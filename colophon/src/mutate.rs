@@ -63,16 +63,37 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Some(format) => MetaCarrier::WholeFile(format),
             None => match parent_doc.carrier {
                 Some(MetaCarrier::Fenced(kind)) => MetaCarrier::Fenced(kind),
-                _ => MetaCarrier::Fenced(fig::EmbedType::FrontmatterYaml),
+                _ => crate::document::frontmatter_carrier(self.default_embed_format()),
             },
         };
 
-        // The new document: title from the file stem, inverse link to parent.
+        // Titles for the authored links: the child's (from its stem) and the
+        // parent's (its own title, else derived from the path).
         let title = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let up = link::relative(path.parent().unwrap_or(Path::new("")), &parent);
+        let parent_title = parent_doc
+            .meta
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| link::path_to_title(&parent));
+
+        // The child's inverse link back to the parent — authored in the
+        // workspace style (registering the parent when authoring by id, which is
+        // safe: the parent exists).
+        let up = self.authored_target(&path, &parent, &parent_title).await?;
+        // The parent's spanning entry for the child. The child is not on disk
+        // yet, so an id link mints its id directly rather than register-by-path.
+        let down = if self.id_links() && self.identity().registration().fires_on(Trigger::Link) {
+            let child_id = self.mint_unique(&path);
+            self.index_mut().register(&child_id, &path);
+            link::id_target(&child_id)
+        } else {
+            link::format_link(self.link_style(), &parent, &path, &title)
+        };
+
         let mut new_doc = MetaEditor::open_or_init("", Some(child_carrier))?;
         new_doc.set_value(&[Segment::Key("title")], fig::Value::Str(title))?;
         new_doc.set_value(&[Segment::Key(&inverse)], fig::Value::Str(up))?;
@@ -80,7 +101,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // The parent: append the child to its spanning field (creating it if
         // absent — `append` needs an existing sequence).
-        let down = link::relative(parent.parent().unwrap_or(Path::new("")), &path);
         let mut parent_editor = MetaEditor::open_or_init(&parent_text, parent_doc.carrier)?;
         let span_path = [Segment::Key(&spanning)];
         if parent_editor
@@ -97,8 +117,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.fs().write(&self.root().join(&path), new_text.as_bytes()).await?;
         self.fs().write(&self.root().join(&parent), parent_out.as_bytes()).await?;
 
-        // Identity hook — eager policies assign an ID from birth.
-        if self.identity().registration().fires_on(Trigger::Create) {
+        // Identity hook — eager policies assign an ID from birth (idempotent: an
+        // id-linked child was already registered above).
+        if self.identity().registration().fires_on(Trigger::Create)
+            && self.index().id_for_path(&path).is_none()
+        {
             let id = self.mint_unique(&path);
             self.index_mut().register(&id, &path);
         }
@@ -470,7 +493,7 @@ fn rerelativize_body_wikilinks(text: &str, body: &str, from: &Path, to: &Path) -
     let mut new_body = String::with_capacity(body.len());
     let mut cursor = 0;
     let mut rewrote = false;
-    for wl in link::parse_wikilinks(body) {
+    for wl in link::scan_wikilinks(from, body) {
         // ID-form (stable by construction) and external targets stay put; the
         // text between `cursor` and this span — including any such skipped
         // wikilink — is copied verbatim by the next span's push (or the tail).
@@ -518,7 +541,7 @@ fn rewrite_body_inbound(text: &str, body: &str, source: &Path, from: &Path, to: 
     let source_dir = source.parent().unwrap_or(Path::new(""));
     let mut new_body = body.to_string();
     let mut changed = false;
-    for wikilink in link::parse_wikilinks(body).into_iter().rev() {
+    for wikilink in link::scan_wikilinks(source, body).into_iter().rev() {
         if wikilink.id_target().is_some() || Link::parse(&wikilink.target).is_external() {
             continue;
         }
@@ -544,6 +567,7 @@ mod tests {
     use crate::fs::StdFs;
     use crate::identity::Minter;
     use crate::index::FileIndex;
+    use crate::link::LinkStyle;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -582,7 +606,9 @@ mod tests {
     fn create_links_both_directions_in_the_parents_format() {
         let dir = tempdir("create");
         write(&dir, "index.md", "```fig\ntitle = Root\n```\nbody\n");
-        block_on(ws(&dir).create(Path::new("notes/new.md"), Path::new("index.md"))).unwrap();
+        // Plain-relative keeps the authored links bare and deterministic.
+        let w = || Workspace::builder(StdFs).root(&dir).link_style(LinkStyle::PlainRelative).build();
+        block_on(w().create(Path::new("notes/new.md"), Path::new("index.md"))).unwrap();
 
         let child = read(&dir, "notes/new.md");
         assert!(child.starts_with("```fig\n"), "child inherits the parent's archetype: {child}");
@@ -593,7 +619,45 @@ mod tests {
         assert!(parent.contains("contents = [notes/new.md]"), "{parent}");
         assert!(parent.ends_with("body\n"), "body untouched: {parent}");
         // The result validates cleanly.
-        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+        assert_eq!(block_on(w().check("index.md")).unwrap(), vec![]);
+    }
+
+    #[cfg(feature = "fig-lang")]
+    #[test]
+    fn create_uses_the_workspace_default_embed_format() {
+        // The parent is a config file (whole-file metadata), so the child
+        // inherits no fenced archetype and falls to the workspace default —
+        // here fig, not the built-in YAML.
+        let dir = tempdir("embed-default");
+        write(&dir, "index.yaml", "title: Root\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .default_embed_format(fig::Format::Fig)
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.yaml"))).unwrap();
+        assert!(read(&dir, "a.md").starts_with("```fig"), "{}", read(&dir, "a.md"));
+    }
+
+    #[test]
+    fn create_authors_id_links_when_configured() {
+        // Obsidian-style: both structural links are authored by id, and both
+        // ends are registered so the links survive any later move untouched.
+        let dir = tempdir("create-id");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::lazy(7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_links(true)
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+
+        let parent_id = w.index().id_for_path(Path::new("index.md")).expect("parent registered");
+        let child_id = w.index().id_for_path(Path::new("a.md")).expect("child registered");
+        assert!(read(&dir, "a.md").contains(&format!("part_of: colophon:{parent_id}")));
+        assert!(read(&dir, "index.md").contains(&format!("colophon:{child_id}")));
+        // And it still validates — id targets resolve through the registry.
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
 
     #[test]
@@ -748,6 +812,31 @@ mod tests {
         );
         // The parent's spanning entry was removed, not reported.
         assert!(!read(&dir, "index.md").contains("a.md"), "parent entry cleaned");
+    }
+
+    #[test]
+    fn config_pointer_resolves_and_reads_a_setting() {
+        // Workspace policy lives in a config document the root links via the
+        // `config` relation — the registry's reachability move, for config.
+        let dir = tempdir("config");
+        write(&dir, "index.md", "---\ntitle: Root\nconfig: colophon.yaml\n---\n");
+        write(
+            &dir,
+            "colophon.yaml",
+            "title: colophon config\npart_of: index.md\nlink_format: plain_relative\n",
+        );
+        let ws = ws(&dir);
+        assert_eq!(
+            block_on(ws.config_path(Path::new("index.md"))).unwrap(),
+            Some(PathBuf::from("colophon.yaml"))
+        );
+        let value = block_on(ws.config_get(Path::new("index.md"), "link_format")).unwrap();
+        assert_eq!(value.and_then(|v| v.as_str().map(str::to_owned)), Some("plain_relative".into()));
+        // An unset key falls through to None (caller uses its default).
+        assert!(block_on(ws.config_get(Path::new("index.md"), "missing")).unwrap().is_none());
+        // No pointer at all → no config document.
+        write(&dir, "bare.md", "---\ntitle: Bare\n---\n");
+        assert!(block_on(ws.config_path(Path::new("bare.md"))).unwrap().is_none());
     }
 
     #[test]

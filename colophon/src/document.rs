@@ -59,6 +59,21 @@ pub fn whole_file_format(path: &Path) -> Option<fig::Format> {
     }
 }
 
+/// The fenced-frontmatter carrier for `format` — the archetype a new document
+/// gets when it inherits no parent block and the workspace default is `format`.
+/// A format whose feature is not compiled falls back to YAML frontmatter (which
+/// the default `yaml` feature always provides).
+pub fn frontmatter_carrier(format: fig::Format) -> MetaCarrier {
+    let embed = match format {
+        #[cfg(feature = "json")]
+        fig::Format::Json => EmbedType::FrontmatterJson,
+        #[cfg(feature = "fig-lang")]
+        fig::Format::Fig => EmbedType::FrontmatterFig,
+        _ => EmbedType::FrontmatterYaml,
+    };
+    MetaCarrier::Fenced(embed)
+}
+
 /// A parsed document: its path, its embedded metadata, and its body text.
 ///
 /// Metadata is stored as a dynamic [`Value`] (a mapping, or [`Value::Null`] when

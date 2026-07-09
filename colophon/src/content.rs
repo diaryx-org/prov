@@ -1,0 +1,123 @@
+//! Body-prose parsing via `twig` — colophon's answer to the `content_format`
+//! knob deferred in `docs/next-steps.md`, and the ingredient that makes
+//! body-link findings code-aware (DESIGN §8's principle: a `[[…]]` that is
+//! really code, e.g. `[[inf] * n for _ in range(m)]]` inside backticks, must
+//! never be treated as a link).
+//!
+//! `twig` (a sister Zig-backed project, path-dependent for now — its Rust
+//! bindings are new) parses Markdown/Djot into a shared AST. [`render_html`]
+//! and [`code_spans`] (feature `content`) are direct FFI calls into it —
+//! `twig`'s C ABI exposes `twig_document_render_html` and
+//! `twig_document_code_spans`, no subprocess involved.
+//!
+//! Pair [`code_spans`] with [`crate::link::scan_wikilinks`] (which is what
+//! actually uses it) to keep a body-link scan from ever treating code as
+//! prose.
+
+use std::path::Path;
+
+/// Which body-prose grammar a document is written in. Maps to a `twig`
+/// [`twig::Format`] one-to-one; kept as colophon's own type so callers outside
+/// the `content` feature (which is when `twig` isn't even a dependency) can
+/// still name a format, e.g. for the `content_format` config knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentFormat {
+    Markdown,
+    Djot,
+}
+
+impl ContentFormat {
+    /// Infer the content format from a path's extension. `None` for anything
+    /// unrecognized (including config extensions, which have no body).
+    pub fn from_extension(path: &Path) -> Option<Self> {
+        match path.extension()?.to_str()? {
+            "md" | "markdown" => Some(Self::Markdown),
+            "dj" | "djot" => Some(Self::Djot),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "content")]
+    fn twig_format(self) -> twig::Format {
+        match self {
+            Self::Markdown => twig::Format::Markdown,
+            Self::Djot => twig::Format::Djot,
+        }
+    }
+}
+
+/// Parse `body` as `format` with `twig`. Shared by [`render_html`] and
+/// [`code_spans`] so both go through the same error mapping.
+#[cfg(feature = "content")]
+fn parse(body: &str, format: ContentFormat) -> crate::error::Result<twig::Document> {
+    twig::Document::parse_str(body, format.twig_format())
+        .map_err(|e| crate::error::Error::Content(format!("twig parse: {e}")))
+}
+
+/// Parse `body` as `format` and render it to HTML, via `twig`'s FFI.
+#[cfg(feature = "content")]
+pub fn render_html(body: &str, format: ContentFormat) -> crate::error::Result<String> {
+    let mut doc = parse(body, format)?;
+    let html = doc
+        .render_html()
+        .map_err(|e| crate::error::Error::Content(format!("twig render: {e}")))?;
+    String::from_utf8(html)
+        .map_err(|e| crate::error::Error::Content(format!("twig produced non-UTF-8 HTML: {e}")))
+}
+
+/// The byte ranges in `body` that `twig` parses as code (inline code spans,
+/// fenced code blocks, raw inline/block escapes) — everything a link scan
+/// should treat as opaque. A direct call into `twig`'s C ABI
+/// (`twig_document_code_spans`); see [`crate::link::scan_wikilinks`].
+#[cfg(feature = "content")]
+pub fn code_spans(body: &str, format: ContentFormat) -> crate::error::Result<Vec<std::ops::Range<usize>>> {
+    let mut doc = parse(body, format)?;
+    doc.code_spans()
+        .map_err(|e| crate::error::Error::Content(format!("twig code_spans: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infers_format_from_extension() {
+        assert_eq!(ContentFormat::from_extension(Path::new("a.md")), Some(ContentFormat::Markdown));
+        assert_eq!(ContentFormat::from_extension(Path::new("a.markdown")), Some(ContentFormat::Markdown));
+        assert_eq!(ContentFormat::from_extension(Path::new("a.dj")), Some(ContentFormat::Djot));
+        assert_eq!(ContentFormat::from_extension(Path::new("a.djot")), Some(ContentFormat::Djot));
+        assert_eq!(ContentFormat::from_extension(Path::new("a.yaml")), None);
+        assert_eq!(ContentFormat::from_extension(Path::new("noext")), None);
+    }
+
+    #[cfg(feature = "content")]
+    #[test]
+    fn renders_markdown_to_html_via_twig_ffi() {
+        let html = render_html("# hi\n", ContentFormat::Markdown).unwrap();
+        assert_eq!(html, "<h1>hi</h1>\n");
+    }
+
+    #[cfg(feature = "content")]
+    #[test]
+    fn renders_djot_to_html_via_twig_ffi() {
+        let html = render_html("_hi_\n", ContentFormat::Djot).unwrap();
+        assert_eq!(html, "<p><em>hi</em></p>\n");
+    }
+
+    #[cfg(feature = "content")]
+    #[test]
+    fn code_spans_cover_verbatim_but_not_prose() {
+        let body = "See [[colophon:abc123]] and `[[inf] * n for _ in range(m)]]` here.";
+        let spans = code_spans(body, ContentFormat::Markdown).unwrap();
+
+        // The plain wikilink is untouched by any code span...
+        let wikilink_span = body.find("[[colophon:abc123]]").unwrap()
+            ..body.find("[[colophon:abc123]]").unwrap() + "[[colophon:abc123]]".len();
+        assert!(!spans.iter().any(|cs| cs.start < wikilink_span.end && wikilink_span.start < cs.end));
+
+        // ...but the backtick-wrapped one is inside exactly one code span.
+        let code_start = body.find('`').unwrap();
+        let code_end = body.rfind('`').unwrap() + 1;
+        assert!(spans.iter().any(|cs| cs.start <= code_start && code_end <= cs.end));
+    }
+}

@@ -20,6 +20,10 @@ fig.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 
+# Body-prose parsing, behind `content` — see `src/content.rs`. Zig-backed
+# (its build.rs runs `zig build`, same shape as `fig`).
+twig = { workspace = true, optional = true }
+
 [features]
 # YAML is the conventional default (`---` frontmatter, `registry.yaml`). Turn it
 # off with `default-features = false` and select another format to slim the build.
@@ -34,3 +38,9 @@ json = ["fig/json"]
 # `fig` is the dependency name, so the native-dialect feature is spelled
 # `fig-lang` (a feature and a dependency may not share a name unambiguously).
 fig-lang = ["fig/fig"]
+
+# Body parsing (Djot/Markdown), via `twig` — see `src/content.rs`. Real FFI:
+# parse + render to HTML + code-span detection (so a `[[…]]` inside a code
+# span is never mistaken for a wikilink — DESIGN §8). Needs the Zig toolchain
+# to build `twig`.
+content = ["dep:twig"]

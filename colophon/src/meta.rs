@@ -48,6 +48,14 @@ impl Value {
         }
     }
 
+    /// The boolean, if this is a [`Value::Bool`].
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     /// The sequence, if this is a [`Value::Sequence`].
     pub fn as_sequence(&self) -> Option<&[Value]> {
         match self {

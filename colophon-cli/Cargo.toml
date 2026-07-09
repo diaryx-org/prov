@@ -33,3 +33,9 @@ clap = { version = "4.5", features = ["derive"] }
 default = ["json", "fig-lang"]
 json = ["colophon/json"]
 fig-lang = ["colophon/fig-lang"]
+
+# Body-prose rendering (`colophon render`) and code-aware body-link scanning,
+# via colophon's `content` feature (twig FFI — needs the Zig toolchain to
+# build). Off by default: not needed for the metadata/structure layers this
+# CLI is mainly for.
+content = ["colophon/content"]

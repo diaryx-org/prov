@@ -46,6 +46,8 @@ compile_error!(
      You have disabled the default feature without selecting a replacement."
 );
 
+pub mod config;
+pub mod content;
 pub mod document;
 pub mod edit;
 pub mod error;
@@ -61,6 +63,10 @@ pub mod tree;
 pub mod validate;
 pub mod workspace;
 
+pub use config::WorkspaceConfig;
+pub use content::ContentFormat;
+#[cfg(feature = "content")]
+pub use content::{code_spans, render_html};
 pub use document::{Document, EmbedType};
 pub use error::{Error, Result};
 pub use exec::block_on;
@@ -68,9 +74,9 @@ pub use fig::Format;
 pub use fs::{Storage, StdFs};
 pub use identity::{Id, IdentityPolicy, Minter, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
-pub use link::{Link, Wikilink};
+pub use link::{Link, LinkStyle, Wikilink, format_link, path_to_title};
 pub use meta::{Mapping, Value};
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use tree::{Node, NodeKind};
-pub use validate::{Backlink, CensusEntry, Finding, LinkSite, Resolution};
+pub use validate::{Backlink, CensusEntry, Finding, Fix, LinkSite, Resolution};
 pub use workspace::{Target, Workspace};

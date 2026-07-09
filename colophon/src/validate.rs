@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::fs::Storage;
-use crate::identity::{self, Id};
+use crate::identity::{self, Id, IdentityPolicy};
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
@@ -218,7 +218,69 @@ impl fmt::Display for Finding {
     }
 }
 
+/// A concrete repair for a finding — **metadata only**. Autofix never edits body
+/// prose: a `[[…]]` that is really code (`[[None] * width]`) must not be
+/// "repaired", and structure-aware body editing belongs to a later layer. So the
+/// fixable findings are the frontmatter ones; body-link findings are diagnosis
+/// only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fix {
+    /// Repair a [`Finding::MissingInverse`]: declare `relation` in `doc` pointing
+    /// back at `parent`. The concrete target — a path in the workspace's link
+    /// style, or a `colophon:<id>` when the workspace authors id links — is
+    /// produced when the fix is applied (which may register `parent`), so the
+    /// repair matches how the workspace authors every other link.
+    AddInverse { doc: PathBuf, relation: String, parent: PathBuf, title: String },
+}
+
+impl fmt::Display for Fix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Fix::AddInverse { doc, relation, parent, .. } => {
+                write!(f, "declare {relation} → {} in {}", parent.display(), doc.display())
+            }
+        }
+    }
+}
+
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Suggest a safe, metadata-only [`Fix`] for `finding`, or `None` when it is
+    /// not safely auto-fixable — a body-link finding (left for the
+    /// structure-aware layer), or a contested containment (a human must pick the
+    /// real parent).
+    ///
+    /// Currently fixes [`Finding::MissingInverse`]: when the child declares *no*
+    /// competing parent, add the back-link — mirroring the style (absolute vs
+    /// relative) the parent used to reference the child, so the repair reads
+    /// native to the workspace. A child that already claims a different parent is
+    /// a contested containment and is left alone.
+    pub async fn suggest_fix(&self, finding: &Finding) -> Result<Option<Fix>> {
+        let Finding::MissingInverse { doc: parent, child, inverse } = finding else {
+            return Ok(None);
+        };
+        // Safe only when the child makes no other (cardinality-one) parent claim.
+        let (_, child_doc) = self.load(child).await?;
+        if child_doc.meta.get(inverse).is_some() {
+            return Ok(None);
+        }
+        // Title the back-link with the parent's own title (else the path), so a
+        // markdown-style repair reads well; the target itself is produced at
+        // apply time, in the workspace's link style (or by id).
+        let (_, parent_doc) = self.load(parent).await?;
+        let title = parent_doc
+            .meta
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| link::path_to_title(parent));
+        Ok(Some(Fix::AddInverse {
+            doc: child.clone(),
+            relation: inverse.clone(),
+            parent: parent.clone(),
+            title,
+        }))
+    }
+
     /// Check the workspace reachable from `start`, returning every finding.
     /// An empty result means the reachable graph holds its invariants. This is
     /// the findings view over [`census`](Workspace::census): each forward link
@@ -376,7 +438,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
 
             // Body wikilinks — overlay references, censused but never spanning.
-            for wikilink in link::parse_wikilinks(&doc.body) {
+            for wikilink in link::scan_wikilinks(&path, &doc.body) {
                 let resolution = self.resolve_forward(&path, &Link::parse(&wikilink.target)).await;
                 census.push(CensusEntry {
                     source: path.clone(),
@@ -442,6 +504,26 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
+impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Apply a [`Fix`], editing the target document's metadata comment- and
+    /// format-preservingly (through the same editor `set` uses). The back-link
+    /// is authored through the workspace's link seam — a path in the configured
+    /// style, or a `colophon:<id>` (registering the parent) when the workspace
+    /// authors id links — so a repair matches how it authors every other link.
+    pub async fn apply_fix(&mut self, fix: &Fix) -> Result<()> {
+        match fix {
+            Fix::AddInverse { doc, relation, parent, title } => {
+                let target = self.authored_target(doc, parent, title).await?;
+                let (text, parsed) = self.load(doc).await?;
+                let updated =
+                    crate::edit::set_in_text(&text, parsed.carrier, relation, fig::Value::Str(target))?;
+                self.fs().write(&self.root().join(doc), updated.as_bytes()).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
 enum NameMatch {
     Exact,
     CaseOnly(String),
@@ -454,6 +536,9 @@ mod tests {
     use super::*;
     use crate::exec::block_on;
     use crate::fs::StdFs;
+    use crate::identity::Minter;
+    use crate::index::FileIndex;
+    use crate::link::LinkStyle;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -596,6 +681,32 @@ mod tests {
         );
     }
 
+    // Real-world regression: a fenced code block containing Python list
+    // comprehensions (`[[float('inf')] * width ...]`) must never be mistaken
+    // for a `[[…]]` wikilink — DESIGN §8's motivating example, life-sized.
+    #[cfg(feature = "content")]
+    #[test]
+    fn check_does_not_flag_python_list_comprehensions_in_a_code_block_as_broken_links() {
+        let dir = tempdir("code-brackets");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\n---\n\n\
+             ```python\n\
+             dp_matrix = [[float('inf')] * width for _ in range(m + 1)]\n\
+             ptr_matrix = [[None] * width for _ in range(m + 1)]\n\
+             ```\n\n\
+             See [[gone.md]] for the real broken link.\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+
+        let broken: Vec<_> =
+            findings.iter().filter(|f| matches!(f, Finding::BrokenLink { .. })).collect();
+        assert_eq!(broken.len(), 1, "{findings:?}");
+        assert!(matches!(broken[0], Finding::BrokenLink { target, .. } if target == "gone.md"));
+    }
+
     #[test]
     fn a_resolving_body_wikilink_is_not_a_finding() {
         let dir = tempdir("body-clean");
@@ -603,6 +714,141 @@ mod tests {
         write(&dir, "a.md", "---\npart_of: index.md\n---\n");
         let ws = Workspace::builder(StdFs).root(&dir).build();
         assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn angle_bracketed_and_absolute_links_resolve_in_the_graph() {
+        // The Adam's-Archive shape: the root links a spaced child by an
+        // angle-bracketed, workspace-absolute path, and the child points back
+        // by an absolute path. Everything must resolve — no missing/broken.
+        let dir = tempdir("archive-links");
+        write(&dir, "index.md", "---\ncontents:\n- '[Notes](</My Notes/notes.md>)'\n---\n");
+        write(&dir, "My Notes/notes.md", "---\npart_of: /index.md\n---\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        // The child resolves (the tree would show it, not "(missing)").
+        let census = block_on(ws.census("index.md")).unwrap();
+        assert!(
+            census.iter().any(|e| matches!(&e.resolution,
+                Resolution::Path(p) if p == &PathBuf::from("My Notes/notes.md"))),
+            "{census:?}"
+        );
+        // And the whole graph validates: absolute inverse links back cleanly.
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn suggests_and_applies_a_missing_inverse_fix() {
+        let dir = tempdir("autofix");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\ntitle: A\n---\n"); // no part_of → MissingInverse
+        // Plain-canonical style keeps the assertion about the fix simple.
+        let mut ws = Workspace::builder(StdFs).root(&dir).link_style(LinkStyle::PlainCanonical).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let mi = findings.iter().find(|f| matches!(f, Finding::MissingInverse { .. })).unwrap();
+        let fix = block_on(ws.suggest_fix(mi)).unwrap().expect("safely fixable");
+        assert!(
+            matches!(&fix, Fix::AddInverse { doc, relation, parent, .. }
+                if doc == &PathBuf::from("a.md") && relation == "part_of"
+                    && parent == &PathBuf::from("index.md")),
+            "{fix:?}"
+        );
+
+        block_on(ws.apply_fix(&fix)).unwrap();
+        // a.md now declares the back-link (plain-canonical), and it validates.
+        assert!(std::fs::read_to_string(dir.join("a.md")).unwrap().contains("part_of: index.md"));
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn autofix_matches_the_workspace_link_style() {
+        // The Adam's-Archive concern: the repair must be written in the
+        // workspace's declared style (markdown-root, titled with the parent's
+        // own title) — never a bare fifth style colophon invented.
+        let dir = tempdir("autofix-style");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- '[A](/a.md)'\n---\n");
+        write(&dir, "a.md", "---\ntitle: A\n---\n");
+        let mut ws = Workspace::builder(StdFs).root(&dir).link_style(LinkStyle::MarkdownRoot).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let mi = findings
+            .iter()
+            .find(|f| matches!(f, Finding::MissingInverse { .. }))
+            .unwrap()
+            .clone();
+        let fix = block_on(ws.suggest_fix(&mi)).unwrap().unwrap();
+        block_on(ws.apply_fix(&fix)).unwrap();
+        // Applied in the workspace's markdown-root style, titled with the
+        // parent's own title.
+        assert!(
+            std::fs::read_to_string(dir.join("a.md")).unwrap().contains("[Home](/index.md)"),
+            "{:?}",
+            std::fs::read_to_string(dir.join("a.md"))
+        );
+    }
+
+    #[test]
+    fn autofix_authors_an_id_link_when_configured() {
+        // Obsidian-style: the repair is authored by id (registering the parent),
+        // so it survives a later move untouched.
+        let dir = tempdir("autofix-id");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\ntitle: A\n---\n");
+        let mut ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::lazy(9))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_links(true)
+            .build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let mi = findings
+            .iter()
+            .find(|f| matches!(f, Finding::MissingInverse { .. }))
+            .unwrap()
+            .clone();
+        let fix = block_on(ws.suggest_fix(&mi)).unwrap().unwrap();
+        block_on(ws.apply_fix(&fix)).unwrap();
+
+        let parent_id = ws.index().id_for_path(Path::new("index.md")).expect("parent registered");
+        assert!(
+            std::fs::read_to_string(dir.join("a.md"))
+                .unwrap()
+                .contains(&format!("part_of: colophon:{parent_id}"))
+        );
+    }
+
+    #[test]
+    fn a_contested_parent_is_not_auto_fixed() {
+        // index claims a.md, but a.md already claims a *different* parent — a
+        // contested containment, not a mechanical missing-inverse. Left to a
+        // human (suggest_fix declines), so autofix never overwrites intent.
+        let dir = tempdir("autofix-contested");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "other.md", "---\ntitle: Other\n---\n");
+        write(&dir, "a.md", "---\npart_of: other.md\n---\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let mi = findings.iter().find(|f| matches!(f, Finding::MissingInverse { .. })).unwrap();
+        assert!(block_on(ws.suggest_fix(mi)).unwrap().is_none(), "contested → not auto-fixed");
+    }
+
+    #[test]
+    fn body_link_findings_are_never_auto_fixed() {
+        // The code-block-false-positive guard: a broken *body* wikilink is
+        // diagnosis only — autofix must not offer to edit prose.
+        let dir = tempdir("autofix-body");
+        // A nested list comprehension: `[[…]]` that is code, not a wikilink.
+        write(&dir, "index.md", "---\ntitle: Root\n---\ndp = [[inf] * n for _ in range(m)]]\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let broken = findings
+            .iter()
+            .find(|f| matches!(f, Finding::BrokenLink { site: LinkSite::Body(_), .. }))
+            .expect("the code fragment scanned as a broken body link");
+        assert!(block_on(ws.suggest_fix(broken)).unwrap().is_none());
     }
 
     #[test]

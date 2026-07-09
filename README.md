@@ -3,7 +3,6 @@ title = colophon
 author = adammharris
 created = 2026-07-06
 contents = [[Design](docs/DESIGN.md)]
-registry = registry.md
 ```
 
 # colophon
@@ -19,11 +18,13 @@ The name is the point. A *colophon* is the note in which a book describes its ow
 
 ## Filesystem
 
-colophon is generic over *where* documents live. It depends on no concrete backend; instead it asks integrators to implement the small async [`colophon::Storage`](colophon/src/fs.rs) trait, which mirrors the slice of `std::fs` the scan/traverse/mutate engine needs. Implement it over `std::fs`, `tokio::fs`, or a browser filesystem (OPFS/IndexedDB) — the workspace never learns which.
+colophon is generic over the small async [`colophon::Storage`](colophon/src/fs.rs) trait, which mirrors the slice of `std::fs` the scan/traverse/mutate engine needs. Implement it over `std::fs`, `tokio::fs`, or a browser filesystem (OPFS/IndexedDB) — the workspace never learns which.
 
 ## Status
 
-Early extraction from [diaryx](https://github.com/diaryx-org/diaryx). The pure layers — embedded-metadata parsing, document splitting, relation extraction — are real and tested. The filesystem-driven scan/traversal/mutation engine ports next; its seams (`Workspace`, `IdentityPolicy`, `IndexStore`, `Storage`) are staked out so nothing app-specific leaks into the eventual public API.
+Works for simple workspaces.
+
+Development resumed, now that [Twig](https://github.com/adammharris/twig) has gained the ability to parse markdown document structure. Currently Twig is a path dependency: `../twig/bindings/rust` so you will have to `git clone` and have `cargo` and `zig` toolchains in order for Colophon to build.
 
 ## License
 

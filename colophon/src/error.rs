@@ -16,6 +16,11 @@ pub enum Error {
     /// The storage backend failed.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// The `twig` body parser failed — see `content.rs`.
+    #[cfg(feature = "content")]
+    #[error("content error: {0}")]
+    Content(String),
 }
 
 /// Convenience alias for results in this crate.

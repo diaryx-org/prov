@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use colophon::tree::{Node, NodeKind};
 use colophon::{
     Document, FileIndex, Format, Id, IndexStore, Minter, RelationSet, StdFs, Trigger, Value,
-    Workspace, block_on, edit, link, meta,
+    Workspace, WorkspaceConfig, block_on, edit, link, meta,
 };
 
 /// The default registry document the CLI creates on first `colophon id` —
@@ -26,6 +26,12 @@ use colophon::{
 /// when bootstrapping one. (It can equally be a `.md` file whose frontmatter
 /// carries the records — anything the pointer targets.)
 const DEFAULT_REGISTRY: &str = "registry.yaml";
+
+/// The default config document the CLI creates on first `colophon config <k> <v>`
+/// — visible, beside the root, and linked from the root's own metadata via the
+/// `config` relation (the same reachability move as the registry). Workspace
+/// policy lives here rather than bloating the root or hiding in a dotfile.
+const DEFAULT_CONFIG: &str = "colophon.yaml";
 
 /// A self-describing plaintext workspace, from the command line.
 #[derive(Parser)]
@@ -70,6 +76,13 @@ enum Command {
         /// Path to a document.
         file: PathBuf,
     },
+    /// Render a document's body to HTML (Markdown/Djot, via `twig`). Requires
+    /// the `content` feature.
+    #[cfg(feature = "content")]
+    Render {
+        /// Path to a document.
+        file: PathBuf,
+    },
     /// Set a metadata field (comment- and format-preserving; creates the
     /// block when the document has none).
     Set {
@@ -99,6 +112,11 @@ enum Command {
     Check {
         /// The document to check from (default: the workspace root).
         root: Option<PathBuf>,
+        /// Interactively repair fixable findings (currently: missing inverse
+        /// links). Metadata edits only — body-link findings are left for a
+        /// structure-aware pass, so code that looks like a link is never touched.
+        #[arg(long)]
+        fix: bool,
     },
     /// Create a document as a child of a parent, linking both directions.
     New {
@@ -146,6 +164,16 @@ enum Command {
         /// The document whose backlinks to list.
         file: PathBuf,
     },
+    /// Get or set workspace config (e.g. `link_format`, `identity`). With a
+    /// value, writes it to the linked config document — creating and linking
+    /// `colophon.yaml` from the root on first use. With a key only, prints that
+    /// value; with no key, prints the effective config.
+    Config {
+        /// The config key (e.g. `link_format`, `identity`). Omit to print all.
+        key: Option<String>,
+        /// The value to set. Omit to read.
+        value: Option<String>,
+    },
 }
 
 /// CLI spelling of the metadata formats colophon compiles in. Variants track the
@@ -181,16 +209,19 @@ fn main() -> ExitCode {
         Command::Meta { file, format } => cmd_meta(&file, format),
         Command::Get { file, key } => cmd_get(&file, &key),
         Command::Body { file } => cmd_body(&file),
+        #[cfg(feature = "content")]
+        Command::Render { file } => cmd_render(&file),
         Command::Set { file, key, value } => cmd_set(&file, &key, &value),
         Command::Unset { file, key } => cmd_unset(&file, &key),
         Command::Tree { root } => cmd_tree(root.as_deref()),
-        Command::Check { root } => cmd_check(root.as_deref()),
+        Command::Check { root, fix } => cmd_check(root.as_deref(), fix),
         Command::New { path, parent } => cmd_new(&path, &parent),
         Command::Mv { from, to } => cmd_mv(&from, &to),
         Command::Rm { path, force } => cmd_rm(&path, force),
         Command::Id { file } => cmd_id(&file),
         Command::Resolve { id } => cmd_resolve(&id),
         Command::Backlinks { file } => cmd_backlinks(&file),
+        Command::Config { key, value } => cmd_config(key.as_deref(), value.as_deref()),
     };
     match result {
         Ok(code) => code,
@@ -218,6 +249,9 @@ struct Ctx {
     root_doc: PathBuf,
     /// The registry document the root declares (relative to `root_dir`), if any.
     registry: Option<PathBuf>,
+    /// The effective workspace config (root frontmatter overlaid by the linked
+    /// config document, over defaults).
+    config: WorkspaceConfig,
 }
 
 type AnyError = Box<dyn std::error::Error>;
@@ -255,7 +289,22 @@ fn find_root() -> Result<Ctx, AnyError> {
                 // Ask the root where its registry lives (the pointer relation).
                 let probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&root_dir).build();
                 let registry = block_on(probe.registry_path(&root_doc))?;
-                return Ok(Ctx { root_dir, root_doc, registry });
+                // Build the effective config: defaults, overlaid by the root
+                // frontmatter (diaryx compat, e.g. `link_format`), overlaid by
+                // the linked config document (which wins).
+                let mut config = WorkspaceConfig::default();
+                if let Some(text) = std::fs::read_to_string(root_dir.join(&root_doc)).ok()
+                    && let Ok(doc) = Document::parse(&root_doc, &text)
+                {
+                    config.apply(&doc.meta);
+                }
+                if let Ok(Some(config_doc)) = block_on(probe.config_path(&root_doc))
+                    && let Some(text) = std::fs::read_to_string(root_dir.join(&config_doc)).ok()
+                    && let Ok(doc) = Document::parse(&config_doc, &text)
+                {
+                    config.apply(&doc.meta);
+                }
+                return Ok(Ctx { root_dir, root_doc, registry, config });
             }
             None if candidates.len() > 1 => {
                 return Err(format!(
@@ -291,8 +340,11 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
     };
     Ok(Workspace::builder(StdFs)
         .root(&ctx.root_dir)
-        .identity(Minter::lazy(entropy_seed()))
+        .identity(Minter::with(ctx.config.identity, entropy_seed()))
         .index(index)
+        .link_style(ctx.config.link_format)
+        .id_links(ctx.config.id_links)
+        .default_embed_format(ctx.config.default_embed_format)
         .build())
 }
 
@@ -479,6 +531,20 @@ fn cmd_body(file: &Path) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
+#[cfg(feature = "content")]
+fn cmd_render(file: &Path) -> CmdResult {
+    let (_, doc) = load(file)?;
+    let format = colophon::ContentFormat::from_extension(file).ok_or_else(|| {
+        format!(
+            "{}: not a recognized body format (expected .md/.markdown or .dj/.djot)",
+            file.display()
+        )
+    })?;
+    let html = colophon::render_html(&doc.body, format)?;
+    print!("{html}");
+    Ok(ExitCode::SUCCESS)
+}
+
 fn cmd_set(file: &Path, key: &str, value: &str) -> CmdResult {
     let (text, doc) = load(file)?;
     let updated = edit::set_in_text(&text, doc.carrier, key, edit::infer_scalar(value))?;
@@ -536,13 +602,17 @@ fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
     }
 }
 
-fn cmd_check(root: Option<&Path>) -> CmdResult {
+fn cmd_check(root: Option<&Path>, fix: bool) -> CmdResult {
     let ctx = find_root()?;
     let root = match root {
         Some(r) => ws_rel(&ctx, r)?,
         None => ctx.root_doc.clone(),
     };
-    let findings = block_on(workspace(&ctx)?.check(&root))?;
+    let mut ws = workspace(&ctx)?;
+    let findings = block_on(ws.check(&root))?;
+    if fix {
+        return cmd_check_fix(&mut ws, &findings);
+    }
     for finding in &findings {
         println!("{finding}");
     }
@@ -555,8 +625,66 @@ fn cmd_check(root: Option<&Path>) -> CmdResult {
     }
 }
 
+/// Interactive repair: walk the findings, and for each one that has a safe,
+/// metadata-only fix, show it and ask before applying. Findings with no fix are
+/// printed as needing attention. `suggest_fix` is consulted lazily, so a fix
+/// applied to one document correctly declines a now-stale finding later.
+fn cmd_check_fix(
+    ws: &mut Workspace<StdFs, Minter, FileIndex>,
+    findings: &[colophon::Finding],
+) -> CmdResult {
+    let mut applied = 0usize;
+    let mut needs_attention = 0usize;
+    let mut apply_all = false;
+    for finding in findings {
+        let Some(fix) = block_on(ws.suggest_fix(finding))? else {
+            println!("•  {finding}");
+            needs_attention += 1;
+            continue;
+        };
+        println!("⚑  {finding}");
+        println!("   → {fix}");
+        let apply = apply_all
+            || match prompt("   apply? [y]es / [n]o / [a]ll / [q]uit: ")?.as_str() {
+                "a" | "all" => {
+                    apply_all = true;
+                    true
+                }
+                "y" | "yes" => true,
+                "q" | "quit" => {
+                    println!("stopped; {applied} fix(es) applied");
+                    return Ok(ExitCode::SUCCESS);
+                }
+                _ => false,
+            };
+        if apply {
+            block_on(ws.apply_fix(&fix))?;
+            applied += 1;
+        }
+    }
+    println!("applied {applied} fix(es); {needs_attention} finding(s) need attention");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Prompt on stderr, read a trimmed, lowercased line from stdin (EOF → empty).
+fn prompt(message: &str) -> Result<String, AnyError> {
+    use std::io::Write;
+    eprint!("{message}");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_lowercase())
+}
+
 fn cmd_new(path: &Path, parent: &Path) -> CmdResult {
-    let ctx = find_root()?;
+    let mut ctx = find_root()?;
+    // Authoring id links (or an eager policy) mints IDs, so ensure a registry to
+    // persist them exists *before* the workspace is built over it.
+    let mints = (ctx.config.id_links && ctx.config.identity.fires_on(Trigger::Link))
+        || ctx.config.identity.fires_on(Trigger::Create);
+    if mints {
+        ensure_registry(&mut ctx)?;
+    }
     let mut ws = workspace(&ctx)?;
     block_on(ws.create(&ws_rel(&ctx, path)?, &ws_rel(&ctx, parent)?))?;
     save_index(&ctx, &mut ws)?;
@@ -587,12 +715,90 @@ fn cmd_rm(path: &Path, force: bool) -> CmdResult {
 
 fn cmd_id(file: &Path) -> CmdResult {
     let mut ctx = find_root()?;
+    if !ctx.config.identity.fires_on(Trigger::Link) {
+        return Err("identity is off in this workspace's config \
+             (run `colophon config identity lazy` to enable stable IDs)"
+            .into());
+    }
     ensure_registry(&mut ctx)?;
     let mut ws = workspace(&ctx)?;
     let id = block_on(ws.register(&ws_rel(&ctx, file)?, Trigger::Link))?;
     save_index(&ctx, &mut ws)?;
     println!("{}", link::id_target(&id));
     Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_config(key: Option<&str>, value: Option<&str>) -> CmdResult {
+    let ctx = find_root()?;
+    match (key, value) {
+        // No key: print the effective config (defaults + root + config document).
+        (None, _) => {
+            print!("{}", meta::serialize_mapping(&ctx.config.to_mapping(), Format::Yaml)?);
+        }
+        // Key only: read that value from the linked config document.
+        (Some(key), None) => {
+            let ws = workspace(&ctx)?;
+            match block_on(ws.config_get(&ctx.root_doc, key))? {
+                Some(v) => match v.as_str() {
+                    Some(s) => println!("{s}"),
+                    None => println!("{}", meta::serialize_value(&v, Format::Yaml)?.trim_end()),
+                },
+                None => {
+                    eprintln!("colophon: {key} is not set");
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
+        }
+        // Key + value: materialize/link the config document if needed, then set.
+        (Some(key), Some(value)) => {
+            let mut ctx = ctx;
+            let config_doc = ensure_config(&mut ctx)?;
+            let full = ctx.root_dir.join(&config_doc);
+            let text = std::fs::read_to_string(&full)?;
+            let doc = Document::parse(&config_doc, &text)?;
+            let updated = edit::set_in_text(&text, doc.carrier, key, edit::infer_scalar(value))?;
+            std::fs::write(&full, updated)?;
+            println!("set {key} = {value} in {}", config_doc.display());
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Ensure the workspace *declares* a config document, bootstrapping one when it
+/// does not: create [`DEFAULT_CONFIG`] beside the root (self-described with a
+/// title and a `part_of` back to the root, in the workspace link style) and add
+/// the `config` pointer to the root's metadata. Returns its path relative to the
+/// root. Mirrors [`ensure_registry`].
+fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
+    let ws = workspace(ctx)?;
+    if let Some(existing) = block_on(ws.config_path(&ctx.root_doc))? {
+        return Ok(existing);
+    }
+    let config_rel = PathBuf::from(DEFAULT_CONFIG);
+    let config_full = ctx.root_dir.join(&config_rel);
+    if !config_full.exists() {
+        // The root's title (or a title from its filename) labels the back-link.
+        let root_full = ctx.root_dir.join(&ctx.root_doc);
+        let root_title = std::fs::read_to_string(&root_full)
+            .ok()
+            .and_then(|t| Document::parse(&ctx.root_doc, &t).ok())
+            .and_then(|d| d.meta.get("title").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| colophon::path_to_title(&ctx.root_doc));
+        let part_of =
+            colophon::format_link(ctx.config.link_format, &config_rel, &ctx.root_doc, &root_title);
+        let mut seed = colophon::Mapping::new();
+        seed.insert("title".into(), Value::String("colophon config".into()));
+        seed.insert("part_of".into(), Value::String(part_of));
+        std::fs::write(&config_full, meta::serialize_mapping(&seed, Format::Yaml)?)?;
+    }
+    // Link it from the root via the `config` relation.
+    let root_full = ctx.root_dir.join(&ctx.root_doc);
+    let text = std::fs::read_to_string(&root_full)?;
+    let doc = Document::parse(&ctx.root_doc, &text)?;
+    let updated = edit::set_in_text(&text, doc.carrier, "config", edit::infer_scalar(DEFAULT_CONFIG))?;
+    std::fs::write(&root_full, updated)?;
+    eprintln!("initialized {} (linked from {})", config_rel.display(), ctx.root_doc.display());
+    Ok(config_rel)
 }
 
 fn cmd_backlinks(file: &Path) -> CmdResult {

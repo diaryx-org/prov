@@ -74,6 +74,7 @@ pub struct RelationSet {
     relations: Vec<Relation>,
     spanning: Option<String>,
     registry: Option<String>,
+    config: Option<String>,
 }
 
 impl RelationSet {
@@ -104,9 +105,21 @@ impl RelationSet {
         self
     }
 
+    /// Mark the named relation as the **config pointer**: the root document links
+    /// its workspace-config document through this relation — the same
+    /// reachability move as the registry (§6), so workspace policy
+    /// (`link_format`, defaults, …) is a self-describing node discovered by
+    /// following links from the root, never an app-private sidecar. The config
+    /// document is optional and lazily created; its absence means all defaults.
+    pub fn config(mut self, name: impl Into<String>) -> Self {
+        self.config = Some(name.into());
+        self
+    }
+
     /// The diaryx vocabulary: `contents`/`part_of` containment (spanning),
-    /// `links`/`link_of` arbitrary cross-references, and `registry` (the root's
-    /// pointer to its ID registry document).
+    /// `links`/`link_of` arbitrary cross-references, `registry` (the root's
+    /// pointer to its ID registry document), and `config` (the root's pointer to
+    /// its workspace-config document).
     pub fn diaryx() -> Self {
         Self::new()
             .with(Relation::many("contents").inverse("part_of"))
@@ -114,8 +127,10 @@ impl RelationSet {
             .with(Relation::many("links").inverse("link_of"))
             .with(Relation::many("link_of").inverse("links"))
             .with(Relation::one("registry"))
+            .with(Relation::one("config"))
             .spanning("contents")
             .registry("registry")
+            .config("config")
     }
 
     /// The configured relations.
@@ -131,6 +146,11 @@ impl RelationSet {
     /// The name of the registry-pointer relation, if one is configured.
     pub fn registry_relation(&self) -> Option<&str> {
         self.registry.as_deref()
+    }
+
+    /// The name of the config-pointer relation, if one is configured.
+    pub fn config_relation(&self) -> Option<&str> {
+        self.config.as_deref()
     }
 
     /// Extract every link declared by a document's metadata, tagged by relation.
@@ -187,6 +207,15 @@ mod tests {
         let set = RelationSet::diaryx();
         assert_eq!(set.children(&d.meta), vec!["a.md".to_string(), "b.md".to_string()]);
         assert_eq!(set.spanning_relation(), Some("contents"));
+    }
+
+    #[test]
+    fn diaryx_declares_registry_and_config_pointers() {
+        let set = RelationSet::diaryx();
+        assert_eq!(set.registry_relation(), Some("registry"));
+        assert_eq!(set.config_relation(), Some("config"));
+        // Both are single-valued pointer relations in the vocabulary.
+        assert!(set.relations().iter().any(|r| r.name == "config"));
     }
 
     #[test]

@@ -25,11 +25,11 @@ use crate::error::{Error, Result};
 use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use crate::index::{IndexStore, NoIndex};
-use crate::link::{self, Link};
+use crate::link::{self, Link, LinkStyle};
 use crate::relation::RelationSet;
 
 /// A composed workspace: a filesystem, a relation vocabulary, an identity
-/// policy, and an index store.
+/// policy, an index store, and the link style it authors in.
 #[derive(Debug, Clone)]
 pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     fs: FS,
@@ -37,11 +37,15 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     relations: RelationSet,
     identity: Id,
     index: Ix,
+    link_style: LinkStyle,
+    id_links: bool,
+    default_embed_format: fig::Format,
 }
 
 impl<FS> Workspace<FS, NoIdentity, NoIndex> {
     /// Start building a paths-only workspace over `fs`. Defaults: root `"."`,
-    /// the [`RelationSet::diaryx`] vocabulary, identity off.
+    /// the [`RelationSet::diaryx`] vocabulary, identity off, and the default
+    /// [`LinkStyle`] (`MarkdownRoot`, matching diaryx).
     pub fn builder(fs: FS) -> WorkspaceBuilder<FS, NoIdentity, NoIndex> {
         WorkspaceBuilder {
             fs,
@@ -49,6 +53,9 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             relations: RelationSet::diaryx(),
             identity: NoIdentity,
             index: NoIndex,
+            link_style: LinkStyle::default(),
+            id_links: false,
+            default_embed_format: fig::Format::Yaml,
         }
     }
 }
@@ -72,6 +79,25 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The index store.
     pub fn index(&self) -> &Ix {
         &self.index
+    }
+
+    /// The link style this workspace authors in (read from the root's
+    /// `link_format`, or the default).
+    pub fn link_style(&self) -> LinkStyle {
+        self.link_style
+    }
+
+    /// Whether this workspace authors durable structural links as
+    /// `colophon:<id>` (registering the target) rather than a path.
+    pub fn id_links(&self) -> bool {
+        self.id_links
+    }
+
+    /// The metadata format a new document gets when it inherits no parent block
+    /// — a *default* for authoring, not a workspace constraint (existing
+    /// documents keep their own format on write, §7).
+    pub fn default_embed_format(&self) -> fig::Format {
+        self.default_embed_format
     }
 
     /// Mutable access to the index store (e.g. to persist it after mutations).
@@ -124,9 +150,42 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// every other link — reachable, validatable, and tool-agnostic — rather
     /// than an app-private path convention.
     pub async fn registry_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
-        let Some(relation) = self.relations().registry_relation() else {
+        match self.relations().registry_relation() {
+            Some(relation) => self.pointer_target(root_doc, relation).await,
+            None => Ok(None),
+        }
+    }
+
+    /// The workspace-config document this root declares via the config-pointer
+    /// relation (§6, the registry's reachability move applied to policy). `None`
+    /// when the vocabulary has no config relation or the root declares none —
+    /// the workspace simply runs on defaults.
+    pub async fn config_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        match self.relations().config_relation() {
+            Some(relation) => self.pointer_target(root_doc, relation).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Read a single workspace-config value by `key` from the linked config
+    /// document. `None` when there is no config document or it lacks the key —
+    /// the caller falls back to its default.
+    pub async fn config_get(
+        &self,
+        root_doc: &Path,
+        key: &str,
+    ) -> Result<Option<crate::meta::Value>> {
+        let Some(config_doc) = self.config_path(root_doc).await? else {
             return Ok(None);
         };
+        let (_, doc) = self.load(&config_doc).await?;
+        Ok(doc.meta.get(key).cloned())
+    }
+
+    /// Resolve the first target of `relation` declared on `root_doc` to a
+    /// workspace path — the shared mechanic behind the registry and config
+    /// pointers: a workspace resource named by a well-known relation on the root.
+    async fn pointer_target(&self, root_doc: &Path, relation: &str) -> Result<Option<PathBuf>> {
         let root_doc = link::normalize(root_doc);
         let (_, doc) = self.load(&root_doc).await?;
         let Some(raw) = doc
@@ -181,6 +240,26 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
             }
         }
     }
+
+    /// The target string colophon writes for a durable link from the document at
+    /// `from` to `to` (titled `title`): a `colophon:<id>` when the workspace
+    /// prefers id links and identity registers on a link — registering `to` — so
+    /// the link survives a move untouched; otherwise a path rendered in the
+    /// workspace's link style. The single seam through which create, rename
+    /// repair, and autofix author a link.
+    pub(crate) async fn authored_target(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        title: &str,
+    ) -> Result<String> {
+        if self.id_links && self.identity.registration().fires_on(Trigger::Link) {
+            let id = self.register(to, Trigger::Link).await?;
+            Ok(link::id_target(&id))
+        } else {
+            Ok(link::format_link(self.link_style, from, to, title))
+        }
+    }
 }
 
 impl<FS: Storage, Id, Ix> Workspace<FS, Id, Ix> {
@@ -203,6 +282,9 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     relations: RelationSet,
     identity: Id,
     index: Ix,
+    link_style: LinkStyle,
+    id_links: bool,
+    default_embed_format: fig::Format,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
@@ -218,6 +300,27 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Set the link style this workspace authors in (typically read from the
+    /// root's `link_format`).
+    pub fn link_style(mut self, link_style: LinkStyle) -> Self {
+        self.link_style = link_style;
+        self
+    }
+
+    /// Author durable structural links as `colophon:<id>` (Obsidian-style)
+    /// rather than paths. Effective only when identity registers on a link.
+    pub fn id_links(mut self, id_links: bool) -> Self {
+        self.id_links = id_links;
+        self
+    }
+
+    /// Set the metadata format new documents get when they inherit no parent
+    /// block (a default, not a constraint).
+    pub fn default_embed_format(mut self, format: fig::Format) -> Self {
+        self.default_embed_format = format;
+        self
+    }
+
     /// Attach an identity policy, turning identity on.
     pub fn identity<Id2>(self, identity: Id2) -> WorkspaceBuilder<FS, Id2, Ix> {
         WorkspaceBuilder {
@@ -226,6 +329,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             relations: self.relations,
             identity,
             index: self.index,
+            link_style: self.link_style,
+            id_links: self.id_links,
+            default_embed_format: self.default_embed_format,
         }
     }
 
@@ -237,6 +343,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             relations: self.relations,
             identity: self.identity,
             index,
+            link_style: self.link_style,
+            id_links: self.id_links,
+            default_embed_format: self.default_embed_format,
         }
     }
 
@@ -248,6 +357,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             relations: self.relations,
             identity: self.identity,
             index: self.index,
+            link_style: self.link_style,
+            id_links: self.id_links,
+            default_embed_format: self.default_embed_format,
         }
     }
 }
