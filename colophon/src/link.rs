@@ -397,18 +397,13 @@ fn shift_spans(links: Vec<Wikilink>, offset: usize) -> Vec<Wikilink> {
         .collect()
 }
 
-#[cfg(feature = "content")]
 fn code_spans_for(path: &Path, body: &str) -> Option<Vec<Range<usize>>> {
     let format = crate::content::ContentFormat::from_extension(path)?;
     // A twig failure degrades to "no spans" rather than aborting the scan —
     // code-awareness is a refinement, the purely lexical scan above is
-    // always a safe fallback.
+    // always a safe fallback. An unrecognized extension is `None` (via
+    // `from_extension`), scanning the whole body as before.
     crate::content::code_spans(body, format).ok()
-}
-
-#[cfg(not(feature = "content"))]
-fn code_spans_for(_path: &Path, _body: &str) -> Option<Vec<Range<usize>>> {
-    None
 }
 
 /// Lexically normalize a relative path: drop `.` components and fold

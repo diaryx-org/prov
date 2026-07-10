@@ -9,29 +9,51 @@
 //! rooted at the current directory, through the dependency-free
 //! [`colophon::block_on`] executor.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use colophon::tree::{Node, NodeKind};
 use colophon::{
-    Document, FileIndex, Format, Id, IndexStore, Minter, RelationSet, StdFs, Trigger, Value,
-    Workspace, WorkspaceConfig, block_on, edit, link, meta,
+    ContentFormat, Document, FileIndex, Format, Id, IndexStore, LinkStyle, Mapping, Minter,
+    Registration, RelationSet, StdFs, Trigger, Value, Workspace, WorkspaceConfig, block_on, edit,
+    link, meta,
 };
 
-/// The default registry document the CLI creates on first `colophon id` —
-/// visible, beside the root, and *linked from the root's own metadata* via the
-/// `registry` relation. Where the registry lives is a fact about the
-/// workspace, declared in the workspace; the CLI only supplies this default
-/// when bootstrapping one. (It can equally be a `.md` file whose frontmatter
-/// carries the records — anything the pointer targets.)
-const DEFAULT_REGISTRY: &str = "registry.yaml";
+/// The filename stem of the registry document the CLI creates on first
+/// `colophon id` — visible, beside the root, and *linked from the root's own
+/// metadata* via the `registry` relation. Its extension is the workspace's
+/// metadata format (see [`sidecar_name`]). Where the registry lives is a fact
+/// about the workspace, declared in it; the CLI only supplies this default when
+/// bootstrapping one. (It can equally be a `.md` file whose frontmatter carries
+/// the records — anything the pointer targets.)
+const REGISTRY_STEM: &str = "registry";
 
-/// The default config document the CLI creates on first `colophon config <k> <v>`
-/// — visible, beside the root, and linked from the root's own metadata via the
-/// `config` relation (the same reachability move as the registry). Workspace
-/// policy lives here rather than bloating the root or hiding in a dotfile.
-const DEFAULT_CONFIG: &str = "colophon.yaml";
+/// The filename stem of the config document the CLI creates on first
+/// `colophon config <k> <v>` (or at `init`) — beside the root, linked via the
+/// `config` relation (the reachability move the registry uses). Workspace policy
+/// lives here rather than bloating the root or hiding in a dotfile.
+const CONFIG_STEM: &str = "colophon";
+
+/// The whole-file extension for a metadata format: the config and registry
+/// sidecars are written in the workspace's *chosen metadata format*, not always
+/// YAML — `yaml`/`json`/`figl`. Mirrors [`colophon::document::whole_file_format`],
+/// which parses them back.
+fn sidecar_ext(format: Format) -> &'static str {
+    match format {
+        #[cfg(feature = "json")]
+        Format::Json => "json",
+        #[cfg(feature = "fig-lang")]
+        Format::Fig => "figl",
+        _ => "yaml",
+    }
+}
+
+/// The sidecar filename for `stem` in metadata `format` (e.g. `colophon.figl`).
+fn sidecar_name(stem: &str, format: Format) -> String {
+    format!("{stem}.{}", sidecar_ext(format))
+}
 
 /// A self-describing plaintext workspace, from the command line.
 #[derive(Parser)]
@@ -43,6 +65,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Initialize a new workspace here: write a self-describing root document
+    /// that the other commands can discover. The starting point — `tree`,
+    /// `new`, and `check` all need a root to work from. On a terminal, prompts
+    /// for anything not given as a flag; pass `--yes` to take every default.
+    Init {
+        /// Directory to initialize (default: the current directory). Created if
+        /// it does not exist.
+        dir: Option<PathBuf>,
+        /// Title for the root document (default: the directory's name, titleized).
+        #[arg(long)]
+        title: Option<String>,
+        /// Author to record in the root's metadata (default: none).
+        #[arg(long)]
+        author: Option<String>,
+        /// Metadata (frontmatter) format for the root document (default: yaml).
+        #[arg(long, value_enum)]
+        meta: Option<MetaFormat>,
+        /// Body-prose grammar; sets the root file's extension (default: markdown).
+        #[arg(long, value_enum)]
+        content: Option<ContentLang>,
+        /// How path links are written (default: markdown-root).
+        #[arg(long, value_enum)]
+        link_style: Option<LinkStyleArg>,
+        /// Identity model: diaryx (paths only) or obsidian (stable IDs) (default: diaryx).
+        #[arg(long, value_enum)]
+        identity: Option<IdentityArg>,
+        /// Accept every default without prompting.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// Summarize a document: its metadata, spanning children, and declared links.
     Show {
         /// Path to a document (plaintext with embedded metadata).
@@ -76,9 +128,7 @@ enum Command {
         /// Path to a document.
         file: PathBuf,
     },
-    /// Render a document's body to HTML (Markdown/Djot, via `twig`). Requires
-    /// the `content` feature.
-    #[cfg(feature = "content")]
+    /// Render a document's body to HTML (Markdown/Djot, via `twig`).
     Render {
         /// Path to a document.
         file: PathBuf,
@@ -180,13 +230,120 @@ enum Command {
 /// crate's format features: YAML is always available; JSON and the native fig
 /// dialect appear only when their features are enabled, so `--format` never
 /// offers a format whose parser is not in the binary.
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum MetaFormat {
     Yaml,
     #[cfg(feature = "json")]
     Json,
     #[cfg(feature = "fig-lang")]
     Fig,
+}
+
+impl MetaFormat {
+    /// The lowercase spelling for the `init` summary line.
+    fn label(self) -> &'static str {
+        match self {
+            MetaFormat::Yaml => "yaml",
+            #[cfg(feature = "json")]
+            MetaFormat::Json => "json",
+            #[cfg(feature = "fig-lang")]
+            MetaFormat::Fig => "fig",
+        }
+    }
+}
+
+/// CLI spelling of the body-prose grammars `twig` parses. Unlike the metadata
+/// formats these are always available (twig is a required dependency), so no
+/// variant is feature-gated.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ContentLang {
+    Markdown,
+    Djot,
+    Html,
+}
+
+impl ContentLang {
+    /// The root document's file extension for this grammar.
+    fn ext(self) -> &'static str {
+        match self {
+            ContentLang::Markdown => "md",
+            ContentLang::Djot => "dj",
+            ContentLang::Html => "html",
+        }
+    }
+
+    /// A title heading in this grammar — the seed body of the root document.
+    fn heading(self, title: &str) -> String {
+        match self {
+            // Markdown and Djot share ATX heading syntax.
+            ContentLang::Markdown | ContentLang::Djot => format!("# {title}\n"),
+            ContentLang::Html => format!("<h1>{title}</h1>\n"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ContentLang::Markdown => "markdown",
+            ContentLang::Djot => "djot",
+            ContentLang::Html => "html",
+        }
+    }
+}
+
+impl From<ContentLang> for ContentFormat {
+    fn from(c: ContentLang) -> Self {
+        match c {
+            ContentLang::Markdown => ContentFormat::Markdown,
+            ContentLang::Djot => ContentFormat::Djot,
+            ContentLang::Html => ContentFormat::Html,
+        }
+    }
+}
+
+/// CLI spelling of the workspace link styles ([`colophon::LinkStyle`]).
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum LinkStyleArg {
+    MarkdownRoot,
+    MarkdownRelative,
+    PlainRelative,
+    PlainCanonical,
+}
+
+impl From<LinkStyleArg> for LinkStyle {
+    fn from(l: LinkStyleArg) -> Self {
+        match l {
+            LinkStyleArg::MarkdownRoot => LinkStyle::MarkdownRoot,
+            LinkStyleArg::MarkdownRelative => LinkStyle::MarkdownRelative,
+            LinkStyleArg::PlainRelative => LinkStyle::PlainRelative,
+            LinkStyleArg::PlainCanonical => LinkStyle::PlainCanonical,
+        }
+    }
+}
+
+/// The two identity models `init` offers, each a preset over the config's
+/// `identity` + `id_links` knobs: **Diaryx** is paths-only (no IDs), **Obsidian**
+/// mints stable IDs lazily and authors links by ID (so moves rewrite nothing).
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum IdentityArg {
+    Diaryx,
+    Obsidian,
+}
+
+impl IdentityArg {
+    /// `(registration triggers, whether colophon authors id links)`.
+    fn to_config(self) -> (Registration, bool) {
+        match self {
+            IdentityArg::Diaryx => (Registration::OFF, false),
+            IdentityArg::Obsidian => (Registration::LAZY, true),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            IdentityArg::Diaryx => "diaryx",
+            IdentityArg::Obsidian => "obsidian",
+        }
+    }
 }
 
 impl From<MetaFormat> for Format {
@@ -209,8 +366,10 @@ fn main() -> ExitCode {
         Command::Meta { file, format } => cmd_meta(&file, format),
         Command::Get { file, key } => cmd_get(&file, &key),
         Command::Body { file } => cmd_body(&file),
-        #[cfg(feature = "content")]
         Command::Render { file } => cmd_render(&file),
+        Command::Init { dir, title, author, meta, content, link_style, identity, yes } => {
+            cmd_init(dir.as_deref(), title, author, meta, content, link_style, identity, yes)
+        }
         Command::Set { file, key, value } => cmd_set(&file, &key, &value),
         Command::Unset { file, key } => cmd_unset(&file, &key),
         Command::Tree { root } => cmd_tree(root.as_deref()),
@@ -257,8 +416,9 @@ struct Ctx {
 type AnyError = Box<dyn std::error::Error>;
 
 /// Find the workspace root by walking up from the current directory: in each
-/// directory, a candidate root is a `.md` document with metadata and no
-/// `part_of` (nothing contains it). `index.md` and `README.md` win ties.
+/// directory, a candidate root is a document (any content grammar — see
+/// [`ROOT_EXTS`]) with metadata and no `part_of` (nothing contains it). A file
+/// stemmed `index`, then `readme`, wins ties.
 fn find_root() -> Result<Ctx, AnyError> {
     let cwd = std::env::current_dir()?;
     for dir in cwd.ancestors() {
@@ -266,7 +426,11 @@ fn find_root() -> Result<Ctx, AnyError> {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            let is_root_ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| ROOT_EXTS.contains(&e.to_ascii_lowercase().as_str()));
+            if !is_root_ext {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
@@ -277,10 +441,19 @@ fn find_root() -> Result<Ctx, AnyError> {
                 }
             }
         }
-        let chosen = ["index.md", "README.md"]
+        // Prefer a file stemmed `index`, then `readme` (any extension); failing
+        // that, a lone candidate. Two-plus unnamed candidates are ambiguous.
+        let stem_is = |name: &str, want: &str| {
+            Path::new(name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case(want))
+        };
+        let chosen = candidates
             .iter()
-            .find(|n| candidates.iter().any(|c| c == *n))
-            .map(|n| n.to_string())
+            .find(|n| stem_is(n, "index"))
+            .or_else(|| candidates.iter().find(|n| stem_is(n, "readme")))
+            .cloned()
             .or_else(|| (candidates.len() == 1).then(|| candidates[0].clone()));
         match chosen {
             Some(root_doc) => {
@@ -336,7 +509,9 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
             };
             FileIndex::parse(rel, &text)?
         }
-        None => FileIndex::new(Format::Yaml),
+        // No registry declared yet: an empty in-memory one in the workspace's
+        // metadata format, so a later bootstrap writes that format.
+        None => FileIndex::new(ctx.config.default_embed_format),
     };
     Ok(Workspace::builder(StdFs)
         .root(&ctx.root_dir)
@@ -349,14 +524,16 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
 }
 
 /// Make sure the workspace *declares* a registry, bootstrapping one when it
-/// does not: create [`DEFAULT_REGISTRY`] beside the root (self-described with
-/// a title and a part_of back to the root) and add the `registry` pointer to
-/// the root's metadata — comment-preservingly, like any other edit.
+/// does not: create `registry.<ext>` (in the workspace's metadata format) beside
+/// the root (self-described with a title and a part_of back to the root) and add
+/// the `registry` pointer to the root's metadata — comment-preservingly, like
+/// any other edit.
 fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
     if ctx.registry.is_some() {
         return Ok(());
     }
-    let registry_rel = PathBuf::from(DEFAULT_REGISTRY);
+    let format = ctx.config.default_embed_format;
+    let registry_rel = PathBuf::from(sidecar_name(REGISTRY_STEM, format));
     let registry_full = ctx.root_dir.join(&registry_rel);
     if !registry_full.exists() {
         let mut seed = colophon::Mapping::new();
@@ -365,23 +542,15 @@ fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
             "part_of".into(),
             Value::String(ctx.root_doc.to_string_lossy().into_owned()),
         );
-        std::fs::write(&registry_full, meta::serialize_mapping(&seed, Format::Yaml)?)?;
+        std::fs::write(&registry_full, meta::serialize_mapping(&seed, format)?)?;
     }
+    let registry_name = registry_rel.to_string_lossy().into_owned();
     let root_full = ctx.root_dir.join(&ctx.root_doc);
     let text = std::fs::read_to_string(&root_full)?;
     let doc = Document::parse(&ctx.root_doc, &text)?;
-    let updated = edit::set_in_text(
-        &text,
-        doc.carrier,
-        "registry",
-        edit::infer_scalar(DEFAULT_REGISTRY),
-    )?;
+    let updated = edit::set_in_text(&text, doc.carrier, "registry", edit::infer_scalar(&registry_name))?;
     std::fs::write(&root_full, updated)?;
-    eprintln!(
-        "initialized {} (linked from {})",
-        registry_rel.display(),
-        ctx.root_doc.display()
-    );
+    eprintln!("initialized {} (linked from {})", registry_rel.display(), ctx.root_doc.display());
     ctx.registry = Some(registry_rel);
     Ok(())
 }
@@ -428,6 +597,201 @@ fn load(file: &Path) -> Result<(String, Document), Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(file)?;
     let doc = Document::parse(file, &text)?;
     Ok((text, doc))
+}
+
+/// The root-document extensions `init` will not overwrite — every content
+/// grammar's `index.*`, so a re-run is caught before it prompts (mirrors the
+/// set `find_root` treats as root candidates).
+const ROOT_EXTS: &[&str] = &["md", "markdown", "dj", "djot", "html", "htm"];
+
+/// Initialize a workspace: write a self-describing root document (`index.<ext>`)
+/// so `find_root` can discover it. Each field comes from its flag if given;
+/// otherwise, on a terminal (and without `--yes`), the user is prompted, and in
+/// every other case the default applies (title = directory name, no author,
+/// YAML metadata, Markdown content). The frontmatter block is synthesized by
+/// the same carrier-aware editor `set` uses, so the file is a normal document
+/// from the start.
+#[allow(clippy::too_many_arguments)]
+fn cmd_init(
+    dir: Option<&Path>,
+    title: Option<String>,
+    author: Option<String>,
+    meta: Option<MetaFormat>,
+    content: Option<ContentLang>,
+    link_style: Option<LinkStyleArg>,
+    identity: Option<IdentityArg>,
+    yes: bool,
+) -> CmdResult {
+    let dir = match dir {
+        Some(d) => d.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    std::fs::create_dir_all(&dir)?;
+    // Canonicalize (now that the directory exists) for a stable absolute name —
+    // both for the default title and the confirmation line.
+    let dir = dir.canonicalize()?;
+
+    // Bail before prompting if this directory is already a workspace.
+    for ext in ROOT_EXTS {
+        let existing = dir.join(format!("index.{ext}"));
+        if existing.exists() {
+            return Err(format!(
+                "{} already exists — this looks like an initialized workspace",
+                existing.display()
+            )
+            .into());
+        }
+    }
+
+    let default_title = link::path_to_title(&dir);
+    // Prompt only on a real terminal and only when `--yes` wasn't passed.
+    let interactive = !yes && std::io::stdin().is_terminal();
+    let prompting = interactive
+        && (title.is_none()
+            || author.is_none()
+            || meta.is_none()
+            || content.is_none()
+            || link_style.is_none()
+            || identity.is_none());
+    if prompting {
+        cliclack::intro("colophon init")?;
+    }
+
+    // Each field: flag wins; else prompt when interactive; else the default.
+    let title = match title {
+        Some(t) if !t.is_empty() => t,
+        _ if interactive => cliclack::input("Title")
+            .default_input(&default_title)
+            .placeholder(&default_title)
+            .interact::<String>()?,
+        _ => default_title,
+    };
+    let author = match author {
+        Some(a) => (!a.trim().is_empty()).then(|| a.trim().to_string()),
+        None if interactive => {
+            let entered: String = cliclack::input("Author")
+                .required(false)
+                .placeholder("optional — leave blank to omit")
+                .interact()?;
+            (!entered.trim().is_empty()).then(|| entered.trim().to_string())
+        }
+        None => None,
+    };
+    let meta = match meta {
+        Some(m) => m,
+        None if interactive => prompt_meta_format()?,
+        None => MetaFormat::Yaml,
+    };
+    let content = match content {
+        Some(c) => c,
+        None if interactive => cliclack::select("Content format")
+            .initial_value(ContentLang::Markdown)
+            .item(ContentLang::Markdown, "Markdown", ".md")
+            .item(ContentLang::Djot, "Djot", ".dj")
+            .item(ContentLang::Html, "HTML", ".html")
+            .interact()?,
+        None => ContentLang::Markdown,
+    };
+    let link_style = match link_style {
+        Some(l) => l,
+        None if interactive => cliclack::select("Link style")
+            .initial_value(LinkStyleArg::MarkdownRoot)
+            .item(LinkStyleArg::MarkdownRoot, "Markdown, workspace-absolute", "[Title](/path.md)")
+            .item(LinkStyleArg::MarkdownRelative, "Markdown, relative", "[Title](../path.md)")
+            .item(LinkStyleArg::PlainRelative, "Plain relative path", "../path.md")
+            .item(LinkStyleArg::PlainCanonical, "Plain workspace path", "path.md")
+            .interact()?,
+        None => LinkStyleArg::MarkdownRoot,
+    };
+    let identity = match identity {
+        Some(i) => i,
+        None if interactive => cliclack::select("Identity")
+            .initial_value(IdentityArg::Diaryx)
+            .item(IdentityArg::Diaryx, "Diaryx — paths only", "no IDs; plain-path links")
+            .item(IdentityArg::Obsidian, "Obsidian — stable IDs", "id links survive moves")
+            .interact()?,
+        None => IdentityArg::Diaryx,
+    };
+
+    // Assemble the workspace preferences these choices encode.
+    let (registration, id_links) = identity.to_config();
+    let ws_config = WorkspaceConfig {
+        link_format: link_style.into(),
+        identity: registration,
+        id_links,
+        default_embed_format: meta.into(),
+        content_format: content.into(),
+    };
+
+    // Write the root document: title, optional author, and a `config` pointer at
+    // the config document we're about to create. Body first, then synthesize the
+    // chosen frontmatter block around it (leading blank line = a conventional gap
+    // after the closing fence).
+    let meta_format: Format = meta.into();
+    let config_name = sidecar_name(CONFIG_STEM, meta_format);
+    let root_name = format!("index.{}", content.ext());
+    let root = dir.join(&root_name);
+    let carrier = colophon::document::frontmatter_carrier(meta_format);
+    let body = format!("\n{}", content.heading(&title));
+    let mut editor = edit::MetaEditor::open_or_init(&body, Some(carrier))?;
+    editor.set_value(&edit::key_path("title"), edit::infer_scalar(&title))?;
+    if let Some(author) = &author {
+        editor.set_value(&edit::key_path("author"), edit::infer_scalar(author))?;
+    }
+    editor.set_value(&edit::key_path("config"), edit::infer_scalar(&config_name))?;
+    std::fs::write(&root, editor.render()?)?;
+
+    // Write the config document beside the root, in the chosen metadata format:
+    // self-describing (title + `part_of` back to the root, in the chosen link
+    // style) plus the recorded preferences. A whole-file config document (DESIGN
+    // §6/§7), the same shape as the registry.
+    let config_rel = PathBuf::from(&config_name);
+    let part_of = link::format_link(ws_config.link_format, &config_rel, Path::new(&root_name), &title);
+    let mut config_map = Mapping::new();
+    config_map.insert("title".into(), Value::String("colophon config".into()));
+    config_map.insert("part_of".into(), Value::String(part_of));
+    for (key, value) in ws_config.to_mapping() {
+        config_map.insert(key, value);
+    }
+    std::fs::write(dir.join(&config_rel), meta::serialize_mapping(&config_map, meta_format)?)?;
+
+    let author_note = author.as_deref().map(|a| format!(", author {a}")).unwrap_or_default();
+    let details = format!(
+        "root: {root_name} — {title}{author_note}\n\
+         config: {config_name} — metadata {}, content {}, link style {}, identity {}",
+        meta.label(),
+        content.label(),
+        ws_config.link_format.as_config_str(),
+        identity.label(),
+    );
+    let next = format!("next: colophon new <path> --parent {root_name}");
+    if prompting {
+        cliclack::outro(format!("initialized {}\n{details}\n{next}", dir.display()))?;
+    } else {
+        println!("initialized {}", dir.display());
+        for line in details.lines() {
+            println!("  {line}");
+        }
+        println!("{next}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Prompt for the metadata format, offering only the formats compiled into this
+/// binary (the same set `--meta` and `--format` accept).
+fn prompt_meta_format() -> std::io::Result<MetaFormat> {
+    let mut select = cliclack::select("Metadata format")
+        .initial_value(MetaFormat::Yaml)
+        .item(MetaFormat::Yaml, "YAML", "--- frontmatter");
+    #[cfg(feature = "json")]
+    {
+        select = select.item(MetaFormat::Json, "JSON", ";;; frontmatter");
+    }
+    #[cfg(feature = "fig-lang")]
+    {
+        select = select.item(MetaFormat::Fig, "fig", "```fig block");
+    }
+    select.interact()
 }
 
 fn cmd_show(file: &Path) -> CmdResult {
@@ -531,7 +895,6 @@ fn cmd_body(file: &Path) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
-#[cfg(feature = "content")]
 fn cmd_render(file: &Path) -> CmdResult {
     let (_, doc) = load(file)?;
     let format = colophon::ContentFormat::from_extension(file).ok_or_else(|| {
@@ -765,16 +1128,18 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> CmdResult {
 }
 
 /// Ensure the workspace *declares* a config document, bootstrapping one when it
-/// does not: create [`DEFAULT_CONFIG`] beside the root (self-described with a
-/// title and a `part_of` back to the root, in the workspace link style) and add
-/// the `config` pointer to the root's metadata. Returns its path relative to the
-/// root. Mirrors [`ensure_registry`].
+/// does not: create `colophon.<ext>` (in the workspace's metadata format) beside
+/// the root (self-described with a title and a `part_of` back to the root, in
+/// the workspace link style) and add the `config` pointer to the root's
+/// metadata. Returns its path relative to the root. Mirrors [`ensure_registry`].
 fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
     let ws = workspace(ctx)?;
     if let Some(existing) = block_on(ws.config_path(&ctx.root_doc))? {
         return Ok(existing);
     }
-    let config_rel = PathBuf::from(DEFAULT_CONFIG);
+    let format = ctx.config.default_embed_format;
+    let config_name = sidecar_name(CONFIG_STEM, format);
+    let config_rel = PathBuf::from(&config_name);
     let config_full = ctx.root_dir.join(&config_rel);
     if !config_full.exists() {
         // The root's title (or a title from its filename) labels the back-link.
@@ -789,13 +1154,13 @@ fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
         let mut seed = colophon::Mapping::new();
         seed.insert("title".into(), Value::String("colophon config".into()));
         seed.insert("part_of".into(), Value::String(part_of));
-        std::fs::write(&config_full, meta::serialize_mapping(&seed, Format::Yaml)?)?;
+        std::fs::write(&config_full, meta::serialize_mapping(&seed, format)?)?;
     }
     // Link it from the root via the `config` relation.
     let root_full = ctx.root_dir.join(&ctx.root_doc);
     let text = std::fs::read_to_string(&root_full)?;
     let doc = Document::parse(&ctx.root_doc, &text)?;
-    let updated = edit::set_in_text(&text, doc.carrier, "config", edit::infer_scalar(DEFAULT_CONFIG))?;
+    let updated = edit::set_in_text(&text, doc.carrier, "config", edit::infer_scalar(&config_name))?;
     std::fs::write(&root_full, updated)?;
     eprintln!("initialized {} (linked from {})", config_rel.display(), ctx.root_doc.display());
     Ok(config_rel)

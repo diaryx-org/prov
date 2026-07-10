@@ -684,7 +684,6 @@ mod tests {
     // Real-world regression: a fenced code block containing Python list
     // comprehensions (`[[float('inf')] * width ...]`) must never be mistaken
     // for a `[[…]]` wikilink — DESIGN §8's motivating example, life-sized.
-    #[cfg(feature = "content")]
     #[test]
     fn check_does_not_flag_python_list_comprehensions_in_a_code_block_as_broken_links() {
         let dir = tempdir("code-brackets");

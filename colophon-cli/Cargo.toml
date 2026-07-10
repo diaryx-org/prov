@@ -25,6 +25,7 @@ path = "src/main.rs"
 colophon.workspace = true
 # Arg parsing.
 clap = { version = "4.5", features = ["derive"] }
+cliclack = "0.5.5"
 
 [features]
 # JSON and the native fig dialect ship in the default binary, but a downstream
@@ -33,9 +34,3 @@ clap = { version = "4.5", features = ["derive"] }
 default = ["json", "fig-lang"]
 json = ["colophon/json"]
 fig-lang = ["colophon/fig-lang"]
-
-# Body-prose rendering (`colophon render`) and code-aware body-link scanning,
-# via colophon's `content` feature (twig FFI — needs the Zig toolchain to
-# build). Off by default: not needed for the metadata/structure layers this
-# CLI is mainly for.
-content = ["colophon/content"]

@@ -65,7 +65,6 @@ pub mod workspace;
 
 pub use config::WorkspaceConfig;
 pub use content::ContentFormat;
-#[cfg(feature = "content")]
 pub use content::{code_spans, render_html};
 pub use document::{Document, EmbedType};
 pub use error::{Error, Result};

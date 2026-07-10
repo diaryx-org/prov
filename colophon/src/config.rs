@@ -20,6 +20,7 @@
 //!
 //! [`Workspace`]: crate::workspace::Workspace
 
+use crate::content::ContentFormat;
 use crate::identity::Registration;
 use crate::link::LinkStyle;
 use crate::meta::{Mapping, Value};
@@ -38,6 +39,10 @@ pub struct WorkspaceConfig {
     /// The metadata format new documents get when they inherit no parent block
     /// — a *default* for authoring, never a workspace constraint (§7).
     pub default_embed_format: fig::Format,
+    /// The body-prose grammar the workspace is authored in (Markdown/Djot/HTML)
+    /// — the format `render` and code-aware link scanning assume, and the
+    /// intended default for new documents.
+    pub content_format: ContentFormat,
 }
 
 impl Default for WorkspaceConfig {
@@ -50,6 +55,7 @@ impl Default for WorkspaceConfig {
             identity: Registration::LAZY,
             id_links: false,
             default_embed_format: fig::Format::Yaml,
+            content_format: ContentFormat::Markdown,
         }
     }
 }
@@ -63,6 +69,7 @@ impl WorkspaceConfig {
             identity: Registration::OFF,
             id_links: false,
             default_embed_format: fig::Format::Yaml,
+            content_format: ContentFormat::Markdown,
         }
     }
 
@@ -75,6 +82,7 @@ impl WorkspaceConfig {
             identity: Registration::LAZY,
             id_links: true,
             default_embed_format: fig::Format::Yaml,
+            content_format: ContentFormat::Markdown,
         }
     }
 
@@ -100,6 +108,11 @@ impl WorkspaceConfig {
         {
             self.default_embed_format = format;
         }
+        if let Some(content) =
+            meta.get("content_format").and_then(Value::as_str).and_then(ContentFormat::from_config_str)
+        {
+            self.content_format = content;
+        }
     }
 
     /// A fresh config with `meta`'s recognized keys applied over the defaults.
@@ -116,6 +129,7 @@ impl WorkspaceConfig {
         map.insert("identity".into(), Value::String(registration_str(self.identity).into()));
         map.insert("id_links".into(), Value::Bool(self.id_links));
         map.insert("embed_format".into(), Value::String(format_str(self.default_embed_format).into()));
+        map.insert("content_format".into(), Value::String(self.content_format.as_config_str().into()));
         map
     }
 }
@@ -185,6 +199,7 @@ mod tests {
             identity: Registration::EAGER,
             id_links: true,
             default_embed_format: fig::Format::Yaml,
+            content_format: ContentFormat::Djot,
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);

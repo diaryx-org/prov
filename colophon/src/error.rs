@@ -18,7 +18,6 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// The `twig` body parser failed — see `content.rs`.
-    #[cfg(feature = "content")]
     #[error("content error: {0}")]
     Content(String),
 }
