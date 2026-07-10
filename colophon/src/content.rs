@@ -4,11 +4,13 @@
 //! really code, e.g. `[[inf] * n for _ in range(m)]]` inside backticks, must
 //! never be treated as a link).
 //!
-//! `twig` (a sister Zig-backed project, path-dependent for now — its Rust
-//! bindings are new) parses Markdown/Djot into a shared AST. [`render_html`]
-//! and [`code_spans`] (feature `content`) are direct FFI calls into it —
-//! `twig`'s C ABI exposes `twig_document_render_html` and
-//! `twig_document_code_spans`, no subprocess involved.
+//! `twig` (a sister Zig-backed project, path-dependent for now) parses
+//! Markdown/Djot into a shared AST. [`render_html`] and [`code_spans`] (feature
+//! `content`) are direct FFI calls into it — `twig`'s C ABI exposes
+//! `twig_document_render_html` and the generic `twig_document_query`, no
+//! subprocess involved. (`code_spans` used to bind a code-block-specific
+//! accessor; twig has since matured to a single generic query API, so it now
+//! selects the code-bearing node kinds itself.)
 //!
 //! Pair [`code_spans`] with [`crate::link::scan_wikilinks`] (which is what
 //! actually uses it) to keep a body-link scan from ever treating code as
@@ -65,15 +67,31 @@ pub fn render_html(body: &str, format: ContentFormat) -> crate::error::Result<St
         .map_err(|e| crate::error::Error::Content(format!("twig produced non-UTF-8 HTML: {e}")))
 }
 
+/// The AST node kinds `twig` parses as opaque code — inline code spans
+/// (`verbatim`), fenced/indented code blocks (`code_block`), and raw
+/// inline/block escapes (`raw_inline` / `raw_block`). twig's selector grammar
+/// has no union combinator, so [`code_spans`] queries these one at a time.
+#[cfg(feature = "content")]
+const CODE_KINDS: [&str; 4] = ["verbatim", "code_block", "raw_inline", "raw_block"];
+
 /// The byte ranges in `body` that `twig` parses as code (inline code spans,
 /// fenced code blocks, raw inline/block escapes) — everything a link scan
-/// should treat as opaque. A direct call into `twig`'s C ABI
-/// (`twig_document_code_spans`); see [`crate::link::scan_wikilinks`].
+/// should treat as opaque. Built from `twig`'s generic query API
+/// (`twig_document_query`) by selecting each code-bearing node kind
+/// ([`CODE_KINDS`]) and taking its whole span; see
+/// [`crate::link::scan_wikilinks`]. Spans are returned sorted by start offset.
 #[cfg(feature = "content")]
 pub fn code_spans(body: &str, format: ContentFormat) -> crate::error::Result<Vec<std::ops::Range<usize>>> {
     let mut doc = parse(body, format)?;
-    doc.code_spans()
-        .map_err(|e| crate::error::Error::Content(format!("twig code_spans: {e}")))
+    let mut spans = Vec::new();
+    for kind in CODE_KINDS {
+        let matches = doc
+            .query(kind)
+            .map_err(|e| crate::error::Error::Content(format!("twig query {kind}: {e}")))?;
+        spans.extend(matches.into_iter().map(|m| m.span));
+    }
+    spans.sort_by_key(|s| s.start);
+    Ok(spans)
 }
 
 #[cfg(test)]
