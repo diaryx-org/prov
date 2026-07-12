@@ -1249,9 +1249,17 @@ fn cmd_new(path: &Path, parent: &Path) -> CmdResult {
         ensure_registry(&mut ctx)?;
     }
     let mut ws = workspace(&ctx)?;
-    block_on(ws.create(&ws_rel(&ctx, path)?, &ws_rel(&ctx, parent)?))?;
+    let created = block_on(ws.create(&ws_rel(&ctx, path)?, &ws_rel(&ctx, parent)?))?;
     save_index(&ctx, &mut ws)?;
-    println!("created {} (in {})", path.display(), parent.display());
+    // A separated child is a pair — the metadata node the parent links, plus its
+    // prose body file. Name both so it is clear two files were written.
+    match &created.body {
+        Some(body) => {
+            println!("created {} (in {})", created.node.display(), parent.display());
+            println!("  body: {}", body.display());
+        }
+        None => println!("created {} (in {})", path.display(), parent.display()),
+    }
     Ok(ExitCode::SUCCESS)
 }
 

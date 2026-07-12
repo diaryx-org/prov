@@ -75,6 +75,7 @@ pub use identity::{Id, IdentityPolicy, Minter, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
 pub use link::{Link, LinkStyle, Wikilink, format_link, path_to_title};
 pub use meta::{Mapping, Value};
+pub use mutate::Created;
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use tree::{Node, NodeKind};
 pub use validate::{Backlink, CensusEntry, Finding, Fix, LinkSite, Resolution};

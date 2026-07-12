@@ -40,6 +40,22 @@ use crate::meta::Value;
 use crate::validate::{Finding, LinkSite, Resolution};
 use crate::workspace::{Target, Workspace};
 
+/// The files [`Workspace::create`] wrote. Under a combined parent this is just
+/// the one document; under a **separated** parent it is the pair — the metadata
+/// node the parent links, plus its sibling prose body file — so a caller (the
+/// CLI) can report both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Created {
+    /// The structural document: the node the parent's spanning entry points at,
+    /// carrying the metadata (and, when separated, a `content` pointer). This is
+    /// also the file any ID registers.
+    pub node: PathBuf,
+    /// The separated prose body file, present only when the new document is a
+    /// separated pair (a whole-file node beside a plain body). `None` for a
+    /// combined document, where the node *is* the whole file.
+    pub body: Option<PathBuf>,
+}
+
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Create a new document at `path` (workspace-relative) as a spanning child
     /// of `parent`: the new file declares the inverse link back to `parent`, in
@@ -54,7 +70,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// — the node is the structural document the parent links to and any ID
     /// registers. A `path` with a whole-file extension is always a bare metadata
     /// document, whatever the parent.
-    pub async fn create(&mut self, path: &Path, parent: &Path) -> Result<()> {
+    ///
+    /// Returns the [`Created`] files: always the structural node, plus the prose
+    /// body file when the child is a separated pair.
+    pub async fn create(&mut self, path: &Path, parent: &Path) -> Result<Created> {
         let path = link::normalize(path);
         let parent = link::normalize(parent);
         let (spanning, inverse) = self.spanning_pair()?;
@@ -183,7 +202,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let id = self.mint_unique(&node);
             self.index_mut().register(&id, &node);
         }
-        Ok(())
+        Ok(Created { node, body })
     }
 
     /// Move/rename the document at `from` to `to`, maintaining every affected
