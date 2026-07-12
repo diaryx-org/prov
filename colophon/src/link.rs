@@ -22,11 +22,15 @@ use std::path::{Component, Path, PathBuf};
 /// A parsed link string: an optional human label and the target it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
-    /// The display label, when written as `[label](target)`.
+    /// The display label, when written as `[label](target)` or `[[target|label]]`.
     pub label: Option<String>,
-    /// The target exactly as written (a relative path, or a URL for overlay
-    /// relations that point off-workspace).
+    /// The target exactly as written (a relative path, an `id:<id>` handle, or a
+    /// URL for overlay relations that point off-workspace).
     pub target: String,
+    /// `true` when the scalar was written as an Obsidian wikilink
+    /// (`[[target]]` / `[[target|label]]`) rather than a markdown link or bare
+    /// target — preserved so [`render`](Link::render) round-trips the wrapper.
+    pub wikilink: bool,
 }
 
 impl Link {
@@ -36,6 +40,20 @@ impl Link {
     /// [`target`](Link::target) always holds the logical path — leading `/` and
     /// all — never the delimiters.
     pub fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        // A wikilink scalar — `[[target]]` / `[[target|label]]` — the Obsidian
+        // wrapper permitted in metadata as well as body prose.
+        if let Some(inner) = raw.strip_prefix("[[").and_then(|r| r.strip_suffix("]]")) {
+            let (target, label) = match inner.split_once('|') {
+                Some((target, label)) => (target.trim(), Some(label.trim().to_string())),
+                None => (inner.trim(), None),
+            };
+            return Self {
+                label,
+                target: target.to_string(),
+                wikilink: true,
+            };
+        }
         if let Some(rest) = raw.strip_prefix('[')
             && let Some(inner) = rest.strip_suffix(')')
             && let Some((label, target)) = inner.split_once("](")
@@ -43,11 +61,13 @@ impl Link {
             return Self {
                 label: Some(label.to_string()),
                 target: unbracket(target),
+                wikilink: false,
             };
         }
         Self {
             label: None,
             target: unbracket(raw),
+            wikilink: false,
         }
     }
 
@@ -57,19 +77,22 @@ impl Link {
     /// verbatim — brackets belong *inside* `[label](…)`, never around a bare
     /// value (matching diaryx, which reads a bare `<…>` as a literal path).
     pub fn render(&self) -> String {
-        match &self.label {
-            Some(label) => format!("[{label}]({})", emit_target(&self.target)),
-            None => self.target.clone(),
+        match (&self.label, self.wikilink) {
+            (Some(label), true) => format!("[[{}|{label}]]", self.target),
+            (None, true) => format!("[[{}]]", self.target),
+            (Some(label), false) => format!("[{label}]({})", emit_target(&self.target)),
+            (None, false) => self.target.clone(),
         }
     }
 
-    /// This link with a different target, keeping the label. The rename path
-    /// uses this so `[Design](old.md)` becomes `[Design](new.md)`, never a
-    /// bare `new.md`.
+    /// This link with a different target, keeping the label and wrapper. The
+    /// rename path uses this so `[Design](old.md)` becomes `[Design](new.md)`,
+    /// never a bare `new.md`.
     pub fn with_target(&self, target: impl Into<String>) -> Self {
         Self {
             label: self.label.clone(),
             target: target.into(),
+            wikilink: self.wikilink,
         }
     }
 
@@ -80,15 +103,14 @@ impl Link {
         self.target.contains("://") || self.target.starts_with("mailto:")
     }
 
-    /// The stable ID this link names, when the target uses the
-    /// `colophon:<id>` scheme — the location-independent alternative to a
-    /// relative path. Such targets resolve through the workspace's ID
-    /// registry, never against the filesystem, and are deliberately *not*
-    /// rewritten by moves: staying valid across moves is their entire point.
+    /// The stable ID this link names, when the target uses the `id:<id>`
+    /// scheme (or the legacy `colophon:<id>` spelling) — the
+    /// location-independent alternative to a relative path. Such targets
+    /// resolve through the workspace's ID registry, never against the
+    /// filesystem, and are deliberately *not* rewritten by moves: staying valid
+    /// across moves is their entire point.
     pub fn id_target(&self) -> Option<crate::identity::Id> {
-        self.target
-            .strip_prefix(ID_SCHEME)
-            .map(|id| crate::identity::Id(id.to_string()))
+        strip_id_scheme(&self.target).map(|id| crate::identity::Id(id.to_string()))
     }
 }
 
@@ -195,12 +217,210 @@ pub fn path_to_title(path: &Path) -> String {
         .join(" ")
 }
 
-/// The target scheme marking a link-by-ID: `colophon:<id>`.
-pub const ID_SCHEME: &str = "colophon:";
+/// The target scheme marking a link-by-ID: `id:<id>`.
+pub const ID_SCHEME: &str = "id:";
 
-/// Render an ID as a link target (`colophon:<id>`).
+/// The legacy scheme (`colophon:<id>`), still recognized on read so existing
+/// workspaces keep resolving. New links are authored with [`ID_SCHEME`].
+pub const LEGACY_ID_SCHEME: &str = "colophon:";
+
+/// Strip the ID scheme from a target, accepting the current `id:` spelling or
+/// the legacy `colophon:` one. `None` when the target names no ID.
+pub fn strip_id_scheme(target: &str) -> Option<&str> {
+    target.strip_prefix(ID_SCHEME).or_else(|| target.strip_prefix(LEGACY_ID_SCHEME))
+}
+
+/// Render an ID as a link target (`id:<id>`).
 pub fn id_target(id: &crate::identity::Id) -> String {
     format!("{ID_SCHEME}{id}")
+}
+
+/// The syntactic wrapper a reference is written in — the first of the two style
+/// axes (see `docs/reference-styles.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Wrapper {
+    /// The diaryx/markdown family: `[Title](target)` or a bare target, with the
+    /// exact path rendering governed by [`ReferenceStyle::path_style`].
+    #[default]
+    Markdown,
+    /// The Obsidian wikilink: `[[target]]` / `[[target|label]]`.
+    Wikilink,
+}
+
+impl Wrapper {
+    /// Parse the `reference_wrapper` config spelling; unknown → `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "markdown" => Some(Self::Markdown),
+            "wikilink" => Some(Self::Wikilink),
+            _ => None,
+        }
+    }
+
+    /// The `reference_wrapper` config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Wikilink => "wikilink",
+        }
+    }
+}
+
+/// What a reference addresses its target *by* — the second style axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Addressing {
+    /// By path — rewritten on every move; rendering follows
+    /// [`ReferenceStyle::path_style`].
+    #[default]
+    Path,
+    /// By durable `id:<id>` handle — move-stable; authoring one registers the
+    /// target (the link-by-id trigger).
+    Id,
+    /// By the target's title/name, resolved nominally through the title index —
+    /// readable but not move/rename-safe, and never registers. Implies
+    /// [`Wrapper::Wikilink`].
+    Alias,
+}
+
+impl Addressing {
+    /// Parse the `reference_target` config spelling; unknown → `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "path" => Some(Self::Path),
+            "id" => Some(Self::Id),
+            "alias" => Some(Self::Alias),
+            _ => None,
+        }
+    }
+
+    /// The `reference_target` config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Id => "id",
+            Self::Alias => "alias",
+        }
+    }
+}
+
+/// How a durable reference is spelled: a [`Wrapper`], an [`Addressing`], whether
+/// an `id` link carries a title label, and the path rendering used when
+/// addressing by path. This is the per-workspace default *and* the per-relation
+/// override (see [`crate::relation::Relation::style`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceStyle {
+    /// The syntactic wrapper.
+    pub wrapper: Wrapper,
+    /// What the reference addresses its target by.
+    pub addressing: Addressing,
+    /// Whether an `id` wikilink carries a `|Title` label (a maintained cache of
+    /// the target's title). Ignored for markdown (its `[Title]` is intrinsic)
+    /// and for `alias` (the target string *is* the title).
+    pub label: bool,
+    /// Path rendering for [`Addressing::Path`] — ignored otherwise.
+    pub path_style: LinkStyle,
+}
+
+impl Default for ReferenceStyle {
+    /// Markdown path links in the default [`LinkStyle`] — the pre-existing
+    /// behavior, so an unconfigured workspace is unchanged.
+    fn default() -> Self {
+        Self {
+            wrapper: Wrapper::Markdown,
+            addressing: Addressing::Path,
+            label: false,
+            path_style: LinkStyle::default(),
+        }
+    }
+}
+
+impl ReferenceStyle {
+    /// Normalize impossible combinations: `alias` has no markdown spelling (there
+    /// is no locator to put in `[Title](…)`), so a markdown+alias request becomes
+    /// wikilink+alias.
+    pub fn normalized(mut self) -> Self {
+        if self.addressing == Addressing::Alias {
+            self.wrapper = Wrapper::Wikilink;
+        }
+        self
+    }
+
+    /// Whether authoring in this style is a *link-by-id* — the trigger that
+    /// registers the target. Only `id` addressing registers.
+    pub fn registers(self) -> bool {
+        self.addressing == Addressing::Id
+    }
+}
+
+/// Render a durable reference from the document at `from` to `to` (titled
+/// `title`) in `style`. `id` must be `Some` when the style addresses by id
+/// (the caller registers the target first); it is ignored otherwise. Returns the
+/// exact scalar to store in metadata (a wikilink scalar keeps its `[[…]]` — the
+/// metadata writer is responsible for any format-level quoting).
+pub fn format_reference(
+    style: ReferenceStyle,
+    from: &Path,
+    to: &Path,
+    id: Option<&crate::identity::Id>,
+    title: &str,
+) -> String {
+    let style = style.normalized();
+    match style.addressing {
+        // No id available (identity off / does not register on link) degrades to
+        // a path link, mirroring the pre-existing `authored_target` fallback.
+        Addressing::Id => match id {
+            Some(id) => wrap(style.wrapper, &id_target(id), title, style.label),
+            None => format_path(Wrapper::Markdown, style.path_style, from, to, title, style.label),
+        },
+        Addressing::Alias => wrap_alias(title),
+        Addressing::Path => format_path(style.wrapper, style.path_style, from, to, title, style.label),
+    }
+}
+
+/// Render a path reference in `wrapper` at `path_style`.
+fn format_path(
+    wrapper: Wrapper,
+    path_style: LinkStyle,
+    from: &Path,
+    to: &Path,
+    title: &str,
+    label: bool,
+) -> String {
+    match wrapper {
+        // Preserve the exact markdown/plain behavior (labeled vs bare) that
+        // `LinkStyle` already encodes — the `label` axis does not apply here.
+        Wrapper::Markdown => format_link(path_style, from, to, title),
+        Wrapper::Wikilink => wrap(Wrapper::Wikilink, &path_text(path_style, from, to), title, label),
+    }
+}
+
+/// The bare path *text* a path reference points at, in the shape `path_style`
+/// selects: workspace-absolute (`/canonical`), relative, or canonical.
+pub fn path_text(path_style: LinkStyle, from: &Path, to: &Path) -> String {
+    match path_style {
+        LinkStyle::MarkdownRoot => format!("/{}", to.to_string_lossy()),
+        LinkStyle::MarkdownRelative | LinkStyle::PlainRelative => {
+            relative(from.parent().unwrap_or(Path::new("")), to)
+        }
+        LinkStyle::PlainCanonical => to.to_string_lossy().into_owned(),
+    }
+}
+
+/// Wrap a resolved `target` (already scheme-/path-formatted) in `wrapper`,
+/// attaching `title` as a label when `with_label`. A markdown reference without
+/// a label is emitted bare (`id:xxx`) — the diaryx-shaped id link.
+fn wrap(wrapper: Wrapper, target: &str, title: &str, with_label: bool) -> String {
+    match (wrapper, with_label) {
+        (Wrapper::Wikilink, true) => format!("[[{target}|{title}]]"),
+        (Wrapper::Wikilink, false) => format!("[[{target}]]"),
+        (Wrapper::Markdown, true) => format!("[{title}]({})", emit_target(target)),
+        (Wrapper::Markdown, false) => emit_target(target),
+    }
+}
+
+/// An alias reference: the title itself, as a bare-name wikilink.
+fn wrap_alias(title: &str) -> String {
+    format!("[[{title}]]")
 }
 
 /// A wikilink embedded in a document's body: `[[target]]` or, with an Obsidian
@@ -266,13 +486,11 @@ impl Wikilink {
         }
     }
 
-    /// The stable ID this wikilink names, when its target uses the
-    /// `colophon:<id>` scheme — `None` for a plain path target. Mirrors
-    /// [`Link::id_target`].
+    /// The stable ID this wikilink names, when its target uses the `id:<id>`
+    /// scheme (or the legacy `colophon:<id>` spelling) — `None` for a plain path
+    /// target. Mirrors [`Link::id_target`].
     pub fn id_target(&self) -> Option<crate::identity::Id> {
-        self.target
-            .strip_prefix(ID_SCHEME)
-            .map(|id| crate::identity::Id(id.to_string()))
+        strip_id_scheme(&self.target).map(|id| crate::identity::Id(id.to_string()))
     }
 }
 
@@ -657,5 +875,113 @@ mod tests {
         assert_eq!(relative(Path::new(""), Path::new("docs/design.md")), "docs/design.md");
         assert_eq!(relative(Path::new("a/b"), Path::new("a/b/c.md")), "c.md");
         assert_eq!(relative(Path::new("a/b"), Path::new("a/b")), ".");
+    }
+
+    #[test]
+    fn parses_and_round_trips_wikilink_scalars_in_metadata() {
+        // A metadata scalar written as a wikilink resolves through the same
+        // Link path as a markdown one, and round-trips its wrapper.
+        let l = Link::parse("[[id:ajp7eqb|My File]]");
+        assert!(l.wikilink);
+        assert_eq!(l.label.as_deref(), Some("My File"));
+        assert_eq!(l.target, "id:ajp7eqb");
+        assert_eq!(l.id_target(), Some(crate::identity::Id("ajp7eqb".into())));
+        assert_eq!(l.render(), "[[id:ajp7eqb|My File]]");
+
+        let bare = Link::parse("[[notes/a.md]]");
+        assert!(bare.wikilink);
+        assert_eq!(bare.label, None);
+        assert_eq!(bare.render(), "[[notes/a.md]]");
+        // Retarget keeps the wikilink wrapper and label.
+        assert_eq!(l.with_target("id:zzzzzz9").render(), "[[id:zzzzzz9|My File]]");
+    }
+
+    #[test]
+    fn id_scheme_reads_current_and_legacy_spellings() {
+        assert_eq!(strip_id_scheme("id:ajp7eqb"), Some("ajp7eqb"));
+        assert_eq!(strip_id_scheme("colophon:ajp7eqb"), Some("ajp7eqb"));
+        assert_eq!(strip_id_scheme("notes/a.md"), None);
+        // New links are authored in the `id:` spelling.
+        assert_eq!(id_target(&crate::identity::Id("ajp7eqb".into())), "id:ajp7eqb");
+        assert_eq!(Link::parse("colophon:ajp7eqb").id_target().unwrap().0, "ajp7eqb");
+    }
+
+    #[test]
+    fn format_reference_renders_each_style() {
+        let from = Path::new("notes/hw.md");
+        let to = Path::new("Archive/a.md");
+        let id = crate::identity::Id("ajp7eqb".into());
+        let s = |wrapper, addressing, label| ReferenceStyle {
+            wrapper,
+            addressing,
+            label,
+            path_style: LinkStyle::MarkdownRoot,
+        };
+
+        // Markdown + path → the classic LinkStyle rendering.
+        assert_eq!(
+            format_reference(s(Wrapper::Markdown, Addressing::Path, false), from, to, None, "A"),
+            "[A](/Archive/a.md)"
+        );
+        // Wikilink + path, label off vs on.
+        assert_eq!(
+            format_reference(s(Wrapper::Wikilink, Addressing::Path, false), from, to, None, "A"),
+            "[[/Archive/a.md]]"
+        );
+        assert_eq!(
+            format_reference(s(Wrapper::Wikilink, Addressing::Path, true), from, to, None, "A"),
+            "[[/Archive/a.md|A]]"
+        );
+        // Markdown + id: bare when unlabeled (the diaryx-shaped id link), a
+        // titled markdown link when labeled.
+        assert_eq!(
+            format_reference(s(Wrapper::Markdown, Addressing::Id, false), from, to, Some(&id), "A"),
+            "id:ajp7eqb"
+        );
+        assert_eq!(
+            format_reference(s(Wrapper::Markdown, Addressing::Id, true), from, to, Some(&id), "A"),
+            "[A](id:ajp7eqb)"
+        );
+        // Wikilink + id, no label / with label.
+        assert_eq!(
+            format_reference(s(Wrapper::Wikilink, Addressing::Id, false), from, to, Some(&id), "A"),
+            "[[id:ajp7eqb]]"
+        );
+        assert_eq!(
+            format_reference(s(Wrapper::Wikilink, Addressing::Id, true), from, to, Some(&id), "A"),
+            "[[id:ajp7eqb|A]]"
+        );
+        // Alias is a bare-name wikilink, even if markdown was requested.
+        assert_eq!(
+            format_reference(s(Wrapper::Markdown, Addressing::Alias, false), from, to, None, "My File"),
+            "[[My File]]"
+        );
+        // Id addressing with no id available degrades to a path link.
+        assert_eq!(
+            format_reference(s(Wrapper::Wikilink, Addressing::Id, true), from, to, None, "A"),
+            "[A](/Archive/a.md)"
+        );
+    }
+
+    #[test]
+    fn reference_style_config_round_trips_and_normalizes() {
+        assert_eq!(Wrapper::from_config_str("wikilink"), Some(Wrapper::Wikilink));
+        assert_eq!(Addressing::from_config_str("alias"), Some(Addressing::Alias));
+        assert_eq!(Wrapper::Wikilink.as_config_str(), "wikilink");
+        assert_eq!(Addressing::Id.as_config_str(), "id");
+        // markdown + alias is impossible; normalization forces wikilink.
+        let n = ReferenceStyle { addressing: Addressing::Alias, ..ReferenceStyle::default() }.normalized();
+        assert_eq!(n.wrapper, Wrapper::Wikilink);
+        assert!(ReferenceStyle { addressing: Addressing::Id, ..ReferenceStyle::default() }.registers());
+        assert!(!ReferenceStyle::default().registers());
+    }
+
+    #[test]
+    fn path_text_takes_the_path_style_shape() {
+        let from = Path::new("a/b/hw.md");
+        let to = Path::new("a/c/x.md");
+        assert_eq!(path_text(LinkStyle::MarkdownRoot, from, to), "/a/c/x.md");
+        assert_eq!(path_text(LinkStyle::MarkdownRelative, from, to), "../c/x.md");
+        assert_eq!(path_text(LinkStyle::PlainCanonical, from, to), "a/c/x.md");
     }
 }

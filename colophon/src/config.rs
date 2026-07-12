@@ -20,23 +20,59 @@
 //!
 //! [`Workspace`]: crate::workspace::Workspace
 
+use std::collections::BTreeMap;
+
 use crate::content::ContentFormat;
 use crate::document::EmbedStyle;
 use crate::identity::Registration;
-use crate::link::LinkStyle;
+use crate::link::{Addressing, LinkStyle, ReferenceStyle, Wrapper};
 use crate::meta::{Mapping, Value};
 
+/// A per-relation reference-style override, as declared in a config document's
+/// `relations` block. Each axis is optional and inherits the workspace default
+/// ([`WorkspaceConfig::reference_style`]) when absent — so a block need only name
+/// the axes it changes. This is the config-document form of
+/// [`Relation::style`](crate::relation::Relation::style), and what lets links
+/// going "down" (`contents`) differ from links going "up" (`part_of`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RelationStyleConfig {
+    /// The wrapper override (`markdown` / `wikilink`).
+    pub wrapper: Option<Wrapper>,
+    /// The addressing override (`path` / `id` / `alias`).
+    pub target: Option<Addressing>,
+    /// The `id`-wikilink label override.
+    pub label: Option<bool>,
+}
+
 /// The workspace-wide policy a config document declares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceConfig {
     /// How path links (`part_of`/`contents`/`links`) are written.
     pub link_format: LinkStyle,
     /// When a document earns a stable ID — the identity registration triggers.
     pub identity: Registration,
-    /// Whether colophon *authors* durable structural links as `colophon:<id>`
-    /// (registering the target) rather than a path — the Obsidian-style,
-    /// move-stable link. Ignored unless identity registers on a link.
+    /// Whether colophon *authors* durable structural links by id (registering
+    /// the target) rather than a path — the Obsidian-style, move-stable link.
+    /// Ignored unless identity registers on a link. A convenience over the
+    /// richer `reference_*` axes; superseded by `reference_target` when set.
     pub id_links: bool,
+    /// The default reference **wrapper** (`markdown` / `wikilink`) — `None`
+    /// derives markdown, the diaryx-shaped default. Overridden per relation by
+    /// [`Relation::style`](crate::relation::Relation::style).
+    pub reference_wrapper: Option<Wrapper>,
+    /// The default reference **addressing** (`path` / `id` / `alias`) — `None`
+    /// derives from `id_links` (id when set, else path).
+    pub reference_target: Option<Addressing>,
+    /// Whether id links carry a `|Title` label (an `id` wikilink) or a `[Title]`
+    /// (a markdown id link) — `None` derives `false` (a bare id link).
+    pub reference_label: Option<bool>,
+    /// Per-relation reference-style overrides, keyed by relation name — the
+    /// config-document form of [`Relation::style`](crate::relation::Relation::style).
+    /// Each entry overlays the workspace default for that relation only, letting
+    /// `contents` (down) and `part_of` (up) carry different styles. Empty means
+    /// every relation inherits the default. Resolve with
+    /// [`resolved_relation_styles`](Self::resolved_relation_styles).
+    pub relation_styles: BTreeMap<String, RelationStyleConfig>,
     /// The metadata format new documents get when they inherit no parent block
     /// — a *default* for authoring, never a workspace constraint (§7).
     pub default_embed_format: fig::Format,
@@ -62,6 +98,10 @@ impl Default for WorkspaceConfig {
             link_format: LinkStyle::default(),
             identity: Registration::LAZY,
             id_links: false,
+            reference_wrapper: None,
+            reference_target: None,
+            reference_label: None,
+            relation_styles: BTreeMap::new(),
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
@@ -77,6 +117,10 @@ impl WorkspaceConfig {
             link_format: LinkStyle::MarkdownRoot,
             identity: Registration::OFF,
             id_links: false,
+            reference_wrapper: None,
+            reference_target: None,
+            reference_label: None,
+            relation_styles: BTreeMap::new(),
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
@@ -91,10 +135,55 @@ impl WorkspaceConfig {
             link_format: LinkStyle::MarkdownRoot,
             identity: Registration::LAZY,
             id_links: true,
+            reference_wrapper: None,
+            reference_target: None,
+            reference_label: None,
+            relation_styles: BTreeMap::new(),
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
         }
+    }
+
+    /// The effective workspace-default [`ReferenceStyle`] — the fallback for any
+    /// relation without its own override. Composes the explicit `reference_*`
+    /// axes over the legacy `link_format`/`id_links` inputs, so an existing
+    /// config (which sets neither `reference_*` key) behaves exactly as before.
+    pub fn reference_style(&self) -> ReferenceStyle {
+        let derived_addressing = if self.id_links { Addressing::Id } else { Addressing::Path };
+        ReferenceStyle {
+            wrapper: self.reference_wrapper.unwrap_or(Wrapper::Markdown),
+            addressing: self.reference_target.unwrap_or(derived_addressing),
+            label: self.reference_label.unwrap_or(false),
+            path_style: self.link_format,
+        }
+        .normalized()
+    }
+
+    /// The declared per-relation overrides resolved to full [`ReferenceStyle`]s,
+    /// each partial overlaid on the workspace default ([`reference_style`]) and
+    /// normalized. Feed the result to
+    /// [`RelationSet::with_styles`](crate::relation::RelationSet::with_styles) to
+    /// build the workspace's relation vocabulary from a config document. Empty
+    /// when no relation declares an override — every relation then inherits the
+    /// default.
+    ///
+    /// [`reference_style`]: Self::reference_style
+    pub fn resolved_relation_styles(&self) -> BTreeMap<String, ReferenceStyle> {
+        let base = self.reference_style();
+        self.relation_styles
+            .iter()
+            .map(|(name, over)| {
+                let style = ReferenceStyle {
+                    wrapper: over.wrapper.unwrap_or(base.wrapper),
+                    addressing: over.target.unwrap_or(base.addressing),
+                    label: over.label.unwrap_or(base.label),
+                    path_style: base.path_style,
+                }
+                .normalized();
+                (name.clone(), style)
+            })
+            .collect()
     }
 
     /// Overlay the recognized keys present in `meta` onto this config; absent
@@ -113,6 +202,43 @@ impl WorkspaceConfig {
         }
         if let Some(id_links) = meta.get("id_links").and_then(Value::as_bool) {
             self.id_links = id_links;
+        }
+        if let Some(wrapper) =
+            meta.get("reference_wrapper").and_then(Value::as_str).and_then(Wrapper::from_config_str)
+        {
+            self.reference_wrapper = Some(wrapper);
+        }
+        if let Some(target) =
+            meta.get("reference_target").and_then(Value::as_str).and_then(Addressing::from_config_str)
+        {
+            self.reference_target = Some(target);
+        }
+        if let Some(label) = meta.get("reference_label").and_then(Value::as_bool) {
+            self.reference_label = Some(label);
+        }
+        // Per-relation style overrides: `relations: { <name>: { style: { … } } }`.
+        // Each axis present overlays that relation's entry; absent axes keep
+        // whatever the entry (or, later, the workspace default) already holds.
+        if let Some(relations) = meta.get("relations").and_then(Value::as_mapping) {
+            for (name, spec) in relations {
+                let Some(style) = spec.get("style").and_then(Value::as_mapping) else {
+                    continue;
+                };
+                let entry = self.relation_styles.entry(name.clone()).or_default();
+                if let Some(wrapper) =
+                    style.get("wrapper").and_then(Value::as_str).and_then(Wrapper::from_config_str)
+                {
+                    entry.wrapper = Some(wrapper);
+                }
+                if let Some(target) =
+                    style.get("target").and_then(Value::as_str).and_then(Addressing::from_config_str)
+                {
+                    entry.target = Some(target);
+                }
+                if let Some(label) = style.get("label").and_then(Value::as_bool) {
+                    entry.label = Some(label);
+                }
+            }
         }
         if let Some(format) =
             meta.get("embed_format").and_then(Value::as_str).and_then(format_from_str)
@@ -144,6 +270,34 @@ impl WorkspaceConfig {
         map.insert("link_format".into(), Value::String(self.link_format.as_config_str().into()));
         map.insert("identity".into(), Value::String(registration_str(self.identity).into()));
         map.insert("id_links".into(), Value::Bool(self.id_links));
+        if let Some(wrapper) = self.reference_wrapper {
+            map.insert("reference_wrapper".into(), Value::String(wrapper.as_config_str().into()));
+        }
+        if let Some(target) = self.reference_target {
+            map.insert("reference_target".into(), Value::String(target.as_config_str().into()));
+        }
+        if let Some(label) = self.reference_label {
+            map.insert("reference_label".into(), Value::Bool(label));
+        }
+        if !self.relation_styles.is_empty() {
+            let mut relations = Mapping::new();
+            for (name, over) in &self.relation_styles {
+                let mut style = Mapping::new();
+                if let Some(wrapper) = over.wrapper {
+                    style.insert("wrapper".into(), Value::String(wrapper.as_config_str().into()));
+                }
+                if let Some(target) = over.target {
+                    style.insert("target".into(), Value::String(target.as_config_str().into()));
+                }
+                if let Some(label) = over.label {
+                    style.insert("label".into(), Value::Bool(label));
+                }
+                let mut relation = Mapping::new();
+                relation.insert("style".into(), Value::Mapping(style));
+                relations.insert(name.clone(), Value::Mapping(relation));
+            }
+            map.insert("relations".into(), Value::Mapping(relations));
+        }
         map.insert("embed_format".into(), Value::String(format_str(self.default_embed_format).into()));
         map.insert("embed_type".into(), Value::String(self.embed_style.as_config_str().into()));
         map.insert("content_format".into(), Value::String(self.content_format.as_config_str().into()));
@@ -219,12 +373,94 @@ mod tests {
             link_format: LinkStyle::PlainRelative,
             identity: Registration::EAGER,
             id_links: true,
+            reference_wrapper: Some(Wrapper::Wikilink),
+            reference_target: Some(Addressing::Id),
+            reference_label: Some(true),
+            relation_styles: BTreeMap::from([
+                (
+                    "contents".to_string(),
+                    RelationStyleConfig {
+                        wrapper: Some(Wrapper::Wikilink),
+                        target: Some(Addressing::Alias),
+                        label: None,
+                    },
+                ),
+                (
+                    "part_of".to_string(),
+                    RelationStyleConfig {
+                        wrapper: Some(Wrapper::Markdown),
+                        target: Some(Addressing::Id),
+                        label: Some(false),
+                    },
+                ),
+            ]),
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::CodeBlock,
             content_format: ContentFormat::Djot,
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);
+    }
+
+    #[test]
+    fn per_relation_styles_resolve_over_the_workspace_default() {
+        // The diaryx up≠down example: a workspace default of `id`, with `contents`
+        // (down) overridden to a nominal alias wikilink and `part_of` (up) to a
+        // bare markdown id link — each partial overlaying the default.
+        let mut cfg = WorkspaceConfig::default();
+        let mut doc = Mapping::new();
+        doc.insert("reference_target".into(), Value::String("id".into()));
+        let mut contents_style = Mapping::new();
+        contents_style.insert("wrapper".into(), Value::String("wikilink".into()));
+        contents_style.insert("target".into(), Value::String("alias".into()));
+        let mut part_of_style = Mapping::new();
+        part_of_style.insert("target".into(), Value::String("id".into()));
+        let mut contents = Mapping::new();
+        contents.insert("style".into(), Value::Mapping(contents_style));
+        let mut part_of = Mapping::new();
+        part_of.insert("style".into(), Value::Mapping(part_of_style));
+        let mut relations = Mapping::new();
+        relations.insert("contents".into(), Value::Mapping(contents));
+        relations.insert("part_of".into(), Value::Mapping(part_of));
+        doc.insert("relations".into(), Value::Mapping(relations));
+        cfg.apply(&Value::Mapping(doc));
+
+        let styles = cfg.resolved_relation_styles();
+        let down = styles.get("contents").expect("contents style");
+        assert_eq!(down.wrapper, Wrapper::Wikilink);
+        assert_eq!(down.addressing, Addressing::Alias);
+
+        let up = styles.get("part_of").expect("part_of style");
+        // Inherits the default wrapper (markdown), keeps its own id target.
+        assert_eq!(up.wrapper, Wrapper::Markdown);
+        assert_eq!(up.addressing, Addressing::Id);
+    }
+
+    #[test]
+    fn reference_style_composes_overrides_over_legacy_inputs() {
+        // No reference_* keys: derives from link_format + id_links (back-compat).
+        let legacy = WorkspaceConfig { id_links: true, ..WorkspaceConfig::default() };
+        let s = legacy.reference_style();
+        assert_eq!(s.wrapper, Wrapper::Markdown);
+        assert_eq!(s.addressing, Addressing::Id);
+        assert!(!s.label);
+
+        // Explicit wikilink + alias overrides, read from a config document.
+        let mut cfg = WorkspaceConfig::default();
+        let mut doc = Mapping::new();
+        doc.insert("reference_wrapper".into(), Value::String("wikilink".into()));
+        doc.insert("reference_target".into(), Value::String("id".into()));
+        doc.insert("reference_label".into(), Value::Bool(true));
+        cfg.apply(&Value::Mapping(doc));
+        let s = cfg.reference_style();
+        assert_eq!(s.wrapper, Wrapper::Wikilink);
+        assert_eq!(s.addressing, Addressing::Id);
+        assert!(s.label);
+
+        // markdown + alias is normalized to wikilink + alias.
+        let mut cfg = WorkspaceConfig::default();
+        cfg.reference_target = Some(Addressing::Alias);
+        assert_eq!(cfg.reference_style().wrapper, Wrapper::Wikilink);
     }
 
     #[test]

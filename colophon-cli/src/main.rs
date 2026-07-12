@@ -17,9 +17,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use colophon::tree::{Node, NodeKind};
 use colophon::document::MetaCarrier;
 use colophon::{
-    ContentFormat, Document, EmbedStyle, FileIndex, Format, Id, IndexStore, LinkStyle, Mapping,
-    Minter, Registration, RelationSet, StdFs, Trigger, Value, Workspace, WorkspaceConfig, block_on,
-    edit, link, meta,
+    Addressing, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id, IndexStore, LinkStyle,
+    Mapping, Minter, Registration, RelationStyleConfig, RelationSet, StdFs, Trigger, Value,
+    Workspace, WorkspaceConfig, Wrapper, block_on, edit, link, meta,
 };
 
 /// The filename stem of the registry document the CLI creates on first
@@ -94,18 +94,26 @@ enum Command {
         /// Body-prose grammar; sets the root file's extension (default: markdown).
         #[arg(long, value_enum)]
         content: Option<ContentLang>,
-        /// How path links are written (default: markdown-root).
+        /// The syntactic wrapper colophon authors references in: markdown
+        /// (`[Title](target)`) or wikilink (`[[target]]`) (default: markdown).
+        /// The first style axis — pick it, then `--reference` picks the target.
+        #[arg(long, value_enum)]
+        wrapper: Option<WrapperArg>,
+        /// What references address their target by: path, id, alias (by title),
+        /// or split (readable `contents` down / durable `part_of` up). `id` and
+        /// `split` require `--identity` ≠ off; `alias`/`split` are by-title links
+        /// with no markdown form, so the interactive menu offers them only under
+        /// `--wrapper wikilink` (default: path).
+        #[arg(long, value_enum)]
+        reference: Option<ReferenceArg>,
+        /// How *path* references are formatted — only used when a target is
+        /// addressed by path (default: markdown-root).
         #[arg(long, value_enum)]
         link_style: Option<LinkStyleArg>,
         /// When documents earn a stable ID: off (paths only), lazy (on
         /// link-by-id or publish), or eager (at creation) (default: lazy).
         #[arg(long, value_enum)]
         identity: Option<IdentityArg>,
-        /// How colophon writes the links it authors: by path, or by stable id
-        /// (requires `--identity` ≠ off) (default: path). Distinct from
-        /// `--link-style`, which sets how *path* links are formatted.
-        #[arg(long, value_enum)]
-        links: Option<LinkKind>,
         /// Accept every default without prompting.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -454,15 +462,138 @@ impl IdentityArg {
     }
 }
 
-/// How colophon authors the structural links it writes — the `id_links` config
-/// key, the *second* identity axis. `Path` writes readable path links (rewritten
-/// on move); `Id` writes `colophon:<id>` targets that survive moves untouched.
-/// Only meaningful when identity can mint on a link, so `init` gates the prompt
-/// on `--identity` ≠ off.
+/// The syntactic wrapper `init` authors references in — the *first* style axis
+/// (`--wrapper`), chosen before the addressing (see `docs/reference-styles.md`,
+/// "pick the wrapper first, then the substyle").
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum LinkKind {
+enum WrapperArg {
+    /// The diaryx/CommonMark form: `[Title](target)` (or bare).
+    Markdown,
+    /// The Obsidian form: `[[target]]` / `[[target|Title]]`.
+    Wikilink,
+}
+
+impl WrapperArg {
+    /// The lowercase spelling for the `init` summary line.
+    fn label(self) -> &'static str {
+        match self {
+            WrapperArg::Markdown => "markdown",
+            WrapperArg::Wikilink => "wikilink",
+        }
+    }
+}
+
+impl From<WrapperArg> for Wrapper {
+    fn from(w: WrapperArg) -> Self {
+        match w {
+            WrapperArg::Markdown => Wrapper::Markdown,
+            WrapperArg::Wikilink => Wrapper::Wikilink,
+        }
+    }
+}
+
+/// What the references `init` authors address their target *by* — the *second*
+/// style axis (`--reference`), the addressing. `Path` is readable but rewritten
+/// on move; `Id` is durable and registers its target (so it needs identity);
+/// `Alias` is by title (readable, never move-safe, never registers); `Split`
+/// sets *different* addressing for the two spanning directions (the diaryx up≠down
+/// shape). The wrapper is chosen separately ([`WrapperArg`]).
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ReferenceArg {
+    /// By path — rewritten when a file moves. Rendering follows `--link-style`.
     Path,
+    /// By durable `id:<id>` handle — survives moves untouched, registers the target.
     Id,
+    /// By the target's title — readable, but not move/rename-safe (implies wikilink).
+    Alias,
+    /// Readable *down*, durable *up*: `contents` by alias, `part_of` by id.
+    Split,
+}
+
+impl ReferenceArg {
+    /// Whether this addressing registers targets (link-by-id), so it needs
+    /// identity to mint IDs. `Path` and `Alias` never register.
+    fn needs_identity(self) -> bool {
+        matches!(self, ReferenceArg::Id | ReferenceArg::Split)
+    }
+
+    /// Whether a by-path reference is (possibly) authored, so `init` asks the
+    /// path-format question. Only `Path` addresses by path.
+    fn uses_path(self) -> bool {
+        self == ReferenceArg::Path
+    }
+
+    /// The lowercase spelling for the `init` summary line and `--reference` flag.
+    fn label(self) -> &'static str {
+        match self {
+            ReferenceArg::Path => "path",
+            ReferenceArg::Id => "id",
+            ReferenceArg::Alias => "alias",
+            ReferenceArg::Split => "split (alias down, id up)",
+        }
+    }
+
+    /// The `--reference` flag value (kebab-case), for diagnostics.
+    fn flag(self) -> &'static str {
+        match self {
+            ReferenceArg::Split => "split",
+            other => other.label(),
+        }
+    }
+
+    /// Write the workspace-default reference axes and per-relation overrides this
+    /// (wrapper, addressing) pair encodes onto `config`. Leaving an axis `None`
+    /// preserves the pre-existing derive, so markdown + `Path` writes no new keys
+    /// (identical to the pre-reference-style behavior).
+    fn write_onto(self, wrapper: Wrapper, config: &mut WorkspaceConfig) {
+        // Record the wrapper only when it departs from the markdown default, so a
+        // plain markdown workspace keeps a minimal config.
+        let wrapper_key = (wrapper == Wrapper::Wikilink).then_some(Wrapper::Wikilink);
+        // Author id links *labeled* — `[Title](id:…)` for markdown, `[[id:…|Title]]`
+        // for wikilink — so a durable reference stays readable, and clickable with
+        // graceful degradation (an `id:` scheme link resolves in tools that know it,
+        // and says "unsupported scheme" in those that don't), rather than an opaque
+        // bare id. The label is a maintained cache of the target's title.
+        let id_label = Some(true);
+        match self {
+            ReferenceArg::Path => {
+                config.reference_wrapper = wrapper_key;
+            }
+            ReferenceArg::Id => {
+                config.reference_wrapper = wrapper_key;
+                config.reference_target = Some(Addressing::Id);
+                config.reference_label = id_label;
+            }
+            ReferenceArg::Alias => {
+                // Alias has no markdown spelling; it always normalizes to wikilink.
+                config.reference_wrapper = Some(Wrapper::Wikilink);
+                config.reference_target = Some(Addressing::Alias);
+            }
+            // Durable id by default (overlay relations like `links` stay
+            // move-stable), then the two spanning directions diverge: a readable
+            // alias going down, an id link going up in the chosen wrapper.
+            ReferenceArg::Split => {
+                config.reference_wrapper = wrapper_key;
+                config.reference_target = Some(Addressing::Id);
+                config.relation_styles.insert(
+                    "contents".into(),
+                    RelationStyleConfig {
+                        wrapper: Some(Wrapper::Wikilink),
+                        target: Some(Addressing::Alias),
+                        label: None,
+                    },
+                );
+                config.relation_styles.insert(
+                    "part_of".into(),
+                    RelationStyleConfig {
+                        wrapper: Some(wrapper),
+                        target: Some(Addressing::Id),
+                        label: id_label,
+                    },
+                );
+            }
+        }
+    }
 }
 
 impl From<MetaFormat> for Format {
@@ -488,9 +619,31 @@ fn main() -> ExitCode {
         Command::Get { file, key } => cmd_get(&file, &key),
         Command::Body { file } => cmd_body(&file),
         Command::Render { file } => cmd_render(&file),
-        Command::Init { dir, title, author, meta, embed, content, link_style, identity, links, yes } => {
-            cmd_init(dir.as_deref(), title, author, meta, embed, content, link_style, identity, links, yes)
-        }
+        Command::Init {
+            dir,
+            title,
+            author,
+            meta,
+            embed,
+            content,
+            wrapper,
+            reference,
+            link_style,
+            identity,
+            yes,
+        } => cmd_init(
+            dir.as_deref(),
+            title,
+            author,
+            meta,
+            embed,
+            content,
+            wrapper,
+            reference,
+            link_style,
+            identity,
+            yes,
+        ),
         Command::Set { file, key, value } => cmd_set(&file, &key, &value),
         Command::Unset { file, key } => cmd_unset(&file, &key),
         Command::Tree { root } => cmd_tree(root.as_deref()),
@@ -649,12 +802,17 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
         // metadata format, so a later bootstrap writes that format.
         None => FileIndex::new(ctx.config.default_embed_format),
     };
+    // The relation vocabulary picks up any per-relation `style` overrides the
+    // config document declares (up≠down), overlaid on the diaryx default set.
+    let relations = RelationSet::diaryx().with_styles(&ctx.config.resolved_relation_styles());
     Ok(Workspace::builder(StdFs)
         .root(&ctx.root_dir)
+        .relations(relations)
         .identity(Minter::with(ctx.config.identity, entropy_seed()))
         .index(index)
         .link_style(ctx.config.link_format)
         .id_links(ctx.config.id_links)
+        .reference_style(ctx.config.reference_style())
         .default_embed_format(ctx.config.default_embed_format)
         .build())
 }
@@ -765,9 +923,10 @@ fn cmd_init(
     meta: Option<MetaFormat>,
     embed: Option<EmbedArg>,
     content: Option<ContentLang>,
+    wrapper: Option<WrapperArg>,
+    reference: Option<ReferenceArg>,
     link_style: Option<LinkStyleArg>,
     identity: Option<IdentityArg>,
-    links: Option<LinkKind>,
     yes: bool,
 ) -> CmdResult {
     let dir = match dir {
@@ -795,19 +954,23 @@ fn cmd_init(
     let default_title = link::path_to_title(&dir);
     // Prompt only on a real terminal and only when `--yes` wasn't passed.
     let interactive = !yes && std::io::stdin().is_terminal();
-    // The link-authoring prompt only appears when identity isn't off, so it only
-    // counts toward "will we prompt?" in that case — keeping intro/outro paired
-    // with at least one real question.
-    let links_prompt_possible = links.is_none() && identity != Some(IdentityArg::Off);
+    // Two prompts are conditional but still count toward "will we prompt?", so
+    // the intro/outro stay paired with at least one question: the references
+    // prompt is skipped when identity is off (path is forced), and the path-format
+    // prompt appears only when a by-path reference is (possibly) authored.
+    let reference_prompt_possible = reference.is_none() && identity != Some(IdentityArg::Off);
+    let path_format_possible =
+        link_style.is_none() && matches!(reference, None | Some(ReferenceArg::Path));
     let prompting = interactive
         && (title.is_none()
             || author.is_none()
             || content.is_none()
             || embed.is_none()
             || meta.is_none()
-            || link_style.is_none()
+            || wrapper.is_none()
             || identity.is_none()
-            || links_prompt_possible);
+            || reference_prompt_possible
+            || path_format_possible);
     if prompting {
         cliclack::intro("colophon init")?;
     }
@@ -882,19 +1045,15 @@ fn cmd_init(
         None if interactive => prompt_config_language(embed)?,
         None => MetaFormat::Yaml,
     };
-    let link_style = match link_style {
-        Some(l) => l,
-        None if interactive => cliclack::select("Link style")
-            .initial_value(LinkStyleArg::MarkdownRoot)
-            .item(LinkStyleArg::MarkdownRoot, "Markdown, workspace-absolute", "[Title](/path.md)")
-            .item(LinkStyleArg::MarkdownRelative, "Markdown, relative", "[Title](../path.md)")
-            .item(LinkStyleArg::PlainRelative, "Plain relative path", "../path.md")
-            .item(LinkStyleArg::PlainCanonical, "Plain workspace path", "path.md")
-            .interact()?,
-        None => LinkStyleArg::MarkdownRoot,
+    // The reference style, in two axes (docs/reference-styles.md): pick the
+    // wrapper first — the syntactic form every reference is written in.
+    let wrapper = match wrapper {
+        Some(w) => w,
+        None if interactive => prompt_wrapper()?,
+        None => WrapperArg::Markdown,
     };
-    // Identity is two independent axes (DESIGN §4). First: *when* a document
-    // earns a stable ID. Default lazy, matching `WorkspaceConfig::default()`.
+    // Identity gates the addressing axis (id/split register). First: *when* a
+    // document earns a stable ID. Default lazy, matching `WorkspaceConfig::default()`.
     let identity = match identity {
         Some(i) => i,
         None if interactive => cliclack::select("Identity")
@@ -905,39 +1064,48 @@ fn cmd_init(
             .interact()?,
         None => IdentityArg::Lazy,
     };
-    // Second: whether colophon *authors* links by ID. Only meaningful when an ID
-    // can be minted on a link, so with identity off it is forced to path links
-    // and the prompt is skipped. A `--links id` against `--identity off` is an
-    // explicit contradiction — surface it rather than silently ignoring it.
-    let id_links = if identity == IdentityArg::Off {
-        if links == Some(LinkKind::Id) {
-            return Err("`--links id` needs identity to mint IDs (try `--identity lazy`)".into());
-        }
-        false
-    } else {
-        match links {
-            Some(l) => l == LinkKind::Id,
-            None if interactive => {
-                cliclack::select("Links between documents")
-                    .initial_value(LinkKind::Path)
-                    .item(LinkKind::Path, "By path", "readable links; colophon rewrites them when a file moves")
-                    .item(LinkKind::Id, "By stable ID", "links never change; the registry tracks where each file lives")
-                    .interact()?
-                    == LinkKind::Id
+    // Second: the addressing — what a reference points at. `id`/`split` register
+    // their targets, so they need identity; a `--reference id/split` against
+    // `--identity off` is a surfaced contradiction rather than silently ignored.
+    // With identity off the interactive menu simply omits those options.
+    let reference = match reference {
+        Some(r) => {
+            if r.needs_identity() && identity == IdentityArg::Off {
+                return Err(format!(
+                    "`--reference {}` needs identity to mint IDs (try `--identity lazy`)",
+                    r.flag()
+                )
+                .into());
             }
-            None => false,
+            r
         }
+        None if interactive => prompt_reference(identity, wrapper)?,
+        None => ReferenceArg::Path,
+    };
+    // Third: the path format — how a by-path reference renders (root / relative /
+    // plain). Only meaningful, and only asked, when the addressing is by path.
+    let link_style = match link_style {
+        Some(l) => l,
+        None if interactive && reference.uses_path() => prompt_path_format(wrapper)?,
+        None => LinkStyleArg::MarkdownRoot,
     };
 
-    // Assemble the workspace preferences these choices encode.
-    let ws_config = WorkspaceConfig {
+    // Assemble the workspace preferences these choices encode. The (wrapper,
+    // reference) pair writes the default `reference_*` axes and any per-relation
+    // overrides (the up≠down split) onto the config.
+    let mut ws_config = WorkspaceConfig {
         link_format: link_style.into(),
         identity: identity.registration(),
-        id_links,
+        id_links: false,
+        reference_wrapper: None,
+        reference_target: None,
+        reference_label: None,
+        relation_styles: std::collections::BTreeMap::new(),
         default_embed_format: meta.into(),
         embed_style: embed,
         content_format: content.into(),
     };
+    reference.write_onto(wrapper.into(), &mut ws_config);
 
     let meta_format: Format = meta.into();
     let config_name = sidecar_name(CONFIG_STEM, meta_format);
@@ -999,16 +1167,23 @@ fn cmd_init(
 
     let author_note = author.as_deref().map(|a| format!(", author {a}")).unwrap_or_default();
     let (embed_label, _) = embed_labels(embed);
+    // The path format only appears when a by-path reference is authored — it is
+    // inert otherwise.
+    let path_note = if reference.uses_path() {
+        format!(", path format {}", ws_config.link_format.as_config_str())
+    } else {
+        String::new()
+    };
     let details = format!(
         "root: {root_name} — {title}{author_note}\n\
-         config: {config_name} — content {}, embed {} ({}), language {}, link style {}, identity {}, links {}",
+         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, wrapper {}, references {}{path_note}",
         content.label(),
         embed.as_config_str(),
         embed_label.to_lowercase(),
         meta.label(),
-        ws_config.link_format.as_config_str(),
         identity.label(),
-        if id_links { "id" } else { "path" },
+        wrapper.label(),
+        reference.label(),
     );
     let next = format!("next: colophon new <path> --parent {root_name}");
     if prompting {
@@ -1025,6 +1200,71 @@ fn cmd_init(
 
 /// Prompt for the embed type, offering only the styles that suit `content` (the
 /// first is the default). See [`ContentLang::embed_styles`].
+/// Prompt for the reference **wrapper** — the first style axis.
+fn prompt_wrapper() -> std::io::Result<WrapperArg> {
+    cliclack::select("Wrapper")
+        .initial_value(WrapperArg::Markdown)
+        .item(WrapperArg::Markdown, "Markdown", "[Title](target) — the diaryx/CommonMark form")
+        .item(WrapperArg::Wikilink, "Wikilink", "[[target]] — the Obsidian form")
+        .interact()
+}
+
+/// Prompt for the reference **addressing** — the second axis. The menu is gated
+/// by the two axes already chosen: the registering options (`id`, `split`) appear
+/// only when identity can mint IDs, and the by-title options (`alias`, and the
+/// `split` that relies on it going down) appear only under the wikilink wrapper —
+/// an alias has no markdown spelling, so offering it under markdown would author
+/// a wikilink the user did not ask for.
+fn prompt_reference(identity: IdentityArg, wrapper: WrapperArg) -> std::io::Result<ReferenceArg> {
+    let registers = identity != IdentityArg::Off;
+    let wikilink = wrapper == WrapperArg::Wikilink;
+    let mut select = cliclack::select("References between documents")
+        .initial_value(ReferenceArg::Path)
+        .item(ReferenceArg::Path, "By path", "readable; rewritten when a file moves");
+    if registers {
+        select = select.item(
+            ReferenceArg::Id,
+            "By stable ID",
+            "durable; the registry tracks where each file lives",
+        );
+    }
+    if wikilink {
+        select = select.item(
+            ReferenceArg::Alias,
+            "By title",
+            "[[Title]] — readable, not move/rename-safe",
+        );
+        if registers {
+            select = select.item(
+                ReferenceArg::Split,
+                "Readable down, durable up",
+                "contents by title ([[Title]]), part_of by ID",
+            );
+        }
+    }
+    select.interact()
+}
+
+/// Prompt for how *path* references are rendered — asked only when a by-path
+/// reference is authored. The wrapper is already chosen: markdown offers the
+/// full bracket-or-bare set, wikilink offers only the inner path *shape* (it
+/// always wraps).
+fn prompt_path_format(wrapper: WrapperArg) -> std::io::Result<LinkStyleArg> {
+    let mut select = cliclack::select("Path format").initial_value(LinkStyleArg::MarkdownRoot);
+    select = match wrapper {
+        WrapperArg::Markdown => select
+            .item(LinkStyleArg::MarkdownRoot, "Workspace-absolute", "[Title](/path.md)")
+            .item(LinkStyleArg::MarkdownRelative, "Relative", "[Title](../path.md)")
+            .item(LinkStyleArg::PlainRelative, "Plain relative", "../path.md")
+            .item(LinkStyleArg::PlainCanonical, "Plain workspace path", "path.md"),
+        WrapperArg::Wikilink => select
+            .item(LinkStyleArg::MarkdownRoot, "Workspace-absolute", "[[/path.md]]")
+            .item(LinkStyleArg::PlainRelative, "Relative", "[[../path.md]]")
+            .item(LinkStyleArg::PlainCanonical, "Workspace path", "[[path.md]]"),
+    };
+    select.interact()
+}
+
 fn prompt_embed_style(content: ContentLang) -> std::io::Result<EmbedStyle> {
     let styles = content.embed_styles();
     let mut select = cliclack::select("Embed type").initial_value(styles[0]);
@@ -1206,6 +1446,7 @@ fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
         NodeKind::Cycle => " (cycle!)".to_string(),
         NodeKind::Unreadable(e) => format!(" (unreadable: {e})"),
         NodeKind::UnresolvedId(id) => format!(" (unresolved id: {id})"),
+        NodeKind::AmbiguousAlias(name) => format!(" (ambiguous alias: [[{name}]])"),
     };
     println!("{connector}{name}{marker}");
     let child_prefix = if is_root {
@@ -1294,9 +1535,13 @@ fn prompt(message: &str) -> Result<String, AnyError> {
 
 fn cmd_new(path: &Path, parent: &Path) -> CmdResult {
     let mut ctx = find_root()?;
-    // Authoring id links (or an eager policy) mints IDs, so ensure a registry to
-    // persist them exists *before* the workspace is built over it.
-    let mints = (ctx.config.id_links && ctx.config.identity.fires_on(Trigger::Link))
+    // Authoring a reference that registers (the default style, or any relation's
+    // override — e.g. `part_of: id` in a split) mints IDs, as does an eager
+    // policy; ensure a registry to persist them exists *before* the workspace is
+    // built over it.
+    let link_registers = ctx.config.reference_style().registers()
+        || ctx.config.resolved_relation_styles().values().any(|s| s.registers());
+    let mints = (link_registers && ctx.config.identity.fires_on(Trigger::Link))
         || ctx.config.identity.fires_on(Trigger::Create);
     if mints {
         ensure_registry(&mut ctx)?;

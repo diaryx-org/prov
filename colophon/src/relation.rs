@@ -5,6 +5,7 @@
 //! about the *vocabulary*. A [`RelationSet`] names which fields are links, their
 //! cardinality, their inverse, and which single relation is **spanning**.
 
+use crate::link::ReferenceStyle;
 use crate::meta::Value;
 
 /// How many targets a relation field may hold.
@@ -26,6 +27,12 @@ pub struct Relation {
     pub inverse: Option<String>,
     /// How many targets the field may hold.
     pub cardinality: Cardinality,
+    /// The reference style colophon authors *this* relation's links in,
+    /// overriding the workspace default. `None` inherits the default. This is
+    /// what lets links going "down" (`contents`) differ from links going "up"
+    /// (`part_of`) — style is resolved per relation (see
+    /// `docs/reference-styles.md`).
+    pub style: Option<ReferenceStyle>,
 }
 
 impl Relation {
@@ -35,6 +42,7 @@ impl Relation {
             name: name.into(),
             inverse: None,
             cardinality: Cardinality::One,
+            style: None,
         }
     }
 
@@ -44,12 +52,21 @@ impl Relation {
             name: name.into(),
             inverse: None,
             cardinality: Cardinality::Many,
+            style: None,
         }
     }
 
     /// Declare this relation's inverse (builder-style).
     pub fn inverse(mut self, name: impl Into<String>) -> Self {
         self.inverse = Some(name.into());
+        self
+    }
+
+    /// Author this relation's links in a specific reference style, overriding
+    /// the workspace default (builder-style). E.g. `alias` wikilinks going down
+    /// through `contents`, durable `id` links going up through `part_of`.
+    pub fn style(mut self, style: ReferenceStyle) -> Self {
+        self.style = Some(style);
         self
     }
 }
@@ -138,6 +155,31 @@ impl RelationSet {
         &self.relations
     }
 
+    /// The per-relation reference style override for `name`, if that relation is
+    /// configured and carries one. `None` means "inherit the workspace default"
+    /// — the caller falls back to its own default style.
+    pub fn style_for(&self, name: &str) -> Option<ReferenceStyle> {
+        self.relations.iter().find(|r| r.name == name).and_then(|r| r.style)
+    }
+
+    /// Overlay per-relation reference styles by name (builder-style) — the
+    /// config-driven form of [`Relation::style`]. Each configured relation whose
+    /// name appears in `styles` adopts that style; relations absent from the map
+    /// keep whatever style they already carry (usually none → the workspace
+    /// default). Names in `styles` with no matching relation are ignored. This is
+    /// how a workspace's vocabulary picks up the `relations` block of its config
+    /// document (see [`WorkspaceConfig::resolved_relation_styles`]).
+    ///
+    /// [`WorkspaceConfig::resolved_relation_styles`]: crate::config::WorkspaceConfig::resolved_relation_styles
+    pub fn with_styles(mut self, styles: &std::collections::BTreeMap<String, ReferenceStyle>) -> Self {
+        for relation in &mut self.relations {
+            if let Some(style) = styles.get(&relation.name) {
+                relation.style = Some(*style);
+            }
+        }
+        self
+    }
+
     /// The name of the spanning relation, if one is configured.
     pub fn spanning_relation(&self) -> Option<&str> {
         self.spanning.as_deref()
@@ -216,6 +258,28 @@ mod tests {
         assert_eq!(set.config_relation(), Some("config"));
         // Both are single-valued pointer relations in the vocabulary.
         assert!(set.relations().iter().any(|r| r.name == "config"));
+    }
+
+    #[test]
+    fn with_styles_attaches_config_styles_by_name() {
+        use crate::link::{Addressing, LinkStyle, Wrapper};
+        use std::collections::BTreeMap;
+
+        let alias = ReferenceStyle {
+            wrapper: Wrapper::Wikilink,
+            addressing: Addressing::Alias,
+            label: false,
+            path_style: LinkStyle::default(),
+        };
+        let styles = BTreeMap::from([("contents".to_string(), alias)]);
+        let set = RelationSet::diaryx().with_styles(&styles);
+
+        // Named relation adopts the style; unnamed ones stay on the default.
+        assert_eq!(set.style_for("contents"), Some(alias));
+        assert_eq!(set.style_for("part_of"), None);
+        // A name with no matching relation is ignored, not an error.
+        let orphan = BTreeMap::from([("nonexistent".to_string(), alias)]);
+        assert!(RelationSet::diaryx().with_styles(&orphan).style_for("contents").is_none());
     }
 
     #[test]

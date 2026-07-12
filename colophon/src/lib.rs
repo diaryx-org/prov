@@ -59,11 +59,12 @@ pub mod link;
 pub mod meta;
 pub mod mutate;
 pub mod relation;
+pub mod title;
 pub mod tree;
 pub mod validate;
 pub mod workspace;
 
-pub use config::WorkspaceConfig;
+pub use config::{RelationStyleConfig, WorkspaceConfig};
 pub use content::ContentFormat;
 pub use content::{code_spans, render_html};
 pub use document::{Document, EmbedStyle, EmbedType, embed_carrier};
@@ -73,10 +74,13 @@ pub use fig::Format;
 pub use fs::{Storage, StdFs};
 pub use identity::{Id, IdentityPolicy, Minter, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
-pub use link::{Link, LinkStyle, Wikilink, format_link, path_to_title};
+pub use link::{
+    Addressing, Link, LinkStyle, ReferenceStyle, Wikilink, Wrapper, format_link, path_to_title,
+};
 pub use meta::{Mapping, Value};
 pub use mutate::Created;
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
+pub use title::{TitleIndex, TitleMatch};
 pub use tree::{Node, NodeKind};
 pub use validate::{Backlink, CensusEntry, Finding, Fix, LinkSite, Resolution};
 pub use workspace::{Target, Workspace};

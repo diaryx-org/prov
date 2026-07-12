@@ -40,6 +40,7 @@ use crate::identity::{self, Id, IdentityPolicy};
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
+use crate::title::{self, TitleIndex, TitleMatch};
 use crate::workspace::{Target, Workspace};
 
 /// Where in a document a forward link is written — a frontmatter relation field
@@ -83,6 +84,9 @@ pub enum Resolution {
     DanglingId { id: Id, tombstoned: bool },
     /// A `colophon:<id>` target failing its check character — a typo.
     MalformedId,
+    /// A nominal (alias) target several documents claim — unresolvable.
+    /// `candidates` are the sharers, sorted.
+    AmbiguousAlias { name: String, candidates: Vec<PathBuf> },
     /// A URL / mail address — off-workspace, never resolved or rewritten.
     External,
 }
@@ -131,6 +135,12 @@ impl CensusEntry {
             Resolution::DanglingId { id, tombstoned } => {
                 Some(Finding::DanglingId { doc, site, id: id.clone(), tombstoned: *tombstoned })
             }
+            Resolution::AmbiguousAlias { name, candidates } => Some(Finding::AmbiguousAlias {
+                doc,
+                site,
+                name: name.clone(),
+                candidates: candidates.clone(),
+            }),
             Resolution::Path(_) | Resolution::Id { .. } | Resolution::External => None,
         }
     }
@@ -171,11 +181,15 @@ pub enum Finding {
     /// A `colophon:<id>` reference whose ID fails the shape/check-character
     /// test — almost certainly a typo, caught before it dangles silently.
     MalformedId { doc: PathBuf, site: LinkSite, target: String },
-    /// A well-formed `colophon:<id>` reference with no live registry entry.
+    /// A well-formed `id:<id>` reference with no live registry entry.
     /// `tombstoned` distinguishes "that document was deleted" from "this ID
     /// was never issued here" (an out-of-band reference the registry has not
     /// reconciled — DESIGN §4's known hazard).
     DanglingId { doc: PathBuf, site: LinkSite, id: Id, tombstoned: bool },
+    /// A nominal (alias) reference whose name several documents claim, so it
+    /// cannot resolve to one — the fallible edge of title-based linking.
+    /// `candidates` are the documents that share the name, sorted.
+    AmbiguousAlias { doc: PathBuf, site: LinkSite, name: String, candidates: Vec<PathBuf> },
 }
 
 impl fmt::Display for Finding {
@@ -210,9 +224,16 @@ impl fmt::Display for Finding {
             ),
             Finding::DanglingId { doc, site, id, tombstoned } => write!(
                 f,
-                "{}: dangling {site} ID: colophon:{id} ({})",
+                "{}: dangling {site} ID: id:{id} ({})",
                 doc.display(),
                 if *tombstoned { "document was deleted" } else { "never issued in this registry" }
+            ),
+            Finding::AmbiguousAlias { doc, site, name, candidates } => write!(
+                f,
+                "{}: ambiguous {site} alias: [[{name}]] matches {} documents ({})",
+                doc.display(),
+                candidates.len(),
+                candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
             ),
         }
     }
@@ -365,6 +386,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut visited = BTreeSet::new();
         let mut queue = vec![link::normalize(start)];
 
+        // The nominal-resolution index, built once for the whole walk (a flat
+        // scan, independent of the link resolution it powers).
+        let titles = self.title_index().await?;
+
         let spanning = self.relations().spanning_relation().map(str::to_owned);
         let inverse = spanning.as_deref().and_then(|s| {
             self.relations()
@@ -391,7 +416,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // Parse once: `link.target` is the bare target (any `[label](…)`
                 // stripped), which is what both the census and findings record.
                 let link = Link::parse(&edge.target);
-                let resolution = self.resolve_forward(&path, &link).await;
+                let resolution = self.resolve_forward(&path, &link, &titles).await;
 
                 if Some(edge.relation.as_str()) == spanning.as_deref()
                     && let Some(resolved) = resolution.resolved_path().cloned()
@@ -414,7 +439,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                                 .unwrap_or_default()
                                 .iter()
                                 .any(|t| {
-                                    self.resolve_link(&resolved, &Link::parse(t))
+                                    self.resolve_link_with(&resolved, &Link::parse(t), Some(&titles))
                                         == Target::Path(path.clone())
                                 });
                             if !points_back {
@@ -439,7 +464,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
             // Body wikilinks — overlay references, censused but never spanning.
             for wikilink in link::scan_wikilinks(&path, &doc.body) {
-                let resolution = self.resolve_forward(&path, &Link::parse(&wikilink.target)).await;
+                let resolution =
+                    self.resolve_forward(&path, &Link::parse(&wikilink.target), &titles).await;
                 census.push(CensusEntry {
                     source: path.clone(),
                     site: LinkSite::Body(wikilink.span),
@@ -473,11 +499,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 
     /// Resolve one forward link (declared in the document at `source`) into a
-    /// [`Resolution`]. A path target is checked against the on-disk name; a
-    /// `colophon:<id>` target resolves through the registry and stays an
-    /// id-form resolution, so callers can distinguish a location-independent
-    /// link (never rewritten by a move) from a path (which is).
-    async fn resolve_forward(&self, source: &Path, link: &Link) -> Resolution {
+    /// [`Resolution`]. A path target is checked against the on-disk name; an
+    /// `id:<id>` target resolves through the registry and stays an id-form
+    /// resolution; a nominal (`[[My File]]`) target resolves through `titles` —
+    /// `Unique` to the on-disk path, `Ambiguous` to
+    /// [`Resolution::AmbiguousAlias`], `Unknown` falling through to a path (so a
+    /// nominal link to nothing reports as `Broken`, like any dead link).
+    async fn resolve_forward(&self, source: &Path, link: &Link, titles: &TitleIndex) -> Resolution {
         if link.is_external() {
             return Resolution::External;
         }
@@ -489,6 +517,21 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Some(path) => Resolution::Id { id, to: link::normalize(path) },
                 None => Resolution::DanglingId { tombstoned: self.index().is_known(&id), id },
             };
+        }
+        if title::is_alias_shaped(&link.target) {
+            match titles.resolve(&link.target) {
+                TitleMatch::Unique(path) => {
+                    return match self.exact_name(&path).await {
+                        NameMatch::Exact => Resolution::Path(path),
+                        NameMatch::CaseOnly(actual) => Resolution::CaseMismatch { got: path, actual },
+                        NameMatch::None => Resolution::Broken,
+                    };
+                }
+                TitleMatch::Ambiguous(candidates) => {
+                    return Resolution::AmbiguousAlias { name: link.target.clone(), candidates };
+                }
+                TitleMatch::Unknown => {}
+            }
         }
         let resolved = link::resolve(source, &link.target);
         match self.exact_name(&resolved).await {
@@ -527,14 +570,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Apply a [`Fix`], editing the target document's metadata comment- and
-    /// format-preservingly (through the same editor `set` uses). The back-link
-    /// is authored through the workspace's link seam — a path in the configured
-    /// style, or a `colophon:<id>` (registering the parent) when the workspace
-    /// authors id links — so a repair matches how it authors every other link.
+    /// format-preservingly (through the same editor `set` uses). The back-link is
+    /// authored through the workspace's link seam in the fixed relation's
+    /// reference style — a path, an `id:<id>` link (registering the parent), or an
+    /// alias — so a repair matches how it authors every other link.
     pub async fn apply_fix(&mut self, fix: &Fix) -> Result<()> {
         match fix {
             Fix::AddInverse { doc, relation, parent, title } => {
-                let target = self.authored_target(doc, parent, title).await?;
+                // The parent exists (this repair points a child back at it), so an
+                // id link registers it by path. Authored in `relation`'s style.
+                let target = self.authored_target(relation, doc, parent, title, true).await?;
                 let (text, parsed) = self.load(doc).await?;
                 let updated =
                     crate::edit::set_in_text(&text, parsed.carrier, relation, fig::Value::Str(target))?;
@@ -702,6 +747,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn check_resolves_a_unique_alias_and_flags_an_ambiguous_one() {
+        let dir = tempdir("alias-check");
+        // Body aliases: `[[Alpha]]` is unique (clean), `[[Dup]]` is claimed by
+        // two documents (ambiguous → a finding).
+        write(&dir, "index.md", "---\ntitle: Root\n---\nSee [[Alpha]] and [[Dup]].\n");
+        write(&dir, "alpha.md", "---\ntitle: Alpha\n---\n");
+        write(&dir, "one.md", "---\ntitle: Dup\n---\n");
+        write(&dir, "two.md", "---\ntitle: Dup\n---\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        // The unique alias produced no finding; the ambiguous one did.
+        assert!(
+            !findings.iter().any(|f| matches!(f, Finding::AmbiguousAlias { name, .. } if name == "Alpha")),
+            "unique alias must resolve cleanly: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::AmbiguousAlias { name, candidates, .. }
+                    if name == "Dup" && candidates.len() == 2
+            )),
+            "ambiguous alias must be flagged: {findings:?}"
+        );
+    }
+
     // Real-world regression: a fenced code block containing Python list
     // comprehensions (`[[float('inf')] * width ...]`) must never be mistaken
     // for a `[[…]]` wikilink — DESIGN §8's motivating example, life-sized.
@@ -835,7 +907,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(dir.join("a.md"))
                 .unwrap()
-                .contains(&format!("part_of: colophon:{parent_id}"))
+                .contains(&format!("part_of: id:{parent_id}"))
         );
     }
 

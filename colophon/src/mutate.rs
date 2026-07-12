@@ -131,20 +131,14 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
-        // The child's inverse link back to the parent — authored in the
-        // workspace style (registering the parent when authoring by id, which is
-        // safe: the parent exists).
-        let up = self.authored_target(&node, &parent, &parent_title).await?;
-        // The parent's spanning entry for the child (its structural node). The
-        // node is not on disk yet, so an id link mints its id directly rather
-        // than register-by-path.
-        let down = if self.id_links() && self.identity().registration().fires_on(Trigger::Link) {
-            let child_id = self.mint_unique(&node);
-            self.index_mut().register(&child_id, &node);
-            link::id_target(&child_id)
-        } else {
-            link::format_link(self.link_style(), &parent, &node, &title)
-        };
+        // The child's inverse link back to the parent, authored in the `inverse`
+        // relation's style (going "up"). The parent exists, so an id link
+        // registers it by path.
+        let up = self.authored_target(&inverse, &node, &parent, &parent_title, true).await?;
+        // The parent's spanning entry for the child, authored in the `spanning`
+        // relation's style (going "down"). The node is not on disk yet, so
+        // `target_exists = false` mints its id directly rather than register-by-path.
+        let down = self.authored_target(&spanning, &parent, &node, &title, false).await?;
 
         // Author the node's metadata: title, inverse link, and — for a separated
         // child — a `content` pointer at its body file. A separated node is
@@ -945,10 +939,57 @@ mod tests {
 
         let parent_id = w.index().id_for_path(Path::new("index.md")).expect("parent registered");
         let child_id = w.index().id_for_path(Path::new("a.md")).expect("child registered");
-        assert!(read(&dir, "a.md").contains(&format!("part_of: colophon:{parent_id}")));
-        assert!(read(&dir, "index.md").contains(&format!("colophon:{child_id}")));
+        assert!(read(&dir, "a.md").contains(&format!("part_of: id:{parent_id}")));
+        assert!(read(&dir, "index.md").contains(&format!("id:{child_id}")));
         // And it still validates — id targets resolve through the registry.
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn create_authors_up_and_down_in_different_relation_styles() {
+        use crate::link::{Addressing, ReferenceStyle, Wrapper};
+        use crate::relation::{Relation, RelationSet};
+
+        // Down (`contents`) reads like a TOC — an alias wikilink. Up (`part_of`)
+        // is durable bookkeeping — a bare markdown id link. Two relations, two
+        // styles, one create.
+        let alias = ReferenceStyle {
+            wrapper: Wrapper::Wikilink,
+            addressing: Addressing::Alias,
+            label: false,
+            path_style: LinkStyle::default(),
+        };
+        let by_id = ReferenceStyle {
+            wrapper: Wrapper::Markdown,
+            addressing: Addressing::Id,
+            label: false,
+            path_style: LinkStyle::default(),
+        };
+        let relations = RelationSet::new()
+            .with(Relation::many("contents").inverse("part_of").style(alias))
+            .with(Relation::one("part_of").inverse("contents").style(by_id))
+            .spanning("contents");
+
+        let dir = tempdir("create-updown");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .relations(relations)
+            .identity(Minter::lazy(7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+
+        // Up: `part_of` on the child is a durable id link, and it registered the
+        // parent (the id direction is what triggers registration).
+        let parent_id = w.index().id_for_path(Path::new("index.md")).expect("parent registered");
+        assert!(read(&dir, "a.md").contains(&format!("part_of: id:{parent_id}")), "{}", read(&dir, "a.md"));
+
+        // Down: `contents` on the parent is a nominal alias wikilink (the child's
+        // title), and — because `alias` never links-by-id — the child is *not*
+        // registered. That asymmetry is by design.
+        assert!(read(&dir, "index.md").contains("[[a]]"), "{}", read(&dir, "index.md"));
+        assert!(w.index().id_for_path(Path::new("a.md")).is_none(), "alias down-link must not register the child");
     }
 
     #[test]
@@ -1197,7 +1238,7 @@ mod tests {
         block_on(w.rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap();
         let index_text = read(&dir, "index.md");
         assert!(
-            index_text.contains(&format!("colophon:{id}")),
+            index_text.contains(&format!("id:{id}")),
             "id entry untouched: {index_text}"
         );
         assert_eq!(w.index().resolve(&id), Some(PathBuf::from("sub/a.md")));

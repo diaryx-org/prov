@@ -31,9 +31,12 @@ pub enum NodeKind {
     Cycle,
     /// A file that exists but could not be read or parsed; the message says why.
     Unreadable(String),
-    /// A `colophon:<id>` target the registry does not currently resolve
+    /// An `id:<id>` target the registry does not currently resolve
     /// (unknown, tombstoned, or no registry attached).
     UnresolvedId(crate::identity::Id),
+    /// A nominal (alias) target whose name several documents claim — a
+    /// containment link that cannot be resolved to one child.
+    AmbiguousAlias(String),
 }
 
 /// One node of the materialized spanning tree.
@@ -53,12 +56,16 @@ pub struct Node {
 
 impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// Materialize the spanning tree rooted at `start` (a workspace-relative
-    /// path). Missing, unreadable, cyclic, and unresolved-ID targets become
-    /// marked nodes. `colophon:<id>` targets resolve through the registry.
+    /// path). Missing, unreadable, cyclic, unresolved-ID, and ambiguous-alias
+    /// targets become marked nodes. `id:<id>` targets resolve through the
+    /// registry; nominal (`[[My File]]`) targets resolve through the title
+    /// index, built once for the whole walk so spanning alias links (a
+    /// `contents: alias` vocabulary) descend like any other.
     pub async fn tree(&self, start: impl AsRef<Path>) -> Result<Node> {
         let start = link::normalize(start);
+        let titles = self.title_index().await?;
         let mut trail: Vec<PathBuf> = Vec::new();
-        self.tree_node(start, None, &mut trail).await
+        self.tree_node(start, None, &titles, &mut trail).await
     }
 
     /// Read and parse the workspace-relative document at `path`, returning the
@@ -74,6 +81,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         &'a self,
         path: PathBuf,
         label: Option<String>,
+        titles: &'a crate::title::TitleIndex,
         trail: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<Node>> + 'a>> {
         Box::pin(async move {
@@ -113,7 +121,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             let mut children = Vec::new();
             for raw in self.relations().children(&doc.meta) {
                 let child = Link::parse(&raw);
-                let child_path = match self.resolve_link(&path, &child) {
+                let child_path = match self.resolve_link_with(&path, &child, Some(titles)) {
                     Target::External => continue,
                     Target::UnresolvedId(id) => {
                         children.push(Node {
@@ -125,9 +133,19 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                         });
                         continue;
                     }
+                    Target::AmbiguousAlias(name) => {
+                        children.push(Node {
+                            path: PathBuf::from(name.clone()),
+                            title: None,
+                            label: child.label,
+                            kind: NodeKind::AmbiguousAlias(name),
+                            children: Vec::new(),
+                        });
+                        continue;
+                    }
                     Target::Path(p) => p,
                 };
-                children.push(self.tree_node(child_path, child.label, trail).await?);
+                children.push(self.tree_node(child_path, child.label, titles, trail).await?);
             }
             trail.pop();
 
@@ -170,6 +188,36 @@ mod tests {
         assert_eq!(root.children[0].label.as_deref(), Some("A"));
         assert_eq!(root.children[0].kind, NodeKind::Doc);
         assert_eq!(root.children[1].kind, NodeKind::Missing);
+    }
+
+    #[test]
+    fn spanning_alias_links_resolve_through_the_title_index() {
+        // A workspace whose containment links are nominal `[[Title]]` aliases:
+        // the walk must resolve them through the title index and descend, and
+        // flag a name several documents share as ambiguous.
+        let dir = tempdir("alias");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- '[[Alpha]]'\n- '[[Dup]]'\n- '[[Ghost]]'\n---\n",
+        );
+        write(&dir, "notes/alpha.md", "---\ntitle: Alpha\n---\n");
+        write(&dir, "one.md", "---\ntitle: Dup\n---\n");
+        write(&dir, "two.md", "---\ntitle: Dup\n---\n");
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let root = block_on(ws.tree("index.md")).unwrap();
+        assert_eq!(root.children.len(), 3);
+
+        // `[[Alpha]]` → the unique document titled Alpha, descended into.
+        assert_eq!(root.children[0].kind, NodeKind::Doc);
+        assert_eq!(root.children[0].path, PathBuf::from("notes/alpha.md"));
+
+        // `[[Dup]]` → two documents claim the title, so it cannot resolve.
+        assert_eq!(root.children[1].kind, NodeKind::AmbiguousAlias("Dup".into()));
+
+        // `[[Ghost]]` → no document claims it; falls through to a missing path.
+        assert_eq!(root.children[2].kind, NodeKind::Missing);
     }
 
     #[test]

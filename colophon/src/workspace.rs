@@ -19,14 +19,20 @@
 //! The filesystem-driven `scan`/traverse/mutate engine ports from `diaryx_core`
 //! next; the seams are in place so that port has somewhere to land.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
+use crate::content::ContentFormat;
+use crate::document::whole_file_format;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use crate::index::{IndexStore, NoIndex};
-use crate::link::{self, Link, LinkStyle};
+use crate::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
+use crate::meta::Value;
 use crate::relation::RelationSet;
+use crate::title::{self, TitleIndex, TitleMatch};
 
 /// A composed workspace: a filesystem, a relation vocabulary, an identity
 /// policy, an index store, and the link style it authors in.
@@ -39,6 +45,7 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     index: Ix,
     link_style: LinkStyle,
     id_links: bool,
+    reference_style: Option<ReferenceStyle>,
     default_embed_format: fig::Format,
 }
 
@@ -55,6 +62,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             index: NoIndex,
             link_style: LinkStyle::default(),
             id_links: false,
+            reference_style: None,
             default_embed_format: fig::Format::Yaml,
         }
     }
@@ -87,10 +95,30 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         self.link_style
     }
 
-    /// Whether this workspace authors durable structural links as
-    /// `colophon:<id>` (registering the target) rather than a path.
+    /// Whether this workspace authors durable structural links by id
+    /// (registering the target) rather than a path — a convenience view over the
+    /// effective default [`reference_style`](Self::reference_style).
     pub fn id_links(&self) -> bool {
-        self.id_links
+        self.reference_style().registers()
+    }
+
+    /// The workspace-default reference style — the fallback for any relation
+    /// without its own `style` override. An explicit `reference_style` builder
+    /// value wins; otherwise it is derived from the legacy `link_style`/`id_links`
+    /// builder inputs so existing configurations behave exactly as before.
+    pub fn reference_style(&self) -> ReferenceStyle {
+        self.reference_style.unwrap_or(ReferenceStyle {
+            wrapper: Wrapper::Markdown,
+            addressing: if self.id_links { Addressing::Id } else { Addressing::Path },
+            label: false,
+            path_style: self.link_style,
+        })
+    }
+
+    /// The reference style colophon authors `relation`'s links in: the
+    /// relation's own override if it declares one, else the workspace default.
+    pub fn reference_style_for(&self, relation: &str) -> ReferenceStyle {
+        self.relations.style_for(relation).unwrap_or_else(|| self.reference_style())
     }
 
     /// The metadata format a new document gets when it inherits no parent block
@@ -106,26 +134,55 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     }
 }
 
+/// Whether `path` names a document the title scan should read — one whose
+/// extension is a recognized body format (Markdown/Djot/HTML) or a whole-file
+/// metadata format (YAML/JSON/…). Non-document files (images, binaries) are
+/// skipped so the scan neither reads nor mis-indexes them.
+fn is_document_path(path: &Path) -> bool {
+    ContentFormat::from_extension(path).is_some() || whole_file_format(path).is_some()
+}
+
 /// The resolution of one link target against a workspace: a path, an ID the
 /// registry does not currently resolve, or an off-workspace reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     /// A (normalized, workspace-relative) path.
     Path(PathBuf),
-    /// A `colophon:<id>` reference with no live registry entry — unknown,
+    /// An `id:<id>` reference with no live registry entry — unknown,
     /// tombstoned, or the workspace has no registry at all.
     UnresolvedId(crate::identity::Id),
+    /// A nominal (alias) reference whose name several documents claim, so it
+    /// cannot be resolved to one. The `String` is the name as written.
+    AmbiguousAlias(String),
     /// A URL or mail address — never resolved against the workspace and never
     /// rewritten by moves.
     External,
 }
 
 impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
-    /// Resolve `link` (declared in the document at `doc`) to a workspace
-    /// target. Path targets resolve relative to `doc`'s directory; a
-    /// `colophon:<id>` target resolves through the registry — the
-    /// location-independent path that stays valid across moves.
+    /// Resolve `link` (declared in the document at `doc`) to a workspace target,
+    /// without nominal (alias) resolution — path and `id:` targets only. Use
+    /// [`resolve_link_with`](Self::resolve_link_with) when a [`TitleIndex`] is
+    /// available and `[[My File]]`-style aliases should resolve.
     pub fn resolve_link(&self, doc: &Path, link: &Link) -> Target {
+        self.resolve_link_with(doc, link, None)
+    }
+
+    /// Resolve `link` to a workspace target. Path targets resolve relative to
+    /// `doc`'s directory; an `id:<id>` target resolves through the registry (the
+    /// location-independent path that stays valid across moves); an
+    /// alias-shaped target (a bare name) resolves through `titles` when one is
+    /// supplied — `Unique` to its path, `Ambiguous` to
+    /// [`Target::AmbiguousAlias`], and `Unknown` falling through to a path (so a
+    /// nominal link to nothing surfaces as a missing/broken path, exactly as
+    /// before aliases existed). With `titles` `None`, alias resolution is off
+    /// and this is the pure path/id resolver.
+    pub fn resolve_link_with(
+        &self,
+        doc: &Path,
+        link: &Link,
+        titles: Option<&TitleIndex>,
+    ) -> Target {
         if link.is_external() {
             return Target::External;
         }
@@ -134,6 +191,17 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 Some(path) => Target::Path(link::normalize(path)),
                 None => Target::UnresolvedId(id),
             };
+        }
+        if let Some(titles) = titles
+            && title::is_alias_shaped(&link.target)
+        {
+            match titles.resolve(&link.target) {
+                TitleMatch::Unique(path) => return Target::Path(link::normalize(path)),
+                TitleMatch::Ambiguous(_) => return Target::AmbiguousAlias(link.target.clone()),
+                // Unknown: fall through — a bare name with nothing behind it is
+                // treated as a path, so it reads as missing like any dead link.
+                TitleMatch::Unknown => {}
+            }
         }
         Target::Path(link::resolve(doc, &link.target))
     }
@@ -180,6 +248,63 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         };
         let (_, doc) = self.load(&config_doc).await?;
         Ok(doc.meta.get(key).cloned())
+    }
+
+    /// Build the workspace's [`TitleIndex`] by scanning every document under the
+    /// root and registering it under its `title` and its file stem. This is a
+    /// **derived cache** (DESIGN §5): rebuilt on demand, never persisted. It is
+    /// what makes nominal (`[[My File]]`) references resolvable — a flat
+    /// filesystem scan, deliberately independent of link resolution so that
+    /// alias links can themselves be *spanning* (`contents: alias`) without a
+    /// chicken-and-egg between "walk the tree" and "resolve the walk's links."
+    pub async fn title_index(&self) -> Result<TitleIndex> {
+        let mut index = TitleIndex::new();
+        self.scan_titles(PathBuf::new(), &mut index).await?;
+        Ok(index)
+    }
+
+    /// Recursively index the documents under the workspace-relative `rel_dir`.
+    /// Unreadable directories and files are skipped (a title index is a
+    /// best-effort cache, not a validation pass); hidden entries (`.`-prefixed)
+    /// are ignored.
+    fn scan_titles<'a>(
+        &'a self,
+        rel_dir: PathBuf,
+        index: &'a mut TitleIndex,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
+                return Ok(());
+            };
+            for entry in entries {
+                let Some(name) = entry.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
+                    continue;
+                };
+                if name.starts_with('.') {
+                    continue;
+                }
+                let rel = if rel_dir.as_os_str().is_empty() {
+                    PathBuf::from(&name)
+                } else {
+                    rel_dir.join(&name)
+                };
+                if entry.file_type().is_dir() {
+                    self.scan_titles(rel, index).await?;
+                } else if entry.file_type().is_file() && is_document_path(&rel) {
+                    // Always index by stem (name-based resolution, Obsidian-style)…
+                    if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
+                        index.insert(stem, rel.clone());
+                    }
+                    // …and by the declared `title` when the document parses.
+                    if let Ok((_, doc)) = self.load(&rel).await
+                        && let Some(title) = doc.meta.get("title").and_then(Value::as_str)
+                    {
+                        index.insert(title, rel.clone());
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Resolve the first target of `relation` declared on `root_doc` to a
@@ -241,24 +366,52 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
         }
     }
 
-    /// The target string colophon writes for a durable link from the document at
-    /// `from` to `to` (titled `title`): a `colophon:<id>` when the workspace
-    /// prefers id links and identity registers on a link — registering `to` — so
-    /// the link survives a move untouched; otherwise a path rendered in the
-    /// workspace's link style. The single seam through which create, rename
-    /// repair, and autofix author a link.
+    /// The scalar colophon writes for a durable link declared by `relation` from
+    /// the document at `from` to `to` (titled `title`). The style is
+    /// [`reference_style_for`](Self::reference_style_for)`(relation)`, so links
+    /// going "down" (e.g. `contents`) and "up" (e.g. `part_of`) can differ. An
+    /// `id`-addressing style registers `to` first (the link-by-id trigger) so the
+    /// link survives a move untouched; if identity does not register on a link,
+    /// [`format_reference`](link::format_reference) degrades it to a path.
+    ///
+    /// `target_exists` says whether `to` is already on disk: `true` registers it
+    /// through the existence-checked [`register`](Self::register); `false` (a
+    /// document being created in the same operation) mints and registers directly.
+    /// The single seam through which create, rename repair, and autofix author a
+    /// link.
     pub(crate) async fn authored_target(
         &mut self,
+        relation: &str,
         from: &Path,
         to: &Path,
         title: &str,
+        target_exists: bool,
     ) -> Result<String> {
-        if self.id_links && self.identity.registration().fires_on(Trigger::Link) {
-            let id = self.register(to, Trigger::Link).await?;
-            Ok(link::id_target(&id))
+        let style = self.reference_style_for(relation);
+        let id = if style.registers() && self.identity.registration().fires_on(Trigger::Link) {
+            Some(if target_exists {
+                self.register(to, Trigger::Link).await?
+            } else {
+                self.register_for_authoring(to)
+            })
         } else {
-            Ok(link::format_link(self.link_style, from, to, title))
+            None
+        };
+        Ok(link::format_reference(style, from, to, id.as_ref(), title))
+    }
+
+    /// Ensure `path` has an ID for the purpose of authoring a link *to* a
+    /// document this same operation is creating — so the on-disk existence check
+    /// in [`register`](Self::register) does not yet hold. Idempotent: returns any
+    /// existing ID, else mints and registers one.
+    pub(crate) fn register_for_authoring(&mut self, path: &Path) -> crate::identity::Id {
+        let path = link::normalize(path);
+        if let Some(id) = self.index.id_for_path(&path) {
+            return id;
         }
+        let id = self.mint_unique(&path);
+        self.index.register(&id, &path);
+        id
     }
 }
 
@@ -284,6 +437,7 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     index: Ix,
     link_style: LinkStyle,
     id_links: bool,
+    reference_style: Option<ReferenceStyle>,
     default_embed_format: fig::Format,
 }
 
@@ -307,10 +461,19 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
-    /// Author durable structural links as `colophon:<id>` (Obsidian-style)
-    /// rather than paths. Effective only when identity registers on a link.
+    /// Author durable structural links by id (Obsidian-style) rather than paths.
+    /// A convenience over [`reference_style`](Self::reference_style); effective
+    /// only when identity registers on a link.
     pub fn id_links(mut self, id_links: bool) -> Self {
         self.id_links = id_links;
+        self
+    }
+
+    /// Set the workspace-default reference style — the fallback for relations
+    /// without their own override. Supersedes the `link_style`/`id_links`
+    /// convenience inputs when set.
+    pub fn reference_style(mut self, style: ReferenceStyle) -> Self {
+        self.reference_style = Some(style);
         self
     }
 
@@ -331,6 +494,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             index: self.index,
             link_style: self.link_style,
             id_links: self.id_links,
+            reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
         }
     }
@@ -345,6 +509,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             index,
             link_style: self.link_style,
             id_links: self.id_links,
+            reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
         }
     }
@@ -359,6 +524,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             index: self.index,
             link_style: self.link_style,
             id_links: self.id_links,
+            reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
         }
     }
