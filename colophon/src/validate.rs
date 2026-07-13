@@ -581,7 +581,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // stripped), which is what both the census and findings record.
                 let link = Link::parse(&edge.target);
                 if titles.is_none() && title::is_alias_shaped(&link.target) {
-                    titles = Some(self.title_index().await?);
+                    titles = Some(self.title_index_scoped(start).await?);
                 }
                 let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
 
@@ -607,7 +607,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                                     .iter()
                                     .any(|t| title::is_alias_shaped(&Link::parse(t).target))
                             {
-                                titles = Some(self.title_index().await?);
+                                titles = Some(self.title_index_scoped(start).await?);
                             }
                             let points_back = inverse_targets.iter().any(|t| {
                                 self.resolve_link_with(&resolved, &Link::parse(t), titles.as_ref())
@@ -637,7 +637,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             for wikilink in link::scan_wikilinks(&path, &doc.body) {
                 let wl = Link::parse(&wikilink.target);
                 if titles.is_none() && title::is_alias_shaped(&wl.target) {
-                    titles = Some(self.title_index().await?);
+                    titles = Some(self.title_index_scoped(start).await?);
                 }
                 let resolution = self.resolve_forward(&path, &wl, titles.as_ref()).await;
                 census.push(CensusEntry {
@@ -981,6 +981,32 @@ mod tests {
             )),
             "ambiguous alias must be flagged: {findings:?}"
         );
+    }
+
+    #[test]
+    fn alias_resolution_is_scoped_to_reached_directories() {
+        // The title index is bounded to directories the workspace reaches
+        // (DESIGN §8), so a document in an *unreached* subtree — a vendored copy,
+        // a nested workspace — cannot collide with a workspace title. Here two
+        // documents are titled "Target": one in the reached tree, one in an
+        // unlinked `vendor/`. A whole-repo scan would make `[[Target]]` ambiguous;
+        // the scoped scan resolves it to the one in the workspace.
+        let dir = tempdir("alias-scope");
+        write(&dir, "index.md", "---\ntitle: Root\ncontents:\n- notes/a.md\n- notes/target.md\n---\n");
+        write(&dir, "notes/a.md", "---\ntitle: A\npart_of: ../index.md\n---\nSee [[Target]].\n");
+        write(&dir, "notes/target.md", "---\ntitle: Target\npart_of: ../index.md\n---\n");
+        // A same-titled document in an unreached directory — never linked.
+        write(&dir, "vendor/dup.md", "---\ntitle: Target\n---\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        // `[[Target]]` resolves to the workspace document, not flagged ambiguous…
+        assert!(
+            !findings.iter().any(|f| matches!(f, Finding::AmbiguousAlias { name, .. } if name == "Target")),
+            "the vendored duplicate must not make the alias ambiguous: {findings:?}"
+        );
+        // …and the unreached `vendor/` is invisible — no orphan for its document.
+        assert_eq!(findings, vec![], "clean: vendored subtree neither collides nor orphans: {findings:?}");
     }
 
     // Real-world regression: a fenced code block containing Python list

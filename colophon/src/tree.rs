@@ -69,7 +69,8 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         // would read every file under `target/`, vendored trees, and the rest).
         let mut titles: Option<crate::title::TitleIndex> = None;
         let mut trail: Vec<PathBuf> = Vec::new();
-        self.tree_node(start, None, &mut titles, &mut trail).await
+        let root = start.clone();
+        self.tree_node(start, None, &root, &mut titles, &mut trail).await
     }
 
     /// Read and parse the workspace-relative document at `path`, returning the
@@ -85,6 +86,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         &'a self,
         path: PathBuf,
         label: Option<String>,
+        root: &'a Path,
         titles: &'a mut Option<crate::title::TitleIndex>,
         trail: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<Node>> + 'a>> {
@@ -128,7 +130,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 // Build the title index on first sight of a nominal link, never
                 // before — this is the only place the tree walk can need it.
                 if titles.is_none() && crate::title::is_alias_shaped(&child.target) {
-                    *titles = Some(self.title_index().await?);
+                    *titles = Some(self.title_index_scoped(root).await?);
                 }
                 let child_path = match self.resolve_link_with(&path, &child, titles.as_ref()) {
                     Target::External => continue,
@@ -154,7 +156,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     }
                     Target::Path(p) => p,
                 };
-                children.push(self.tree_node(child_path, child.label, titles, trail).await?);
+                children.push(self.tree_node(child_path, child.label, root, titles, trail).await?);
                 // (titles carried by &mut, so a nominal link deeper in the tree
                 // reuses the index built above rather than rescanning.)
             }

@@ -278,10 +278,21 @@ the alternative (flagging every stray file anywhere beneath the root) makes
 colophon unusable inside a larger repo. The recursive filesystem walk survives
 only where it is an *explicit* import — `content_documents`/`plan_mirror` for
 `init --adopt mirror`, and `attach --all --recursive` — never in steady-state
-validation. (Resolution's flat scans — the title index and the frontmatter-id
-registry, §5 — stay whole-tree for now: bounding them would couple index-building
-to the very traversal it powers, breaking alias- and id-addressed *spanning*
-links. That narrowing is a separate step.)
+validation.
+
+**The title index is bounded too.** It is built *lazily* — only when a
+`[[alias]]` link is actually encountered, so a path/id workspace (the diaryx
+default) never scans at all — and when it is built, it is scoped to the reached
+directories: a cheap path/id pre-pass (`title_scope`) collects the directories
+the tree occupies, and only those are indexed. So an alias resolves within the
+workspace without reading `target/`, a vendored tree, or a nested workspace at
+the repo root, and a same-titled document in an unreached subtree cannot collide
+with a workspace title. The one case that cannot be bounded is an **alias-addressed
+spanning** relation: descending the tree then needs every title up front (the
+chicken-and-egg the flat scan avoids), so `title_scope` reports it and the build
+falls back to the full whole-tree scan. (The frontmatter-id registry, §5, still
+scans whole-tree — bounding it has the same spanning-id coupling and is a separate
+step.)
 
 ## 9. Extraction discipline & status
 

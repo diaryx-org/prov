@@ -263,6 +263,93 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         Ok(index)
     }
 
+    /// The title index bounded to the directories the workspace reaches from
+    /// `start` (DESIGN §8) — the reachability-scoped counterpart to
+    /// [`title_index`](Self::title_index). Only documents in a directory some
+    /// link path/id-reaches are indexed, so a `[[alias]]` resolves within the
+    /// workspace without scanning `target/`, a vendored tree, or a nested
+    /// workspace at the repo root.
+    ///
+    /// Falls back to the full [`title_index`](Self::title_index) when the
+    /// **spanning** relation is addressed by alias: descending the tree then needs
+    /// every title up front, so the scan cannot be bounded (the chicken-and-egg
+    /// the flat scan was written to avoid). An overlay alias to an *orphan* (a doc
+    /// no path/id link reaches) likewise falls outside the scope and reads as
+    /// broken — which it effectively is.
+    pub(crate) async fn title_index_scoped(&self, start: &Path) -> Result<TitleIndex> {
+        let (dirs, needs_full) = self.title_scope(start).await?;
+        if needs_full {
+            return self.title_index().await;
+        }
+        let mut index = TitleIndex::new();
+        for rel in self.direct_child_files(&dirs).await? {
+            if !is_document_path(&rel) {
+                continue;
+            }
+            if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
+                index.insert(stem, rel.clone());
+            }
+            if let Ok((_, doc)) = self.load(&rel).await
+                && let Some(title) = doc.meta.get("title").and_then(Value::as_str)
+            {
+                index.insert(title, rel.clone());
+            }
+        }
+        Ok(index)
+    }
+
+    /// The directories the workspace occupies, reached from `start` by following
+    /// path/id links — spanning links drive descent, and every relation's (and
+    /// body wikilink's) path/id target contributes its directory, so an alias can
+    /// resolve to anything the tree links. The scope [`title_index_scoped`] indexes.
+    ///
+    /// The returned flag is `true` when a **spanning** link is alias-shaped: it
+    /// cannot be followed without the title index, so the scope would be
+    /// incomplete and the caller must scan in full instead.
+    async fn title_scope(&self, start: &Path) -> Result<(BTreeSet<PathBuf>, bool)> {
+        let spanning = self.relations().spanning_relation().map(str::to_owned);
+        let dir_of = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
+        let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut queue = vec![link::normalize(start)];
+        let mut needs_full = false;
+        while let Some(path) = queue.pop() {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
+            dirs.insert(dir_of(&path));
+            let Ok((_, doc)) = self.load(&path).await else { continue };
+            for edge in self.relations().edges(&doc.meta) {
+                let link = Link::parse(&edge.target);
+                let is_spanning = Some(edge.relation.as_str()) == spanning.as_deref();
+                if link.is_external() {
+                    continue;
+                }
+                if title::is_alias_shaped(&link.target) {
+                    // Can't resolve without the index; a spanning alias defeats bounding.
+                    needs_full = needs_full || is_spanning;
+                    continue;
+                }
+                if let Target::Path(target) = self.resolve_link(&path, &link) {
+                    dirs.insert(dir_of(&target));
+                    if is_spanning {
+                        queue.push(target);
+                    }
+                }
+            }
+            for wikilink in link::scan_wikilinks(&path, &doc.body) {
+                let link = Link::parse(&wikilink.target);
+                if link.is_external() || title::is_alias_shaped(&link.target) {
+                    continue;
+                }
+                if let Target::Path(target) = self.resolve_link(&path, &link) {
+                    dirs.insert(dir_of(&target));
+                }
+            }
+        }
+        Ok((dirs, needs_full))
+    }
+
     /// Scan every document under the root for a self-stored `id` frontmatter
     /// field, returning the `(id, path)` pairs — the rebuildable id→path map for
     /// the frontmatter-only identity storage mode ([`IdStorage::FrontmatterOnly`]).
