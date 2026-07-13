@@ -55,6 +55,7 @@ pub mod exec;
 pub mod fs;
 pub mod identity;
 pub mod index;
+pub mod intake;
 pub mod link;
 pub mod meta;
 pub mod mutate;
@@ -74,6 +75,7 @@ pub use fig::Format;
 pub use fs::{Storage, StdFs};
 pub use identity::{Id, IdentityPolicy, Minter, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
+pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use link::{
     Addressing, Link, LinkStyle, ReferenceStyle, Wikilink, Wrapper, format_link, path_to_title,
 };

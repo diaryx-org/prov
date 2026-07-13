@@ -126,31 +126,32 @@ Rules that hold for every strategy:
 
 ## `StructureSource` seam
 
-Adoption is the first real caller of the ⏳ `StructureSource` abstraction:
+Adoption is the first real caller of the plan-then-apply intake. As built
+(`intake.rs`), the plan is a concrete value produced by `plan_mirror` (no trait
+yet — see below):
 
-```text
-trait StructureSource {
-    /// Propose a containment plan for a directory without mutating anything.
-    async fn intake(&self, storage, root_dir) -> StructurePlan;
-}
-
+```rust
 struct StructurePlan {
-    root: PathBuf,
-    // parent -> ordered children (files and synthesized folder-notes)
-    edges: Vec<(PathBuf, Vec<PathBuf>)>,
-    // nodes that must be created (bare-folder index docs)
-    synthesized: Vec<NodeSpec>,
+    // folder-notes to create for bare directories, parents-first
+    synthesized: Vec<SynthNode>,   // { path, parent, title }
+    // existing files to link under a node
+    adoptions: Vec<Adoption>,      // { child, parent }
 }
 ```
 
-- **`FilesystemSource`** implements the `mirror`/`flat` mappings above.
-- **`FrontmatterSource`** is today's behavior (links already declared in docs) —
-  the intake for a class-C tree that needs no restructure.
-- **Hybrid** merges the two (filesystem fills gaps the frontmatter leaves).
+- **`plan_mirror` + `apply_plan`** are the `mirror` mapping — the concrete
+  `FilesystemSource`. `plan_mirror` only reads (previewable); `apply_plan` reuses
+  `create` (synthesized notes) and `adopt` (existing files), so all the
+  link-maintenance and identity hooks come for free.
+- A **`StructureSource` trait** would abstract over alternative intakes — a
+  `FrontmatterSource` (links already declared in docs; the class-C tree that
+  needs no restructure) or a **hybrid** (filesystem fills the gaps frontmatter
+  leaves). Deferred until a second source exists: one implementation behind a
+  trait is premature abstraction.
 
-`init --adopt` = `FilesystemSource.intake` → preview `StructurePlan` → apply as a
-mutation batch. Directory-walk machinery already half-exists (`scan_ids_dir`,
-`scan_titles` in `workspace.rs`).
+`init --adopt mirror` = `plan_mirror` → (`apply_plan`) mutation batch. The
+directory walk reuses `content_documents` (itself modeled on `scan_ids_dir` /
+`scan_titles`).
 
 ## Companion: an orphan finding in `validate`
 
@@ -203,9 +204,24 @@ shares the Phase-1 machinery.
   registry (the post-fix `ensure_registry` is now gated on the index being dirty).
   Still deferred: a dry-run/preview before writing, and per-file parent choice
   (batch adoption always uses the root).
-- **Phase 2 — directory-tree import.** `FilesystemSource` + `StructureSource`
-  seam, the `mirror` strategy, synthesized folder-notes. The full
-  "import a vault" feature; `init` is one caller and the answer to open Q2.
+- **Phase 2 — directory-tree import.** ✅ **Done.** `Workspace::plan_mirror`
+  (`intake.rs`) walks the directory tree and returns a `StructurePlan` — the
+  folder-notes to synthesize (parents-first) and the files to adopt, computed
+  without touching disk so it can be previewed; `apply_plan` realizes it, reusing
+  `create` for the folder-notes and `adopt` for the files. Every directory
+  holding content becomes a node — its own `index`/`readme` when present, else a
+  synthesized `index.<ext>` titled after the folder — so following links
+  reproduces the filesystem. `create` gained a crate-internal `create_titled` so
+  a synthesized note's title and its parent's spanning-entry *label* are authored
+  in one step (no stale `[index]` labels). `init --adopt mirror` runs it (and the
+  interactive menu offers "import the folder tree" whenever the loose files span
+  subdirectories); a **separated** root — where folder-note grammar inheritance
+  breaks — is refused by `plan_mirror` and `init` falls back to flat with a note.
+  The `StructureSource` *trait* is deferred: with one concrete source
+  (`FilesystemSource`, i.e. these two methods) an abstraction would be premature —
+  it lands when a second source (frontmatter-only or hybrid) needs it. Still
+  deferred: a `--dry-run` preview of the `StructurePlan`, and per-file parent
+  choice.
 
 ## Rejected / non-goals
 

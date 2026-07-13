@@ -121,9 +121,10 @@ enum Command {
         #[arg(long, value_enum)]
         id_storage: Option<IdStorageArg>,
         /// What to do with content documents already in the directory: `flat`
-        /// links each one under the new root; `none` leaves them unlinked. `mirror`
-        /// (directory-tree import) is not implemented yet. Omit to be asked on a
-        /// terminal (and to leave them unlinked otherwise).
+        /// links each one under the new root; `mirror` folds the folder tree into
+        /// the containment tree (each directory becomes a node, synthesizing a
+        /// folder index where none exists); `none` leaves them unlinked. Omit to
+        /// be asked on a terminal (and to leave them unlinked otherwise).
         #[arg(long, value_enum)]
         adopt: Option<AdoptArg>,
         /// Accept every default without prompting.
@@ -505,10 +506,10 @@ impl IdStorageArg {
 }
 
 /// What `init` does with content documents already present in the directory
-/// (`docs/init-adoption.md`, Phase 1). `Flat` links each loose file directly
-/// under the new root; `None_` initializes but leaves them unlinked; `Mirror`
-/// (mirror the directory tree into the containment tree) is the Phase 2 import,
-/// not built yet — accepted as a flag so the error names it.
+/// (`docs/init-adoption.md`). `Flat` (Phase 1) links each loose file directly
+/// under the new root; `Mirror` (Phase 2) folds the directory tree into the
+/// containment tree — every directory becomes a node, synthesizing a folder-note
+/// index where none exists; `None_` initializes but leaves them unlinked.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum AdoptArg {
     Flat,
@@ -1188,20 +1189,15 @@ fn cmd_init(
     // Prompt only on a real terminal and only when `--yes` wasn't passed.
     let interactive = !yes && std::io::stdin().is_terminal();
 
-    if adopt == Some(AdoptArg::Mirror) {
-        return Err("`--adopt mirror` (directory-tree import) isn't implemented yet; \
-             use `--adopt flat` to link the existing files directly under the root"
-            .into());
-    }
-
     // Inspect the directory before prompting, and refuse or warn as its contents
     // warrant (docs/init-adoption.md): never overwrite an initialized workspace,
     // never mint a root that competes with an existing tree, and never silently
     // orphan a folder of notes. When loose content is present, decide whether to
-    // adopt it (link it under the new root) — the flag wins, else the terminal is
-    // asked.
+    // adopt it — and how (`flat` links each file directly under the new root;
+    // `mirror` reproduces the folder tree as containment). The flag wins, else the
+    // terminal is asked. `None` here means "leave them unlinked".
     let mut loose_docs: Vec<PathBuf> = Vec::new();
-    let mut do_adopt = false;
+    let mut adopt_mode: Option<AdoptArg> = None;
     match classify_dir(&dir) {
         DirState::Greenfield => {}
         DirState::Initialized { marker } => {
@@ -1236,20 +1232,32 @@ fn cmd_init(
         // note, and `--yes` without a decision refuses rather than guess.
         DirState::LooseContent { docs } => {
             let n = docs.len();
+            // Whether the loose files span subdirectories — if so, a `mirror`
+            // import (folder-as-node) is on the table; a single flat directory has
+            // nothing to mirror, so only `flat` is offered.
+            let nested = docs.iter().any(|d| d.parent().is_some_and(|p| !p.as_os_str().is_empty()));
             match adopt {
-                Some(AdoptArg::Flat) => do_adopt = true,
+                Some(AdoptArg::Flat) => adopt_mode = Some(AdoptArg::Flat),
+                Some(AdoptArg::Mirror) => adopt_mode = Some(AdoptArg::Mirror),
                 Some(AdoptArg::None_) => {}
-                Some(AdoptArg::Mirror) => unreachable!("handled above"),
                 None if interactive => {
-                    match cliclack::select(format!(
+                    let mut menu = cliclack::select(format!(
                         "{n} existing document(s) here aren't part of a colophon workspace — what should init do?"
-                    ))
-                    .item("adopt", "Adopt them", "link each one under the new root")
-                    .item("leave", "Leave unlinked", "initialize anyway; colophon check will list them")
-                    .item("cancel", "Cancel", "write nothing")
-                    .interact()?
-                    {
-                        "adopt" => do_adopt = true,
+                    ));
+                    if nested {
+                        menu = menu.item(
+                            "mirror",
+                            "Import the folder tree",
+                            "mirror each directory as a node (synthesizing folder indexes)",
+                        );
+                    }
+                    menu = menu
+                        .item("flat", "Adopt flat", "link every file directly under the new root")
+                        .item("leave", "Leave unlinked", "initialize anyway; colophon check will list them")
+                        .item("cancel", "Cancel", "write nothing");
+                    match menu.interact()? {
+                        "mirror" => adopt_mode = Some(AdoptArg::Mirror),
+                        "flat" => adopt_mode = Some(AdoptArg::Flat),
                         "leave" => {}
                         _ => {
                             println!("cancelled — nothing written");
@@ -1258,10 +1266,15 @@ fn cmd_init(
                     }
                 }
                 None if yes => {
+                    let mirror_hint = if nested {
+                        " `--adopt mirror` mirrors the folder tree;"
+                    } else {
+                        ""
+                    };
                     return Err(format!(
-                        "{n} existing document(s) here aren't linked into a workspace; \
-                         pass `--adopt flat` to link them under the root, or `--adopt none` \
-                         to initialize and leave them unlinked."
+                        "{n} existing document(s) here aren't linked into a workspace;\
+                        {mirror_hint} pass `--adopt flat` to link them under the root, or \
+                         `--adopt none` to initialize and leave them unlinked."
                     )
                     .into());
                 }
@@ -1504,12 +1517,16 @@ fn cmd_init(
     }
     std::fs::write(dir.join(&config_rel), meta::serialize_mapping(&config_map, meta_format)?)?;
 
-    // Phase 1 flat adoption (docs/init-adoption.md): link each pre-existing loose
-    // document under the freshly-written root, both directions, in the workspace's
-    // reference style. Runs over the workspace we just wrote, so a registry is
-    // bootstrapped first when the links will mint IDs (as `new` does).
+    // Adoption of pre-existing loose content (docs/init-adoption.md). `flat`
+    // (Phase 1) links each document directly under the freshly-written root;
+    // `mirror` (Phase 2) folds the directory tree into the containment tree,
+    // synthesizing a folder-note index for each bare directory. Both run over the
+    // workspace we just wrote, so a registry is bootstrapped first when the links
+    // will mint IDs (as `new` does).
     let mut adopt_note = String::new();
-    if do_adopt && !loose_docs.is_empty() {
+    if let Some(strategy) = adopt_mode
+        && !loose_docs.is_empty()
+    {
         let mut ctx = Ctx {
             root_dir: dir.clone(),
             root_doc: PathBuf::from(&root_name),
@@ -1524,15 +1541,40 @@ fn cmd_init(
             ensure_registry(&mut ctx)?;
         }
         let mut ws = workspace(&ctx)?;
-        let mut adopted = 0usize;
-        for doc in &loose_docs {
-            match block_on(ws.adopt(doc, &ctx.root_doc)) {
-                Ok(()) => adopted += 1,
-                Err(e) => eprintln!("colophon: could not adopt {}: {e}", doc.display()),
+        // `mirror` needs a combined-document root; if the interview chose a
+        // separated root, fall back to flat rather than abort a written workspace.
+        let strategy = match strategy {
+            AdoptArg::Mirror => match block_on(ws.plan_mirror(&ctx.root_doc)) {
+                Ok(plan) => {
+                    let outcome = block_on(ws.apply_plan(&plan))?;
+                    for (doc, why) in &outcome.skipped {
+                        eprintln!("colophon: could not adopt {}: {why}", doc.display());
+                    }
+                    adopt_note = format!(
+                        "\nimported {} document(s), synthesizing {} folder index(es), mirroring the tree under {root_name}",
+                        outcome.adopted.len(),
+                        outcome.synthesized.len(),
+                    );
+                    None // handled
+                }
+                Err(e) => {
+                    eprintln!("colophon: mirror import unavailable ({e}); adopting flat instead");
+                    Some(AdoptArg::Flat)
+                }
+            },
+            other => Some(other),
+        };
+        if let Some(AdoptArg::Flat) = strategy {
+            let mut adopted = 0usize;
+            for doc in &loose_docs {
+                match block_on(ws.adopt(doc, &ctx.root_doc)) {
+                    Ok(()) => adopted += 1,
+                    Err(e) => eprintln!("colophon: could not adopt {}: {e}", doc.display()),
+                }
             }
+            adopt_note = format!("\nadopted {adopted} existing document(s) under {root_name}");
         }
         persist(&ctx, &mut ws)?;
-        adopt_note = format!("\nadopted {adopted} existing document(s) under {root_name}");
     }
 
     let author_note = author.as_deref().map(|a| format!(", author {a}")).unwrap_or_default();

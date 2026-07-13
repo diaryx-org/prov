@@ -74,6 +74,21 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Returns the [`Created`] files: always the structural node, plus the prose
     /// body file when the child is a separated pair.
     pub async fn create(&mut self, path: &Path, parent: &Path) -> Result<Created> {
+        self.create_titled(path, parent, None).await
+    }
+
+    /// [`create`](Self::create) with an explicit title for the new document,
+    /// used where the file stem is a poor title — a synthesized folder-note
+    /// (`index.md`) that should read as its folder (`intake.rs`). `None` falls
+    /// back to the stem, the plain-`create` behavior. Authoring the title here
+    /// (rather than retitling after) keeps the parent's spanning-entry *label* in
+    /// step with it, since that label is taken from the child's title.
+    pub(crate) async fn create_titled(
+        &mut self,
+        path: &Path,
+        parent: &Path,
+        title_override: Option<&str>,
+    ) -> Result<Created> {
         let path = link::normalize(path);
         let parent = link::normalize(parent);
         let (spanning, inverse) = self.spanning_pair()?;
@@ -118,12 +133,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
 
-        // Titles for the authored links: the child's (from its stem) and the
-        // parent's (its own title, else derived from the path).
-        let title = node
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        // Titles for the authored links: the child's (an explicit override, else
+        // from its stem) and the parent's (its own title, else derived from the
+        // path).
+        let title = title_override.map(str::to_owned).unwrap_or_else(|| {
+            node.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+        });
         let parent_title = parent_doc
             .meta
             .get("title")

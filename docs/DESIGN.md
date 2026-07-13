@@ -304,7 +304,7 @@ not yet ported.
 | ID links (`colophon:<id>` targets) | `link`/`tree`/`validate`/`mutate` | ✅ resolve through the registry everywhere paths do; never rewritten by moves (the registry update is the maintenance); findings: `MalformedId` (check char), `DanglingId` (tombstoned vs never-issued) |
 | Workspace composition + builder | `workspace` | ✅ type-flipping builder |
 | Traverse (spanning tree from a root) | `tree` | ✅ `Workspace::tree`; missing/cyclic/unreadable targets are marked nodes |
-| Scan (directory-driven discovery) | — | ⏳ waits on `StructureSource` |
+| Scan (directory-driven discovery) | `workspace`/`intake` | ✅ `Workspace::content_documents` (flat content scan) powers the orphan check; `plan_mirror` walks the tree into a `StructurePlan` — the directory-driven half of intake |
 | Mutation with link maintenance | `mutate` | ✅ first cut: `create`/`rename`/`delete`/`adopt` (parent entry, inverse links, re-relativization, labels kept; fig `Embed` edits). `adopt` links an *existing* file both ways without touching its body — the onboarding complement of `create` (`docs/init-adoption.md`, Phase 1), driving `init --adopt` and the orphan autofix. Remaining diaryx ops ⏳ |
 | Validation | `validate` | ✅ findings: broken link, case mismatch, duplicate containment, missing inverse, unreadable, malformed/dangling id, ambiguous alias, **id mismatch** + **unregistered id** (the frontmatter-storage reconcile pair), **orphan** (a content document on disk nothing reachable links to — the onboarding signal, `docs/init-adoption.md`). Autofix: missing inverse ✅; id mismatch → trust the registry (rewrite frontmatter) ✅; unregistered id → adopt into the registry ✅; orphan + body-link findings stay diagnosis-only |
 | Storage adapter + executor | `fs`, `exec` | ✅ `StdFs` + dependency-free `block_on` |
@@ -312,7 +312,7 @@ not yet ported.
 | Single-document edits | `edit` | ✅ format-preserving `set`/`unset` over text |
 | Multi-format embedded metadata | `document`/`meta` | ✅ read side (fig 2.1's `detect` + `split` *are* the fence layer); ⏳ format-preserving writes ride the mutation port |
 | serde / fig backend split | — | ⏳ planned (feature gates) |
-| `StructureSource` (filesystem intake) | — | ⏳ planned |
+| Filesystem intake (`mirror` import) | `intake` | ✅ `plan_mirror` → `StructurePlan` (previewable) → `apply_plan` folds a directory tree into the containment tree, synthesizing folder-notes for bare dirs and reusing `create`/`adopt`; drives `init --adopt mirror` (`docs/init-adoption.md`, Phase 2). The `StructureSource` *trait* (frontmatter/hybrid sources) is deferred until a second source needs it |
 
 ## 10. Open questions
 
@@ -326,9 +326,16 @@ not yet ported.
    let an ID silently change meaning. Full history/event-log stores remain
    possible behind `IndexStore` (e.g. for sync), but the file-backed default
    does not need them.
-2. **How first-class is the filesystem `StructureSource`** — a genuine peer to
-   frontmatter links, or an onboarding/migration convenience for users who have
-   not adopted embedded links? This sets how much to invest in the abstraction.
+2. ~~**How first-class is the filesystem `StructureSource`**~~ **Answered: a
+   genuine peer, realized concretely first.** The filesystem is a real structure
+   source — `init --adopt mirror` folds a whole directory tree into the
+   containment tree (synthesizing folder-notes), not merely a flat convenience
+   (`intake.rs`, `docs/init-adoption.md` Phase 2). But it landed as concrete
+   methods (`plan_mirror`/`apply_plan`), not a `StructureSource` trait: with one
+   implementation the trait would be premature. The abstraction (peer
+   frontmatter/hybrid sources) is deferred until a second source demands it — so
+   the answer is "first-class in capability, un-abstracted until it pays for
+   itself."
 3. **Is the internal colophon ID ever unified with the published permalink**, or
    do they stay two layers (internal minted opaque ID; external ARK permalink)?
    Model B keeps them separable; nothing yet forces them together.
