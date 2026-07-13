@@ -17,9 +17,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use colophon::tree::{Node, NodeKind};
 use colophon::document::MetaCarrier;
 use colophon::{
-    Addressing, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id, IdStorage, IndexStore,
-    LinkStyle, Mapping, Minter, Registration, RelationStyleConfig, RelationSet, StdFs, Trigger,
-    Value, Workspace, WorkspaceConfig, Wrapper, block_on, edit, link, meta,
+    Addressing, Adoption, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id, IdStorage,
+    IndexStore, LinkStyle, Mapping, Minter, Registration, RelationStyleConfig, RelationSet, StdFs,
+    StructurePlan, SynthNode, Trigger, Value, Workspace, WorkspaceConfig, Wrapper, block_on, edit,
+    link, meta,
 };
 
 /// The filename stem of the registry document the CLI creates on first
@@ -1197,6 +1198,160 @@ fn pick_root_candidate(docs: &[FoundDoc]) -> Option<PathBuf> {
         .or_else(|| (candidates.len() == 1).then(|| candidates[0].clone()))
 }
 
+/// The direct children of one directory, categorized for the interactive intake
+/// walk: plaintext `docs`, opaque `others` (attachment candidates), and `subdirs`
+/// — all workspace-relative, sorted, hidden entries skipped. Non-recursive: the
+/// walk descends only where the user opts in.
+struct DirListing {
+    docs: Vec<PathBuf>,
+    others: Vec<PathBuf>,
+    subdirs: Vec<PathBuf>,
+}
+
+fn dir_listing(root_dir: &Path, rel_dir: &Path) -> DirListing {
+    let mut docs = Vec::new();
+    let mut others = Vec::new();
+    let mut subdirs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root_dir.join(rel_dir)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = rel_dir.join(name);
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                subdirs.push(rel);
+            } else if ContentFormat::from_extension(&rel).is_some() {
+                docs.push(rel);
+            } else if colophon::is_opaque_payload(&rel) {
+                // A whole-file metadata file (`.yaml` config/registry) is neither
+                // a document to adopt nor an opaque payload — it is skipped.
+                others.push(rel);
+            }
+        }
+    }
+    docs.sort();
+    others.sort();
+    subdirs.sort();
+    DirListing { docs, others, subdirs }
+}
+
+/// The node document a directory already has — an `index`- or `readme`-stemmed
+/// plaintext file directly in it — or `None` (a folder-note must be synthesized).
+/// Directory scope of the root discovery in `find_root`/`existing_node`.
+fn existing_dir_node(root_dir: &Path, rel_dir: &Path) -> Option<PathBuf> {
+    let listing = dir_listing(root_dir, rel_dir);
+    let stem_is = |p: &Path, want: &str| {
+        p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case(want))
+    };
+    listing
+        .docs
+        .iter()
+        .find(|p| stem_is(p, "index"))
+        .or_else(|| listing.docs.iter().find(|p| stem_is(p, "readme")))
+        .cloned()
+}
+
+/// The synthesized folder-note name for a directory, in content grammar `ext`.
+/// The single place the folder-index convention lives — a future `default index
+/// name` config (README.md / `<dir>.md` / custom) slots in here.
+fn folder_note_name(rel_dir: &Path, ext: &str) -> PathBuf {
+    rel_dir.join(format!("index.{ext}"))
+}
+
+/// Interactively walk one directory, accumulating a [`StructurePlan`] (documents
+/// to adopt, folder-notes to synthesize) and a list of attachments
+/// `(payload, parent)` — the recursive core of the guided `init` intake. `node`
+/// is the document this directory's contents hang under (the root, or the
+/// directory's own node). For each directory: pick which documents to link, which
+/// non-document files to give metadata, and which subdirectories to descend into
+/// (each getting its existing index/readme as node, or a synthesized folder-note).
+/// Nothing is written here — the plan is applied afterward.
+fn intake_walk(
+    root_dir: &Path,
+    rel_dir: &Path,
+    node: &Path,
+    ext: &str,
+    plan: &mut StructurePlan,
+    attachments: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<(), AnyError> {
+    let listing = dir_listing(root_dir, rel_dir);
+    let here = if rel_dir.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        rel_dir.display().to_string()
+    };
+
+    // 1. Documents in this directory (excluding the node itself) → adopt under it.
+    let docs: Vec<PathBuf> = listing.docs.iter().filter(|d| d.as_path() != node).cloned().collect();
+    if !docs.is_empty() {
+        let items: Vec<(PathBuf, String, String)> = docs
+            .iter()
+            .map(|d| (d.clone(), d.file_name().unwrap_or_default().to_string_lossy().into_owned(), String::new()))
+            .collect();
+        let picked = cliclack::multiselect(format!("Documents in {here} to link under {}:", node.display()))
+            .items(&items)
+            .initial_values(docs.clone())
+            .required(false)
+            .interact()?;
+        for child in picked {
+            plan.adoptions.push(Adoption { child, parent: node.to_path_buf() });
+        }
+    }
+
+    // 2. Non-document files → write a metadata sidecar for each chosen one.
+    if !listing.others.is_empty() {
+        let items: Vec<(PathBuf, String, String)> = listing
+            .others
+            .iter()
+            .map(|f| (f.clone(), f.file_name().unwrap_or_default().to_string_lossy().into_owned(), String::new()))
+            .collect();
+        let picked = cliclack::multiselect(format!("Non-document files in {here} to give metadata:"))
+            .items(&items)
+            .required(false)
+            .interact()?;
+        for payload in picked {
+            attachments.push((payload, node.to_path_buf()));
+        }
+    }
+
+    // 3. Subdirectories → descend into the chosen ones, giving each a node.
+    if !listing.subdirs.is_empty() {
+        let items: Vec<(PathBuf, String, String)> = listing
+            .subdirs
+            .iter()
+            .map(|d| (d.clone(), format!("{}/", d.file_name().unwrap_or_default().to_string_lossy()), String::new()))
+            .collect();
+        let picked = cliclack::multiselect(format!("Subdirectories of {here} to include:"))
+            .items(&items)
+            .initial_values(listing.subdirs.clone())
+            .required(false)
+            .interact()?;
+        for sub in picked {
+            let child_node = match existing_dir_node(root_dir, &sub) {
+                // An existing index/readme becomes the node — adopt it under here.
+                Some(node_rel) => {
+                    plan.adoptions.push(Adoption { child: node_rel.clone(), parent: node.to_path_buf() });
+                    node_rel
+                }
+                // No node yet — synthesize a folder-note titled after the folder.
+                None => {
+                    let path = folder_note_name(&sub, ext);
+                    plan.synthesized.push(SynthNode {
+                        path: path.clone(),
+                        parent: node.to_path_buf(),
+                        title: link::path_to_title(&sub),
+                    });
+                    path
+                }
+            };
+            intake_walk(root_dir, &sub, &child_node, ext, plan, attachments)?;
+        }
+    }
+    Ok(())
+}
+
 /// Initialize a workspace: write a self-describing root the other commands can
 /// discover. Each field comes from its flag if given; otherwise, on a terminal
 /// (and without `--yes`), the user is prompted, and in every other case the
@@ -1238,6 +1393,11 @@ fn cmd_init(
 
     // Prompt only on a real terminal and only when `--yes` wasn't passed.
     let interactive = !yes && std::io::stdin().is_terminal();
+    // The guided, recursive per-directory intake walk replaces the one-shot
+    // flat/mirror menu when a terminal is present and no adoption flag forces a
+    // non-interactive choice: the user picks documents, files, and subdirectories
+    // to include, directory by directory.
+    let use_walk = interactive && adopt.is_none() && !attach;
 
     // Inspect the directory before prompting, and refuse or warn as its contents
     // warrant (docs/init-adoption.md): never overwrite an initialized workspace,
@@ -1281,6 +1441,9 @@ fn cmd_init(
         // under the new root) or leave them unlinked — the flag decides, else the
         // terminal is asked, else (non-interactive) they are left unlinked with a
         // note, and `--yes` without a decision refuses rather than guess.
+        // Walk mode handles loose content per-directory below; here we only run
+        // the one-shot flat/mirror menu (or flags) for the non-walk case.
+        DirState::LooseContent { .. } if use_walk => {}
         DirState::LooseContent { docs } => {
             let n = docs.len();
             // Whether the loose files span subdirectories — if so, a `mirror`
@@ -1353,7 +1516,7 @@ fn cmd_init(
     // nothing to force. The `--attach` flag opts in; a terminal is asked (default
     // *leave*); `--yes` without the flag leaves them alone.
     let mut attach_others = false;
-    if !loose_others.is_empty() {
+    if !loose_others.is_empty() && !use_walk {
         let m = loose_others.len();
         if attach {
             attach_others = true;
@@ -1378,7 +1541,8 @@ fn cmd_init(
         link_style.is_none() && matches!(reference, None | Some(ReferenceArg::Path));
     let id_storage_prompt_possible = id_storage.is_none() && identity != Some(IdentityArg::Off);
     let prompting = interactive
-        && (title.is_none()
+        && (use_walk
+            || title.is_none()
             || author.is_none()
             || content.is_none()
             || embed.is_none()
@@ -1669,6 +1833,49 @@ fn cmd_init(
             ));
         }
         persist(&ctx, &mut ws)?;
+    }
+
+    // The guided intake walk: descend the tree directory by directory, picking
+    // which documents to link, which files to attach, and which subdirectories to
+    // enter — building a plan that is applied after the root exists. Replaces the
+    // one-shot flat/mirror menu for the interactive case.
+    if use_walk {
+        let mut plan = StructurePlan::default();
+        let mut attachments: Vec<(PathBuf, PathBuf)> = Vec::new();
+        intake_walk(&dir, Path::new(""), Path::new(&root_name), content.ext(), &mut plan, &mut attachments)?;
+        if !plan.is_empty() || !attachments.is_empty() {
+            let mut ctx = Ctx {
+                root_dir: dir.clone(),
+                root_doc: PathBuf::from(&root_name),
+                registry: None,
+                config: ws_config.clone(),
+            };
+            let link_registers = ctx.config.reference_style().registers()
+                || ctx.config.resolved_relation_styles().values().any(|s| s.registers());
+            let mints = (link_registers && ctx.config.identity.fires_on(Trigger::Link))
+                || ctx.config.identity.fires_on(Trigger::Create);
+            if mints {
+                ensure_registry(&mut ctx)?;
+            }
+            let mut ws = workspace(&ctx)?;
+            let outcome = block_on(ws.apply_plan(&plan))?;
+            for (doc, why) in &outcome.skipped {
+                eprintln!("colophon: could not link {}: {why}", doc.display());
+            }
+            let mut attached = 0usize;
+            for (payload, parent) in &attachments {
+                match block_on(ws.attach(payload, parent)) {
+                    Ok(_) => attached += 1,
+                    Err(e) => eprintln!("colophon: could not attach {}: {e}", payload.display()),
+                }
+            }
+            persist(&ctx, &mut ws)?;
+            adopt_note = format!(
+                "\nlinked {} document(s), synthesized {} folder index(es), attached {attached} file(s)",
+                outcome.adopted.len(),
+                outcome.synthesized.len(),
+            );
+        }
     }
 
     let author_note = author.as_deref().map(|a| format!(", author {a}")).unwrap_or_default();
