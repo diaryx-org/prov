@@ -194,6 +194,52 @@ format-agnosticism, made an action). Decided this session:
   justify it. `restyle_frontmatter_links` is a near-sibling of `rerelativize` (move
   vs restyle); a shared `map_frontmatter_links(…, render)` could unify them then.
 
+## Routes (`route.rs`)
+
+Landed: `colophon new --under Daily/2026/2026-07 -p`. The position taken, so it
+doesn't get relitigated: **the workflow is not colophon's to own.** A `daily`
+command would bake diaryx vocabulary into the core (§2/§9), and a workflow DSL in
+`colophon.yaml` would be worse — it would restate, in config, a fact the links
+*already declare* (where daily entries live), which is the authoritative-vs-derived
+confusion §5 warns about, while the genuinely non-derivable half (a date format)
+is a fact about the *user*, not the workspace, and so can't live in a document
+that's versioned and shared with the content. The split: colophon supplies the
+primitive a shell can't express (find-or-create nodes, linked both ways, registry
+maintained); a two-line alias supplies the dates.
+
+- **`--layout`'s default is `nested`, and that's a judgment call.** Flat is
+  consistent with `create`'s beside-the-parent rule, but at depth it piles every
+  generation into one directory and two routes sharing a segment name
+  (`Daily/2026`, `Projects/2026`) collide on one filename. `-p` exists for deep
+  routes, so nested wins. Note the *terminal* document is unaffected either way —
+  it always lands beside its resolved parent — so this never contradicts `create`.
+- **Route addressing is `new`-only so far.** `mv`, `attach`, `duplicate`, and
+  `adopt` all name a parent by path and would take `--under` the same way. Worth
+  doing once the segment/route surface has proven out; `route_segments` +
+  `plan_route` are already the whole seam.
+- **The synthesis seam is still un-extracted (deliberate, but the debt is now
+  real).** `route.rs` reuses `intake`'s `SynthNode` and both end in the same
+  `create_titled` loop, so this *is* the second consumer the "un-abstract until
+  the 2nd engine" rule was waiting for (§10 discipline). It was left concrete
+  because the two differ in the ways that matter — a plan of one chain vs. a
+  forest, abort-on-failure vs. collect-and-continue — and a premature
+  `Plan`/`Apply` trait would have to paper over both. Revisit when a third
+  synthesizer appears, or when `--under` spreads to the other mutations.
+- **Title matching is exact and case-sensitive.** `Daily/2026` won't find a node
+  titled `daily`. Deliberate (addressing that guesses is worse than addressing
+  that misses), but a `--fuzzy`/case-insensitive fallback that *reports* what it
+  matched is a plausible ergonomic follow-up.
+- **`title_text` coerces non-string scalars.** A hand-written `title: 2026` is a
+  YAML integer, so route matching compares scalar *text*, not just
+  `Value::as_str` — otherwise a route would synthesize a second `2026` beside a
+  perfectly good one. If title-matching spreads (`title.rs`'s index does the same
+  job for aliases), this coercion should probably move there and be shared.
+- **An unlinked file in the way is an honest error, not a silent adopt.** `-p`
+  onto a route whose file already exists on disk but isn't linked fails with
+  `already exists` (from `create`). Correct — link-shaped containment means an
+  unlinked file isn't in the tree — but the fix is `adopt`, and the error doesn't
+  say so. Worth naming the remedy in the message.
+
 ## Mutation
 
 - **`delete` autofix.** `delete` now *diagnoses* inbound danglers; optionally

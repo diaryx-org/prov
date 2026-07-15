@@ -61,6 +61,7 @@ pub mod link;
 pub mod meta;
 pub mod mutate;
 pub mod relation;
+pub mod route;
 pub mod title;
 pub mod tree;
 pub mod validate;
@@ -84,6 +85,7 @@ pub use link::{
 pub use meta::{Mapping, Value};
 pub use mutate::Created;
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
+pub use route::{Layout, RoutePlan};
 pub use title::{TitleIndex, TitleMatch};
 pub use tree::{Node, NodeKind};
 pub use validate::{Backlink, CensusEntry, Finding, Fix, LinkSite, Resolution};

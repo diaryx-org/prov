@@ -13,15 +13,34 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use colophon::tree::{Node, NodeKind};
 use colophon::document::MetaCarrier;
 use colophon::{
     Addressing, Adoption, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id, IdStorage,
-    IndexStore, LinkStyle, Mapping, Minter, Registration, RelationStyleConfig, RelationSet, StdFs,
-    StructurePlan, SynthNode, Target, Trigger, Value, Workspace, WorkspaceConfig, Wrapper, block_on,
-    edit, link, meta,
+    IndexStore, Layout, LinkStyle, Mapping, Minter, Registration, RelationStyleConfig, RelationSet,
+    RoutePlan, StdFs, StructurePlan, SynthNode, Target, Trigger, Value, Workspace, WorkspaceConfig,
+    Wrapper, block_on, edit, link, meta,
 };
+
+/// `--layout` — the CLI mirror of [`Layout`], so the flag's spelling is the
+/// CLI's business and the library enum stays free of clap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum LayoutArg {
+    /// A directory per route segment, each holding an `index` node.
+    Nested,
+    /// Every synthesized node beside the start document.
+    Flat,
+}
+
+impl From<LayoutArg> for Layout {
+    fn from(arg: LayoutArg) -> Self {
+        match arg {
+            LayoutArg::Nested => Layout::Nested,
+            LayoutArg::Flat => Layout::Flat,
+        }
+    }
+}
 
 /// The filename stem of the registry document the CLI creates on first
 /// `colophon id` — visible, beside the root, and *linked from the root's own
@@ -223,13 +242,34 @@ enum Command {
     /// parent's directory, and records the title in the document's metadata,
     /// where structure lives. Override the derived filename with `--as` (an exact
     /// path) or just its extension with `--ext`.
+    #[command(group(ArgGroup::new("placement").required(true).args(["in_doc", "under"])))]
     New {
         /// Title of the new document (recorded in its metadata; a readable
         /// filename is slugged from it unless `--as` overrides).
         title: String,
-        /// The parent document (gains a spanning link to the new file).
-        #[arg(long, short)]
-        parent: PathBuf,
+        /// The parent document, by path (gains a spanning link to the new file).
+        /// `--parent` still works as an alias.
+        #[arg(long = "in", short = 'i', alias = "parent", value_name = "DOC")]
+        in_doc: Option<PathBuf>,
+        /// The parent by its *route through the containment tree* instead of its
+        /// path: `Daily/2026/2026-07`, each segment the title of a child of the
+        /// last, walked from the workspace root. Missing segments are an error
+        /// unless `-p`.
+        #[arg(long, short = 'u', value_name = "ROUTE")]
+        under: Option<String>,
+        /// Create any route segments that don't exist yet, linked into the tree —
+        /// `mkdir -p` for containment. Only meaningful with `--under`.
+        #[arg(long = "parents", short = 'p', requires = "under")]
+        parents: bool,
+        /// Where `-p` writes the nodes it creates: `nested` (a directory per
+        /// segment, `daily/2026/index.md`) or `flat` (all beside the start,
+        /// `daily.md`, `2026.md`). File placement only — containment is the links
+        /// either way (default: nested).
+        #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
+        layout: LayoutArg,
+        /// Print what `--under` resolves to and what `-p` would create, then stop.
+        #[arg(long, requires = "under")]
+        dry_run: bool,
         /// Use this exact workspace path instead of a title-derived name (the
         /// title is still taken from the positional). Wins over `--ext`.
         #[arg(long = "as")]
@@ -792,9 +832,16 @@ fn main() -> ExitCode {
         Command::Tree { root } => cmd_tree(root.as_deref()),
         Command::Explore { file } => cmd_explore(file.as_deref()),
         Command::Check { root, fix } => cmd_check(root.as_deref(), fix),
-        Command::New { title, parent, as_path, ext } => {
-            cmd_new(&title, &parent, as_path.as_deref(), ext.as_deref())
-        }
+        Command::New { title, in_doc, under, parents, layout, dry_run, as_path, ext } => cmd_new(
+            &title,
+            in_doc.as_deref(),
+            under.as_deref(),
+            parents,
+            layout.into(),
+            dry_run,
+            as_path.as_deref(),
+            ext.as_deref(),
+        ),
         Command::Attach { payload, parent, all, recursive } => {
             cmd_attach(payload.as_deref(), parent.as_deref(), all, recursive)
         }
@@ -2649,20 +2696,100 @@ fn prompt(message: &str) -> Result<String, AnyError> {
     Ok(line.trim().to_lowercase())
 }
 
-fn cmd_new(title: &str, parent: &Path, as_path: Option<&Path>, ext: Option<&str>) -> CmdResult {
+/// Print a route plan without applying it: what resolved, what is missing, and
+/// where the missing nodes would land. Shared by `--dry-run` and the error a
+/// missing route raises without `-p`, so the two describe the plan identically.
+fn show_route_plan(route: &str, plan: &RoutePlan) {
+    println!("route {route:?}");
+    for (depth, node) in plan.resolved.iter().enumerate() {
+        println!("  {:indent$}{} (exists)", "", node.display(), indent = depth * 2);
+    }
+    let base = plan.resolved.len();
+    for (depth, synth) in plan.synthesize.iter().enumerate() {
+        println!(
+            "  {:indent$}{} (create, titled {:?})",
+            "",
+            synth.path.display(),
+            synth.title,
+            indent = (base + depth) * 2
+        );
+    }
+}
+
+/// Create a document under a parent named either by path (`--in`) or by its
+/// route through the containment tree (`--under`, optionally with `-p` to create
+/// the segments that don't exist). Clap's `placement` group guarantees exactly
+/// one of the two.
+#[allow(clippy::too_many_arguments)]
+fn cmd_new(
+    title: &str,
+    in_doc: Option<&Path>,
+    under: Option<&str>,
+    parents: bool,
+    layout: Layout,
+    dry_run: bool,
+    as_path: Option<&Path>,
+    ext: Option<&str>,
+) -> CmdResult {
     let mut ctx = find_root()?;
     // Authoring a reference that registers (the default style, or any relation's
     // override — e.g. `part_of: id` in a split) mints IDs, as does an eager
     // policy; ensure a registry to persist them exists *before* the workspace is
-    // built over it.
+    // built over it. A route's synthesized nodes are `create`d too, so they mint
+    // on the same terms — the registry has to exist before the route is applied,
+    // not just before the leaf.
     let link_registers = ctx.config.reference_style().registers()
         || ctx.config.resolved_relation_styles().values().any(|s| s.registers());
     let mints = (link_registers && ctx.config.identity.fires_on(Trigger::Link))
         || ctx.config.identity.fires_on(Trigger::Create);
-    if mints {
+    if mints && !dry_run {
         ensure_registry(&mut ctx)?;
     }
-    let parent_rel = ws_rel(&ctx, parent)?;
+
+    // Resolve the parent. `--in` is already a path; `--under` walks the tree from
+    // the root, and (with `-p`) creates what it doesn't find. Either way the rest
+    // of this function is unchanged — a route is just another way to *name* a
+    // parent, never a different kind of creation.
+    let mut ws = workspace(&ctx)?;
+    let parent_rel = match (in_doc, under) {
+        (Some(path), _) => ws_rel(&ctx, path)?,
+        (None, Some(route)) => {
+            let segments = Workspace::<StdFs>::route_segments(route);
+            let plan = block_on(ws.plan_route(&ctx.root_doc, &segments, layout))?;
+            if dry_run {
+                show_route_plan(route, &plan);
+                if plan.is_complete() {
+                    println!("\nnothing to create; {title:?} would go under {}", plan.terminal.display());
+                } else if !parents {
+                    println!("\n{} segment(s) missing — re-run with -p to create them", plan.synthesize.len());
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
+            if !plan.is_complete() && !parents {
+                // Name the first missing segment and where the walk got to: the
+                // useful half of the error is *how far* the route resolved.
+                let missing = &plan.synthesize[0];
+                return Err(format!(
+                    "route {route:?} stops at {}: no child titled {:?}\n\
+                     re-run with -p to create the missing segment(s), or --dry-run to preview",
+                    missing.parent.display(),
+                    missing.title,
+                )
+                .into());
+            }
+            let created_nodes = plan.synthesize.len();
+            let terminal = block_on(ws.apply_route(&plan))?;
+            for synth in &plan.synthesize {
+                println!("created {} ({:?})", synth.path.display(), synth.title);
+            }
+            if created_nodes > 0 {
+                persist(&ctx, &mut ws)?;
+            }
+            terminal
+        }
+        (None, None) => unreachable!("clap's `placement` group requires --in or --under"),
+    };
+
     // The new document's path: an explicit `--as` wins; otherwise a readable
     // filename derived from the title — `slug(title).<ext>` beside the parent,
     // where the extension is `--ext` or the workspace's content format. The title
@@ -2676,17 +2803,18 @@ fn cmd_new(title: &str, parent: &Path, as_path: Option<&Path>, ext: Option<&str>
             parent_rel.parent().unwrap_or(Path::new("")).join(name)
         }
     };
-    let mut ws = workspace(&ctx)?;
+    // (`ws` is the one built above — reusing it keeps any IDs a route just minted
+    // in the same in-memory index this create registers into.)
     let created = block_on(ws.create_with_title(&path, &parent_rel, title))?;
     persist(&ctx, &mut ws)?;
     // A separated child is a pair — the metadata node the parent links, plus its
     // prose body file. Name both so it is clear two files were written.
     match &created.body {
         Some(body) => {
-            println!("created {} (in {})", created.node.display(), parent.display());
+            println!("created {} (in {})", created.node.display(), parent_rel.display());
             println!("  body: {}", body.display());
         }
-        None => println!("created {} (in {})", created.node.display(), parent.display()),
+        None => println!("created {} (in {})", created.node.display(), parent_rel.display()),
     }
     Ok(ExitCode::SUCCESS)
 }
