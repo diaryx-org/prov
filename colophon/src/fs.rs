@@ -224,6 +224,78 @@ fn convert_file_type(ft: std::fs::FileType) -> FileType {
     }
 }
 
+/// [`Storage`] over `std::fs` that fails the *n*th write, for testing that a
+/// [`ChangeSet`](crate::change::ChangeSet) unwinds.
+///
+/// Every other method delegates to [`StdFs`], so a workspace over this backend
+/// behaves exactly like a real one until the chosen write, then reports the kind
+/// of failure a full disk or a revoked permission would.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct FailAtWrite {
+    writes: std::cell::Cell<usize>,
+    fail_at: usize,
+}
+
+#[cfg(test)]
+impl FailAtWrite {
+    /// Fail the `fail_at`th write (0-indexed); let every other one through.
+    pub(crate) fn nth(fail_at: usize) -> Self {
+        Self { writes: std::cell::Cell::new(0), fail_at }
+    }
+
+    /// Never fail — a counting [`StdFs`]. Pair with
+    /// [`attempted`](Self::attempted) to learn how many writes an operation
+    /// makes, so a test can then fail each of them in turn.
+    pub(crate) fn never() -> Self {
+        Self::nth(usize::MAX)
+    }
+
+    /// How many writes have been attempted.
+    ///
+    /// Only meaningful after a *successful* run: once a write fails, the
+    /// rollback's own writes go through this same backend and are counted too.
+    pub(crate) fn attempted(&self) -> usize {
+        self.writes.get()
+    }
+}
+
+#[cfg(test)]
+impl Storage for FailAtWrite {
+    async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        StdFs.read(path).await
+    }
+    async fn read_to_string(&self, path: &Path) -> io::Result<String> {
+        StdFs.read_to_string(path).await
+    }
+    async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        StdFs.read_dir(path).await
+    }
+    async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        let n = self.writes.get();
+        self.writes.set(n + 1);
+        if n == self.fail_at {
+            return Err(io::Error::other("disk full (test)"));
+        }
+        StdFs.write(path, contents).await
+    }
+    async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        StdFs.create_dir_all(path).await
+    }
+    async fn remove_file(&self, path: &Path) -> io::Result<()> {
+        StdFs.remove_file(path).await
+    }
+    async fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        StdFs.remove_dir_all(path).await
+    }
+    async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.rename(from, to).await
+    }
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        StdFs.metadata(path).await
+    }
+}
+
 /// The type of a filesystem entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileType {

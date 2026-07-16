@@ -20,9 +20,16 @@
 //! monomorphize to nothing.
 //!
 //! The vocabulary is never hardcoded: the spanning relation and its inverse
-//! come from the workspace's [`crate::relation::RelationSet`]. First cut:
-//! documents only (no directory moves), and best-effort atomicity (edits are
-//! computed before any write, but writes are not transactional).
+//! come from the workspace's [`crate::relation::RelationSet`].
+//!
+//! ## Writes are staged, not issued
+//!
+//! Every op here computes its edits and stages them into a
+//! [`ChangeSet`](crate::change::ChangeSet), which lands as one unit — documents
+//! and, when the op moved an ID, the registry with them. No error can leave the
+//! workspace half-linked; see [`crate::change`] for what that does and does not
+//! cover (it is error atomicity, not crash atomicity — there is still no
+//! journal). Ops remain documents-only: no directory moves.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -167,6 +174,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
+        // Everything below can touch the index — authoring an id-form link
+        // registers its target — so the change set (and with it the index
+        // checkpoint that unwinds those registrations) opens here, before the
+        // first of them, not down at the writes.
+        let mut cs = self.change();
+
         // The child's inverse link back to the parent, authored in the `inverse`
         // relation's style (going "up"). The parent exists, so an id link
         // registers it by path.
@@ -217,29 +230,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let parent_out = parent_editor.render()?;
 
-        if let Some(dir) = self.root().join(&node).parent() {
-            self.fs().create_dir_all(dir).await?;
-        }
-        self.fs()
-            .write(&self.root().join(&node), new_text.as_bytes())
-            .await?;
+        // All edits computed; stage them.
+        cs.write(&node, new_text);
         // A separated child's prose file starts empty (like a combined child's
         // body, which is just the synthesized block with nothing after it).
         if let Some(body_path) = &body {
-            self.fs().write(&self.root().join(body_path), b"").await?;
+            cs.write(body_path, Vec::new());
         }
-        self.fs()
-            .write(&self.root().join(&parent), parent_out.as_bytes())
-            .await?;
+        cs.write(&parent, parent_out);
 
         // Identity hook — eager policies assign an ID from birth (idempotent: an
-        // id-linked child was already registered above).
+        // id-linked child was already registered above). Staged before the
+        // commit, so the registry lands with the documents rather than after.
         if self.identity().registration().fires_on(Trigger::Create)
             && self.index().id_for_path(&node).is_none()
         {
             let id = self.mint_unique(&node);
             self.index_mut().register(&id, &node);
         }
+        self.commit(cs).await?;
         Ok(Created { node, body })
     }
 
@@ -321,6 +330,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
+        let mut cs = self.change();
         // The child's inverse link back up. Comment-/format-preserving edit of the
         // existing document (its body is untouched), in the `inverse` relation's
         // reference style — the parent exists, so an id link registers it by path.
@@ -334,9 +344,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 &inverse,
                 fig::Value::Str(up),
             )?;
-            self.fs()
-                .write(&self.root().join(&child), updated.as_bytes())
-                .await?;
+            cs.write(&child, updated);
         }
         // The parent's spanning entry going down (the child exists on disk, so an
         // id link registers it by path). Append to the sequence, creating it if
@@ -354,14 +362,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 parent_editor
                     .set_value(&span_path, fig::Value::Seq(vec![fig::Value::Str(down)]))?;
             }
-            self.fs()
-                .write(
-                    &self.root().join(&parent),
-                    parent_editor.render()?.as_bytes(),
-                )
-                .await?;
+            cs.write(&parent, parent_editor.render()?);
         }
-        Ok(())
+        self.commit(cs).await
     }
 
     /// Move the document at `child` to a different `parent` in the containment
@@ -381,14 +384,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// unparented child is accepted too, in which case there is nothing to remove
     /// and the effect is exactly `adopt`'s.
     ///
-    /// ## Failure leaves a *detectable* state, not an atomic one
+    /// ## Failure ordering
     ///
-    /// Three documents change, and colophon has no journal — so a crash between
-    /// writes cannot be prevented, only made loud. The writes are therefore
-    /// ordered so that every window is a finding `check` already reports:
-    /// repointing the child first leaves the old parent claiming a child that
-    /// does not claim it back ([`Finding::MissingInverse`]); adding the new entry
-    /// before removing the old leaves the child contained twice
+    /// Three documents change, and they land as one [`ChangeSet`]: an I/O
+    /// failure at any of them unwinds the rest, so no error leaves the child
+    /// contained twice or the old parent claiming a child that has moved on.
+    ///
+    /// The write *order* still matters, because a change set cannot rule out a
+    /// crash (see [`crate::change`]). It is therefore chosen so that the windows
+    /// a crash could expose are all findings `check` already reports: repointing
+    /// the child first leaves the old parent claiming a child that does not claim
+    /// it back ([`Finding::MissingInverse`]); adding the new entry before
+    /// removing the old leaves the child contained twice
     /// ([`Finding::DuplicateContainment`]). Removing the old entry first would
     /// instead leave a child pointing up at a parent that has forgotten it — the
     /// one inconsistency in this set that `check` does *not* look for, so it is
@@ -460,6 +467,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
+        let mut cs = self.change();
+
         // 1. The child's inverse, repointed up at the new parent.
         let up = self
             .authored_target(&inverse, &child, &parent, &parent_title, true)
@@ -470,9 +479,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             &inverse,
             fig::Value::Str(up),
         )?;
-        self.fs()
-            .write(&self.root().join(&child), updated.as_bytes())
-            .await?;
+        cs.write(&child, updated);
 
         // 2. The new parent's spanning entry, appended (created if it had none).
         let already_down =
@@ -491,31 +498,27 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             {
                 editor.set_value(&span_path, fig::Value::Seq(vec![fig::Value::Str(down)]))?;
             }
-            self.fs()
-                .write(&self.root().join(&parent), editor.render()?.as_bytes())
-                .await?;
+            cs.write(&parent, editor.render()?);
         }
 
         // 3. The old parent's entry, removed last (see the ordering note above).
-        // Re-read it here: when the old parent *is* the new parent's neighbour in
-        // some earlier write, the text on disk is what must be edited, not the
-        // copy loaded before step 2.
+        // Read through the change set: when the old parent is a document some
+        // earlier step already staged, that staged text is what must be edited,
+        // not the stale copy on disk.
         if let Some(old) = &old_parent
             && old != &parent
         {
-            let (old_text, old_doc) = self.load(old).await?;
+            let (old_text, old_doc) = self.load_staged(&cs, old).await?;
             if let (Some(index), Some(carrier)) = (
                 self.entry_index(&old_doc, &spanning, old, &child),
                 old_doc.carrier,
             ) {
                 let mut editor = MetaEditor::open(&old_text, carrier)?;
                 editor.remove_item(&[Segment::Key(&spanning)], index)?;
-                self.fs()
-                    .write(&self.root().join(old), editor.render()?.as_bytes())
-                    .await?;
+                cs.write(old, editor.render()?);
             }
         }
-        Ok(())
+        self.commit(cs).await
     }
 
     /// Move/rename the document at `from` to `to`, maintaining every affected
@@ -549,6 +552,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Err(Error::Structure(format!("{} already exists", to.display())));
         }
         let (from_text, from_doc) = self.load(&from).await?;
+        let mut cs = self.change();
 
         // 1. Inbound references: every document that links *to* `from` by a
         //    path, retargeted to `to` (parent's spanning entry, children's
@@ -560,6 +564,23 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // alongside (and keep the `content` pointer correct) so the pair travels
         // together.
         let body_move = self.plan_body_move(&from_doc, &from, &to).await?;
+
+        // The body's destination needs the same refusal as the node's. A rename
+        // overwrites, and an overwrite is the one thing staging cannot make good:
+        // every other op records its undo before acting, but a clobbered file's
+        // bytes are gone by the time anything could have copied them. So this is
+        // a guard, not something rollback covers — and it is easy to walk into,
+        // since the body's name is *derived* (`notes.yaml` → `notes.md`) and so
+        // never passed by the caller, who therefore never sees the collision.
+        if let Some(mv) = &body_move
+            && self.fs().try_exists(&self.root().join(&mv.to)).await?
+        {
+            return Err(Error::Structure(format!(
+                "{}'s content file would move to {}, which already exists",
+                to.display(),
+                mv.to.display()
+            )));
+        }
 
         // 2. The document itself: when its directory changes, every relative
         //    link it declares must be recomputed to keep resolving — first the
@@ -589,40 +610,29 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             self_text = editor.render()?;
         }
 
-        // All edits computed; now write.
-        if let Some(dir) = self.root().join(&to).parent() {
-            self.fs().create_dir_all(dir).await?;
-        }
-        self.fs()
-            .rename(&self.root().join(&from), &self.root().join(&to))
-            .await?;
-        self.fs()
-            .write(&self.root().join(&to), self_text.as_bytes())
-            .await?;
+        // All edits computed; stage them.
+        cs.rename(&from, &to);
+        cs.write(&to, self_text);
         if let Some(mv) = &body_move {
-            self.fs()
-                .rename(&self.root().join(&mv.from), &self.root().join(&mv.to))
-                .await?;
+            cs.rename(&mv.from, &mv.to);
             // A prose body is rewritten with its re-relativized text; an opaque
             // payload (`text` is `None`) is left exactly as the rename moved it.
             if let Some(text) = &mv.text {
-                self.fs()
-                    .write(&self.root().join(&mv.to), text.as_bytes())
-                    .await?;
+                cs.write(&mv.to, text.clone());
             }
         }
         for (source, text) in inbound_writes {
-            self.fs()
-                .write(&self.root().join(&source), text.as_bytes())
-                .await?;
+            cs.write(source, text);
         }
 
         // Identity hook — the registry follows the move, so every
-        // `colophon:<id>` reference to this document survives untouched.
+        // `colophon:<id>` reference to this document survives untouched. Staged
+        // with the documents: a move whose links are maintained but whose
+        // registry is not is the one tear IDs exist to prevent.
         if let Some(id) = self.index().id_for_path(&from) {
             self.index_mut().set_path(&id, &to);
         }
-        Ok(())
+        self.commit(cs).await
     }
 
     /// Delete the document at `path`, removing the parent's spanning entry for
@@ -705,17 +715,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // A separated node's body lives in a sibling file; delete the pair.
         let body_file = content_target(&doc, &path);
+        let body_exists = match &body_file {
+            Some(body) => self.fs().try_exists(&self.root().join(body)).await?,
+            None => false,
+        };
 
-        self.fs().remove_file(&self.root().join(&path)).await?;
-        if let Some(body) = body_file
-            && self.fs().try_exists(&self.root().join(&body)).await?
-        {
-            self.fs().remove_file(&self.root().join(&body)).await?;
+        let mut cs = self.change();
+        cs.remove(&path);
+        if let (Some(body), true) = (&body_file, body_exists) {
+            cs.remove(body);
         }
         if let Some((parent, text)) = parent_write {
-            self.fs()
-                .write(&self.root().join(&parent), text.as_bytes())
-                .await?;
+            cs.write(parent, text);
         }
 
         // Identity hook — retire the ID (a tombstoning store keeps it known
@@ -723,6 +734,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let Some(id) = self.index().id_for_path(&path) {
             self.index_mut().unregister(&id);
         }
+        self.commit(cs).await?;
         Ok(danglers)
     }
 
@@ -787,23 +799,19 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let meta_text = crate::meta::serialize_mapping(&map, format)?;
         let body_text = doc.body.clone();
 
+        let mut cs = self.change();
         // Inbound links now point at the metadata file (the structural node).
         let inbound = self.collect_inbound_rewrites(&path, &meta_path).await?;
 
-        self.fs()
-            .write(&self.root().join(&meta_path), meta_text.as_bytes())
-            .await?;
-        self.fs()
-            .write(&self.root().join(&path), body_text.as_bytes())
-            .await?;
+        cs.write(&meta_path, meta_text);
+        cs.write(&path, body_text);
         for (source, text) in inbound {
-            self.fs()
-                .write(&self.root().join(&source), text.as_bytes())
-                .await?;
+            cs.write(source, text);
         }
         if let Some(id) = self.index().id_for_path(&path) {
             self.index_mut().set_path(&id, &meta_path);
         }
+        self.commit(cs).await?;
         Ok(meta_path)
     }
 
@@ -859,21 +867,19 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let combined = editor.render()?;
 
+        let mut cs = self.change();
         // Inbound links point back at the (now combined) content file.
         let inbound = self.collect_inbound_rewrites(&path, &content).await?;
 
-        self.fs()
-            .write(&self.root().join(&content), combined.as_bytes())
-            .await?;
-        self.fs().remove_file(&self.root().join(&path)).await?;
+        cs.write(&content, combined);
+        cs.remove(&path);
         for (source, text) in inbound {
-            self.fs()
-                .write(&self.root().join(&source), text.as_bytes())
-                .await?;
+            cs.write(source, text);
         }
         if let Some(id) = self.index().id_for_path(&path) {
             self.index_mut().set_path(&id, &content);
         }
+        self.commit(cs).await?;
         Ok(content)
     }
 
@@ -941,6 +947,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // own inverse link "up" is already present (copied verbatim) and resolves
         // unchanged, so it is not re-authored. A parentless source just skips this.
         let parent = self.single_target(&doc, &inverse, &source);
+        let mut cs = self.change();
         let parent_write = if let Some(parent) = &parent {
             let (parent_text, parent_doc) = self.load(parent).await?;
             let copy_title = doc
@@ -966,22 +973,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             None
         };
 
-        // All edits computed; now write. Node first, then its body copy (opaque
+        // All edits computed; stage them. Node first, then its body copy (opaque
         // payload bytes carried verbatim), then the parent's updated entry.
-        if let Some(dir) = self.root().join(&dest).parent() {
-            self.fs().create_dir_all(dir).await?;
-        }
-        self.fs()
-            .write(&self.root().join(&dest), copy_text.as_bytes())
-            .await?;
+        cs.write(&dest, copy_text);
         if let (Some(body_from), Some((body_to, _))) = (&body_from, &body_dest) {
             let bytes = self.fs().read(&self.root().join(body_from)).await?;
-            self.fs().write(&self.root().join(body_to), &bytes).await?;
+            cs.write(body_to, bytes);
         }
         if let Some((parent, text)) = parent_write {
-            self.fs()
-                .write(&self.root().join(&parent), text.as_bytes())
-                .await?;
+            cs.write(parent, text);
         }
 
         // Identity hook — an eager policy assigns the copy an ID from birth
@@ -992,6 +992,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let id = self.mint_unique(&dest);
             self.index_mut().register(&id, &dest);
         }
+        self.commit(cs).await?;
         Ok(dest)
     }
 
@@ -1067,33 +1068,37 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         } else {
             vec![file]
         };
-        let mut changed = 0;
-        for path in targets {
-            if self.restyle_document(&path, style).await? {
-                changed += 1;
+        // One set for the whole subtree, not one per document: a recursive
+        // restyle is a single edit to the reader ("convert this subtree"), so a
+        // failure two thirds of the way down should not leave the other third
+        // converted. Every document is independent here — nothing reads what an
+        // earlier one wrote — so the whole sweep stages cleanly.
+        let mut cs = self.change();
+        for path in &targets {
+            if let Some(text) = self.restyle_document(path, style).await? {
+                cs.write(path, text);
             }
         }
+        let changed = cs.len();
+        self.commit(cs).await?;
         Ok(changed)
     }
 
     /// Restyle every path link the document at `path` declares — frontmatter
-    /// relation entries then body links — writing the file only when something
-    /// changed. Returns whether it did. The body is spliced against `doc.body`
-    /// (verbatim, MetaEditor-preserved) after the frontmatter edit, the same
-    /// two-step `rename` uses.
-    async fn restyle_document(&self, path: &Path, style: crate::link::LinkStyle) -> Result<bool> {
+    /// relation entries then body links — returning its new text, or `None` when
+    /// nothing changed (so a no-op restyle stages no write). The body is spliced
+    /// against `doc.body` (verbatim, MetaEditor-preserved) after the frontmatter
+    /// edit, the same two-step `rename` uses.
+    async fn restyle_document(
+        &self,
+        path: &Path,
+        style: crate::link::LinkStyle,
+    ) -> Result<Option<String>> {
         let (text, doc) = self.load(path).await?;
         let meta_rewritten =
             restyle_frontmatter_links(&text, &doc, self.relations().relations(), path, style)?;
         let final_text = restyle_body_links(&meta_rewritten, &doc.body, path, style);
-        if final_text != text {
-            self.fs()
-                .write(&self.root().join(path), final_text.as_bytes())
-                .await?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        Ok((final_text != text).then_some(final_text))
     }
 
     /// Every document reachable from `root` down the spanning relation, `root`
@@ -1649,7 +1654,7 @@ fn rewrite_body_inbound(text: &str, body: &str, source: &Path, from: &Path, to: 
 mod tests {
     use super::*;
     use crate::exec::block_on;
-    use crate::fs::StdFs;
+    use crate::fs::{FailAtWrite, StdFs};
     use crate::identity::Minter;
     use crate::index::FileIndex;
     use crate::link::LinkStyle;
@@ -2739,5 +2744,457 @@ mod tests {
         block_on(w.rename(Path::new("a.md"), Path::new("b.md"))).unwrap();
         block_on(w.delete(Path::new("b.md"), false)).unwrap();
         assert_eq!(w.index().id_for_path(Path::new("b.md")), None);
+    }
+
+    // ---- transactional writes (see `crate::change`) ----
+    //
+    // The property under test is the crate's whole reason to exist: link
+    // maintenance spans documents, so a mutation that half-lands is worse than
+    // one that does not land at all. Each of these drives a real operation over a
+    // backend that fails one write, and asserts the workspace is byte-for-byte as
+    // it was found — not merely "check-clean", which a torn-but-detectable state
+    // would also be.
+
+    /// The whole workspace as `(relative path, contents)`, sorted — so a test can
+    /// assert nothing anywhere changed, rather than spot-checking the files it
+    /// happened to think of.
+    fn snapshot(dir: &Path) -> Vec<(String, String)> {
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+            entries.sort_by_key(std::fs::DirEntry::path);
+            for entry in entries {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, base, out);
+                } else {
+                    out.push((
+                        path.strip_prefix(base).unwrap().to_string_lossy().into_owned(),
+                        std::fs::read_to_string(&path).unwrap_or_default(),
+                    ));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// A workspace over a backend that fails the `fail_at`th write.
+    fn failing_ws(dir: &Path, fail_at: usize) -> Workspace<FailAtWrite> {
+        Workspace::builder(FailAtWrite::nth(fail_at)).root(dir).build()
+    }
+
+    fn linked_tree(tag: &str) -> PathBuf {
+        let dir = tempdir(tag);
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n- b.md\n---\nbody\n",
+        );
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\nsee [[b]]\n");
+        write(
+            &dir,
+            "b.md",
+            "---\ntitle: B\npart_of: index.md\nlinks:\n- a.md\n---\nbody\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn moving_a_separated_node_refuses_to_overwrite_an_occupied_body_path() {
+        // `rename` guards its own destination but not its *body's*, and a rename
+        // that clobbers is the one thing a change set cannot undo: the overwritten
+        // bytes are gone before any rollback could copy them. So the guard has to
+        // be a refusal up front, alongside the check on the node's own path.
+        let dir = tempdir("body-collision");
+        write(&dir, "index.md", "---\ntitle: Root\ncontents:\n- notes.yaml\n---\n");
+        write(
+            &dir,
+            "notes.yaml",
+            "title: Notes\npart_of: index.md\ncontent: notes.md\n",
+        );
+        write(&dir, "notes.md", "the prose\n");
+        // An unrelated document already sitting where the body would land.
+        write(&dir, "other.md", "PRECIOUS — must not be destroyed\n");
+
+        let err = block_on(ws(&dir).rename(Path::new("notes.yaml"), Path::new("other.yaml")))
+            .unwrap_err();
+        assert!(err.to_string().contains("other.md"), "should name the blocker: {err}");
+        assert_eq!(
+            read(&dir, "other.md"),
+            "PRECIOUS — must not be destroyed\n",
+            "the move destroyed an unrelated document"
+        );
+        assert!(dir.join("notes.yaml").exists(), "and the refused move changed nothing");
+    }
+
+    #[test]
+    fn a_failed_create_leaves_neither_the_child_nor_the_parents_entry() {
+        // `create` writes the child then the parent. Fail the parent's write and
+        // the child file must not survive: a document nothing contains is exactly
+        // the orphan `check` cannot see (DESIGN §8).
+        let dir = tempdir("atomic-create");
+        write(&dir, "index.md", "---\ntitle: Root\n---\nbody\n");
+        let before = snapshot(&dir);
+
+        let mut w = failing_ws(&dir, 1);
+        let err = block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap_err();
+        assert!(err.to_string().contains("disk full"), "{err}");
+        assert_eq!(snapshot(&dir), before, "a failed create left something behind");
+    }
+
+    #[test]
+    fn a_failed_rename_leaves_every_inbound_link_pointing_at_the_original() {
+        // The op with the most writes and the most to lose: the file moves, then
+        // the parent's entry, the sibling's overlay link and the body wikilink all
+        // retarget. Fail each write in turn — the workspace must come back whole
+        // every time, whichever one it was.
+        //
+        // The sweep is bounded by a probe run rather than a literal, so it keeps
+        // covering every write the day `rename` grows one.
+        let probe = tempdir("atomic-rename-probe");
+        let _ = std::fs::remove_dir_all(&probe);
+        let dir = linked_tree("atomic-rename-probe");
+        let mut w = Workspace::builder(FailAtWrite::never()).root(&dir).build();
+        block_on(w.rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap();
+        let writes = w.fs().attempted();
+        assert!(writes >= 3, "expected the move, the parent and the sibling: {writes}");
+
+        for fail_at in 0..writes {
+            let dir = linked_tree("atomic-rename");
+            let before = snapshot(&dir);
+
+            let mut w = failing_ws(&dir, fail_at);
+            let err = block_on(w.rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap_err();
+            assert!(err.to_string().contains("disk full"), "{err}");
+            assert_eq!(
+                snapshot(&dir),
+                before,
+                "a rename that failed at write {fail_at} of {writes} left the workspace torn"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_reparent_leaves_the_old_containment_intact() {
+        // Three documents change, and the middle window is the dangerous one: the
+        // child repointed at its new parent while the old parent still claims it.
+        let dir = tempdir("atomic-reparent");
+        write(&dir, "index.md", "---\ntitle: Root\ncontents:\n- old.md\n- new.md\n---\n");
+        write(&dir, "old.md", "---\ntitle: Old\npart_of: index.md\ncontents:\n- kid.md\n---\n");
+        write(&dir, "new.md", "---\ntitle: New\npart_of: index.md\n---\n");
+        write(&dir, "kid.md", "---\ntitle: Kid\npart_of: old.md\n---\n");
+        let before = snapshot(&dir);
+
+        // Write 0 repoints the kid, 1 adds the new parent's entry, 2 removes the
+        // old parent's. Failing the last is the worst case — both the other two
+        // have landed, and the kid is contained twice.
+        let mut w = failing_ws(&dir, 2);
+        let err = block_on(w.reparent(Path::new("kid.md"), Path::new("new.md"))).unwrap_err();
+        assert!(err.to_string().contains("disk full"), "{err}");
+        assert_eq!(snapshot(&dir), before, "a failed reparent left the kid contained twice");
+    }
+
+    #[test]
+    fn a_failed_delete_restores_the_document_it_removed() {
+        let dir = linked_tree("atomic-delete");
+        let before = snapshot(&dir);
+
+        // `delete` removes the file, then rewrites the parent's entry. Failing
+        // that write must bring the document back, not leave the parent pointing
+        // at a hole.
+        let mut w = failing_ws(&dir, 0);
+        let err = block_on(w.delete(Path::new("a.md"), true)).unwrap_err();
+        assert!(err.to_string().contains("disk full"), "{err}");
+        assert_eq!(snapshot(&dir), before, "a failed delete lost a document");
+    }
+
+    #[test]
+    fn consecutive_ops_keep_each_others_registrations() {
+        // The other half of the checkpoint's lifetime, and the one that bites in
+        // the ordinary case: a *successful* op must drop its checkpoint even when
+        // it staged no registry write of its own — a host-less store (frontmatter
+        // storage, or before a registry is bootstrapped), an `InMemoryIndex`, an
+        // op that never dirtied the index. Otherwise the checkpoint outlives the
+        // op that took it, and the next one cannot tell it from a leak.
+        let dir = tempdir("consecutive-ops");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::eager(7))
+            .id_links(true)
+            // No host: `pending_write` stages nothing, so `commit` has no registry
+            // write to report — exactly the case that leaves a checkpoint behind.
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+        let a_id = w.index().id_for_path(Path::new("a.md")).expect("a.md registered");
+        let root_id = w.index().id_for_path(Path::new("index.md")).expect("root registered");
+
+        block_on(w.create(Path::new("b.md"), Path::new("index.md"))).unwrap();
+
+        // The second create must not have unwound the first one's registrations —
+        // the root's `contents` now links both by id, and both must resolve.
+        assert_eq!(
+            w.index().id_for_path(Path::new("a.md")),
+            Some(a_id.clone()),
+            "the first op's registration was erased by the second"
+        );
+        assert_eq!(
+            w.index().id_for_path(Path::new("index.md")),
+            Some(root_id),
+            "the root was re-minted a second, different id"
+        );
+        assert!(w.index().id_for_path(Path::new("b.md")).is_some(), "b.md registered");
+
+        // The authored links must actually resolve — the user-visible failure.
+        let root_text = read(&dir, "index.md");
+        assert!(
+            root_text.contains(a_id.as_str()),
+            "the root links a.md by id: {root_text}"
+        );
+        assert_eq!(
+            w.index().resolve(&a_id),
+            Some(PathBuf::from("a.md")),
+            "the id the root links must still resolve"
+        );
+    }
+
+    #[test]
+    fn a_registration_made_between_ops_survives_the_next_one() {
+        // `change` unwinds an outstanding checkpoint, so it must be certain that a
+        // checkpoint outstanding at that moment really is abandoned work. A
+        // caller registering an ID *between* two ops — the public seam
+        // `Workspace::register` — is not abandoned work, and erasing it would
+        // dangle any link the caller authored from the id it was handed.
+        let dir = tempdir("register-between-ops");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+        let mut w = hosted_registry_ws(&dir, StdFs);
+
+        // An op that succeeds without dirtying the index — the case that used to
+        // leave a checkpoint outstanding.
+        block_on(w.convert_link_style(Path::new("a.md"), LinkStyle::PlainRelative, false)).unwrap();
+
+        let id = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
+        block_on(w.create(Path::new("c.md"), Path::new("index.md"))).unwrap();
+
+        assert_eq!(
+            w.index().resolve(&id),
+            Some(PathBuf::from("a.md")),
+            "a registration made between ops must not be erased by the next one"
+        );
+        assert!(
+            read(&dir, "registry.yaml").contains("a.md"),
+            "and the next op's commit should carry it to disk"
+        );
+    }
+
+    #[test]
+    fn a_dangling_checkpoint_is_unwound_by_the_next_op_not_inherited() {
+        // The third window, after "the write failed" and "the rollback failed":
+        // an op that returns early *between* `change` and `commit`, by `?` on an
+        // edit it was still computing. Its writes never happened, but its
+        // registrations did, and no commit ran to unwind them — `create` mints the
+        // child's ID before authoring the parent's entry, so the leak would be a
+        // registry record naming a document that was never written.
+        //
+        // Driven through the index protocol rather than a fixture, deliberately.
+        // Reaching that `?` from the public API needs a metadata edit the editor
+        // rejects *after* the mint, which the ops currently recover from or make
+        // unreachable — so a fixture would either not fail at all (and quietly
+        // stop testing this) or encode today's exact failure points as if they
+        // were the contract. What is being asserted is `change`'s contract: a
+        // checkpoint left outstanding is unwound, never inherited.
+        let dir = tempdir("dangling-checkpoint");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = id_ws(&dir);
+
+        // Exactly what an op that bailed after minting would leave behind.
+        w.index_mut().checkpoint();
+        let ghost = crate::identity::Id("ghostid".into());
+        w.index_mut().register(&ghost, Path::new("never-written.md"));
+        assert!(w.index().is_dirty(), "the abandoned op dirtied the store");
+
+        // The next op unwinds it rather than staging it into its own registry.
+        block_on(w.create(Path::new("real.md"), Path::new("index.md"))).unwrap();
+        assert_eq!(
+            w.index().resolve(&ghost),
+            None,
+            "a document that was never created must not survive into the next op"
+        );
+    }
+
+    // ---- the registry lands with the documents (DESIGN §5) ----
+
+    #[test]
+    fn moving_the_registry_document_does_not_resurrect_it_at_its_old_path() {
+        // The registry document is a document: it has a title and a `part_of`, it
+        // is a node of the tree, and it can be moved like any other. But `commit`
+        // stages the registry's own write *last*, so unless that write follows the
+        // move it lands at the old path — recreating the file the op just renamed
+        // away from, with all the records in it, while the file the root now
+        // points at has none.
+        let dir = tempdir("move-registry");
+        write(&dir, "index.md", "---\ntitle: Root\nregistry: registry.yaml\n---\n");
+        let mut w = hosted_registry_ws(&dir, StdFs);
+        // Give the registry document an id of its own, so the move dirties the
+        // store and forces the registry write into the same set as the rename.
+        let id = block_on(w.register(Path::new("registry.yaml"), Trigger::Link)).unwrap();
+
+        block_on(w.rename(Path::new("registry.yaml"), Path::new("meta/registry.yaml"))).unwrap();
+
+        assert!(
+            !dir.join("registry.yaml").exists(),
+            "the registry was resurrected at the path it just moved away from"
+        );
+        let moved = read(&dir, "meta/registry.yaml");
+        assert!(
+            moved.contains(id.as_str()) && moved.contains("meta/registry.yaml"),
+            "the moved registry must hold its records, repointed: {moved}"
+        );
+    }
+
+    #[test]
+    fn an_op_that_rewrites_the_registry_document_is_not_clobbered_by_its_own_records() {
+        // The likelier shape of the same hazard: the registry document declares
+        // `part_of` back at the root, so moving the *root* re-relativizes it —
+        // staging a write to the registry document. `commit` then stages its own
+        // write to that document, rendered from the text it read at startup, and
+        // last-write-wins silently drops the re-relativized link.
+        let dir = tempdir("rewrite-registry");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nregistry: registry.yaml\ncontents:\n- registry.yaml\n---\n",
+        );
+        let mut w = hosted_registry_ws(&dir, StdFs);
+        // The registry document points back at the root, in a path form a move
+        // must recompute.
+        write(&dir, "registry.yaml", "title: ID registry\npart_of: index.md\n");
+        let text = read(&dir, "registry.yaml");
+        w.index_mut().set_host("registry.yaml", &text).unwrap();
+        let root_id = block_on(w.register(Path::new("index.md"), Trigger::Link)).unwrap();
+
+        block_on(w.rename(Path::new("index.md"), Path::new("docs/index.md"))).unwrap();
+
+        let registry = read(&dir, "registry.yaml");
+        assert!(
+            registry.contains("part_of: docs/index.md"),
+            "the registry document's own part_of must survive the root's move: {registry}"
+        );
+        assert!(
+            registry.contains(root_id.as_str()),
+            "and its records must be there too: {registry}"
+        );
+    }
+
+    /// A workspace whose registry is a real document on disk, so its write is
+    /// staged rather than left to the caller.
+    ///
+    /// Seeds the host only if it is not already there, so a test can rebuild the
+    /// workspace over a directory mid-flight — the way a second CLI run picks up
+    /// the registry the first one left — instead of wiping it.
+    fn hosted_registry_ws<FS: Storage>(dir: &Path, fs: FS) -> Workspace<FS, Minter, FileIndex> {
+        let host = "registry.yaml";
+        if !dir.join(host).exists() {
+            write(dir, host, "title: ID registry\n");
+        }
+        let text = std::fs::read_to_string(dir.join(host)).unwrap();
+        Workspace::builder(fs)
+            .root(dir)
+            .identity(Minter::eager(7))
+            .index(FileIndex::parse(Path::new(host), &text).unwrap())
+            .build()
+    }
+
+    #[test]
+    fn a_rename_lands_its_registry_update_in_the_same_change_set() {
+        // The positive half: after a successful move the registry on disk already
+        // names the new path. Nothing else had to write it — no post-hoc save
+        // step, which is the window this closes.
+        let dir = tempdir("registry-with-docs");
+        write(&dir, "index.md", "---\ntitle: Root\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+        let mut w = hosted_registry_ws(&dir, StdFs);
+
+        let id = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
+        block_on(w.rename(Path::new("a.md"), Path::new("moved.md"))).unwrap();
+
+        let registry = read(&dir, "registry.yaml");
+        assert!(
+            registry.contains("moved.md") && !registry.contains(" a.md"),
+            "the registry on disk should already name the new path: {registry}"
+        );
+        assert!(registry.contains(id.as_str()), "the id should be recorded: {registry}");
+        assert!(!w.index().is_dirty(), "a staged registry write leaves the store clean");
+    }
+
+    #[test]
+    fn a_failed_rename_does_not_leave_the_registry_ahead_of_the_documents() {
+        // The tear this exists to prevent, and the one the documents cannot
+        // self-heal from: the registry is authoritative, not derived, so an
+        // `id → path` that moved while the documents did not would resolve every
+        // `colophon:<id>` reference to a file that is not there.
+        //
+        // Swept across every write the op makes rather than aimed at one, because
+        // the interesting failure is the *last* — the registry's own write, with
+        // every document already on disk behind it. Fixing a single index here
+        // would silently stop testing that the day an op grows a write.
+        let seed = |tag: &str| {
+            let dir = tempdir(tag);
+            write(&dir, "index.md", "---\ntitle: Root\ncontents:\n- a.md\n---\n");
+            write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+            dir
+        };
+
+        // Probe: how many writes does the move make, registry included?
+        let dir = seed("registry-rollback-probe");
+        let mut w = hosted_registry_ws(&dir, FailAtWrite::never());
+        block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
+        let before_move = w.fs().attempted();
+        block_on(w.rename(Path::new("a.md"), Path::new("moved.md"))).unwrap();
+        let writes = w.fs().attempted() - before_move;
+        assert!(
+            read(&dir, "registry.yaml").contains("moved.md"),
+            "the probe should have staged the registry write — otherwise this \
+             test's premise is gone"
+        );
+
+        for fail_at in 0..writes {
+            let dir = seed("registry-rollback");
+
+            // Register and let it land, so the sweep isolates the *move*.
+            let mut w = hosted_registry_ws(&dir, StdFs);
+            let id = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
+            block_on(w.create(Path::new("settle.md"), Path::new("index.md"))).unwrap();
+            assert!(read(&dir, "registry.yaml").contains("a.md"), "registry seeded");
+            let before = snapshot(&dir);
+
+            // Rebuild over a backend that fails this run's `fail_at`th write,
+            // carrying the same on-disk registry — as a second CLI run would.
+            let mut w = hosted_registry_ws(&dir, FailAtWrite::nth(fail_at));
+            let id_again = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
+            assert_eq!(id, id_again, "the same document keeps its id across runs");
+
+            let err = block_on(w.rename(Path::new("a.md"), Path::new("moved.md"))).unwrap_err();
+            assert!(err.to_string().contains("disk full"), "{err}");
+
+            // On disk: nothing moved — least of all the registry.
+            assert_eq!(
+                snapshot(&dir),
+                before,
+                "a rename that failed at write {fail_at} of {writes} left the workspace torn"
+            );
+            // In memory: the store was rolled back too, so a caller holding this
+            // workspace does not go on believing the move happened.
+            assert_eq!(
+                w.index().resolve(&id),
+                Some(PathBuf::from("a.md")),
+                "the in-memory registry should have rolled back with the writes \
+                 (failed at write {fail_at} of {writes})"
+            );
+        }
     }
 }

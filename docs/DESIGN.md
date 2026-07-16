@@ -176,6 +176,18 @@ Consequences the implementation must honor:
   (disposable, blow-away-and-regenerate) and a `registry` section (durable,
   backed up, merge-critical). Fusing them into one undifferentiated blob loses
   the cache's safety valve.
+- **The registry's write belongs in the same unit as the documents it describes.**
+  This falls straight out of the two natures. A derived cache may lag: if it is
+  stale, rebuild it. Authoritative state may not — a mutation that maintains three
+  documents' links but loses its `id → path` update leaves every `colophon:<id>`
+  reference to the moved document resolving to nothing, and *nothing in the
+  workspace can repair it*, because the mapping was never in the documents to
+  begin with. So a mutation stages its registry write into the same `ChangeSet`
+  (`colophon/src/change.rs`) as its document edits, and the two land or fail
+  together. The corollary is the honest half: the frontmatter *shadow* copy
+  (`id_storage: frontmatter`) is derived — idempotently re-stamped from the
+  registry on any later run — so it is deliberately left outside that unit. What
+  can be rebuilt need not be transactional; what cannot, must be.
 - **A single central index file is a merge/write-contention hotspot.** Every
   mutation on every device touches it, so every sync touches it — re-concentrating
   exactly the contention that per-file frontmatter avoids. This is why

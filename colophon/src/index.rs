@@ -48,6 +48,77 @@ pub trait IndexStore {
     fn is_known(&self, id: &Id) -> bool {
         self.resolve(id).is_some()
     }
+
+    // ---- staging ----
+    //
+    // A mutation's registry update has to land in the *same* unit as its
+    // document edits (§ the module docs): a rename that repoints three links but
+    // loses its `id → path` update leaves every `colophon:<id>` reference to the
+    // moved document resolving to nothing — the exact failure IDs exist to
+    // prevent, and the one the documents cannot self-heal from, because the
+    // registry is authoritative rather than derived (DESIGN §5).
+    //
+    // So the op mutates the store in memory *first*, stages the resulting write
+    // alongside the documents', and applies the lot. These four hooks are what
+    // make that reversible. All default to nothing, which is exactly right for
+    // [`NoIndex`] (nothing to persist) and for a store that persists itself.
+
+    /// Snapshot the store, so a mutation that fails can put it back. Called
+    /// before an op touches the index; paired with exactly one
+    /// [`rollback`](IndexStore::rollback) or [`committed`](IndexStore::committed).
+    fn checkpoint(&mut self) {}
+
+    /// Restore the last [`checkpoint`](IndexStore::checkpoint) — the mutation
+    /// failed and its writes were unwound, so the in-memory store must forget it
+    /// too, or it would claim a move that never happened.
+    fn rollback(&mut self) {}
+
+    /// The mutation's writes landed: drop the checkpoint.
+    ///
+    /// `persisted` says whether this store's own [`pending_write`] was among
+    /// them. These are two different facts and must not be conflated: the
+    /// checkpoint is dropped **unconditionally**, because the op succeeded and
+    /// there is nothing left to undo, while `dirty` clears only when the write
+    /// actually went out. A store with no home stages nothing yet still commits
+    /// successfully — leaving its checkpoint outstanding would make the *next*
+    /// op's [`change`](crate::workspace::Workspace::change) mistake it for one
+    /// abandoned mid-edit and unwind a mutation that fully happened.
+    ///
+    /// [`pending_write`]: IndexStore::pending_write
+    fn committed(&mut self, persisted: bool) {
+        let _ = persisted;
+    }
+
+    /// Follow the mutation's change set to wherever it leaves this store's home.
+    ///
+    /// Called just before [`pending_write`](IndexStore::pending_write), because a
+    /// store that persists into a *document* has a problem the rest of the
+    /// mutation does not: that document is itself part of the workspace, and the
+    /// same op may be moving or rewriting it. The registry declares a `part_of`
+    /// back at the root, so moving the root re-relativizes it; and the registry
+    /// document can simply be renamed like any other node.
+    ///
+    /// Either way its write is staged *last*, so without this it would render
+    /// against the text read at startup and land at the path read at startup —
+    /// silently reverting the op's edit, or recreating the file the op just
+    /// renamed away from. Rebasing first makes the last write build *on* the
+    /// earlier one instead of erasing it.
+    fn rebase(&mut self, cs: &crate::change::ChangeSet) -> Result<()> {
+        let _ = cs;
+        Ok(())
+    }
+
+    /// The write that would persist this store, as `(path, full new text)` —
+    /// staged into the mutation's change set and applied with it.
+    ///
+    /// `None` when there is nothing to write: the store is unchanged, has no
+    /// file home, or persists itself some other way. A store that returns `None`
+    /// while dirty is left dirty, so a caller that knows a home this store does
+    /// not can still write it (the CLI bootstrapping a registry document only
+    /// once a fix has actually minted an ID).
+    fn pending_write(&mut self) -> Result<Option<(PathBuf, String)>> {
+        Ok(None)
+    }
 }
 
 /// No index — identity-off workspaces. Registers nothing, resolves nothing.
@@ -70,6 +141,17 @@ impl IndexStore for NoIndex {
 /// tombstones: an unregistered ID is forgotten entirely.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryIndex {
+    forward: HashMap<Id, PathBuf>,
+    reverse: HashMap<PathBuf, Id>,
+    /// The last [`checkpoint`](IndexStore::checkpoint), restored by
+    /// [`rollback`](IndexStore::rollback). Nothing is persisted from here, so
+    /// the two maps are the whole of the state to save.
+    saved: Option<Box<InMemoryState>>,
+}
+
+/// An [`InMemoryIndex`]'s saved state — see its `saved` field.
+#[derive(Debug, Clone)]
+struct InMemoryState {
     forward: HashMap<Id, PathBuf>,
     reverse: HashMap<PathBuf, Id>,
 }
@@ -117,6 +199,26 @@ impl IndexStore for InMemoryIndex {
             self.reverse.remove(&path);
         }
     }
+
+    fn checkpoint(&mut self) {
+        self.saved = Some(Box::new(InMemoryState {
+            forward: self.forward.clone(),
+            reverse: self.reverse.clone(),
+        }));
+    }
+
+    fn rollback(&mut self) {
+        if let Some(saved) = self.saved.take() {
+            self.forward = saved.forward;
+            self.reverse = saved.reverse;
+        }
+    }
+
+    /// Nothing here is ever persisted, so `persisted` is irrelevant — but the
+    /// checkpoint must still be dropped on every success.
+    fn committed(&mut self, _persisted: bool) {
+        self.saved = None;
+    }
 }
 
 /// The persistent registry: a snapshot with tombstones, living **under the
@@ -141,6 +243,15 @@ impl IndexStore for InMemoryIndex {
 pub struct FileIndex {
     live: InMemoryIndex,
     tombstones: BTreeSet<Id>,
+    /// The host document's workspace-relative path — where
+    /// [`pending_write`](IndexStore::pending_write) stages its write. `None` for
+    /// a registry with no document behind it yet: an
+    /// [`InMemoryIndex`]-in-disguise built by [`new`](FileIndex::new), either
+    /// because the workspace stores IDs in frontmatter only (nothing to persist)
+    /// or because no registry document has been bootstrapped yet. Such a store
+    /// stays dirty rather than silently dropping records, so a caller that knows
+    /// a home can still write it.
+    host: Option<PathBuf>,
     /// The host document's full current text and carrier — what `render`
     /// splices the records back into.
     host_text: String,
@@ -155,20 +266,74 @@ pub struct FileIndex {
     /// would make fig auto-create a flow map.
     has_registry_key: bool,
     dirty: bool,
+    /// The last [`checkpoint`](IndexStore::checkpoint).
+    saved: Option<Box<FileIndexState>>,
+}
+
+/// Every field of a [`FileIndex`] a mutation can move — saved by
+/// [`checkpoint`](IndexStore::checkpoint) and put back by
+/// [`rollback`](IndexStore::rollback). `render` advances `host_text`/`persisted`
+/// as a side effect of staging, so those are as much part of the mutation as the
+/// records themselves and have to unwind with them.
+#[derive(Debug, Clone)]
+struct FileIndexState {
+    live: InMemoryIndex,
+    tombstones: BTreeSet<Id>,
+    host_text: String,
+    persisted: BTreeMap<Id, Option<String>>,
+    has_registry_key: bool,
+    dirty: bool,
 }
 
 impl FileIndex {
-    /// An empty registry hosted by an (empty) bare config document in `format`.
+    /// An empty registry with no host document — see the `host` field. Records
+    /// resolve in memory; nothing is staged for writing.
     pub fn new(format: fig::Format) -> Self {
         Self {
             live: InMemoryIndex::new(),
             tombstones: BTreeSet::new(),
+            host: None,
             host_text: String::new(),
             carrier: MetaCarrier::WholeFile(format),
             persisted: BTreeMap::new(),
             has_registry_key: false,
             dirty: false,
+            saved: None,
         }
+    }
+
+    /// Give a registry a host document to persist into, adopting `text` as its
+    /// current contents.
+    ///
+    /// The bootstrap seam: a workspace that only discovers it needs a registry
+    /// *after* a mutation has minted an ID (`check --fix` declines to create one
+    /// until a fix actually registers something) creates the document, then hands
+    /// it here so the write renders against the real host — its title, its
+    /// `part_of`, its fence style — rather than against nothing.
+    ///
+    /// **This store's records stay authoritative.** Only the write *target* is
+    /// adopted: the host's text, carrier, and already-persisted record state, so
+    /// [`render`](Self::render) splices a correct diff into it. Records the host
+    /// happens to carry are not merged into memory — they were not part of what
+    /// this store was built from, and adopting them here would resurrect, as live
+    /// records, whatever a scan or a caller had deliberately left out. They are
+    /// not *lost* either: `render` only ever touches the records it knows about,
+    /// so their lines survive in the document and are read back normally by the
+    /// next [`parse`](Self::parse).
+    pub fn set_host(&mut self, path: impl Into<PathBuf>, text: &str) -> Result<()> {
+        let path = path.into();
+        let reparsed = Self::parse(&path, text)?;
+        self.host = Some(path);
+        self.carrier = reparsed.carrier;
+        self.host_text = reparsed.host_text;
+        self.persisted = reparsed.persisted;
+        self.has_registry_key = reparsed.has_registry_key;
+        Ok(())
+    }
+
+    /// The document this registry persists into, if it has one.
+    pub fn host(&self) -> Option<&Path> {
+        self.host.as_deref()
     }
 
     /// Parse the registry out of its host document. `path` picks the carrier
@@ -187,11 +352,13 @@ impl FileIndex {
         let mut index = Self {
             live: InMemoryIndex::new(),
             tombstones: BTreeSet::new(),
+            host: Some(path.to_path_buf()),
             host_text: text.to_string(),
             carrier,
             persisted: BTreeMap::new(),
             has_registry_key: doc.meta.get("registry").is_some(),
             dirty: false,
+            saved: None,
         };
         if let Some(registry) = doc.meta.get("registry").and_then(Value::as_mapping) {
             for (id, value) in registry {
@@ -360,6 +527,71 @@ impl IndexStore for FileIndex {
     fn is_known(&self, id: &Id) -> bool {
         self.live.resolve(id).is_some() || self.tombstones.contains(id)
     }
+
+    fn checkpoint(&mut self) {
+        self.saved = Some(Box::new(FileIndexState {
+            live: self.live.clone(),
+            tombstones: self.tombstones.clone(),
+            host_text: self.host_text.clone(),
+            persisted: self.persisted.clone(),
+            has_registry_key: self.has_registry_key,
+            dirty: self.dirty,
+        }));
+    }
+
+    fn rollback(&mut self) {
+        let Some(saved) = self.saved.take() else { return };
+        let FileIndexState { live, tombstones, host_text, persisted, has_registry_key, dirty } =
+            *saved;
+        self.live = live;
+        self.tombstones = tombstones;
+        self.host_text = host_text;
+        self.persisted = persisted;
+        self.has_registry_key = has_registry_key;
+        self.dirty = dirty;
+    }
+
+    fn committed(&mut self, persisted: bool) {
+        self.saved = None;
+        if persisted {
+            self.dirty = false;
+        }
+    }
+
+    fn rebase(&mut self, cs: &crate::change::ChangeSet) -> Result<()> {
+        let Some(host) = self.host.clone() else {
+            return Ok(());
+        };
+        // Follow a move of the host document to its final path.
+        let dest = cs.renamed_to(&host).unwrap_or(host);
+        // Whatever the set will leave in that document is the text the records
+        // must be spliced into — the op's edit, not the copy read at startup.
+        if let Some(bytes) = cs.staged(&dest) {
+            let text = String::from_utf8(bytes.to_vec()).map_err(|e| {
+                crate::error::Error::Structure(format!(
+                    "{} is not valid UTF-8: {e}",
+                    dest.display()
+                ))
+            })?;
+            return self.set_host(dest, &text);
+        }
+        // Moved but not rewritten: the bytes travelled with the rename, so
+        // `host_text` still describes it and only the path changes.
+        self.host = Some(dest);
+        Ok(())
+    }
+
+    /// The registry's write, rendered against its host document. `None` — and
+    /// crucially *still dirty* — when there is no host to write to.
+    fn pending_write(&mut self) -> Result<Option<(PathBuf, String)>> {
+        if !self.dirty {
+            return Ok(None);
+        }
+        let Some(host) = self.host.clone() else {
+            return Ok(None);
+        };
+        Ok(Some((host, self.render()?)))
+    }
 }
 
 // These engine tests use YAML fixtures throughout, so they run whenever the
@@ -367,6 +599,44 @@ impl IndexStore for FileIndex {
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_host_keeps_this_stores_records_and_preserves_the_hosts() {
+        // The bootstrap backstop: an index built with no home (records minted by
+        // fixes) is given one after the fact. Its own records must survive into
+        // the write, and any the host already carried must not be trampled by it.
+        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mine = Id("mineeee".into());
+        ix.register(&mine, Path::new("fixed.md"));
+
+        // A host that already has a record of its own, plus self-description.
+        let host = "title: ID registry\npart_of: index.md\nregistry:\n  theirss: other.md\n";
+        ix.set_host("registry.yaml", host).unwrap();
+
+        let (path, rendered) = ix.pending_write().unwrap().expect("dirty, and now has a home");
+        assert_eq!(path, PathBuf::from("registry.yaml"));
+        assert!(rendered.contains("fixed.md"), "this store's record must land: {rendered}");
+        assert!(rendered.contains("other.md"), "the host's record must survive: {rendered}");
+        assert!(rendered.contains("part_of"), "the host's self-description survives: {rendered}");
+
+        // The host's record was not adopted as live in memory — but the next
+        // parse of what we just wrote reads both, which is what makes that safe.
+        assert_eq!(ix.resolve(&Id("theirss".into())), None);
+        let reread = FileIndex::parse(Path::new("registry.yaml"), &rendered).unwrap();
+        assert_eq!(reread.resolve(&mine), Some(PathBuf::from("fixed.md")));
+        assert_eq!(reread.resolve(&Id("theirss".into())), Some(PathBuf::from("other.md")));
+    }
+
+    #[test]
+    fn a_store_with_no_host_stays_dirty_rather_than_dropping_records() {
+        // Frontmatter-only workspaces, and the window before a registry is
+        // bootstrapped: nothing to stage, so the caller must still be told there
+        // is something to write.
+        let mut ix = FileIndex::new(fig::Format::Yaml);
+        ix.register(&Id("orphann".into()), Path::new("a.md"));
+        assert_eq!(ix.pending_write().unwrap(), None, "nowhere to write");
+        assert!(ix.is_dirty(), "and so it must not claim to be persisted");
+    }
 
     #[test]
     fn registers_and_resolves_both_directions() {

@@ -764,6 +764,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// reference style — a path, an `id:<id>` link (registering the parent), or an
     /// alias — so a repair matches how it authors every other link.
     pub async fn apply_fix(&mut self, fix: &Fix) -> Result<()> {
+        let mut cs = self.change();
         match fix {
             Fix::AddInverse { doc, relation, parent, title } => {
                 // The parent exists (this repair points a child back at it), so an
@@ -772,21 +773,22 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 let (text, parsed) = self.load(doc).await?;
                 let updated =
                     crate::edit::set_in_text(&text, parsed.carrier, relation, fig::Value::Str(target))?;
-                self.fs().write(&self.root().join(doc), updated.as_bytes()).await?;
+                cs.write(doc, updated);
             }
             // Trust the registry: overwrite the document's `id` frontmatter.
             Fix::SetId { doc, id } => {
                 let (text, parsed) = self.load(doc).await?;
                 let updated =
                     crate::edit::set_in_text(&text, parsed.carrier, "id", fig::Value::Str(id.0.clone()))?;
-                self.fs().write(&self.root().join(doc), updated.as_bytes()).await?;
+                cs.write(doc, updated);
             }
-            // Adopt the frontmatter id into the registry (a cache update, no doc edit).
+            // Adopt the frontmatter id into the registry (a cache update, no doc
+            // edit — but the registry write it implies is staged by `commit`).
             Fix::RegisterId { doc, id } => {
                 self.index_mut().register(id, doc);
             }
         }
-        Ok(())
+        self.commit(cs).await
     }
 }
 

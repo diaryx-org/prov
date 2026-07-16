@@ -24,6 +24,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+use crate::change::ChangeSet;
 use crate::content::ContentFormat;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
@@ -650,9 +651,106 @@ impl<FS: Storage, Id, Ix> Workspace<FS, Id, Ix> {
     pub fn fs(&self) -> &FS {
         &self.fs
     }
+}
 
-    // TODO(port): scan/traverse/mutate from diaryx_core::workspace land here,
-    // driving `fs` and maintaining `index` when `identity` triggers fire.
+impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Open a [`ChangeSet`] for a mutation: an empty set, and a checkpoint of
+    /// the index so a failure can put it back.
+    ///
+    /// Pairs with exactly one [`commit`](Self::commit), and opens *before* the
+    /// op's first index touch rather than at its writes — authoring an id-form
+    /// link registers its target, so the registrations an op makes while
+    /// computing its edits are part of what a failure has to unwind.
+    ///
+    /// An op can also fail *between* the two, by `?` on an edit it was still
+    /// computing — a malformed parent block rejected by the editor, say. Its
+    /// writes never happened, but its registrations did, and no `commit` ran to
+    /// unwind them. The leak is not hypothetical: `create` mints an ID for the
+    /// child *before* authoring the parent's entry, so a failure in between would
+    /// leave the registry naming a document that was never written.
+    ///
+    /// So opening rolls back any checkpoint still outstanding before taking a new
+    /// one. A store with nothing checkpointed ignores it, which is the ordinary
+    /// case; the one that has something is the one that left it behind.
+    pub(crate) fn change(&mut self) -> ChangeSet {
+        self.index.rollback();
+        self.index.checkpoint();
+        ChangeSet::new()
+    }
+
+    /// [`load`](Self::load) a document, preferring what `cs` has already staged
+    /// for it over what is on disk.
+    ///
+    /// For the op that edits the same document twice: the second edit has to see
+    /// the first, and the first is in the set rather than on the filesystem.
+    pub(crate) async fn load_staged(
+        &self,
+        cs: &ChangeSet,
+        path: &Path,
+    ) -> Result<(String, crate::document::Document)> {
+        let Some(bytes) = cs.staged(path) else {
+            return self.load(path).await;
+        };
+        let text = String::from_utf8(bytes.to_vec())
+            .map_err(|e| Error::Structure(format!("{} is not valid UTF-8: {e}", path.display())))?;
+        let doc = crate::document::Document::parse(path, &text)?;
+        Ok((text, doc))
+    }
+
+    /// Land a staged [`ChangeSet`], together with the registry write when the op
+    /// moved an ID — one unit, all of it or none of it.
+    ///
+    /// The registry is staged *last*, after the documents, for the same reason
+    /// [`reparent`](crate::mutate) orders its writes the way it does: since the
+    /// one failure this cannot rule out is a crash between ops, the window it
+    /// leaves should be the diagnosable one. Documents-then-registry leaves at
+    /// worst an ID resolving to a stale path, which `check` reports;
+    /// registry-first would leave it resolving to a document that is not there.
+    ///
+    /// A dirty index with nowhere to persist (a workspace storing IDs in
+    /// frontmatter only, or one whose registry document is not bootstrapped yet)
+    /// stages nothing and stays dirty — the caller that knows the home writes it.
+    /// It still *commits*, though: staging nothing is not failing, so its
+    /// checkpoint is spent like anyone's. Conflating those two is how a
+    /// successful op leaves a checkpoint behind for the next
+    /// [`change`](Self::change) to mistake for a leak and unwind.
+    pub(crate) async fn commit(&mut self, mut cs: ChangeSet) -> Result<()> {
+        // The registry lives in a document, and the op may be moving or rewriting
+        // that very document. Follow it before rendering — staged last, this write
+        // would otherwise clobber the op's own edit to it.
+        if let Err(e) = self.index.rebase(&cs) {
+            self.index.rollback();
+            return Err(e);
+        }
+        let staged_index = match self.index.pending_write() {
+            Ok(Some((path, text))) => {
+                cs.write(path, text);
+                true
+            }
+            Ok(None) => false,
+            Err(e) => {
+                self.index.rollback();
+                return Err(e);
+            }
+        };
+        match cs.apply(&self.fs, &self.root).await {
+            Ok(()) => {
+                // Unconditional: the op succeeded, so its checkpoint is spent
+                // either way. `staged_index` only says whether the store may now
+                // call itself persisted — a store with no home stages nothing and
+                // must stay dirty for whoever does write it, but its checkpoint is
+                // just as finished as anyone's.
+                self.index.committed(staged_index);
+                Ok(())
+            }
+            Err(e) => {
+                self.index.rollback();
+                Err(e)
+            }
+        }
+    }
+
+    // TODO(port): scan/traverse from diaryx_core::workspace land here.
 }
 
 /// Builder for [`Workspace`]. Setting an identity policy or index store returns

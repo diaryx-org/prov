@@ -279,12 +279,17 @@ containment a human must resolve"); reparent *replaces* the claim. An unparented
 child is accepted, which makes reparent a superset — so `colophon adopt` was never
 added, since `reparent --in` already links an orphan.
 
-- **It is detectable, not atomic.** Three documents change and there is no journal,
-  so the writes are ordered by which failure `check` can see: repoint the child
-  (→ `MissingInverse` if it stops there), add the new entry (→ `DuplicateContainment`),
-  remove the old one last. Removing first would leave a child pointing at a parent
-  that forgot it — the one state in this set `check` does *not* look for, which is
-  exactly why it is last. A journal would make this moot; nothing else will.
+- **It is atomic against errors, detectable against crashes.** Three documents
+  change, and they land as one `ChangeSet` (`colophon/src/change.rs`), so an I/O
+  failure at any of them unwinds the rest: no error leaves the child contained
+  twice. A crash is still a crash — unwinding is driven from memory — so the write
+  *order* still earns its keep, chosen so every window a crash could expose is a
+  finding `check` reports: repoint the child (→ `MissingInverse` if it stops there),
+  add the new entry (→ `DuplicateContainment`), remove the old one last. Removing
+  first would leave a child pointing at a parent that forgot it — the one state in
+  this set `check` does *not* look for, which is exactly why it is last. Closing
+  the crash window needs a journal and an `fsync` seam on `Storage`; nothing else
+  will.
 - **The cycle check is a walk, not a census.** Reparenting a node under its own
   descendant is refused by walking `part_of` up from the new parent. Cheap and
   bounded, but note *why* it must be refused rather than reported: the detached pair

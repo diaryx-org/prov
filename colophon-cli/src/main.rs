@@ -17,10 +17,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use colophon::document::MetaCarrier;
 use colophon::tree::{Node, NodeKind};
 use colophon::{
-    Addressing, Adoption, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id, IdStorage,
-    IndexStore, Layout, LinkStyle, Mapping, Minter, Registration, RelationSet, RelationStyleConfig,
-    RoutePlan, StdFs, StructurePlan, SynthNode, Target, Trigger, Value, Workspace, WorkspaceConfig,
-    Wrapper, block_on, edit, link, meta,
+    Addressing, Adoption, ChangeSet, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id,
+    IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Registration, RelationSet,
+    RelationStyleConfig, RoutePlan, StdFs, StructurePlan, SynthNode, Target, Trigger, Value,
+    Workspace, WorkspaceConfig, Wrapper, block_on, edit, link, meta,
 };
 
 /// `--layout` — the CLI mirror of [`Layout`], so the flag's spelling is the
@@ -1164,6 +1164,10 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
 /// the root (self-described with a title and a part_of back to the root) and add
 /// the `registry` pointer to the root's metadata — comment-preservingly, like
 /// any other edit.
+///
+/// Two files, so one [`ChangeSet`]: a bootstrap that wrote the registry document
+/// but failed to point the root at it would leave a registry no scan can find —
+/// invisible, and silently re-bootstrapped (over) next run.
 fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
     // Frontmatter-only storage keeps no registry document — IDs live solely in
     // each file's `id` field, so there is nothing to bootstrap or point at.
@@ -1176,6 +1180,8 @@ fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
     let format = ctx.config.default_embed_format;
     let registry_rel = PathBuf::from(sidecar_name(REGISTRY_STEM, format));
     let registry_full = ctx.root_dir.join(&registry_rel);
+
+    let mut cs = ChangeSet::new();
     if !registry_full.exists() {
         let mut seed = colophon::Mapping::new();
         seed.insert("title".into(), Value::String("ID registry".into()));
@@ -1183,7 +1189,7 @@ fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
             "part_of".into(),
             Value::String(ctx.root_doc.to_string_lossy().into_owned()),
         );
-        std::fs::write(&registry_full, meta::serialize_mapping(&seed, format)?)?;
+        cs.write(&registry_rel, meta::serialize_mapping(&seed, format)?);
     }
     let registry_name = registry_rel.to_string_lossy().into_owned();
     let root_full = ctx.root_dir.join(&ctx.root_doc);
@@ -1195,7 +1201,9 @@ fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
         "registry",
         edit::infer_scalar(&registry_name),
     )?;
-    std::fs::write(&root_full, updated)?;
+    cs.write(&ctx.root_doc, updated);
+    block_on(cs.apply(&StdFs, &ctx.root_dir))?;
+
     eprintln!(
         "initialized {} (linked from {})",
         registry_rel.display(),
@@ -1205,8 +1213,14 @@ fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
     Ok(())
 }
 
-/// Persist the registry when a command changed it, to wherever the root says
-/// it lives.
+/// Persist the registry when a mutation could not stage it itself.
+///
+/// Normally this does nothing: the library stages the registry write into the
+/// same change set as the documents whose links it describes, so by the time a
+/// command returns, the index is already clean. The exception is a workspace
+/// with no registry document *yet* — `check --fix` deliberately declines to
+/// bootstrap one until a fix has actually minted an ID, so the index it dirtied
+/// had nowhere to stage to. Give it its new home and write it.
 fn save_index(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<(), AnyError> {
     if !ws.index().is_dirty() {
         return Ok(());
@@ -1214,9 +1228,20 @@ fn save_index(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result
     let Some(rel) = &ctx.registry else {
         return Err("the registry changed but no registry document is declared".into());
     };
-    let rendered = ws.index_mut().render()?;
-    std::fs::write(ctx.root_dir.join(rel), rendered)?;
-    ws.index_mut().mark_clean();
+    let full = ctx.root_dir.join(rel);
+    let host_text = match std::fs::read_to_string(&full) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    ws.index_mut().set_host(rel, &host_text)?;
+    let Some((path, rendered)) = ws.index_mut().pending_write()? else {
+        return Ok(());
+    };
+    let mut cs = ChangeSet::new();
+    cs.write(path, rendered);
+    block_on(cs.apply(&StdFs, &ctx.root_dir))?;
+    ws.index_mut().committed(true);
     Ok(())
 }
 
@@ -3617,7 +3642,9 @@ fn cmd_config(key: Option<&str>, value: Option<&str>) -> CmdResult {
 /// does not: create `colophon.<ext>` (in the workspace's metadata format) beside
 /// the root (self-described with a title and a `part_of` back to the root, in
 /// the workspace link style) and add the `config` pointer to the root's
-/// metadata. Returns its path relative to the root. Mirrors [`ensure_registry`].
+/// metadata. Returns its path relative to the root. Mirrors [`ensure_registry`],
+/// including its change set: a config document the root does not point at is one
+/// nothing will ever read.
 fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
     let ws = workspace(ctx)?;
     if let Some(existing) = block_on(ws.config_path(&ctx.root_doc))? {
@@ -3627,6 +3654,7 @@ fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
     let config_name = sidecar_name(CONFIG_STEM, format);
     let config_rel = PathBuf::from(&config_name);
     let config_full = ctx.root_dir.join(&config_rel);
+    let mut cs = ChangeSet::new();
     if !config_full.exists() {
         // The root's title (or a title from its filename) labels the back-link.
         let root_full = ctx.root_dir.join(&ctx.root_doc);
@@ -3649,7 +3677,7 @@ fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
         let mut seed = colophon::Mapping::new();
         seed.insert("title".into(), Value::String("colophon config".into()));
         seed.insert("part_of".into(), Value::String(part_of));
-        std::fs::write(&config_full, meta::serialize_mapping(&seed, format)?)?;
+        cs.write(&config_rel, meta::serialize_mapping(&seed, format)?);
     }
     // Link it from the root via the `config` relation.
     let root_full = ctx.root_dir.join(&ctx.root_doc);
@@ -3661,7 +3689,8 @@ fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
         "config",
         edit::infer_scalar(&config_name),
     )?;
-    std::fs::write(&root_full, updated)?;
+    cs.write(&ctx.root_doc, updated);
+    block_on(cs.apply(&StdFs, &ctx.root_dir))?;
     eprintln!(
         "initialized {} (linked from {})",
         config_rel.display(),

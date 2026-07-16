@@ -227,6 +227,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
+        // Opens before the first id-authoring call below, so the index
+        // checkpoint covers the registrations those make (see `mutate::create`).
+        let mut cs = self.change();
+
         // The sidecar's inverse link up (the parent exists → an id link registers
         // it by path) and the parent's spanning entry down (the sidecar is not on
         // disk yet → mint its id directly rather than register-by-path).
@@ -256,11 +260,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let parent_out = parent_editor.render()?;
 
-        if let Some(dir) = self.root().join(&node).parent() {
-            self.fs().create_dir_all(dir).await?;
-        }
-        self.fs().write(&self.root().join(&node), node_text.as_bytes()).await?;
-        self.fs().write(&self.root().join(&parent), parent_out.as_bytes()).await?;
+        cs.write(&node, node_text);
+        cs.write(&parent, parent_out);
 
         // Identity hook — eager policies assign an ID from birth (idempotent: an
         // id-linked sidecar was already registered above).
@@ -270,6 +271,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let id = self.mint_unique(&node);
             self.index_mut().register(&id, &node);
         }
+        self.commit(cs).await?;
         Ok(node)
     }
 }

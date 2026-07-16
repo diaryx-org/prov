@@ -20,6 +20,21 @@ pub enum Error {
     /// The `twig` body parser failed — see `content.rs`.
     #[error("content error: {0}")]
     Content(String),
+
+    /// A staged write failed *and* the rollback that should have undone it also
+    /// failed — see [`crate::change::ChangeSet::apply`]. The one case where
+    /// colophon cannot say what is on disk, so it says exactly that instead of
+    /// reporting the original failure as if the workspace were untouched.
+    #[error(
+        "{cause}; and rolling back failed too: {rollback}. \
+         The workspace may be partially written — run `colophon check`."
+    )]
+    Torn {
+        /// The failure that triggered the rollback.
+        cause: String,
+        /// The failure the rollback itself hit.
+        rollback: String,
+    },
 }
 
 /// Convenience alias for results in this crate.

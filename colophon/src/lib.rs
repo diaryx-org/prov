@@ -47,6 +47,7 @@ compile_error!(
 );
 
 pub mod attach;
+pub mod change;
 pub mod config;
 pub mod content;
 pub mod document;
@@ -67,6 +68,7 @@ pub mod tree;
 pub mod validate;
 pub mod workspace;
 
+pub use change::{ChangeSet, FileOp};
 pub use config::{IdStorage, RelationStyleConfig, WorkspaceConfig};
 pub use content::ContentFormat;
 pub use content::{code_spans, render_html};
