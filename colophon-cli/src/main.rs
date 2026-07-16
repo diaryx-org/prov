@@ -140,6 +140,19 @@ enum Command {
         /// but no tombstones) (default: frontmatter).
         #[arg(long, value_enum)]
         id_storage: Option<IdStorageArg>,
+        /// Content-checksum coverage for bit-rot detection: payloads (attachment
+        /// files only — the default, frictionless), full (also document bodies,
+        /// paired with `colophon edit`), or off. Verified by `colophon check`.
+        #[arg(long, value_enum)]
+        fixity: Option<FixityArg>,
+        /// Delete straight to a hard delete instead of the recoverable recycle bin
+        /// (the recycle bin is on by default — the safe archival posture).
+        #[arg(long)]
+        no_recycle_bin: bool,
+        /// Frontmatter field `colophon edit` stamps with an RFC 3339 UTC timestamp
+        /// on a content change (e.g. `updated`). Omitted → the feature is off.
+        #[arg(long, value_name = "FIELD")]
+        updated_field: Option<String>,
         /// What to do with content documents already in the directory: `flat`
         /// links each one under the new root; `mirror` folds the folder tree into
         /// the containment tree (each directory becomes a node, synthesizing a
@@ -724,6 +737,34 @@ impl IdStorageArg {
     }
 }
 
+/// How far content-checksum (fixity) coverage extends — the `fixity` config key
+/// ([`colophon::Fixity`]). `Payloads` (the default) checksums attachment payloads
+/// only — frictionless, since a payload is never edited; `Full` also checksums
+/// document bodies (pair with `colophon edit`); `Off` records nothing.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum FixityArg {
+    Off,
+    Payloads,
+    Full,
+}
+
+impl From<FixityArg> for colophon::Fixity {
+    fn from(f: FixityArg) -> Self {
+        match f {
+            FixityArg::Off => colophon::Fixity::Off,
+            FixityArg::Payloads => colophon::Fixity::Payloads,
+            FixityArg::Full => colophon::Fixity::Full,
+        }
+    }
+}
+
+impl FixityArg {
+    /// The lowercase spelling for the `init` summary line.
+    fn label(self) -> &'static str {
+        colophon::Fixity::from(self).as_config_str()
+    }
+}
+
 /// What `init` does with content documents already present in the directory
 /// (`docs/init-adoption.md`). `Flat` (Phase 1) links each loose file directly
 /// under the new root; `Mirror` (Phase 2) folds the directory tree into the
@@ -908,6 +949,9 @@ fn main() -> ExitCode {
             link_style,
             identity,
             id_storage,
+            fixity,
+            no_recycle_bin,
+            updated_field,
             adopt,
             attach,
             yes,
@@ -923,6 +967,9 @@ fn main() -> ExitCode {
             link_style,
             identity,
             id_storage,
+            fixity,
+            no_recycle_bin,
+            updated_field,
             adopt,
             attach,
             yes,
@@ -1912,6 +1959,9 @@ fn cmd_init(
     link_style: Option<LinkStyleArg>,
     identity: Option<IdentityArg>,
     id_storage: Option<IdStorageArg>,
+    fixity: Option<FixityArg>,
+    no_recycle_bin: bool,
+    updated_field: Option<String>,
     adopt: Option<AdoptArg>,
     attach: bool,
     yes: bool,
@@ -2081,6 +2131,7 @@ fn cmd_init(
     let path_format_possible =
         link_style.is_none() && matches!(reference, None | Some(ReferenceArg::Path));
     let id_storage_prompt_possible = id_storage.is_none() && identity != Some(IdentityArg::Off);
+    let fixity_prompt_possible = fixity.is_none();
     let prompting = interactive
         && (use_walk
             || title.is_none()
@@ -2092,7 +2143,8 @@ fn cmd_init(
             || identity.is_none()
             || reference_prompt_possible
             || path_format_possible
-            || id_storage_prompt_possible);
+            || id_storage_prompt_possible
+            || fixity_prompt_possible);
     if prompting {
         cliclack::intro("colophon init")?;
     }
@@ -2256,6 +2308,18 @@ fn cmd_init(
         }
     };
 
+    // The archival safety axes. Fixity is prompted (three meaningful tiers);
+    // recycle-bin (on unless opted out) and the updated-timestamp field are
+    // flag-only — a recoverable delete is the right default without asking, and a
+    // timestamp field name is a niche text input.
+    let fixity = match fixity {
+        Some(f) => f,
+        None if interactive => prompt_fixity()?,
+        None => FixityArg::Payloads,
+    };
+    let recycle_bin = !no_recycle_bin;
+    let updated_field = updated_field.unwrap_or_default();
+
     // Assemble the workspace preferences these choices encode. The (wrapper,
     // reference) pair writes the default `reference_*` axes and any per-relation
     // overrides (the up≠down split) onto the config.
@@ -2271,9 +2335,9 @@ fn cmd_init(
         default_embed_format: meta.into(),
         embed_style: embed,
         content_format: content.into(),
-        recycle_bin: true,
-        fixity: colophon::Fixity::Payloads,
-        updated_field: String::new(),
+        recycle_bin,
+        fixity: fixity.into(),
+        updated_field: updated_field.clone(),
     };
     reference.write_onto(wrapper.into(), &mut ws_config);
 
@@ -2525,9 +2589,22 @@ fn cmd_init(
     } else {
         String::new()
     };
+    // The safety axes: recycle bin (when on), fixity (when recording anything),
+    // and the updated-timestamp field (when named).
+    let recycle_note = if recycle_bin { ", recycle bin" } else { "" };
+    let fixity_note = if fixity != FixityArg::Off {
+        format!(", fixity {}", fixity.label())
+    } else {
+        String::new()
+    };
+    let updated_note = if updated_field.is_empty() {
+        String::new()
+    } else {
+        format!(", updates `{updated_field}`")
+    };
     let details = format!(
         "root: {root_name} — {title}{author_note}\n\
-         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, wrapper {}, references {}{path_note}{id_storage_note}",
+         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, wrapper {}, references {}{path_note}{id_storage_note}{recycle_note}{fixity_note}{updated_note}",
         content.label(),
         embed.as_config_str(),
         embed_label.to_lowercase(),
@@ -2617,6 +2694,26 @@ fn prompt_reference(identity: IdentityArg, wrapper: WrapperArg) -> std::io::Resu
 /// Prompt for where IDs are stored — registry vs. a self-describing frontmatter
 /// shadow. The `frontmatter-only` mode (no registry) is intentionally not offered
 /// here; it forfeits tombstones and is reachable only via `--id-storage`.
+/// Prompt for content-checksum coverage — the archival bit-rot guard. Payloads
+/// is the frictionless default; full extends it to editable bodies (paired with
+/// `colophon edit`); off records nothing.
+fn prompt_fixity() -> std::io::Result<FixityArg> {
+    cliclack::select("Content checksums (bit-rot detection)")
+        .initial_value(FixityArg::Payloads)
+        .item(
+            FixityArg::Payloads,
+            "Attachments",
+            "checksum attachment files; verified by `check` (recommended)",
+        )
+        .item(
+            FixityArg::Full,
+            "Attachments + document bodies",
+            "also checksum bodies; restamped by `colophon edit`",
+        )
+        .item(FixityArg::Off, "Off", "record no checksums")
+        .interact()
+}
+
 fn prompt_id_storage() -> std::io::Result<IdStorageArg> {
     cliclack::select("Where IDs are stored")
         .initial_value(IdStorageArg::Frontmatter)
