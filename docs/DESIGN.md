@@ -49,6 +49,54 @@ Nothing about "diary", "journal", or even "contents" is baked into the core.
 `RelationSet::diaryx()` is merely a preset; the test suite proves a `part`/`whole`
 vocabulary works identically with zero diaryx assumptions.
 
+### Where configuration starts and ends — *does colophon read it back?*
+
+The line above ("mechanism fixed, vocabulary flexible") raises a recurring
+question every new field forces: is *this* thing configurable, and how far? The
+operative test is one question — **does colophon read the value back and reason
+about it?** — and it sorts every field into three tiers:
+
+1. **Mechanism — not configurable.** How structure works, that integrity is
+   checkable, that identity is additive, and *the format of anything colophon
+   itself maintains*. A colophon-maintained value must be machine-standard
+   because colophon has to parse, compare, and rewrite it reliably — years later,
+   on another tool, after a merge. The `sha256:` fixity digest, the opaque id, the
+   registry, an RFC 3339 `updated` timestamp: all live here. They are
+   standardized *precisely because* they are not for human eyes but for machine
+   reasoning.
+2. **Vocabulary & representation — configurable.** The *names and surface
+   spellings* of those mechanisms: which fields are relations, the spanning one,
+   reference styles, id storage, embed format, the *name* of the `updated` field,
+   whether a feature is on. Configuring a workspace means re-spelling colophon's
+   fixed mechanisms for your vault — never redefining them. Essentially all
+   colophon config lives here.
+3. **Content — not colophon's business.** Everything colophon merely *carries*:
+   `title`, a user's own `date`, arbitrary frontmatter, the body. colophon never
+   reasons about these, so there is nothing to standardize and nothing to
+   configure — the user owns them completely, today, just by writing them.
+
+The tension this resolves is the seductive middle option: a colophon-*maintained*
+field that the user also *formats*. That combination is incoherent — the moment
+colophon must round-trip a value it has to understand the format, and parsing
+arbitrary user formats (ambiguous, locale-dependent, lossy) is exactly the
+fragility an archive cannot afford. So the real boundary is:
+
+> **colophon-maintained ⟹ colophon owns the format. User-formatted ⟹ the user
+> maintains it.** There is no "colophon maintains a field whose format it does not
+> understand."
+
+The corollary — **store canonical, render pretty**: human-friendly formatting is
+a *presentation* concern (a viewer, an export), never a storage one. colophon
+stores the canonical machine value (RFC 3339 `…Z`); a UI displays it however the
+reader likes. This is why "let users choose the timestamp format" never becomes a
+storage-config question: a user who wants a pretty date authors a `date` field
+colophon never reads (tier 3), while the maintained `updated` field (tier 1/2 —
+fixed format, configurable *name*) stays trustworthy. The two pulls stop fighting
+because they are aimed at two different fields.
+
+So: **config exists to rename and re-spell colophon's mechanisms — never to
+reformat its machine-state (fixed) or to manage your content (already yours).**
+
 ## 3. Structure: a spanning tree with an overlay graph
 
 Containment is a **tree**, not a general DAG — but that is a feature, not a
@@ -354,7 +402,7 @@ not yet ported.
 | Crash-atomic change sets + journal | `change`, `journal` | ✅ **error atomicity** (in-memory unwind on any failed write) **and crash atomicity**. Per file: `write_atomic` means no document is caught half-written even by a power cut. For the whole set: a checksummed write-ahead journal — a single transient root dotfile (`.colophon-journal`), written and flushed *before* any document (the commit point), removed on success — that `recover` (run by `check`) rolls forward idempotently after a crash. An interrupted set therefore always resolves consistent: fully-before on a caught error, fully-after on a crash. The registry write still rides the same set (§5). Remaining: an IndexedDB backend delegating to its native transaction instead of the journal |
 | Recycle bin (recoverable delete) | `mutate`, `relation`, `config` | ✅ a first-class, **reachable** member (a `recycle_bin` pointer relation off the root, discovered by `Workspace::recycle_bin_path` — the registry's anti-`.obsidian/` move, §5/§6), not an app-private folder. `recycle` moves a document (bytes verbatim) into a visible `recyclebin/` and records a tombstone in its self-describing index (validated by `check`); the bytes park under an *unreached* `recyclebin/items/` so §8's orphan check ignores them. `restore` reverses it losslessly (bytes back, parent re-linked, ID re-registered); `empty_bin` is the only hard purge, always explicit. All three are one journaled ChangeSet. Config axis `recycle_bin` (on by default — the safe archival posture — opt-out per workspace); the CLI routes `rm` to the bin unless `--purge`, and adds `restore`/`empty-bin` |
 | Link text + path arithmetic | `link` | ✅ labeled links, resolve/relative, lexical normalize |
-| Single-document edits | `edit` | ✅ format-preserving `set`/`unset` over text |
+| Single-document edits | `edit` | ✅ format-preserving `set`/`unset` over text; `colophon edit` opens `$EDITOR` and, on a real content change, calls `Workspace::record_content_update` — one crash-safe write that restamps the fixity checksum (under `full`) and stamps the configured `updated_field` (empty = off) with an RFC 3339 UTC instant the CLI supplies (the library stays clockless, DESIGN §2). Gated on actual change (byte-compared across the editor), so an open-and-quit stamps nothing |
 | Multi-format embedded metadata | `document`/`meta` | ✅ read side (fig 2.1's `detect` + `split` *are* the fence layer); ⏳ format-preserving writes ride the mutation port |
 | serde / fig backend split | — | ⏳ planned (feature gates) |
 | Filesystem intake (`mirror` import) | `intake` | ✅ `plan_mirror` → `StructurePlan` (previewable) → `apply_plan` folds a directory tree into the containment tree, synthesizing folder-notes for bare dirs and reusing `create`/`adopt`; drives `init --adopt mirror` (`docs/init-adoption.md`, Phase 2). The `StructureSource` *trait* (frontmatter/hybrid sources) is deferred until a second source needs it |

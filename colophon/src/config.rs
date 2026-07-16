@@ -213,6 +213,14 @@ pub struct WorkspaceConfig {
     /// How far content-checksum (fixity) coverage extends — attachments only (the
     /// default), attachments plus document bodies, or off.
     pub fixity: Fixity,
+    /// The frontmatter field `colophon edit` stamps with the current time when a
+    /// document's content changes — the "last updated" provenance field. Empty
+    /// (the default) disables it. The *name* is yours (vocabulary — `updated`,
+    /// `modified`, `lastmod`); the *value* is always machine-standard (RFC 3339
+    /// UTC), because colophon reads it back to know when to rewrite it. A
+    /// human-friendly date is a *different*, user-owned field colophon never
+    /// touches (see DESIGN §2, "does colophon read it back?").
+    pub updated_field: String,
 }
 
 impl Default for WorkspaceConfig {
@@ -234,6 +242,7 @@ impl Default for WorkspaceConfig {
             content_format: ContentFormat::Markdown,
             recycle_bin: true,
             fixity: Fixity::Payloads,
+            updated_field: String::new(),
         }
     }
 }
@@ -256,6 +265,7 @@ impl WorkspaceConfig {
             content_format: ContentFormat::Markdown,
             recycle_bin: true,
             fixity: Fixity::Payloads,
+            updated_field: String::new(),
         }
     }
 
@@ -277,6 +287,7 @@ impl WorkspaceConfig {
             content_format: ContentFormat::Markdown,
             recycle_bin: true,
             fixity: Fixity::Payloads,
+            updated_field: String::new(),
         }
     }
 
@@ -403,6 +414,9 @@ impl WorkspaceConfig {
         {
             self.fixity = fixity;
         }
+        if let Some(field) = meta.get("updated_field").and_then(Value::as_str) {
+            self.updated_field = field.to_string();
+        }
     }
 
     /// A fresh config with `meta`'s recognized keys applied over the defaults.
@@ -452,6 +466,7 @@ impl WorkspaceConfig {
         map.insert("content_format".into(), Value::String(self.content_format.as_config_str().into()));
         map.insert("recycle_bin".into(), Value::Bool(self.recycle_bin));
         map.insert("fixity".into(), Value::String(self.fixity.as_config_str().into()));
+        map.insert("updated_field".into(), Value::String(self.updated_field.clone()));
         map
     }
 }
@@ -552,6 +567,7 @@ mod tests {
             // Non-default, so the round-trip actually exercises the axis.
             recycle_bin: false,
             fixity: Fixity::Full,
+            updated_field: "modified".to_string(),
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);

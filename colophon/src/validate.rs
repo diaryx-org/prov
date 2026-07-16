@@ -489,39 +489,77 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(findings)
     }
 
-    /// Record the current content checksum for the document at `path`, so its
-    /// stored `content_hash` matches its bytes again — the colophon-mediated way
-    /// to keep fixity true across an edit. `colophon edit` calls this on save so
-    /// a body change restamps rather than becoming a `check` finding; it is also
-    /// how a document first *earns* a body hash under the `full` tier.
+    /// Record that a document's content just changed — the single seam for the
+    /// bookkeeping an edit implies, done as one crash-safe write.
     ///
-    /// Hashes the same bytes `check` verifies: the `content` sibling for a
-    /// document that points at one (an attachment payload, a separated body),
-    /// else the document's own body. Returns whether the stored hash changed —
-    /// `false` is an idempotent no-op that writes nothing, so restamping an
-    /// unchanged document is free. The write rides the same crash-safe
-    /// [`ChangeSet`](crate::ChangeSet) as every other mutation.
-    pub async fn restamp_fixity(&mut self, path: impl AsRef<Path>) -> Result<bool> {
+    /// Two independent effects, each self-gating:
+    /// - **Fixity**: (re)stamp `content_hash` when the workspace records fixity
+    ///   for this document's kind (a payload for an attachment, a body otherwise)
+    ///   *and* the bytes have actually drifted from what is recorded — so an
+    ///   unchanged document restamps nothing.
+    /// - **Timestamp**: when `updated` is `Some((field, at))`, set that frontmatter
+    ///   `field` to `at`. The *caller* decides an edit happened and supplies the
+    ///   time — the library stays clockless and deterministic (DESIGN §2: the
+    ///   client produces the instant, colophon owns the field and its RFC 3339
+    ///   convention). Pass `None` to reconcile the checksum only.
+    ///
+    /// Returns whether anything was written. Hashes the same bytes `check`
+    /// verifies: the `content` sibling for a document that points at one, else the
+    /// document's own body.
+    pub async fn record_content_update(
+        &mut self,
+        path: impl AsRef<Path>,
+        updated: Option<(&str, &str)>,
+    ) -> Result<bool> {
         let path = link::normalize(path.as_ref());
-        let (text, doc) = self.load(&path).await?;
-        let hash = match doc.content_attr() {
-            Some(raw) => {
-                let dir = path.parent().unwrap_or(Path::new(""));
-                let target = link::normalize(dir.join(raw));
-                let bytes = self.fs().read(&self.root().join(&target)).await?;
-                crate::fixity::digest(&bytes)
-            }
-            None => crate::fixity::digest(doc.body.as_bytes()),
+        let (original, doc) = self.load(&path).await?;
+
+        // Fixity: does this document's kind get hashed, and has it drifted?
+        let covered =
+            if doc.is_attachment() { self.fixity().covers_payloads() } else { self.fixity().covers_bodies() };
+        let new_hash = if covered {
+            let hash = match doc.content_attr() {
+                Some(raw) => {
+                    let dir = path.parent().unwrap_or(Path::new(""));
+                    let target = link::normalize(dir.join(raw));
+                    crate::fixity::digest(&self.fs().read(&self.root().join(&target)).await?)
+                }
+                None => crate::fixity::digest(doc.body.as_bytes()),
+            };
+            (doc.meta.get("content_hash").and_then(Value::as_str) != Some(hash.as_str()))
+                .then_some(hash)
+        } else {
+            None
         };
-        if doc.meta.get("content_hash").and_then(Value::as_str) == Some(hash.as_str()) {
+
+        // Apply both frontmatter edits (if any) to the one text, write once.
+        let mut text = original;
+        let mut wrote = false;
+        if let Some(hash) = new_hash {
+            text = crate::edit::set_in_text(&text, doc.carrier, "content_hash", fig::Value::Str(hash))?;
+            wrote = true;
+        }
+        if let Some((field, at)) = updated
+            && !field.is_empty()
+        {
+            text = crate::edit::set_in_text(&text, doc.carrier, field, fig::Value::Str(at.to_string()))?;
+            wrote = true;
+        }
+        if !wrote {
             return Ok(false);
         }
         let mut cs = self.change();
-        let updated =
-            crate::edit::set_in_text(&text, doc.carrier, "content_hash", fig::Value::Str(hash))?;
-        cs.write(&path, updated);
+        cs.write(&path, text);
         self.commit(cs).await?;
         Ok(true)
+    }
+
+    /// Reconcile the content checksum for the document at `path` — [
+    /// `record_content_update`](Self::record_content_update) with no timestamp.
+    /// The colophon-mediated way to keep fixity true across an edit, and how a
+    /// document first *earns* a body hash under the `full` tier.
+    pub async fn restamp_fixity(&mut self, path: impl AsRef<Path>) -> Result<bool> {
+        self.record_content_update(path, None).await
     }
 
     /// The content documents in the workspace's *reached* directories that
@@ -1527,5 +1565,44 @@ mod tests {
         // Restamp (what `colophon edit` does on save) re-blesses it.
         assert!(block_on(w.restamp_fixity("note.md")).unwrap());
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn record_content_update_stamps_the_timestamp_field_and_the_hash_together() {
+        use crate::config::Fixity;
+        let dir = tempdir("content-update");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- note.md\n---\n");
+        write(&dir, "note.md", "---\ntitle: Note\npart_of: index.md\n---\nbody\n");
+        let mut w = Workspace::builder(StdFs).root(&dir).fixity(Fixity::Full).build();
+
+        // A content edit at a caller-supplied instant: both the `updated` field
+        // (the client's chosen name + RFC-3339 value) and the body hash land in
+        // one write.
+        assert!(block_on(w.record_content_update("note.md", Some(("updated", "2026-07-16T10:00:00Z")))).unwrap());
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        assert!(text.contains("updated: 2026-07-16T10:00:00Z"), "{text}");
+        assert!(text.contains("content_hash: sha256:"), "{text}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // The library never reads a clock: the exact string it is handed is what
+        // it writes (DESIGN §2 — the client produces the instant).
+        assert!(block_on(w.record_content_update("note.md", Some(("updated", "2099-01-01T00:00:00Z")))).unwrap());
+        assert!(std::fs::read_to_string(dir.join("note.md")).unwrap().contains("updated: 2099-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn record_content_update_writes_a_timestamp_even_with_fixity_off() {
+        // The timestamp axis is independent of fixity: `updated` tracking works
+        // with no checksums at all (and writes no content_hash then).
+        use crate::config::Fixity;
+        let dir = tempdir("content-update-nofix");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- note.md\n---\n");
+        write(&dir, "note.md", "---\ntitle: Note\npart_of: index.md\n---\nbody\n");
+        let mut w = Workspace::builder(StdFs).root(&dir).fixity(Fixity::Off).build();
+
+        assert!(block_on(w.record_content_update("note.md", Some(("modified", "2026-07-16T10:00:00Z")))).unwrap());
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        assert!(text.contains("modified: 2026-07-16T10:00:00Z"), "{text}");
+        assert!(!text.contains("content_hash"), "fixity off records no hash: {text}");
     }
 }

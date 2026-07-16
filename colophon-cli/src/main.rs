@@ -2273,6 +2273,7 @@ fn cmd_init(
         content_format: content.into(),
         recycle_bin: true,
         fixity: colophon::Fixity::Payloads,
+        updated_field: String::new(),
     };
     reference.write_onto(wrapper.into(), &mut ws_config);
 
@@ -2823,25 +2824,76 @@ fn cmd_unset(file: &Path, key: &str) -> CmdResult {
 }
 
 fn cmd_edit(file: &Path) -> CmdResult {
-    // Open the document; block until the editor exits.
+    // Snapshot before the editor so we can tell whether the user actually changed
+    // anything — an open-and-quit must not bump the timestamp or restamp.
+    let before = std::fs::read(file).ok();
     edit_file(file)?;
+    let changed = std::fs::read(file).ok() != before;
 
-    // On save, under the `full` fixity tier, restamp the body's checksum so a
-    // body edit stays true rather than becoming a `check` finding. This is the
-    // whole point of editing *through* colophon — an out-of-band editor would
-    // leave the hash stale (recoverable with `check --fix`, but noisy).
     let ctx = find_root()?;
     let rel = ws_rel(&ctx, file)?;
-    if ctx.config.fixity.covers_bodies() {
-        let mut ws = workspace(&ctx)?;
-        if block_on(ws.restamp_fixity(&rel))? {
-            persist(&ctx, &mut ws)?;
-            println!("edited {} — content checksum updated", rel.display());
-            return Ok(ExitCode::SUCCESS);
-        }
+    if !changed {
+        println!("edited {} (no changes)", rel.display());
+        return Ok(ExitCode::SUCCESS);
     }
-    println!("edited {}", rel.display());
+
+    // The bookkeeping a real edit implies, in one crash-safe write: restamp the
+    // body checksum (under `full`), and stamp the `updated` field (when
+    // configured) with the current time — RFC 3339 UTC, the machine-standard
+    // value the library reads back (DESIGN §2). Both self-gate, so this is a
+    // no-op when neither is enabled.
+    let mut ws = workspace(&ctx)?;
+    let now = now_rfc3339();
+    let updated = (!ctx.config.updated_field.is_empty())
+        .then_some((ctx.config.updated_field.as_str(), now.as_str()));
+    let wrote = block_on(ws.record_content_update(&rel, updated))?;
+    persist(&ctx, &mut ws)?;
+
+    match (wrote, updated.is_some()) {
+        (true, true) => println!("edited {} — stamped `{}` + checksum", rel.display(), ctx.config.updated_field),
+        (true, false) => println!("edited {} — content checksum updated", rel.display()),
+        (false, true) => println!("edited {} — stamped `{}`", rel.display(), ctx.config.updated_field),
+        _ => println!("edited {}", rel.display()),
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The current time as an RFC 3339 UTC timestamp (`2026-07-16T14:30:00Z`) — the
+/// machine-standard value colophon stores for provenance fields like `updated`
+/// (DESIGN §2). Hand-rolled from the system clock rather than pulling in a date
+/// crate, in the spirit of the dependency-free SHA-256 and journal checksum. A
+/// pre-epoch clock (only a badly-wrong system) formats as the epoch.
+fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    secs_to_rfc3339(secs)
+}
+
+/// Format seconds-since-Unix-epoch as an RFC 3339 UTC timestamp. Split out from
+/// [`now_rfc3339`] so the calendar arithmetic is testable without a clock.
+fn secs_to_rfc3339(secs: u64) -> String {
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+/// Days since 1970-01-01 → (year, month, day), by Howard Hinnant's civil-calendar
+/// algorithm — exact for the whole proleptic Gregorian range, no leap-year
+/// special-casing beyond the era arithmetic.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = (z - era * 146_097) as u64; // day-of-era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day-of-year [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (if month <= 2 { y + 1 } else { y }, month, day)
 }
 
 fn cmd_tree(root: Option<&Path>) -> CmdResult {
@@ -3827,5 +3879,21 @@ fn cmd_resolve(id: &str) -> CmdResult {
             eprintln!("colophon: {id} is not in this workspace's registry");
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secs_to_rfc3339;
+
+    #[test]
+    fn rfc3339_matches_known_instants() {
+        // Cross-checked against `date -u -r <secs>` / any RFC 3339 reference.
+        assert_eq!(secs_to_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(secs_to_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
+        // A leap day, to exercise the calendar arithmetic.
+        assert_eq!(secs_to_rfc3339(1_582_934_400), "2020-02-29T00:00:00Z");
+        // End-of-year boundary.
+        assert_eq!(secs_to_rfc3339(1_609_459_199), "2020-12-31T23:59:59Z");
     }
 }
