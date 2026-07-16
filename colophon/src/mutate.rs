@@ -27,9 +27,10 @@
 //! Every op here computes its edits and stages them into a
 //! [`ChangeSet`](crate::change::ChangeSet), which lands as one unit — documents
 //! and, when the op moved an ID, the registry with them. No error can leave the
-//! workspace half-linked; see [`crate::change`] for what that does and does not
-//! cover (it is error atomicity, not crash atomicity — there is still no
-//! journal). Ops remain documents-only: no directory moves.
+//! workspace half-linked, and behind the write-ahead journal
+//! ([`crate::journal`]) no crash can either: an interrupted op resolves to the
+//! workspace fully before it or fully after it. Ops remain documents-only: no
+//! directory moves.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -736,6 +737,432 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         self.commit(cs).await?;
         Ok(danglers)
+    }
+
+    /// Delete the document at `path` by moving it into the workspace **recycle
+    /// bin** instead of destroying it — the recoverable counterpart of
+    /// [`delete`](Self::delete), and the safe default for archival use.
+    ///
+    /// It shares `delete`'s structure — the parent's spanning entry is removed,
+    /// a document with spanning children is refused unless `force`d, and the same
+    /// dangling-inbound-reference diagnosis is returned — but rather than
+    /// [`remove`](crate::ChangeSet::remove) the file it is **moved** into the bin
+    /// and recorded there, so [`restore`](Self::restore) can bring it back.
+    ///
+    /// The bin is a first-class, reachable member: its index document (which the
+    /// root links through the recycle relation, and which `check` validates like
+    /// any other) records, per deletion, where the document came from and where
+    /// its bytes now live. The whole operation — the file move, the parent edit,
+    /// the bin-index update, and (the first time) the root's pointer to the bin —
+    /// lands as one journaled [`ChangeSet`], so a bin-delete is exactly as
+    /// crash-atomic as everything else.
+    ///
+    /// The deleted bytes are parked under `recyclebin/items/`, mirroring their
+    /// original path. That subdirectory is deliberately *unreached* — nothing
+    /// links into it — so the reachability-bounded orphan check (DESIGN §8) never
+    /// mistakes a binned document for a stray one.
+    ///
+    /// `at` is an optional caller-supplied deletion timestamp recorded on the
+    /// tombstone (the CLI passes the current time). The library takes it as an
+    /// argument rather than reading a clock so the op stays deterministic.
+    pub async fn recycle(
+        &mut self,
+        path: &Path,
+        force: bool,
+        at: Option<&str>,
+    ) -> Result<Vec<Finding>> {
+        let path = link::normalize(path);
+        let (spanning, inverse) = self.spanning_pair()?;
+        let (_, doc) = self.load(&path).await?;
+
+        // Children guard — identical to `delete`'s: a document that contains
+        // others would orphan them, so it is refused unless forced.
+        let children: Vec<String> = self
+            .relations()
+            .children(&doc.meta)
+            .iter()
+            .map(|raw| Link::parse(raw).target)
+            .collect();
+        if !children.is_empty() && !force {
+            return Err(Error::Structure(format!(
+                "{} contains {} document(s) ({}); delete them first or force",
+                path.display(),
+                children.len(),
+                children.join(", ")
+            )));
+        }
+
+        let parent = self.single_target(&doc, &inverse, &path);
+        let root = self.spanning_root(&path, &inverse).await?;
+
+        // Inbound references the move leaves dangling — the same diagnosis
+        // `delete` returns, since a binned document is out of the live graph.
+        let danglers: Vec<Finding> = self
+            .census(&root)
+            .await?
+            .into_iter()
+            .filter(|e| e.resolution.resolved_path() == Some(&path))
+            .filter(|e| {
+                e.source != path
+                    && !(Some(&e.source) == parent.as_ref()
+                        && matches!(&e.site, LinkSite::Relation(r) if *r == spanning))
+            })
+            .map(|e| match e.resolution {
+                Resolution::Id { id, .. } => Finding::DanglingId {
+                    doc: e.source,
+                    site: e.site,
+                    id,
+                    tombstoned: true,
+                },
+                _ => Finding::BrokenLink {
+                    doc: e.source,
+                    site: e.site,
+                    target: e.target_text,
+                },
+            })
+            .collect();
+
+        // Locate the bin, or plan to bootstrap it on this first deletion.
+        let format = self.default_embed_format();
+        let ext = crate::document::whole_file_extension(format);
+        let existing_index = self.recycle_bin_path(&root).await?;
+        let bin_index = existing_index
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("recyclebin").join(format!("index.{ext}")));
+        let bin_dir = bin_index.parent().unwrap_or(Path::new("recyclebin")).to_path_buf();
+        let items_dir = bin_dir.join("items");
+
+        // The bin index's current records (and its own title/`part_of`, so a
+        // wholesale re-render preserves them). Absent bin → empty, with defaults.
+        let (mut records, bin_title, bin_part_of) = match &existing_index {
+            Some(index) => {
+                let (_, bin_doc) = self.load(index).await?;
+                let recs = bin_doc
+                    .meta
+                    .get("deleted")
+                    .and_then(Value::as_sequence)
+                    .map(<[Value]>::to_vec)
+                    .unwrap_or_default();
+                let title = bin_doc
+                    .meta
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Recycle Bin")
+                    .to_string();
+                let part_of = bin_doc
+                    .meta
+                    .get("part_of")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| link::relative(&bin_dir, &root));
+                (recs, title, part_of)
+            }
+            None => (Vec::new(), "Recycle Bin".to_string(), link::relative(&bin_dir, &root)),
+        };
+
+        // Where the bytes go: mirror the original path under the (unreached)
+        // items directory, with a numeric suffix on the rare same-path collision.
+        let mut node_bin = items_dir.join(&path);
+        let mut bump = 1;
+        while self.fs().try_exists(&self.root().join(&node_bin)).await? {
+            let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            node_bin = items_dir
+                .join(path.parent().unwrap_or(Path::new("")))
+                .join(format!("{name}.{bump}"));
+            bump += 1;
+        }
+
+        // A separated document's prose body travels with it.
+        let body_from = content_target(&doc, &path);
+        let body_bin = match &body_from {
+            Some(body) if self.fs().try_exists(&self.root().join(body)).await? => {
+                Some((body.clone(), items_dir.join(body)))
+            }
+            _ => None,
+        };
+
+        // The tombstone record — everything `restore` needs to undo this.
+        let title = doc
+            .meta
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| link::path_to_title(&path));
+        let id_opt = self.index().id_for_path(&path);
+        let mut record = crate::meta::Mapping::new();
+        record.insert("title".into(), Value::String(title));
+        if let Some(id) = &id_opt {
+            record.insert("id".into(), Value::String(id.to_string()));
+        }
+        record.insert("from".into(), Value::String(path.to_string_lossy().into_owned()));
+        record.insert("bin".into(), Value::String(node_bin.to_string_lossy().into_owned()));
+        if let Some(parent) = &parent {
+            record.insert("parent".into(), Value::String(parent.to_string_lossy().into_owned()));
+        }
+        if let Some((from, to)) = &body_bin {
+            record.insert("body_from".into(), Value::String(from.to_string_lossy().into_owned()));
+            record.insert("body_bin".into(), Value::String(to.to_string_lossy().into_owned()));
+        }
+        if let Some(at) = at {
+            record.insert("at".into(), Value::String(at.to_string()));
+        }
+        records.push(Value::Mapping(record));
+
+        let mut bin_map = crate::meta::Mapping::new();
+        bin_map.insert("title".into(), Value::String(bin_title));
+        bin_map.insert("part_of".into(), Value::String(bin_part_of));
+        bin_map.insert("deleted".into(), Value::Sequence(records));
+        let bin_text = crate::meta::serialize_mapping(&bin_map, format)?;
+
+        // The parent's spanning entry for the doomed document, removed.
+        let mut parent_write: Option<(PathBuf, String)> = None;
+        if let Some(parent) = &parent {
+            let (parent_text, parent_doc) = self.load(parent).await?;
+            if let (Some(index), Some(carrier)) = (
+                self.entry_index(&parent_doc, &spanning, parent, &path),
+                parent_doc.carrier,
+            ) {
+                let mut editor = MetaEditor::open(&parent_text, carrier)?;
+                editor.remove_item(&[Segment::Key(&spanning)], index)?;
+                parent_write = Some((parent.clone(), editor.render()?));
+            }
+        }
+
+        let mut cs = self.change();
+        cs.rename(&path, &node_bin);
+        if let Some((from, to)) = &body_bin {
+            cs.rename(from, to);
+        }
+        cs.write(&bin_index, bin_text);
+
+        // The root's pointer to the bin, authored the first time only — merged
+        // with the parent edit when the parent *is* the root, so the one document
+        // is written once with both changes rather than twice.
+        let mut root_text: Option<String> = None;
+        if let Some((parent_path, text)) = &parent_write {
+            if *parent_path == root {
+                root_text = Some(text.clone());
+            } else {
+                cs.write(parent_path.clone(), text.clone());
+            }
+        }
+        if existing_index.is_none() {
+            let base = match &root_text {
+                Some(text) => text.clone(),
+                None => self.load(&root).await?.0,
+            };
+            let root_doc = Document::parse(&root, &base)?;
+            let relation = self
+                .relations()
+                .recycle_relation()
+                .ok_or_else(|| Error::Structure("no recycle relation configured".into()))?
+                .to_string();
+            let root_dir = root.parent().unwrap_or(Path::new(""));
+            let pointer = link::relative(root_dir, &bin_index);
+            root_text = Some(crate::edit::set_in_text(
+                &base,
+                root_doc.carrier,
+                &relation,
+                crate::edit::infer_scalar(&pointer),
+            )?);
+        }
+        if let Some(text) = root_text {
+            cs.write(root.clone(), text);
+        }
+
+        // Identity hook — retire the ID to a tombstone exactly as `delete` does;
+        // the record keeps its value so `restore` can re-register it.
+        if let Some(id) = &id_opt {
+            self.index_mut().unregister(id);
+        }
+        self.commit(cs).await?;
+        Ok(danglers)
+    }
+
+    /// Bring a document back from the recycle bin to the path it was deleted
+    /// from — the inverse of [`recycle`](Self::recycle).
+    ///
+    /// The tombstone record carries everything needed: the bin location to move
+    /// the bytes back from, the parent to re-link under (only the parent → child
+    /// direction was lost; the child's own inverse link travelled with it, so it
+    /// is correct again the moment the file is home), and the ID to re-register.
+    /// It all lands as one journaled [`ChangeSet`]. Refuses when something already
+    /// occupies the restore path, or when `from` is not in the bin.
+    ///
+    /// `root_doc` names the workspace root, from which the bin is discovered.
+    pub async fn restore(&mut self, from: &Path, root_doc: &Path) -> Result<()> {
+        let from = link::normalize(from);
+        let (spanning, _) = self.spanning_pair()?;
+        let bin_index = self
+            .recycle_bin_path(root_doc)
+            .await?
+            .ok_or_else(|| Error::Structure("workspace has no recycle bin".into()))?;
+        let (_, bin_doc) = self.load(&bin_index).await?;
+        let records: Vec<Value> = bin_doc
+            .meta
+            .get("deleted")
+            .and_then(Value::as_sequence)
+            .map(<[Value]>::to_vec)
+            .unwrap_or_default();
+
+        let from_str = from.to_string_lossy();
+        let pos = records
+            .iter()
+            .position(|r| r.get("from").and_then(Value::as_str) == Some(from_str.as_ref()))
+            .ok_or_else(|| {
+                Error::Structure(format!("{} is not in the recycle bin", from.display()))
+            })?;
+        let record = records[pos].clone();
+        let str_field = |key: &str| record.get(key).and_then(Value::as_str).map(str::to_owned);
+        let node_bin = PathBuf::from(
+            str_field("bin")
+                .ok_or_else(|| Error::Structure("recycle record has no `bin` path".into()))?,
+        );
+        let parent = str_field("parent").map(PathBuf::from);
+        let id = str_field("id").map(crate::identity::Id);
+        let title = str_field("title").unwrap_or_else(|| link::path_to_title(&from));
+        let body = match (str_field("body_from"), str_field("body_bin")) {
+            (Some(from), Some(bin)) => Some((PathBuf::from(from), PathBuf::from(bin))),
+            _ => None,
+        };
+
+        if self.fs().try_exists(&self.root().join(&from)).await? {
+            return Err(Error::Structure(format!(
+                "{} already exists; cannot restore over it",
+                from.display()
+            )));
+        }
+
+        // The bin index without this record, re-rendered whole (a machine file).
+        let mut remaining = records;
+        remaining.remove(pos);
+        let bin_dir = bin_index.parent().unwrap_or(Path::new("recyclebin")).to_path_buf();
+        let format = self.default_embed_format();
+        let mut bin_map = crate::meta::Mapping::new();
+        bin_map.insert(
+            "title".into(),
+            Value::String(
+                bin_doc
+                    .meta
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Recycle Bin")
+                    .to_string(),
+            ),
+        );
+        bin_map.insert(
+            "part_of".into(),
+            Value::String(
+                bin_doc
+                    .meta
+                    .get("part_of")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| link::relative(&bin_dir, root_doc)),
+            ),
+        );
+        bin_map.insert("deleted".into(), Value::Sequence(remaining));
+        let bin_text = crate::meta::serialize_mapping(&bin_map, format)?;
+
+        let mut cs = self.change();
+        // Re-register the ID *after* `change`'s checkpoint, so authoring the
+        // parent link below reuses the document's own id rather than minting a new
+        // one, and so a failure rolls the re-registration back with everything else.
+        if let Some(id) = &id {
+            self.index_mut().register(id, &from);
+        }
+        cs.rename(&node_bin, &from);
+        if let Some((body_from, body_bin)) = &body {
+            cs.rename(body_bin, body_from);
+        }
+        cs.write(&bin_index, bin_text);
+
+        // Re-add the parent's spanning entry (its removal is all `recycle` did to
+        // the parent). Skip when the parent is gone or already links the child.
+        if let Some(parent) = &parent
+            && self.fs().try_exists(&self.root().join(parent)).await?
+        {
+            let (parent_text, parent_doc) = self.load(parent).await?;
+            let already = self.relations().children(&parent_doc.meta).iter().any(|t| {
+                self.resolve_link(parent, &Link::parse(t)) == Target::Path(from.clone())
+            });
+            if !already {
+                let down = self.authored_target(&spanning, parent, &from, &title, false).await?;
+                let mut editor = MetaEditor::open_or_init(&parent_text, parent_doc.carrier)?;
+                let span_path = [Segment::Key(&spanning)];
+                if editor.append_value(&span_path, fig::Value::Str(down.clone())).is_err() {
+                    editor.set_value(&span_path, fig::Value::Seq(vec![fig::Value::Str(down)]))?;
+                }
+                cs.write(parent.clone(), editor.render()?);
+            }
+        }
+        self.commit(cs).await
+    }
+
+    /// Permanently purge every document in the recycle bin — the only hard
+    /// delete, and always explicit. Returns how many records were purged.
+    ///
+    /// The bin's bytes are removed and its index emptied (the index member itself
+    /// stays, still linked from the root), as one journaled [`ChangeSet`]. ID
+    /// tombstones are untouched: an ID retired at deletion stays retired, so a
+    /// `colophon:<id>` reference to a purged document remains diagnosable rather
+    /// than silently reissuable.
+    pub async fn empty_bin(&mut self, root_doc: &Path) -> Result<usize> {
+        let bin_index = self
+            .recycle_bin_path(root_doc)
+            .await?
+            .ok_or_else(|| Error::Structure("workspace has no recycle bin".into()))?;
+        let (_, bin_doc) = self.load(&bin_index).await?;
+        let records: Vec<Value> = bin_doc
+            .meta
+            .get("deleted")
+            .and_then(Value::as_sequence)
+            .map(<[Value]>::to_vec)
+            .unwrap_or_default();
+        let count = records.len();
+
+        let bin_dir = bin_index.parent().unwrap_or(Path::new("recyclebin")).to_path_buf();
+        let format = self.default_embed_format();
+        let mut bin_map = crate::meta::Mapping::new();
+        bin_map.insert(
+            "title".into(),
+            Value::String(
+                bin_doc
+                    .meta
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Recycle Bin")
+                    .to_string(),
+            ),
+        );
+        bin_map.insert(
+            "part_of".into(),
+            Value::String(
+                bin_doc
+                    .meta
+                    .get("part_of")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| link::relative(&bin_dir, root_doc)),
+            ),
+        );
+        bin_map.insert("deleted".into(), Value::Sequence(Vec::new()));
+        let bin_text = crate::meta::serialize_mapping(&bin_map, format)?;
+
+        let mut cs = self.change();
+        for record in &records {
+            for key in ["bin", "body_bin"] {
+                if let Some(path) = record.get(key).and_then(Value::as_str) {
+                    let rel = PathBuf::from(path);
+                    if self.fs().try_exists(&self.root().join(&rel)).await? {
+                        cs.remove(rel);
+                    }
+                }
+            }
+        }
+        cs.write(&bin_index, bin_text);
+        self.commit(cs).await?;
+        Ok(count)
     }
 
     /// Split the combined document at `path` into two linked plain-text files: a
@@ -3196,5 +3623,146 @@ mod tests {
                  (failed at write {fail_at} of {writes})"
             );
         }
+    }
+
+    // ---- recycle bin (Part 3) ----
+
+    #[test]
+    fn recycle_moves_a_document_into_the_bin_and_records_it() {
+        let dir = tempdir("recycle-basic");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- note.md\n---\n");
+        let original = "---\ntitle: My Note\npart_of: index.md\n---\nbody text\n";
+        write(&dir, "note.md", original);
+
+        let danglers =
+            block_on(ws(&dir).recycle(Path::new("note.md"), false, Some("2026-07-16T10:00:00Z")))
+                .unwrap();
+        assert!(danglers.is_empty(), "{danglers:?}");
+
+        // The document is gone from its path but not destroyed — its bytes are
+        // moved verbatim into the bin, under the (unreached) items directory.
+        assert!(!dir.join("note.md").exists());
+        assert_eq!(read(&dir, "recyclebin/items/note.md"), original);
+
+        // The parent no longer links it, and the root now links the bin.
+        let index = read(&dir, "index.md");
+        assert!(!index.contains("- note.md"), "parent entry removed: {index}");
+        assert!(index.contains("recycle_bin"), "root links the bin: {index}");
+
+        // The bin index records the deletion: title, origin, and timestamp.
+        let bin = read(&dir, "recyclebin/index.yaml");
+        assert!(bin.contains("My Note"), "records the title: {bin}");
+        assert!(bin.contains("note.md"), "records the origin: {bin}");
+        assert!(bin.contains("2026-07-16T10:00:00Z"), "records when: {bin}");
+
+        // And the workspace is still consistent — the binned doc is *not* an orphan.
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(findings.is_empty(), "a recycle should leave check clean: {findings:?}");
+    }
+
+    #[test]
+    fn recycle_then_restore_is_lossless() {
+        // The round-trip is the whole promise: delete and restore return the
+        // workspace to byte-identical state, parent link and all.
+        let dir = tempdir("recycle-restore");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- note.md\n---\n");
+        let original = "---\ntitle: My Note\npart_of: index.md\n---\nbody text\n";
+        write(&dir, "note.md", original);
+
+        block_on(ws(&dir).recycle(Path::new("note.md"), false, None)).unwrap();
+        assert!(!dir.join("note.md").exists());
+
+        block_on(ws(&dir).restore(Path::new("note.md"), Path::new("index.md"))).unwrap();
+
+        // The document is back, byte-for-byte.
+        assert_eq!(read(&dir, "note.md"), original);
+        // The parent links it again, and its record is gone from the bin.
+        let index = read(&dir, "index.md");
+        assert!(index.contains("note.md"), "parent re-links the restored doc: {index}");
+        let bin = read(&dir, "recyclebin/index.yaml");
+        assert!(!bin.contains("My Note"), "the record is cleared on restore: {bin}");
+        assert!(!dir.join("recyclebin/items/note.md").exists(), "the binned bytes moved back");
+        // Consistent.
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(findings.is_empty(), "a restore should leave check clean: {findings:?}");
+    }
+
+    #[test]
+    fn recycle_refuses_a_parent_with_children_unless_forced() {
+        // Parity with `delete`: a document that contains others cannot be binned
+        // without `force`, since binning it would strand them.
+        let dir = tempdir("recycle-children");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\ncontents:\n- b.md\n---\n");
+        write(&dir, "b.md", "---\ntitle: B\npart_of: a.md\n---\n");
+
+        let err = block_on(ws(&dir).recycle(Path::new("a.md"), false, None)).unwrap_err();
+        assert!(err.to_string().contains("contains 1 document"), "{err}");
+        assert!(dir.join("a.md").exists(), "a refused recycle changes nothing");
+
+        block_on(ws(&dir).recycle(Path::new("a.md"), true, None)).unwrap();
+        assert!(!dir.join("a.md").exists());
+        assert!(dir.join("recyclebin/items/a.md").exists());
+    }
+
+    #[test]
+    fn a_second_deletion_appends_to_the_existing_bin() {
+        // The bin is bootstrapped once; a later deletion appends to it, and the
+        // root's pointer is authored a single time.
+        let dir = tempdir("recycle-append");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n- b.md\n---\n");
+        write(&dir, "a.md", "---\ntitle: Aye\npart_of: index.md\n---\n");
+        write(&dir, "b.md", "---\ntitle: Bee\npart_of: index.md\n---\n");
+
+        block_on(ws(&dir).recycle(Path::new("a.md"), false, None)).unwrap();
+        block_on(ws(&dir).recycle(Path::new("b.md"), false, None)).unwrap();
+
+        let bin = read(&dir, "recyclebin/index.yaml");
+        assert!(bin.contains("Aye") && bin.contains("Bee"), "both recorded: {bin}");
+        assert!(dir.join("recyclebin/items/a.md").exists());
+        assert!(dir.join("recyclebin/items/b.md").exists());
+
+        let index = read(&dir, "index.md");
+        assert_eq!(index.matches("recycle_bin").count(), 1, "pointer authored once: {index}");
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn empty_bin_purges_the_bytes_and_clears_the_index_but_keeps_the_member() {
+        let dir = tempdir("recycle-empty");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\ntitle: Aye\npart_of: index.md\n---\n");
+
+        block_on(ws(&dir).recycle(Path::new("a.md"), false, None)).unwrap();
+        assert!(dir.join("recyclebin/items/a.md").exists());
+
+        let purged = block_on(ws(&dir).empty_bin(Path::new("index.md"))).unwrap();
+        assert_eq!(purged, 1);
+        assert!(!dir.join("recyclebin/items/a.md").exists(), "bytes purged");
+
+        let bin = read(&dir, "recyclebin/index.yaml");
+        assert!(!bin.contains("Aye"), "records cleared: {bin}");
+        // The bin member itself survives, still linked and consistent.
+        assert!(read(&dir, "index.md").contains("recycle_bin"));
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_failed_recycle_leaves_the_workspace_untouched() {
+        // The whole move is one journaled ChangeSet, so an I/O failure part-way
+        // rolls back to exactly the starting state — nothing half-binned.
+        let dir = tempdir("recycle-atomic");
+        write(&dir, "index.md", "---\ncontents:\n- note.md\n---\n");
+        write(&dir, "note.md", "---\ntitle: Note\npart_of: index.md\n---\nbody\n");
+        let before = snapshot(&dir);
+
+        let mut w = Workspace::builder(FailAtWrite::nth(0)).root(&dir).build();
+        let err = block_on(w.recycle(Path::new("note.md"), false, None)).unwrap_err();
+        assert!(err.to_string().contains("disk full"), "{err}");
+
+        assert_eq!(snapshot(&dir), before, "a failed recycle tore the workspace");
     }
 }

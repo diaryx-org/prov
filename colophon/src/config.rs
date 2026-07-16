@@ -144,6 +144,11 @@ pub struct WorkspaceConfig {
     /// — the format `render` and code-aware link scanning assume, and the
     /// intended default for new documents.
     pub content_format: ContentFormat,
+    /// Whether a `delete` moves the document to the **recycle bin** (recoverable)
+    /// rather than destroying it. On by default — the safe posture for archival
+    /// use, where a deletion should never be silently unrecoverable — and opt-out
+    /// per workspace for those who genuinely want a hard delete as the default.
+    pub recycle_bin: bool,
 }
 
 impl Default for WorkspaceConfig {
@@ -163,6 +168,7 @@ impl Default for WorkspaceConfig {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
+            recycle_bin: true,
         }
     }
 }
@@ -183,6 +189,7 @@ impl WorkspaceConfig {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
+            recycle_bin: true,
         }
     }
 
@@ -202,6 +209,7 @@ impl WorkspaceConfig {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
+            recycle_bin: true,
         }
     }
 
@@ -320,6 +328,9 @@ impl WorkspaceConfig {
         {
             self.content_format = content;
         }
+        if let Some(recycle) = meta.get("recycle_bin").and_then(Value::as_bool) {
+            self.recycle_bin = recycle;
+        }
     }
 
     /// A fresh config with `meta`'s recognized keys applied over the defaults.
@@ -367,6 +378,7 @@ impl WorkspaceConfig {
         map.insert("embed_format".into(), Value::String(format_str(self.default_embed_format).into()));
         map.insert("embed_type".into(), Value::String(self.embed_style.as_config_str().into()));
         map.insert("content_format".into(), Value::String(self.content_format.as_config_str().into()));
+        map.insert("recycle_bin".into(), Value::Bool(self.recycle_bin));
         map
     }
 }
@@ -464,6 +476,8 @@ mod tests {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::CodeBlock,
             content_format: ContentFormat::Djot,
+            // Non-default, so the round-trip actually exercises the axis.
+            recycle_bin: false,
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);

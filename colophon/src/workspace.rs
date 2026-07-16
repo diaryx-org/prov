@@ -236,6 +236,18 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         }
     }
 
+    /// The recycle-bin index document this root declares via the recycle-bin
+    /// pointer relation (§6, the same reachability move as the registry). `None`
+    /// when the vocabulary has no recycle relation or the root declares none —
+    /// the workspace has no bin yet, so a deletion is a hard delete until one is
+    /// bootstrapped.
+    pub async fn recycle_bin_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        match self.relations().recycle_relation() {
+            Some(relation) => self.pointer_target(root_doc, relation).await,
+            None => Ok(None),
+        }
+    }
+
     /// Read a single workspace-config value by `key` from the linked config
     /// document. `None` when there is no config document or it lacks the key —
     /// the caller falls back to its default.

@@ -376,7 +376,10 @@ enum Command {
         dry_run: bool,
     },
     /// Delete a document, removing its parent's spanning entry. Refuses when
-    /// the document has children unless --force.
+    /// the document has children unless --force. By default the document is moved
+    /// to the workspace recycle bin (recoverable with `restore`); pass `--purge`
+    /// for an immediate hard delete. The default is governed by the `recycle_bin`
+    /// config axis (on unless opted out).
     Rm {
         /// The document to delete: a path, a title route (`@Daily/2026/07`), or an
         /// id (`id:fpk38j`).
@@ -385,7 +388,21 @@ enum Command {
         /// Delete even when the document still contains children (orphans them).
         #[arg(long)]
         force: bool,
+        /// Hard-delete: destroy the document instead of moving it to the recycle
+        /// bin. Irreversible.
+        #[arg(long)]
+        purge: bool,
     },
+    /// Restore a document from the recycle bin to the path it was deleted from,
+    /// re-linking it under its original parent.
+    Restore {
+        /// The original path of a binned document (as listed in the recycle bin).
+        #[arg(value_name = "PATH")]
+        path: String,
+    },
+    /// Permanently purge every document in the recycle bin. Irreversible; the
+    /// only hard delete of binned documents.
+    EmptyBin,
     /// Convert a document's own outbound links to a different config style —
     /// today the `link_format` axis (how path targets are spelled:
     /// `markdown_root` / `markdown_relative` / `plain_relative` / `plain_canonical`).
@@ -960,7 +977,9 @@ fn main() -> ExitCode {
             layout,
             dry_run,
         } => cmd_reparent(&path, &in_target, parents, layout.into(), dry_run),
-        Command::Rm { path, force } => cmd_rm(&path, force),
+        Command::Rm { path, force, purge } => cmd_rm(&path, force, purge),
+        Command::Restore { path } => cmd_restore(&path),
+        Command::EmptyBin => cmd_empty_bin(),
         Command::Duplicate { source } => cmd_duplicate(&source),
         Command::Convert {
             file,
@@ -2241,6 +2260,7 @@ fn cmd_init(
         default_embed_format: meta.into(),
         embed_style: embed,
         content_format: content.into(),
+        recycle_bin: true,
     };
     reference.write_onto(wrapper.into(), &mut ws_config);
 
@@ -3529,16 +3549,49 @@ fn cmd_reparent(
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_rm(path: &str, force: bool) -> CmdResult {
+fn cmd_rm(path: &str, force: bool, purge: bool) -> CmdResult {
     let resolved = resolve_target(path)?;
     let ctx = find_root()?;
     let mut ws = workspace(&ctx)?;
-    let danglers = block_on(ws.delete(&ws_rel(&ctx, &resolved)?, force))?;
-    persist(&ctx, &mut ws)?;
-    println!("deleted {}", resolved.display());
+    let target = ws_rel(&ctx, &resolved)?;
+
+    // The safe default — move to the recycle bin — unless the workspace opted out
+    // (`recycle_bin: false`) or the caller asked for a hard delete (`--purge`).
+    let danglers = if ctx.config.recycle_bin && !purge {
+        let danglers = block_on(ws.recycle(&target, force, None))?;
+        persist(&ctx, &mut ws)?;
+        println!("moved {} to the recycle bin (restore with `colophon restore`)", resolved.display());
+        danglers
+    } else {
+        let danglers = block_on(ws.delete(&target, force))?;
+        persist(&ctx, &mut ws)?;
+        println!("deleted {}", resolved.display());
+        danglers
+    };
     for finding in &danglers {
         eprintln!("warning: now dangling — {finding}");
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_restore(path: &str) -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+    // The document is deleted, so its path cannot be `resolve_target`-ed (that
+    // reads the file); take it as given, relative to the workspace root.
+    let from = ws_rel(&ctx, Path::new(path))?;
+    block_on(ws.restore(&from, &ctx.root_doc))?;
+    persist(&ctx, &mut ws)?;
+    println!("restored {}", from.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_empty_bin() -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+    let purged = block_on(ws.empty_bin(&ctx.root_doc))?;
+    persist(&ctx, &mut ws)?;
+    println!("purged {purged} document(s) from the recycle bin");
     Ok(ExitCode::SUCCESS)
 }
 

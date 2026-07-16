@@ -92,6 +92,7 @@ pub struct RelationSet {
     spanning: Option<String>,
     registry: Option<String>,
     config: Option<String>,
+    recycle: Option<String>,
 }
 
 impl RelationSet {
@@ -133,10 +134,24 @@ impl RelationSet {
         self
     }
 
+    /// Mark the named relation as the **recycle-bin pointer**: the root document
+    /// links its recycle-bin index through this relation — the same reachability
+    /// move as the registry and config (§6). A deleted document is not destroyed
+    /// but moved into the bin, and the bin's index (a self-describing member,
+    /// discovered by following this link from the root) records where it came
+    /// from so it can be restored. Making the bin *reachable* is what keeps it
+    /// honest: `check` validates it like any other member, and nothing about a
+    /// deletion is hidden in an app-private folder.
+    pub fn recycle(mut self, name: impl Into<String>) -> Self {
+        self.recycle = Some(name.into());
+        self
+    }
+
     /// The diaryx vocabulary: `contents`/`part_of` containment (spanning),
     /// `links`/`link_of` arbitrary cross-references, `registry` (the root's
-    /// pointer to its ID registry document), and `config` (the root's pointer to
-    /// its workspace-config document).
+    /// pointer to its ID registry document), `config` (the root's pointer to its
+    /// workspace-config document), and `recycle_bin` (the root's pointer to its
+    /// recycle-bin index).
     pub fn diaryx() -> Self {
         Self::new()
             .with(Relation::many("contents").inverse("part_of"))
@@ -145,9 +160,11 @@ impl RelationSet {
             .with(Relation::many("link_of").inverse("links"))
             .with(Relation::one("registry"))
             .with(Relation::one("config"))
+            .with(Relation::one("recycle_bin"))
             .spanning("contents")
             .registry("registry")
             .config("config")
+            .recycle("recycle_bin")
     }
 
     /// The configured relations.
@@ -193,6 +210,11 @@ impl RelationSet {
     /// The name of the config-pointer relation, if one is configured.
     pub fn config_relation(&self) -> Option<&str> {
         self.config.as_deref()
+    }
+
+    /// The name of the recycle-bin-pointer relation, if one is configured.
+    pub fn recycle_relation(&self) -> Option<&str> {
+        self.recycle.as_deref()
     }
 
     /// Extract every link declared by a document's metadata, tagged by relation.
@@ -252,12 +274,14 @@ mod tests {
     }
 
     #[test]
-    fn diaryx_declares_registry_and_config_pointers() {
+    fn diaryx_declares_registry_config_and_recycle_pointers() {
         let set = RelationSet::diaryx();
         assert_eq!(set.registry_relation(), Some("registry"));
         assert_eq!(set.config_relation(), Some("config"));
-        // Both are single-valued pointer relations in the vocabulary.
+        assert_eq!(set.recycle_relation(), Some("recycle_bin"));
+        // Each is a single-valued pointer relation in the vocabulary.
         assert!(set.relations().iter().any(|r| r.name == "config"));
+        assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
     }
 
     #[test]
