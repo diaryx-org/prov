@@ -489,6 +489,41 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(findings)
     }
 
+    /// Record the current content checksum for the document at `path`, so its
+    /// stored `content_hash` matches its bytes again — the colophon-mediated way
+    /// to keep fixity true across an edit. `colophon edit` calls this on save so
+    /// a body change restamps rather than becoming a `check` finding; it is also
+    /// how a document first *earns* a body hash under the `full` tier.
+    ///
+    /// Hashes the same bytes `check` verifies: the `content` sibling for a
+    /// document that points at one (an attachment payload, a separated body),
+    /// else the document's own body. Returns whether the stored hash changed —
+    /// `false` is an idempotent no-op that writes nothing, so restamping an
+    /// unchanged document is free. The write rides the same crash-safe
+    /// [`ChangeSet`](crate::ChangeSet) as every other mutation.
+    pub async fn restamp_fixity(&mut self, path: impl AsRef<Path>) -> Result<bool> {
+        let path = link::normalize(path.as_ref());
+        let (text, doc) = self.load(&path).await?;
+        let hash = match doc.content_attr() {
+            Some(raw) => {
+                let dir = path.parent().unwrap_or(Path::new(""));
+                let target = link::normalize(dir.join(raw));
+                let bytes = self.fs().read(&self.root().join(&target)).await?;
+                crate::fixity::digest(&bytes)
+            }
+            None => crate::fixity::digest(doc.body.as_bytes()),
+        };
+        if doc.meta.get("content_hash").and_then(Value::as_str) == Some(hash.as_str()) {
+            return Ok(false);
+        }
+        let mut cs = self.change();
+        let updated =
+            crate::edit::set_in_text(&text, doc.carrier, "content_hash", fig::Value::Str(hash))?;
+        cs.write(&path, updated);
+        self.commit(cs).await?;
+        Ok(true)
+    }
+
     /// The content documents in the workspace's *reached* directories that
     /// nothing reachable from `start` links to — [`Finding::Orphan`] for each. The
     /// reachable set is `start` itself plus every path a census link resolves to
@@ -1458,5 +1493,39 @@ mod tests {
             findings.iter().any(|f| matches!(f, Finding::DuplicateContainment { .. })),
             "{findings:?}"
         );
+    }
+
+    #[test]
+    fn full_tier_body_fixity_round_trips_through_restamp_and_check() {
+        // The `full` tier: a document's *body* carries its own checksum. The whole
+        // colophon-edit loop, exercised at the library level (no $EDITOR needed):
+        // stamp → verify → out-of-band body edit is caught → restamp re-blesses.
+        use crate::config::Fixity;
+        let dir = tempdir("fixity-body");
+        write(&dir, "index.md", "---\ntitle: Home\ncontents:\n- note.md\n---\n");
+        write(&dir, "note.md", "---\ntitle: Note\npart_of: index.md\n---\nhello world\n");
+
+        let mut w = Workspace::builder(StdFs).root(&dir).fixity(Fixity::Full).build();
+
+        // The document earns a body hash; restamping unchanged bytes is a no-op.
+        assert!(block_on(w.restamp_fixity("note.md")).unwrap(), "first stamp records a hash");
+        assert!(!block_on(w.restamp_fixity("note.md")).unwrap(), "restamp of unchanged bytes writes nothing");
+        assert!(std::fs::read_to_string(dir.join("note.md")).unwrap().contains("content_hash: sha256:"));
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // Edit the body out-of-band (bypassing `colophon edit`) — check catches it.
+        let stamped = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        std::fs::write(dir.join("note.md"), stamped.replace("hello world", "goodbye world")).unwrap();
+        let findings = block_on(w.check("index.md")).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::FixityMismatch { doc, .. } if doc == Path::new("note.md"))),
+            "an out-of-band body edit must be caught: {findings:?}"
+        );
+
+        // Restamp (what `colophon edit` does on save) re-blesses it.
+        assert!(block_on(w.restamp_fixity("note.md")).unwrap());
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
 }

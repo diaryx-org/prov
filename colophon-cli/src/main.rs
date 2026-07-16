@@ -201,6 +201,15 @@ enum Command {
         #[arg(value_name = "TARGET")]
         file: String,
     },
+    /// Open a document in `$EDITOR` and, on save, recompute its content checksum
+    /// (under the `full` fixity tier) so a body edit keeps its fixity true rather
+    /// than becoming a `check` finding. The colophon-mediated edit path.
+    Edit {
+        /// The document to edit: a path, a title route (`@Daily/2026/07`), or an
+        /// id (`id:fpk38j`).
+        #[arg(value_name = "TARGET")]
+        file: String,
+    },
     /// Set a metadata field (comment- and format-preserving; creates the
     /// block when the document has none).
     Set {
@@ -918,6 +927,7 @@ fn main() -> ExitCode {
             attach,
             yes,
         ),
+        Command::Edit { file } => resolve_target(&file).and_then(|f| cmd_edit(&f)),
         Command::Set { file, key, value } => {
             resolve_target(&file).and_then(|f| cmd_set(&f, &key, &value))
         }
@@ -2809,6 +2819,28 @@ fn cmd_unset(file: &Path, key: &str) -> CmdResult {
     let (text, doc) = load(file)?;
     let updated = edit::unset_in_text(&text, doc.carrier, key)?;
     std::fs::write(file, updated)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_edit(file: &Path) -> CmdResult {
+    // Open the document; block until the editor exits.
+    edit_file(file)?;
+
+    // On save, under the `full` fixity tier, restamp the body's checksum so a
+    // body edit stays true rather than becoming a `check` finding. This is the
+    // whole point of editing *through* colophon — an out-of-band editor would
+    // leave the hash stale (recoverable with `check --fix`, but noisy).
+    let ctx = find_root()?;
+    let rel = ws_rel(&ctx, file)?;
+    if ctx.config.fixity.covers_bodies() {
+        let mut ws = workspace(&ctx)?;
+        if block_on(ws.restamp_fixity(&rel))? {
+            persist(&ctx, &mut ws)?;
+            println!("edited {} — content checksum updated", rel.display());
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+    println!("edited {}", rel.display());
     Ok(ExitCode::SUCCESS)
 }
 
