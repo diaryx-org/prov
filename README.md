@@ -23,6 +23,7 @@ prov
 
 # prov
 
+[![CI](https://img.shields.io/github/actions/workflow/status/diaryx-org/prov/ci.yml?branch=main)](https://github.com/diaryx-org/prov/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/prov.svg)](https://crates.io/crates/prov)
 [![docs.rs](https://img.shields.io/docsrs/prov)](https://docs.rs/prov)
 [![license](https://img.shields.io/crates/l/prov.svg)](#license)
