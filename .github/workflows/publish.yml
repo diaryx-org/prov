@@ -14,14 +14,22 @@ name: Publish
 # `fig`/`twig-doc` dependencies are Zig-backed (their build.rs runs `zig build`),
 # so the pinned toolchain must be on PATH. Version mirrors the other workflows.
 #
-# Prerequisite before the first tagged release: add a CARGO_REGISTRY_TOKEN secret
-# to this repo — a crates.io API token (https://crates.io/settings/tokens) scoped
-# to publish-new + publish-update for `prov` and `prov-cli`.
+# Auth is Trusted Publishing: crates-io-auth-action exchanges this workflow's
+# short-lived GitHub OIDC token for a temporary crates.io token at run time, so
+# there is no long-lived CARGO_REGISTRY_TOKEN secret to store or rotate. That
+# exchange needs `id-token: write` (below).
+#
+# Prerequisite before the first tagged release: register this workflow as a
+# Trusted Publisher for BOTH crates. On crates.io, for each of `prov` and
+# `prov-cli`, go to Settings → Trusted Publishing → Add, and enter owner
+# `diaryx-org`, repository `prov`, and workflow `publish.yml` (leave the
+# environment blank — this workflow uses none). No API token is needed.
 on:
   push: { tags: [v*.*.*] }
   workflow_dispatch: null
 permissions:
   contents: read
+  id-token: write   # mint the OIDC token that crates-io-auth-action exchanges
 jobs:
   crates-io:
     name: Publish to crates.io
@@ -32,9 +40,12 @@ jobs:
     - uses: mlugg/setup-zig@v2
       with: { version: "0.16.0" }
     - uses: Swatinem/rust-cache@v2
+    - name: Mint a short-lived crates.io token via Trusted Publishing
+      uses: rust-lang/crates-io-auth-action@v1
+      id: auth
     - name: Publish prov, then prov-cli (skipping versions already on crates.io)
       env:
-        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       run: |
         set -euo pipefail
 
