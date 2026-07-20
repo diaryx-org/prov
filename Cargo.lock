@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "prov"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "fig",
  "indexmap",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "prov-cli"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "clap",
  "cliclack",
