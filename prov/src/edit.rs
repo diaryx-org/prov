@@ -204,6 +204,19 @@ pub fn set_in_text(
     editor.render()
 }
 
+/// Upsert `dotted` to a full [`Value`](crate::meta::Value) — the mapping-valued
+/// counterpart to [`set_in_text`], which takes only a `fig::Value` scalar. Lets a
+/// caller set a whole nested block (e.g. the root's `prov:` policy block) without
+/// naming `fig`, converting through the crate's `Value → fig::Value` bridge.
+pub fn set_meta_in_text(
+    text: &str,
+    carrier: Option<MetaCarrier>,
+    dotted: &str,
+    value: &crate::meta::Value,
+) -> Result<String> {
+    set_in_text(text, carrier, dotted, fig::Value::from(value))
+}
+
 /// Delete the entry at `dotted` from `text`'s metadata (carrier-aware).
 /// Returns the full re-rendered document text. Errors when the document has
 /// no metadata or the path does not exist.

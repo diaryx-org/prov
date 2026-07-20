@@ -34,6 +34,24 @@ mechanism — both homes accept the whole vocabulary, and the config document wi
 on any overlap. A minimal hand-authored vault can therefore put a policy key in
 the root `prov:` block and never create a config document.
 
+### Converting between the homes
+
+Because the two homes read identically, where policy lives is an ergonomic choice
+you can change at any time — `prov config --home <root|sidecar>` relocates the
+whole policy:
+
+- **`--home root`** inlines the policy into the root's `prov:` block and removes
+  the sidecar (one less file).
+- **`--home sidecar`** moves it into `prov.yaml` and clears the root's `prov:`
+  block (an uncluttered root).
+
+It is a *move*, not a materialization: only the recognized policy keys travel — no
+defaults are baked in, so the effective config is unchanged — and user fields stay
+put. A `--home root` that would strand a hand-added field in the sidecar keeps the
+file rather than deleting it. (This is distinct from `--setup`, which writes the
+*full* effective config — defaults included — into the sidecar for those who want
+nothing implicit.)
+
 ### Pointers stay top-level
 
 The `config`, `registry`, and `recycle_bin` **pointer relations** are *not*

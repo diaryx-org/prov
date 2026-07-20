@@ -160,6 +160,11 @@ choice, never an architectural one. Two rules:
   edit cadence than the root's content. A 3-term audience set with no payload
   stays inline; a curated vocabulary with per-term config earns a file.
 
+  For *workspace policy* specifically, the choice is reversible at any time:
+  `prov config --home root` inlines all policy into the root block and drops the
+  sidecar; `prov config --home sidecar` moves it into `prov.yaml` and clears the
+  block. Both homes read identically, so this only relocates bytes.
+
 ## 5. Versioning
 
 `spec` is an integer. New keys are added *additively* under the same spec until a

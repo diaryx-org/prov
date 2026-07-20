@@ -158,9 +158,12 @@ fn main() -> ExitCode {
         Command::Id { file } => resolve_target(&file).and_then(|f| cmd_id(&f)),
         Command::Resolve { id } => cmd_resolve(&id),
         Command::Backlinks { file } => resolve_target(&file).and_then(|f| cmd_backlinks(&f)),
-        Command::Config { key, value, setup } => {
-            cmd_config(key.as_deref(), value.as_deref(), setup)
-        }
+        Command::Config {
+            key,
+            value,
+            setup,
+            home,
+        } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
     };
     match result {
         Ok(code) => code,
@@ -1701,10 +1704,229 @@ fn cmd_config_setup(mut ctx: Ctx) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_config(key: Option<&str>, value: Option<&str>, setup: bool) -> CmdResult {
+/// Relocate the workspace's declared policy to a single home (`config --home`).
+/// A *move*, not a materialization: only the *recognized policy* keys declared
+/// across the two surfaces travel — no defaults baked in, and user fields stay
+/// put — so the effective config is unchanged, just consolidated. Reads span both
+/// homes regardless (`Ctx`); this only chooses where the bytes live.
+fn cmd_config_home(mut ctx: Ctx, home: ConfigHome) -> CmdResult {
+    // The recognized policy vocabulary: the keys `WorkspaceConfig` round-trips.
+    // Anything else in a surface (a user field, a stray note) is not policy and
+    // must not travel — so it is what the move ignores and what the delete guards.
+    let recognized: std::collections::HashSet<String> =
+        ctx.config.to_mapping().keys().cloned().collect();
+    let declared = collect_declared_policy(&ctx, &recognized)?;
+    match home {
+        ConfigHome::Sidecar => move_policy_to_sidecar(&mut ctx, &declared, &recognized),
+        ConfigHome::Root => move_policy_to_root(&mut ctx, &declared, &recognized),
+    }
+}
+
+type KeySet = std::collections::HashSet<String>;
+
+/// The recognized policy declared across both homes — the root's inline `prov:`
+/// block with the sidecar's policy overlaid (the effective precedence *config
+/// document > root block*), filtered to `recognized` so only policy travels.
+/// Deep-merged, so a nested block present in both (e.g. `references`) combines
+/// key-by-key rather than one home's block wholesale replacing the other's —
+/// matching how `WorkspaceConfig::apply` layers.
+fn collect_declared_policy(ctx: &Ctx, recognized: &KeySet) -> Result<Mapping, AnyError> {
+    let mut merged = Mapping::new();
+    let root_full = ctx.root_dir.join(&ctx.root_doc);
+    if let Ok(text) = std::fs::read_to_string(&root_full)
+        && let Ok(doc) = Document::parse(&ctx.root_doc, &text)
+        && let Some(Value::Mapping(block)) = doc.meta.get(prov::config::ROOT_CONFIG_KEY)
+    {
+        merged = filter_keys(block, recognized);
+    }
+    let probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&ctx.root_dir).build();
+    if let Some(config_doc) = block_on(probe.config_path(&ctx.root_doc))? {
+        let full = ctx.root_dir.join(&config_doc);
+        let text = std::fs::read_to_string(&full)?;
+        let doc = Document::parse(&config_doc, &text)?;
+        if let Some(map) = doc.meta.as_mapping() {
+            deep_merge(&mut merged, &filter_keys(map, recognized));
+        }
+    }
+    Ok(merged)
+}
+
+/// A copy of `map` keeping only top-level keys in `keys`.
+fn filter_keys(map: &Mapping, keys: &KeySet) -> Mapping {
+    map.iter()
+        .filter(|(k, _)| keys.contains(k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// A copy of `map` dropping the top-level keys in `keys`.
+fn drop_keys(map: &Mapping, keys: &KeySet) -> Mapping {
+    map.iter()
+        .filter(|(k, _)| !keys.contains(k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Recursively overlay `overlay` onto `base`: a mapping-valued key present in both
+/// merges key-by-key; every other key is replaced. The deep counterpart of
+/// `Mapping::extend`, so `references: { notation }` in one home and
+/// `references: { target }` in the other combine rather than clobber.
+fn deep_merge(base: &mut Mapping, overlay: &Mapping) {
+    for (key, value) in overlay {
+        match (base.get_mut(key), value) {
+            (Some(Value::Mapping(base_inner)), Value::Mapping(overlay_inner)) => {
+                deep_merge(base_inner, overlay_inner);
+            }
+            _ => {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+/// Rewrite the root's `prov:` block to `keep` its non-policy fields only (the
+/// recognized policy having moved out): if nothing remains, remove the `prov:`
+/// key entirely; otherwise set it to the remainder. The root's body and all other
+/// fields are preserved.
+fn strip_root_policy(ctx: &Ctx, recognized: &KeySet) -> Result<(), AnyError> {
+    let root_full = ctx.root_dir.join(&ctx.root_doc);
+    let text = std::fs::read_to_string(&root_full)?;
+    let doc = Document::parse(&ctx.root_doc, &text)?;
+    let Some(Value::Mapping(block)) = doc.meta.get(prov::config::ROOT_CONFIG_KEY) else {
+        return Ok(());
+    };
+    let remainder = drop_keys(block, recognized);
+    let updated = if remainder.is_empty() {
+        edit::unset_in_text(&text, doc.carrier, prov::config::ROOT_CONFIG_KEY)?
+    } else {
+        edit::set_meta_in_text(
+            &text,
+            doc.carrier,
+            prov::config::ROOT_CONFIG_KEY,
+            &Value::Mapping(remainder),
+        )?
+    };
+    std::fs::write(&root_full, updated)?;
+    Ok(())
+}
+
+/// `config --home sidecar`: write the declared policy into `prov.yaml` (creating
+/// and linking it if absent), preserving the sidecar's own `title`/`part_of` and
+/// any non-policy fields, then strip the recognized policy from the root's `prov:`
+/// block. Comments in the config document are not preserved (rebuilt canonically,
+/// like `--setup`).
+fn move_policy_to_sidecar(ctx: &mut Ctx, declared: &Mapping, recognized: &KeySet) -> CmdResult {
+    let config_doc = ensure_config(ctx)?;
+    let full = ctx.root_dir.join(&config_doc);
+    let text = std::fs::read_to_string(&full)?;
+    let doc = Document::parse(&config_doc, &text)?;
+    // Keep every non-policy field the sidecar already has (title, part_of, and any
+    // hand-added content), then write the policy after it.
+    let mut map = doc
+        .meta
+        .as_mapping()
+        .map(|m| drop_keys(m, recognized))
+        .unwrap_or_default();
+    for (k, v) in declared {
+        map.insert(k.clone(), v.clone());
+    }
+    std::fs::write(
+        &full,
+        meta::serialize_mapping(&map, ctx.config.default_embed_format)?,
+    )?;
+    strip_root_policy(ctx, recognized)?;
+    println!(
+        "moved workspace policy to {} and cleared the root `prov:` block",
+        config_doc.display()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `config --home root`: merge the declared policy into the root's `prov:` block
+/// (preserving any non-policy field already there), then retire the sidecar. If
+/// stripping the policy leaves the sidecar with only its `title`/`part_of`, it is
+/// deleted and its `config:` pointer removed; if it still carries hand-added
+/// fields, it is kept (rewritten without the moved policy) so nothing is lost.
+fn move_policy_to_root(ctx: &mut Ctx, declared: &Mapping, recognized: &KeySet) -> CmdResult {
+    let root_full = ctx.root_dir.join(&ctx.root_doc);
+    let text = std::fs::read_to_string(&root_full)?;
+    let doc = Document::parse(&ctx.root_doc, &text)?;
+    let mut block = match doc.meta.get(prov::config::ROOT_CONFIG_KEY) {
+        Some(Value::Mapping(m)) => m.clone(),
+        _ => Mapping::new(),
+    };
+    for (k, v) in declared {
+        block.insert(k.clone(), v.clone());
+    }
+    let updated = edit::set_meta_in_text(
+        &text,
+        doc.carrier,
+        prov::config::ROOT_CONFIG_KEY,
+        &Value::Mapping(block),
+    )?;
+    std::fs::write(&root_full, updated)?;
+
+    let probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&ctx.root_dir).build();
+    if let Some(config_doc) = block_on(probe.config_path(&ctx.root_doc))? {
+        let sidecar_full = ctx.root_dir.join(&config_doc);
+        let sidecar_text = std::fs::read_to_string(&sidecar_full)?;
+        let sidecar = Document::parse(&config_doc, &sidecar_text)?;
+        let remainder = sidecar
+            .meta
+            .as_mapping()
+            .map(|m| drop_keys(m, recognized))
+            .unwrap_or_default();
+        let only_self_describing = remainder
+            .keys()
+            .all(|k| k == "title" || k == "part_of");
+        if only_self_describing {
+            // The sidecar is now empty of meaning — remove its pointer and delete it.
+            let text = std::fs::read_to_string(&root_full)?;
+            let doc = Document::parse(&ctx.root_doc, &text)?;
+            if doc.meta.get("config").is_some() {
+                let updated = edit::unset_in_text(&text, doc.carrier, "config")?;
+                std::fs::write(&root_full, updated)?;
+            }
+            std::fs::remove_file(&sidecar_full)?;
+            println!(
+                "moved workspace policy into the root `prov:` block and removed {}",
+                config_doc.display()
+            );
+        } else {
+            // Hand-added fields remain — keep the sidecar, just without the policy.
+            std::fs::write(
+                &sidecar_full,
+                meta::serialize_mapping(&remainder, ctx.config.default_embed_format)?,
+            )?;
+            let kept: Vec<String> = remainder
+                .keys()
+                .filter(|k| k.as_str() != "title" && k.as_str() != "part_of")
+                .cloned()
+                .collect();
+            println!(
+                "moved workspace policy into the root `prov:` block; kept {} for its non-policy field(s): {}",
+                config_doc.display(),
+                kept.join(", ")
+            );
+        }
+    } else {
+        println!("moved workspace policy into the root `prov:` block");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_config(
+    key: Option<&str>,
+    value: Option<&str>,
+    setup: bool,
+    home: Option<ConfigHome>,
+) -> CmdResult {
     let ctx = find_root_quiet()?;
     if setup {
         return cmd_config_setup(ctx);
+    }
+    if let Some(home) = home {
+        return cmd_config_home(ctx, home);
     }
     match (key, value) {
         // No key: print the effective config (defaults + root + config document).

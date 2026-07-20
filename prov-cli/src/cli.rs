@@ -495,9 +495,28 @@ pub(crate) enum Command {
         /// document — every setting written out at its current (or default)
         /// value, so nothing relies on invisible defaults. Fills in the keys you
         /// have not set; existing settings and fields are preserved.
-        #[arg(long, conflicts_with_all = ["key", "value"])]
+        #[arg(long, conflicts_with_all = ["key", "value", "home"])]
         setup: bool,
+        /// Relocate the whole workspace policy to one home, preserving what is
+        /// declared (no defaults baked in): `sidecar` moves it into `prov.yaml`
+        /// and clears the root's `prov:` block ("unclutter my root"); `root`
+        /// inlines it into the root's `prov:` block and removes the sidecar ("one
+        /// less file"). Reading always spans both homes regardless of where policy
+        /// lives.
+        #[arg(long, value_name = "root|sidecar", conflicts_with_all = ["key", "value", "setup"])]
+        home: Option<ConfigHome>,
     },
+}
+
+/// Which home the `config --home` conversion relocates workspace policy to. The
+/// two homes read identically (DESIGN §2, "two homes, one vocabulary"); this only
+/// chooses *where the bytes live*.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ConfigHome {
+    /// Inline in the root document's `prov:` block; the sidecar is removed.
+    Root,
+    /// In the dedicated `prov.yaml` config document; the root's block is cleared.
+    Sidecar,
 }
 
 /// CLI spelling of the metadata formats prov compiles in. Variants track the
