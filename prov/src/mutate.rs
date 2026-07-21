@@ -721,7 +721,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// resolves to `target` and carries a label distinct from `new_title` gets
     /// that label set to `new_title`, its target and wrapper untouched. Returns
     /// the rewritten text, or `None` when nothing needed changing.
-    async fn relabel_inbound_doc(
+    pub(crate) async fn relabel_inbound_doc(
         &self,
         source: &Path,
         target: &Path,

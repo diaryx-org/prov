@@ -117,8 +117,13 @@ pub struct CensusEntry {
     pub source: PathBuf,
     /// Where in `source` the link is written.
     pub site: LinkSite,
-    /// The target exactly as written.
+    /// The target exactly as written (bare — the `[label](…)` wrapper stripped).
     pub target_text: String,
+    /// The display label the link carried, when written `[label](target)` /
+    /// `[[target|label]]` — `None` for a bare target. Kept so a caller can check
+    /// a label against the target's current title (stale-label detection) without
+    /// re-reading the source.
+    pub label: Option<String>,
     /// How the target resolves.
     pub resolution: Resolution,
 }
@@ -226,6 +231,23 @@ pub enum Finding {
         site: LinkSite,
         name: String,
         candidates: Vec<PathBuf>,
+    },
+    /// An **id-addressed** link (`[label](id:…)`) whose display `label` no longer
+    /// matches the current `title` of the document it resolves to — the target was
+    /// retitled out of band (another editor, a merge) without the label following.
+    /// `expected` is the target's current title; `actual` is the stale label;
+    /// `target` is the link exactly as written. Only id links are flagged: their
+    /// label is decorative (the id is the real reference), so a divergence is
+    /// almost certainly staleness — a path link's label may be an intentional
+    /// custom name. Auto-fixable by relabeling ([`Fix::RelabelLink`]); the in-app
+    /// path keeps labels fresh via [`Workspace::retitle`](crate::Workspace::retitle),
+    /// so this catches only what changed behind prov's back.
+    StaleLabel {
+        doc: PathBuf,
+        site: LinkSite,
+        target: String,
+        expected: String,
+        actual: String,
     },
     /// A document's self-stored `id` frontmatter disagrees with the registry —
     /// the portable shadow copy and the registry entry have drifted (an
@@ -376,6 +398,17 @@ impl fmt::Display for Finding {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Finding::StaleLabel {
+                doc,
+                site,
+                expected,
+                actual,
+                ..
+            } => write!(
+                f,
+                "{}: stale {site} label: reads \"{actual}\" but the target is now titled \"{expected}\"",
+                doc.display()
+            ),
             Finding::IdMismatch {
                 doc,
                 frontmatter,
@@ -493,6 +526,16 @@ pub enum Fix {
         parent: PathBuf,
         title: String,
     },
+    /// Repair a [`Finding::StaleLabel`]: rewrite the display label of every link
+    /// in `doc` that resolves to `target` to `new_label` (the target's current
+    /// title), leaving the id/path target untouched. The same mechanic
+    /// [`Workspace::retitle`](crate::Workspace::retitle) runs, applied after the
+    /// fact to a label a title change bypassed.
+    RelabelLink {
+        doc: PathBuf,
+        target: PathBuf,
+        new_label: String,
+    },
     /// Repair a [`Finding::IdMismatch`] by *trusting the registry*: rewrite the
     /// document's `id` frontmatter to `id` (the ID the registry records for its
     /// path). The registry is the durable, tombstone-bearing side, so it wins.
@@ -522,6 +565,18 @@ impl fmt::Display for Fix {
                     f,
                     "declare {relation} → {} in {}",
                     parent.display(),
+                    doc.display()
+                )
+            }
+            Fix::RelabelLink {
+                doc,
+                target,
+                new_label,
+            } => {
+                write!(
+                    f,
+                    "relabel the link to {} in {} as \"{new_label}\"",
+                    target.display(),
                     doc.display()
                 )
             }
@@ -610,6 +665,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 doc: doc.clone(),
                 hash: actual.clone(),
             })),
+            // Relabel the stale link to the target's current title. Resolve its
+            // (id) target to a path so the fix can locate it; a link that no
+            // longer resolves has nothing safe to relabel.
+            Finding::StaleLabel {
+                doc,
+                target,
+                expected,
+                ..
+            } => match self.resolve_link(doc, &Link::parse(target)) {
+                crate::Target::Path(path) => Ok(Some(Fix::RelabelLink {
+                    doc: doc.clone(),
+                    target: path,
+                    new_label: expected.clone(),
+                })),
+                _ => Ok(None),
+            },
             _ => Ok(None),
         }
     }
@@ -641,7 +712,61 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             self.vocabulary_findings(start, &census, &content_bodies)
                 .await?,
         );
+        findings.extend(self.stale_label_findings(&census).await?);
         Ok(findings)
+    }
+
+    /// Flag every **id-addressed** link whose display label has drifted from the
+    /// current title of the document it resolves to — a target retitled out of
+    /// band. Only id links are checked: their label is decorative (the id is the
+    /// reference), so divergence is staleness, where a path link's label may be an
+    /// intentional custom name. Bounded to the census already walked; each target
+    /// title is read once and cached.
+    async fn stale_label_findings(&self, census: &[CensusEntry]) -> Result<Vec<Finding>> {
+        let mut titles: std::collections::BTreeMap<PathBuf, Option<String>> =
+            std::collections::BTreeMap::new();
+        let mut findings = Vec::new();
+        for entry in census {
+            // Only id-addressed links with a label: `Resolution::Id` marks the
+            // id form (its `to` is the live target path), and a label is what
+            // there is to keep fresh.
+            let Some(label) = &entry.label else { continue };
+            let Resolution::Id { to: target, .. } = &entry.resolution else {
+                continue;
+            };
+            if !titles.contains_key(target) {
+                let title = self.title_of(target).await?;
+                titles.insert(target.clone(), title);
+            }
+            if let Some(Some(current)) = titles.get(target)
+                && label != current
+            {
+                findings.push(Finding::StaleLabel {
+                    doc: entry.source.clone(),
+                    site: entry.site.clone(),
+                    target: entry.target_text.clone(),
+                    expected: current.clone(),
+                    actual: label.clone(),
+                });
+            }
+        }
+        Ok(findings)
+    }
+
+    /// The `title` a document declares, or `None` when it is missing or the file
+    /// cannot be read.
+    async fn title_of(&self, path: &Path) -> Result<Option<String>> {
+        let text = match self.fs().read_to_string(&self.root().join(path)).await {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let doc = crate::document::Document::parse(path, &text)?;
+        Ok(doc
+            .meta
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned))
     }
 
     /// Verify every **record store** the workspace reaches — the id registry, the
@@ -1234,6 +1359,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 census.push(CensusEntry {
                     source: path.clone(),
                     site: LinkSite::Relation(edge.relation),
+                    label: link.label,
                     target_text: link.target,
                     resolution,
                 });
@@ -1250,6 +1376,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 census.push(CensusEntry {
                     source: path.clone(),
                     site: LinkSite::Body(body_link.span),
+                    label: wl.label,
                     target_text: wl.target,
                     resolution,
                 });
@@ -1412,6 +1539,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 )?;
                 cs.write(doc, updated);
             }
+            // Relabel every link in `doc` resolving to `target` to the new label,
+            // reusing the same mechanic `retitle` runs.
+            Fix::RelabelLink {
+                doc,
+                target,
+                new_label,
+            } => {
+                if let Some(updated) = self.relabel_inbound_doc(doc, target, new_label).await? {
+                    cs.write(doc, updated);
+                }
+            }
             // Trust the registry: overwrite the document's `id` frontmatter.
             Fix::SetId { doc, id } => {
                 let (text, parsed) = self.load(doc).await?;
@@ -1491,6 +1629,72 @@ mod tests {
         write(&dir, "a.md", "---\npart_of: index.md\n---\n");
         let ws = Workspace::builder(StdFs).root(&dir).build();
         assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn check_flags_and_fixes_a_stale_id_link_label() {
+        use crate::link::{Addressing, ReferenceStyle, Wrapper};
+        use crate::relation::{Relation, RelationSet};
+
+        let by_id_labeled = ReferenceStyle {
+            wrapper: Wrapper::Markdown,
+            addressing: Addressing::Id,
+            label: true,
+            path_style: LinkStyle::default(),
+        };
+        let relations = RelationSet::new()
+            .with(Relation::many("contents").inverse("part_of"))
+            .with(
+                Relation::one("part_of")
+                    .inverse("contents")
+                    .style(by_id_labeled),
+            )
+            .spanning("contents");
+
+        let dir = tempdir("stale-label");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .relations(relations)
+            .identity(Minter::eager(7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+        block_on(w.create_with_title(Path::new("child.md"), Path::new("index.md"), "Child"))
+            .unwrap();
+
+        // Retitle the parent OUT OF BAND — edit its `title` directly, so the
+        // inbound label on the child is never refreshed (the merge/other-editor
+        // case `retitle` cannot catch).
+        let idx = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        std::fs::write(
+            dir.join("index.md"),
+            idx.replace("title: Root", "title: Renamed"),
+        )
+        .unwrap();
+
+        // check flags the drift…
+        let findings = block_on(w.check("index.md")).unwrap();
+        let stale = findings
+            .iter()
+            .find(|f| matches!(f, Finding::StaleLabel { .. }));
+        assert!(stale.is_some(), "expected a StaleLabel finding, got {findings:?}");
+
+        // …and the suggested fix relabels the child to the parent's new title.
+        let fix = block_on(w.suggest_fix(stale.unwrap()))
+            .unwrap()
+            .expect("stale label is auto-fixable");
+        block_on(w.apply_fix(&fix)).unwrap();
+        let child = std::fs::read_to_string(dir.join("child.md")).unwrap();
+        assert!(child.contains("[Renamed](id:"), "relabeled: {child}");
+
+        // Clean afterward.
+        assert!(
+            !block_on(w.check("index.md"))
+                .unwrap()
+                .iter()
+                .any(|f| matches!(f, Finding::StaleLabel { .. })),
+            "no stale labels remain"
+        );
     }
 
     #[test]
