@@ -125,6 +125,18 @@ impl Link {
         }
     }
 
+    /// This link with a different display label, keeping the target and wrapper.
+    /// The retitle path uses this so `[Old Title](id:abc)` becomes
+    /// `[New Title](id:abc)` when the target is renamed — the label follows the
+    /// title while the (id or path) target stays exactly as written.
+    pub fn with_label(&self, label: impl Into<String>) -> Self {
+        Self {
+            label: Some(label.into()),
+            target: self.target.clone(),
+            wikilink: self.wikilink,
+        }
+    }
+
     /// `true` when the target points off-workspace (a URL or mail address)
     /// rather than at a file — such links are never resolved against the
     /// filesystem or rewritten by moves.
