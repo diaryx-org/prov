@@ -113,6 +113,19 @@ fn every_command_runs_end_to_end() {
     assert_eq!(ok(&dir, &["config", "identity"]).trim(), "lazy");
     ok(&dir, &["config", "references.target", "id"]);
     ok(&dir, &["config", "--setup"]);
+
+    // ── backup: whole-tree copy, outside the graph entirely ──
+    let backup_dir = dir.parent().unwrap().join("smoke-all-backup");
+    let _ = std::fs::remove_dir_all(&backup_dir);
+    ok(&dir, &["backup", "--to", backup_dir.to_str().unwrap()]);
+    assert!(backup_dir.join("index.md").exists());
+    let backup_zip = dir.parent().unwrap().join("smoke-all-backup.zip");
+    let _ = std::fs::remove_file(&backup_zip);
+    ok(
+        &dir,
+        &["backup", "--to", backup_zip.to_str().unwrap(), "--zip"],
+    );
+    assert!(backup_zip.is_file());
 }
 
 #[test]

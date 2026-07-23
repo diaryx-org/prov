@@ -516,6 +516,26 @@ pub(crate) enum Command {
         #[arg(long, value_name = "root|sidecar", conflicts_with_all = ["key", "value", "setup"])]
         home: Option<ConfigHome>,
     },
+    /// Copy the entire workspace tree to another filesystem location, for
+    /// redundancy against losing the workspace's own location (a dead disk, a
+    /// deleted cloud folder). A plain, opaque, whole-tree copy — bytes
+    /// verbatim, hidden files included — with no pointer relation, no
+    /// manifest, no config axis: it deliberately depends on nothing living
+    /// inside the workspace, which is the whole point of a backup. An
+    /// imperative one-off, not a standing behavior.
+    Backup {
+        /// Where to write the backup: a directory to copy the tree into
+        /// (created if missing; parent directories are created as needed; an
+        /// *existing* directory here must be empty) — or, with `--zip`, the
+        /// path of the zip file to create. Refused if it resolves inside the
+        /// workspace root (the copy would recurse into itself).
+        #[arg(long = "to", value_name = "PATH")]
+        to: PathBuf,
+        /// Archive into a single store-only (uncompressed) zip file instead of
+        /// copying to a directory.
+        #[arg(long)]
+        zip: bool,
+    },
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

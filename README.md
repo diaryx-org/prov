@@ -56,6 +56,7 @@ So `2>/dev/null` silences the chatter without eating data, and `$(prov new 'Titl
 | `convert` | each rewritten document's path, one per line |
 | `empty-bin` | *(nothing — a bulk purge names no object)* |
 | `config <key> <value>` | the value now in effect |
+| `backup` | the destination path (directory, or the zip file with `--zip`) |
 | `meta`, `get`, `body`, `render`, `links`, `tree`, `backlinks`, `id`, `resolve`, `config`, `check` | the requested data (findings, values, edges) |
 
 ## Status

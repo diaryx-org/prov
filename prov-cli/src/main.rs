@@ -34,7 +34,9 @@ use prov::{
     block_on, edit, link, meta,
 };
 
+mod backup;
 mod cli;
+mod zip;
 use cli::*;
 
 fn main() -> ExitCode {
@@ -177,6 +179,7 @@ fn main() -> ExitCode {
             setup,
             home,
         } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
+        Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
     };
     match result {
         Ok(code) => code,
