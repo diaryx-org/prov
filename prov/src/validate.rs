@@ -265,6 +265,20 @@ pub enum Finding {
     /// `id`, or a registry rebuilt from a stale snapshot). Reconcilable by
     /// adopting the id into the registry.
     UnregisteredId { doc: PathBuf, frontmatter: Id },
+    /// The registry holds an id for a document that does not carry it — the
+    /// inverse of [`UnregisteredId`](Finding::UnregisteredId), and raised only
+    /// under a stamping mode ([`IdStorage::stamps_frontmatter`], DESIGN §5),
+    /// where every document is meant to be self-describing. Raised for a
+    /// workspace converted from registry-only storage, and for any document
+    /// whose `id` was stripped out of band.
+    ///
+    /// It is the finding that makes the conversion mechanical: `check` names
+    /// every unstamped document, and [`Fix::SetId`] writes the registry's id into
+    /// each one — the registry is the authority here, since it is the home the
+    /// id has had all along.
+    ///
+    /// [`IdStorage::stamps_frontmatter`]: crate::config::IdStorage::stamps_frontmatter
+    UnstampedId { doc: PathBuf, registry: Id },
     /// A content document that exists on disk but nothing reachable from the
     /// checked root links to it — the self-describing structure silently omits
     /// it. The onboarding signal (DESIGN §8): a folder of notes that predates the
@@ -430,6 +444,11 @@ impl fmt::Display for Finding {
                 "{}: unregistered id: frontmatter says id:{frontmatter} but the registry has no such entry",
                 doc.display()
             ),
+            Finding::UnstampedId { doc, registry } => write!(
+                f,
+                "{}: unstamped id: the registry records id:{registry} but the document does not carry it",
+                doc.display()
+            ),
             Finding::Orphan { doc } => {
                 write!(
                     f,
@@ -536,7 +555,8 @@ pub enum Fix {
         target: PathBuf,
         new_label: String,
     },
-    /// Repair a [`Finding::IdMismatch`] by *trusting the registry*: rewrite the
+    /// Repair a [`Finding::IdMismatch`] or [`Finding::UnstampedId`] by
+    /// *trusting the registry*: rewrite the
     /// document's `id` frontmatter to `id` (the ID the registry records for its
     /// path). The registry is the durable, tombstone-bearing side, so it wins.
     SetId { doc: PathBuf, id: Id },
@@ -658,6 +678,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Finding::UnregisteredId { doc, frontmatter } => Ok(Some(Fix::RegisterId {
                 doc: doc.clone(),
                 id: frontmatter.clone(),
+            })),
+            // Write the registry's id down into the document, making it
+            // self-describing. Unambiguous — unlike `IdMismatch`, there is no
+            // competing claim to weigh, only a home that is still empty.
+            Finding::UnstampedId { doc, registry } => Ok(Some(Fix::SetId {
+                doc: doc.clone(),
+                id: registry.clone(),
             })),
             // Re-stamp to the current bytes — accept the change. The current hash
             // is already computed in the finding, so no re-read is needed.
@@ -1304,6 +1331,18 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         }),
                     },
                 }
+            } else if self.id_storage().stamps_frontmatter()
+                && let Some(reg) = self.index().id_for_path(&path)
+            {
+                // The other direction: a stamping workspace expects every
+                // registered document to carry its own id, and this one does not
+                // (a workspace converted from registry-only storage, or an `id`
+                // stripped out of band). The registry is the authority — the id
+                // is already live and linked to — so the repair writes it down.
+                structural.push(Finding::UnstampedId {
+                    doc: path.clone(),
+                    registry: reg,
+                });
             }
 
             // Frontmatter relation edges — the only links that can be spanning.
@@ -2283,6 +2322,65 @@ mod tests {
         assert!(
             block_on(ws.check("index.md")).unwrap().is_empty(),
             "adopted → clean"
+        );
+    }
+
+    #[test]
+    fn unstamped_id_is_found_and_written_into_the_document() {
+        use crate::config::IdStorage;
+        use crate::identity::Id;
+        use crate::index::IndexStore;
+
+        // A registry-only workspace: the id lives in the registry and the
+        // document carries nothing — exactly the state a vault is in the moment
+        // it converts to stamping storage.
+        let dir = tempdir("unstamped-id");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        let build = |storage| {
+            let mut ws = Workspace::builder(StdFs)
+                .root(&dir)
+                .identity(Minter::lazy(9))
+                .index(FileIndex::new(fig::Format::Yaml))
+                .id_storage(storage)
+                .build();
+            ws.index_mut()
+                .register(&Id("aaaaaaa".into()), Path::new("index.md"));
+            ws
+        };
+
+        // Registry-only storage does not expect a stamp, so it raises nothing.
+        let ws = build(IdStorage::Registry);
+        assert!(
+            block_on(ws.check("index.md")).unwrap().is_empty(),
+            "registry-only storage should not ask for a stamp"
+        );
+
+        // Stamping storage names the gap.
+        let mut ws = build(IdStorage::Frontmatter);
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let f = findings
+            .iter()
+            .find(|f| matches!(f, Finding::UnstampedId { registry, .. } if registry.0 == "aaaaaaa"))
+            .expect("expected an UnstampedId")
+            .clone();
+
+        // And the fix writes the registry's id down into the document, leaving
+        // the registry itself untouched.
+        let fix = block_on(ws.suggest_fix(&f)).unwrap().unwrap();
+        assert!(matches!(&fix, Fix::SetId { id, .. } if id.0 == "aaaaaaa"));
+        block_on(ws.apply_fix(&fix)).unwrap();
+        assert!(
+            std::fs::read_to_string(dir.join("index.md"))
+                .unwrap()
+                .contains("id: aaaaaaa")
+        );
+        assert_eq!(
+            ws.index().id_for_path(Path::new("index.md")),
+            Some(Id("aaaaaaa".into()))
+        );
+        assert!(
+            block_on(ws.check("index.md")).unwrap().is_empty(),
+            "stamped → clean"
         );
     }
 

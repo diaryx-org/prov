@@ -204,10 +204,32 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .authored_target(&spanning, &parent, &node, &title, false)
             .await?;
 
-        // Author the node's metadata: title, inverse link, and — for a separated
-        // child — a `content` pointer at its body file. A separated node is
-        // serialized from a mapping (a whole-file document, valid in any format
-        // including empty JSON); a combined child grows its block via the editor.
+        // Identity hook — eager policies assign an ID from birth (idempotent: an
+        // id-linked child was already registered by the spanning entry above).
+        // It runs *before* the node's text is authored, because a
+        // frontmatter-stamping workspace has to write that id into the document
+        // it is about to compose; the registry write it implies is staged by
+        // `commit` either way, so the registry still lands with the documents.
+        if self.identity().registration().fires_on(Trigger::Create)
+            && self.index().id_for_path(&node).is_none()
+        {
+            let id = self.mint_unique(&node);
+            self.index_mut().register(&id, &node);
+        }
+        // The id the document carries as its own, under a stamping mode
+        // (DESIGN §5) — `None` when ids live only in the registry, or when a lazy
+        // policy has not minted one for this node at all.
+        let stamp = self
+            .id_storage()
+            .stamps_frontmatter()
+            .then(|| self.index().id_for_path(&node))
+            .flatten();
+
+        // Author the node's metadata: title, its own id (when stamped), inverse
+        // link, and — for a separated child — a `content` pointer at its body
+        // file. A separated node is serialized from a mapping (a whole-file
+        // document, valid in any format including empty JSON); a combined child
+        // grows its block via the editor.
         let new_text = match (&node_carrier, &body) {
             (MetaCarrier::WholeFile(format), Some(body_path)) => {
                 let body_ref = body_path
@@ -217,6 +239,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .to_string();
                 let mut map = crate::meta::Mapping::new();
                 map.insert("title".into(), Value::String(title));
+                if let Some(id) = &stamp {
+                    map.insert("id".into(), Value::String(id.0.clone()));
+                }
                 map.insert(inverse.clone(), Value::String(up));
                 map.insert("content".into(), Value::String(body_ref));
                 crate::meta::serialize_mapping(&map, *format)?
@@ -224,6 +249,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             _ => {
                 let mut new_doc = MetaEditor::open_or_init("", Some(node_carrier))?;
                 new_doc.set_value(&[Segment::Key("title")], fig::Value::Str(title))?;
+                if let Some(id) = &stamp {
+                    new_doc.set_value(&[Segment::Key("id")], fig::Value::Str(id.0.clone()))?;
+                }
                 new_doc.set_value(&[Segment::Key(&inverse)], fig::Value::Str(up))?;
                 new_doc.render()?
             }
@@ -250,15 +278,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         cs.write(&parent, parent_out);
 
-        // Identity hook — eager policies assign an ID from birth (idempotent: an
-        // id-linked child was already registered above). Staged before the
-        // commit, so the registry lands with the documents rather than after.
-        if self.identity().registration().fires_on(Trigger::Create)
-            && self.index().id_for_path(&node).is_none()
-        {
-            let id = self.mint_unique(&node);
-            self.index_mut().register(&id, &node);
-        }
         self.commit(cs).await?;
         Ok(Created { node, body })
     }
@@ -2570,6 +2589,130 @@ mod tests {
         assert!(read(&dir, "index.md").contains(&format!("id:{child_id}")));
         // And it still validates — id targets resolve through the registry.
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn create_stamps_the_new_documents_id_under_frontmatter_storage() {
+        use crate::config::IdStorage;
+        use crate::identity::Registration;
+
+        // Stamping storage (`id_storage: both`) makes every authored document
+        // self-describing: the id prov mints lands in the document as well as the
+        // registry, so identity travels with the file.
+        let dir = tempdir("create-stamp");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_storage(IdStorage::Frontmatter)
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+
+        let child_id = w
+            .index()
+            .id_for_path(Path::new("a.md"))
+            .expect("child registered");
+        assert!(
+            read(&dir, "a.md").contains(&format!("id: {child_id}")),
+            "the child carries its own id: {}",
+            read(&dir, "a.md")
+        );
+        // The stamp agrees with the registry, so nothing is left to reconcile.
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn create_leaves_documents_id_free_under_registry_storage() {
+        use crate::identity::Registration;
+
+        // The converse, and the behavior every existing vault keeps: ids live in
+        // the registry alone and documents stay free of `id` clutter.
+        let dir = tempdir("create-no-stamp");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+
+        assert!(
+            w.index().id_for_path(Path::new("a.md")).is_some(),
+            "eager identity still registers the child"
+        );
+        assert!(
+            !read(&dir, "a.md").contains("id:"),
+            "no stamp under registry storage: {}",
+            read(&dir, "a.md")
+        );
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn create_stamps_the_parent_it_registers_to_author_a_link() {
+        use crate::config::IdStorage;
+
+        // The child is not the only document that earns an id here: authoring an
+        // id-form link *to* the parent registers the parent too. That id has the
+        // same claim to travel with its file, so the stamp has to reach documents
+        // the op only touched in passing — otherwise the very first `create` in a
+        // fresh vault leaves the root unstamped and `check` immediately complains.
+        let dir = tempdir("create-stamp-parent");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::lazy(7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_links(true)
+            .id_storage(IdStorage::Frontmatter)
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+
+        let parent_id = w
+            .index()
+            .id_for_path(Path::new("index.md"))
+            .expect("parent registered");
+        let index = read(&dir, "index.md");
+        assert!(
+            index.contains(&format!("id: {parent_id}")),
+            "the parent carries the id it earned: {index}"
+        );
+        // The stamp rode the same change set as the parent's own edit (its new
+        // spanning entry), so neither clobbered the other.
+        assert!(index.contains("contents:"), "{index}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn create_stamps_a_separated_childs_node_document() {
+        use crate::config::IdStorage;
+        use crate::identity::Registration;
+
+        // A separated child's id belongs on its *structural node*, the file the
+        // registry knows and the parent links — not on the prose body beside it.
+        let dir = tempdir("create-stamp-separate");
+        write(&dir, "index.yaml", "title: Root\ncontent: index.md\n");
+        write(&dir, "index.md", "# Root\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_storage(IdStorage::Frontmatter)
+            .build();
+        block_on(w.create(Path::new("notes.md"), Path::new("index.yaml"))).unwrap();
+
+        let node_id = w
+            .index()
+            .id_for_path(Path::new("notes.yaml"))
+            .expect("node registered");
+        assert!(
+            read(&dir, "notes.yaml").contains(&format!("id: {node_id}")),
+            "{}",
+            read(&dir, "notes.yaml")
+        );
+        assert_eq!(read(&dir, "notes.md"), "", "the body file stays empty");
+        assert_eq!(block_on(w.check("index.yaml")).unwrap(), vec![]);
     }
 
     #[test]

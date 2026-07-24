@@ -346,6 +346,10 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
         .reference_style(ctx.config.reference_style())
         .default_embed_format(ctx.config.default_embed_format)
         .fixity(ctx.config.fixity)
+        // Honor the declared identity-storage mode: under `both` (the config
+        // default) every document prov authors carries its own `id`, and `check`
+        // reports any that does not.
+        .id_storage(ctx.config.id_storage)
         .build())
 }
 

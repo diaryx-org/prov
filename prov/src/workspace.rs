@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use crate::change::ChangeSet;
-use crate::config::Fixity;
+use crate::config::{Fixity, IdStorage};
 use crate::content::ContentFormat;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
@@ -50,12 +50,25 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     reference_style: Option<ReferenceStyle>,
     default_embed_format: fig::Format,
     fixity: Fixity,
+    id_storage: IdStorage,
+    /// Documents that earned an id this operation and, under a stamping mode,
+    /// still need it written into their own frontmatter. Drained by
+    /// [`commit`](Workspace::commit) into the operation's change set, so a
+    /// document's id and the registry entry for it land in the same crash-atomic
+    /// write — never one without the other.
+    pending_stamps: Vec<(PathBuf, crate::identity::Id)>,
 }
 
 impl<FS> Workspace<FS, NoIdentity, NoIndex> {
     /// Start building a paths-only workspace over `fs`. Defaults: root `"."`,
     /// the [`RelationSet::diaryx`] vocabulary, identity off, and the default
     /// [`LinkStyle`] (`MarkdownRoot`, matching diaryx).
+    ///
+    /// Identity storage defaults to [`IdStorage::Registry`] — *not*
+    /// [`WorkspaceConfig`](crate::config::WorkspaceConfig)'s `both` default — so a
+    /// hand-built workspace keeps writing id-free documents unless it opts in.
+    /// Consumers that drive the builder from a config (the normal path) pass
+    /// [`id_storage`](WorkspaceBuilder::id_storage) and get the declared mode.
     pub fn builder(fs: FS) -> WorkspaceBuilder<FS, NoIdentity, NoIndex> {
         WorkspaceBuilder {
             fs,
@@ -68,6 +81,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             reference_style: None,
             default_embed_format: fig::Format::Yaml,
             fixity: Fixity::Payloads,
+            id_storage: IdStorage::Registry,
         }
     }
 }
@@ -126,6 +140,14 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// recorded regardless.
     pub fn fixity(&self) -> Fixity {
         self.fixity
+    }
+
+    /// Where this workspace persists document ids (DESIGN §5). Consulted by the
+    /// ops that *author* a document — under a stamping mode each one carries its
+    /// own `id` — and by `check`, which reconciles the two homes against each
+    /// other.
+    pub fn id_storage(&self) -> IdStorage {
+        self.id_storage
     }
 
     /// The workspace-default reference style — the fallback for any relation
@@ -708,6 +730,7 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
         }
         let id = self.mint_unique(&path);
         self.index.register(&id, &path);
+        self.queue_stamp(&path, &id);
         Ok(id)
     }
 
@@ -767,7 +790,18 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
         }
         let id = self.mint_unique(&path);
         self.index.register(&id, &path);
+        self.queue_stamp(&path, &id);
         id
+    }
+
+    /// Note that `path` should carry `id` in its own frontmatter, for
+    /// [`commit`](Self::commit) to stage. A no-op unless the workspace stores ids
+    /// in the document (DESIGN §5) — under registry-only storage a document never
+    /// learns its own id.
+    fn queue_stamp(&mut self, path: &Path, id: &crate::identity::Id) {
+        if self.id_storage.stamps_frontmatter() {
+            self.pending_stamps.push((path.to_path_buf(), id.clone()));
+        }
     }
 }
 
@@ -840,6 +874,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// successful op leaves a checkpoint behind for the next
     /// [`change`](Self::change) to mistake for a leak and unwind.
     pub(crate) async fn commit(&mut self, mut cs: ChangeSet) -> Result<()> {
+        // Documents that earned an id this op write it down themselves, in the
+        // same set as the registry entry — so the two homes for an id can never
+        // disagree because of an interrupted write.
+        if let Err(e) = self.stage_pending_stamps(&mut cs).await {
+            self.pending_stamps.clear();
+            self.index.rollback();
+            return Err(e);
+        }
         // The registry lives in a document, and the op may be moving or rewriting
         // that very document. Follow it before rendering — staged last, this write
         // would otherwise clobber the op's own edit to it.
@@ -873,6 +915,54 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Err(e)
             }
         }
+    }
+
+    /// Drain [`pending_stamps`](Self::pending_stamps) into `cs`: for each
+    /// document that earned an id, stage a copy of it carrying that id in its
+    /// `id` field.
+    ///
+    /// Reads through the set rather than the filesystem
+    /// ([`ChangeSet::staged`]), so a document this op is *already* rewriting is
+    /// stamped on top of that edit instead of clobbering it. Three cases are
+    /// deliberately skipped rather than guessed at:
+    ///
+    /// - a document the set **renames** — the stamp would land at a path the set
+    ///   is emptying;
+    /// - a document that is **not on disk** and not staged — nothing to edit
+    ///   (`create` composes its new document's id inline, so this is the copy
+    ///   that never needed a stamp, not a lost one);
+    /// - a document that **already carries this exact id** — idempotent.
+    ///
+    /// A skip is never silent damage: the id is in the registry either way, and
+    /// `check` raises [`Finding::UnstampedId`](crate::Finding::UnstampedId) for
+    /// any document still missing its stamp.
+    async fn stage_pending_stamps(&mut self, cs: &mut ChangeSet) -> Result<()> {
+        for (path, id) in std::mem::take(&mut self.pending_stamps) {
+            if cs.renamed_to(&path).is_some() {
+                continue;
+            }
+            let text = match cs.staged(&path) {
+                Some(bytes) => match std::str::from_utf8(bytes) {
+                    Ok(text) => text.to_string(),
+                    // An opaque payload (an attachment) is not a document and has
+                    // no frontmatter to stamp.
+                    Err(_) => continue,
+                },
+                None => match self.fs.read_to_string(&self.root.join(&path)).await {
+                    Ok(text) => text,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
+                },
+            };
+            let doc = crate::document::Document::parse(&path, &text)?;
+            if doc.meta.get("id").and_then(Value::as_str) == Some(id.0.as_str()) {
+                continue;
+            }
+            let updated =
+                crate::edit::set_in_text(&text, doc.carrier, "id", fig::Value::Str(id.0.clone()))?;
+            cs.write(&path, updated);
+        }
+        Ok(())
     }
 
     /// Bootstrap a **linked sidecar**: create `sidecar` (a whole-file metadata
@@ -936,6 +1026,7 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     reference_style: Option<ReferenceStyle>,
     default_embed_format: fig::Format,
     fixity: Fixity,
+    id_storage: IdStorage,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
@@ -972,6 +1063,16 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Set where a document's stable id is persisted (DESIGN §5). Under a
+    /// frontmatter-stamping mode ([`IdStorage::stamps_frontmatter`]) every
+    /// document prov authors carries its own `id`, so identity travels with the
+    /// file and the registry becomes a rebuildable cache rather than the sole
+    /// authority.
+    pub fn id_storage(mut self, id_storage: IdStorage) -> Self {
+        self.id_storage = id_storage;
+        self
+    }
+
     /// Set the workspace-default reference style — the fallback for relations
     /// without their own override. Supersedes the `link_style`/`id_links`
     /// convenience inputs when set.
@@ -1000,6 +1101,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
             fixity: self.fixity,
+            id_storage: self.id_storage,
         }
     }
 
@@ -1016,6 +1118,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
             fixity: self.fixity,
+            id_storage: self.id_storage,
         }
     }
 
@@ -1032,6 +1135,8 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
             fixity: self.fixity,
+            id_storage: self.id_storage,
+            pending_stamps: Vec::new(),
         }
     }
 }
