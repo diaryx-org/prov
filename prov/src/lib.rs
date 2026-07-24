@@ -81,7 +81,9 @@ pub use config::{
 };
 /// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
 /// re-exported so a consumer can name types without depending on `fig-schema`
-/// directly (and so it cannot drift to a different version of it).
+/// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
+/// different version than the one prov resolves against.
+pub use fig::ExtKind;
 pub use fig_schema::FieldType;
 pub use content::ContentFormat;
 pub use content::{code_spans, render_html};
