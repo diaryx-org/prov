@@ -79,12 +79,6 @@ pub use config::{
     RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
     field_type_from_config_str, metadata_format_from_str, metadata_format_str, spec_ahead,
 };
-/// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
-/// re-exported so a consumer can name types without depending on `fig-schema`
-/// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
-/// different version than the one prov resolves against.
-pub use fig::ExtKind;
-pub use fig_schema::FieldType;
 pub use content::ContentFormat;
 pub use content::{code_spans, render_html};
 pub use discovery::{Discovered, Discovery, discover};
@@ -94,7 +88,13 @@ pub use document::{
 };
 pub use error::{Error, Result};
 pub use exec::block_on;
+/// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
+/// re-exported so a consumer can name types without depending on `fig-schema`
+/// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
+/// different version than the one prov resolves against.
+pub use fig::ExtKind;
 pub use fig::Format;
+pub use fig_schema::FieldType;
 pub use fs::{Capabilities, DirEntry, FileType, InMemoryFs, Metadata, StdFs, Storage};
 pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
