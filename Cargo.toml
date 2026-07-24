@@ -35,7 +35,7 @@ twig-doc = { version = "2.3.0" }
 # over a seeded PRNG. Prov supplies its own seed (uniqueness is enforced by
 # rejection against the index, not entropy), so the dependency-free default —
 # no `os`/`js` features — is all it needs. See `prov/src/identity.rs`.
-moid = "0.1.1"
+moid = "1.0.0"
 
 # Internal crate.
 prov = { path = "prov", version = "0.3.2" }

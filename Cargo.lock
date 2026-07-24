@@ -256,9 +256,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "moid"
-version = "0.1.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55b87b04ce0b0ee80639e714c967564857a4aec419d5606339d9d7698415ecec"
+checksum = "8eaa3adc7a8ec181caaa788dc25bbbe04fab91bf983a1c6089e4b15abd413029"
 
 [[package]]
 name = "once_cell"
