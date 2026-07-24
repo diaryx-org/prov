@@ -102,11 +102,14 @@ prov:
       notation: wikilink      # …plus any reference-axis override, same block
       target: alias
     part_of: { cardinality: one, inverse: contents, target: id }
-  fields:                     # controlled vocabularies (tags, audiences, …)
+  fields:                     # field declarations — types and controlled vocabularies
     audience:
+      type: str               # what the value *is* — see "Field types" below
       values: closed          # open (folksonomy) | closed (must be a known term)
       vocabulary: '[Audiences](/vocab/audiences.yaml)'   # pointer to the term store
       reify: true             # each term is its own node (backlinks, prose, stable id)
+    created:
+      type: date              # a type alone is a complete declaration
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
 
@@ -122,10 +125,45 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `id_storage: both`, `updated: ""`, `identity: lazy`, `fixity: attachments`,
 `recycle_bin: true`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
-declares none; absent `fields` ⇒ no field is controlled (every such field is
+declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content). The `spanning`, relation-definition
 (`cardinality`/`inverse`/`means`), and `fields` axes are the *self-description*
 layer — see [Spec](/docs/spec.md).
+
+### Field types
+
+A `fields.<name>` entry declares two independent things, and needs at least one
+of them to be worth writing: a **type** (`type:` — what the value is) and a
+**controlled vocabulary** (`vocabulary:` + `values:` — which values are legal).
+Neither implies the other. `created` is a date nothing controls; an `audience`
+vocabulary needs no declared type. An entry with neither is ignored.
+
+The type vocabulary is [`fig-schema`](https://crates.io/crates/fig-schema)'s, not
+one prov invents, so prov, a metadata editor, and a view engine all name types
+identically instead of agreeing by convention:
+
+| `type:`          | means                                      |
+| ---------------- | ------------------------------------------ |
+| `str`            | text                                       |
+| `bool`           | `true` / `false`                           |
+| `int` / `float`  | a number                                   |
+| `date`           | a calendar date, `2026-07-24`              |
+| `datetime`       | an instant with offset, `2026-07-24T07:32:00Z` |
+| `local-datetime` | a date and time with no offset             |
+| `time`           | a time of day, `07:32:00`                  |
+| `ref`            | a link to another document                 |
+| `map` / `seq`    | a nested mapping or list                   |
+
+prov carries the type without interpreting it — nothing in `check` fails because
+a value does not match its declared type. It is there so a frontend can parse and
+render the field faithfully (a `date` gets a date picker, not a text box).
+
+The date and time types map onto the underlying format's native scalars where it
+has them — a TOML `created = 2026-07-24` stays a date rather than becoming a
+quoted string — and to plain unquoted text where it does not, which is the YAML
+frontmatter case: `created: 2026-07-24` is written correctly but reads back as a
+string. That asymmetry is harmless, because a field's declaration is found by
+*name*, never by inspecting the value's type.
 
 ### The two reference axes, orthogonalized
 

@@ -75,10 +75,14 @@ pub mod workspace;
 
 pub use change::{ChangeSet, FileOp};
 pub use config::{
-    ConfigIssue, ConfigIssueKind, FieldSpec, Fixity, IdStorage, OpenClosed, RelationDef,
-    RelationStyleConfig, WorkspaceConfig, diagnose, metadata_format_from_str, metadata_format_str,
-    spec_ahead,
+    ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, IdStorage, OpenClosed,
+    RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
+    field_type_from_config_str, metadata_format_from_str, metadata_format_str, spec_ahead,
 };
+/// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
+/// re-exported so a consumer can name types without depending on `fig-schema`
+/// directly (and so it cannot drift to a different version of it).
+pub use fig_schema::FieldType;
 pub use content::ContentFormat;
 pub use content::{code_spans, render_html};
 pub use discovery::{Discovered, Discovery, discover};

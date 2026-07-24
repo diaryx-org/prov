@@ -812,7 +812,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let config = self.effective_config(start).await?;
         for spec in config.fields.values() {
-            if let Some(p) = self.vocabulary_path(start, &spec.vocabulary) {
+            // A type-only field declares no vocabulary, so it has no store.
+            if let Some(pointer) = &spec.vocabulary
+                && let Some(p) = self.vocabulary_path(start, pointer)
+            {
                 stores.push(("vocabulary", p));
             }
         }
@@ -857,7 +860,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             crate::vocabulary::Vocabulary,
         )> = Vec::new();
         for (field, spec) in &config.fields {
-            if let Ok(Some(vocab)) = self.load_vocabulary(start, &spec.vocabulary).await {
+            // Membership is only checkable for a field that names a vocabulary;
+            // a type-only field has nothing to be a member of.
+            let Some(pointer) = &spec.vocabulary else {
+                continue;
+            };
+            if let Ok(Some(vocab)) = self.load_vocabulary(start, pointer).await {
                 vocabs.push((field.clone(), spec.values, vocab));
             }
         }

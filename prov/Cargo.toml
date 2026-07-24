@@ -17,6 +17,8 @@ publish = true
 # runs `zig build`). The value tree is prov's common currency. Which format
 # backends fig compiles in is governed by prov's features below.
 fig.workspace = true
+# Field-type vocabulary for `fields.<name>.type` — see `src/config.rs`.
+fig-schema.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 

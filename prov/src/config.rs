@@ -25,6 +25,9 @@
 
 use std::collections::BTreeMap;
 
+use fig::ExtKind;
+use fig_schema::FieldType;
+
 use crate::content::ContentFormat;
 use crate::document::EmbedStyle;
 use crate::identity::Registration;
@@ -122,22 +125,112 @@ impl OpenClosed {
     }
 }
 
-/// A controlled-vocabulary field declaration — an entry in the `fields` block.
-/// It turns a frontmatter field (`tags`, `audience`) that prov would otherwise
-/// merely carry (DESIGN §2, tier 3) into a *resolvable reference* prov keeps
-/// consistent: every value is checked against the vocabulary the `vocabulary`
-/// pointer reaches.
+/// A field declaration — an entry in the `fields` block. It promotes a
+/// frontmatter field (`tags`, `audience`, `created`) that prov would otherwise
+/// merely carry (DESIGN §2, tier 3) into something prov and its frontends know
+/// the shape of. Two independent things can be declared, and a field needs at
+/// least one of them to be worth an entry:
+///
+/// - **A type** ([`ty`](Self::ty)) — what the value *is*. Pure data shape,
+///   decidable from the value alone, so it is spelled in `fig-schema`'s
+///   vocabulary rather than one prov invents.
+/// - **A vocabulary** ([`vocabulary`](Self::vocabulary)) — which values are
+///   *legal*, turning the field into a resolvable reference prov keeps
+///   consistent: every value is checked against the vocabulary document the
+///   pointer reaches.
+///
+/// They compose (a closed vocabulary of strings is both), but neither implies
+/// the other: `created` is a date with no vocabulary, and a vocabulary field
+/// needs no declared type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSpec {
+    /// The type the field's values are expected to take, if declared. Drives
+    /// type-directed parsing and widget choice in a frontend (a `date` field
+    /// gets a date picker); prov itself carries it without interpreting it.
+    pub ty: Option<FieldType>,
     /// Whether the value set is open (folksonomy) or closed (must be known).
+    /// Meaningful only alongside a [`vocabulary`](Self::vocabulary).
     pub values: OpenClosed,
     /// The pointer (a link) to the vocabulary document listing this field's legal
-    /// terms — resolved like the `registry`/`config` pointers (DESIGN §6).
-    pub vocabulary: String,
+    /// terms — resolved like the `registry`/`config` pointers (DESIGN §6). `None`
+    /// for a field that declares a type but no controlled vocabulary.
+    pub vocabulary: Option<String>,
     /// Whether each term is reified as its own node (rich: backlinks, a prose
     /// body, stable id) rather than a bare key in a flat registry. A hint to
     /// tooling; prov validates membership either way.
     pub reify: bool,
+}
+
+/// The config spellings of [`FieldType`], in the order a diagnostic offers them.
+///
+/// A deliberate subset of `fig-schema`'s type vocabulary: the kinds a *document
+/// field* can meaningfully declare. `fig`'s remaining extended kinds
+/// (`EnumLiteral`, `CharLiteral`, `NumberSpecial`) are artifacts of particular
+/// serializations — ZON, JSON5 — rather than things a workspace declares about
+/// its own metadata, so they get no spelling here.
+pub const FIELD_TYPES: &[&str] = &[
+    "str",
+    "bool",
+    "int",
+    "float",
+    "date",
+    "datetime",
+    "local-datetime",
+    "time",
+    "ref",
+    "map",
+    "seq",
+];
+
+/// Parse a `fields.<name>.type` spelling into a [`FieldType`]; unknown → `None`.
+///
+/// A free function rather than an inherent method because [`FieldType`] is
+/// `fig-schema`'s type, not prov's — but the shape mirrors
+/// [`OpenClosed::from_config_str`] and its siblings, since this is the same kind
+/// of config-vocabulary translation.
+///
+/// The date/time spellings map onto `fig`'s extended scalars, which round-trip
+/// as a format's *native* date where the format has one (a TOML `1979-05-27`
+/// stays a date rather than becoming a quoted string) and as plain unquoted text
+/// where it does not (YAML frontmatter, where the same value reads back as a
+/// string — harmless, since a rule is matched by path, not by value type).
+pub fn field_type_from_config_str(value: &str) -> Option<FieldType> {
+    Some(match value {
+        "str" => FieldType::Str,
+        "bool" => FieldType::Bool,
+        "int" => FieldType::Int,
+        "float" => FieldType::Float,
+        // An instant carrying its offset — the archivally honest default, and
+        // what `updated:` stamps.
+        "datetime" => FieldType::Extended(ExtKind::OffsetDateTime),
+        "local-datetime" => FieldType::Extended(ExtKind::LocalDateTime),
+        "date" => FieldType::Extended(ExtKind::LocalDate),
+        "time" => FieldType::Extended(ExtKind::LocalTime),
+        "ref" => FieldType::Ref,
+        "map" => FieldType::Map,
+        "seq" => FieldType::Seq,
+        _ => return None,
+    })
+}
+
+/// The `fields.<name>.type` spelling of a [`FieldType`], or `None` for a type
+/// with no config spelling (see [`FIELD_TYPES`]) — such a type is dropped on
+/// serialization rather than written as something that would not read back.
+pub fn field_type_as_config_str(ty: FieldType) -> Option<&'static str> {
+    Some(match ty {
+        FieldType::Str => "str",
+        FieldType::Bool => "bool",
+        FieldType::Int => "int",
+        FieldType::Float => "float",
+        FieldType::Ref => "ref",
+        FieldType::Map => "map",
+        FieldType::Seq => "seq",
+        FieldType::Extended(ExtKind::OffsetDateTime) => "datetime",
+        FieldType::Extended(ExtKind::LocalDateTime) => "local-datetime",
+        FieldType::Extended(ExtKind::LocalDate) => "date",
+        FieldType::Extended(ExtKind::LocalTime) => "time",
+        FieldType::Null | FieldType::Extended(_) => return None,
+    })
 }
 
 /// Where a document's stable ID is persisted — the identity-storage axis
@@ -565,18 +658,25 @@ impl WorkspaceConfig {
                 }
             }
         }
-        // Controlled-vocabulary fields: `fields: { <field>: { values, vocabulary, reify } }`.
+        // Field declarations: `fields: { <field>: { type, values, vocabulary, reify } }`.
         if let Some(fields) = meta.get("fields").and_then(Value::as_mapping) {
             for (name, spec) in fields {
-                // A field is only controlled once it names a vocabulary to resolve
-                // against; without one there is nothing to check membership in.
-                let Some(vocabulary) = spec
+                let vocabulary = spec
                     .get("vocabulary")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
-                else {
+                    .map(str::to_string);
+                let ty = spec
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .and_then(field_type_from_config_str);
+                // An entry that declares neither a type nor a vocabulary says
+                // nothing about the field that prov or a frontend could act on;
+                // recording it would only claim the field is described when it
+                // isn't. (`diagnose` reports the malformed spelling that most
+                // often causes this.)
+                if ty.is_none() && vocabulary.is_none() {
                     continue;
-                };
+                }
                 let values = spec
                     .get("values")
                     .and_then(Value::as_str)
@@ -586,6 +686,7 @@ impl WorkspaceConfig {
                 self.fields.insert(
                     name.clone(),
                     FieldSpec {
+                        ty,
                         values,
                         vocabulary,
                         reify,
@@ -722,11 +823,18 @@ impl WorkspaceConfig {
             let mut fields = Mapping::new();
             for (name, spec) in &self.fields {
                 let mut entry = Mapping::new();
-                entry.insert(
-                    "values".into(),
-                    Value::String(spec.values.as_config_str().into()),
-                );
-                entry.insert("vocabulary".into(), Value::String(spec.vocabulary.clone()));
+                if let Some(ty) = spec.ty.and_then(field_type_as_config_str) {
+                    entry.insert("type".into(), Value::String(ty.into()));
+                }
+                // `values` describes a vocabulary, so it is only meaningful — and
+                // only written — alongside one.
+                if let Some(vocabulary) = &spec.vocabulary {
+                    entry.insert(
+                        "values".into(),
+                        Value::String(spec.values.as_config_str().into()),
+                    );
+                    entry.insert("vocabulary".into(), Value::String(vocabulary.clone()));
+                }
                 if spec.reify {
                     entry.insert("reify".into(), Value::Bool(true));
                 }
@@ -815,7 +923,7 @@ const REFERENCE_KEYS: &[&str] = &["notation", "path_style", "target", "label"];
 /// (`means` is free-form and never near-miss-matched, like `updated`).
 const RELATION_DEF_KEYS: &[&str] = &["cardinality", "inverse", "means"];
 /// Keys inside each `fields.<name>` entry.
-const FIELD_KEYS: &[&str] = &["values", "vocabulary", "reify"];
+const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "reify"];
 
 /// If `meta` declares a `spec` newer than [`SPEC_VERSION`] — the version this
 /// build understands — the declared version. The signal that prov may be
@@ -1099,8 +1207,8 @@ fn diagnose_relation_entry(issues: &mut Vec<ConfigIssue>, name: &str, value: &Va
     }
 }
 
-/// Diagnose the `fields:` block — a mapping of frontmatter field name to a
-/// controlled-vocabulary declaration (`values` / `vocabulary` / `reify`).
+/// Diagnose the `fields:` block — a mapping of frontmatter field name to a field
+/// declaration (`type` / `values` / `vocabulary` / `reify`).
 fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
     let Some(map) = value.as_mapping() else {
         return block_shape_issue(issues, "fields", value);
@@ -1114,6 +1222,13 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
         for (key, v) in entry {
             let dotted = format!("{prefix}.{key}");
             match key.as_str() {
+                "type" => enum_axis(
+                    issues,
+                    &dotted,
+                    v,
+                    |s| field_type_from_config_str(s).is_some(),
+                    FIELD_TYPES,
+                ),
                 "values" => enum_axis(
                     issues,
                     &dotted,
@@ -1389,14 +1504,28 @@ mod tests {
                     },
                 ),
             ]),
-            fields: BTreeMap::from([(
-                "audience".to_string(),
-                FieldSpec {
-                    values: OpenClosed::Closed,
-                    vocabulary: "[Audiences](/vocab/audiences.yaml)".to_string(),
-                    reify: true,
-                },
-            )]),
+            fields: BTreeMap::from([
+                (
+                    "audience".to_string(),
+                    FieldSpec {
+                        ty: Some(FieldType::Str),
+                        values: OpenClosed::Closed,
+                        vocabulary: Some("[Audiences](/vocab/audiences.yaml)".to_string()),
+                        reify: true,
+                    },
+                ),
+                // A type with no vocabulary — the other half of a field
+                // declaration, and the shape that has no `values` to write.
+                (
+                    "created".to_string(),
+                    FieldSpec {
+                        ty: Some(FieldType::Extended(ExtKind::LocalDate)),
+                        values: OpenClosed::default(),
+                        vocabulary: None,
+                        reify: false,
+                    },
+                ),
+            ]),
             id_storage: IdStorage::Frontmatter,
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::CodeBlock,
@@ -1595,6 +1724,68 @@ mod tests {
         assert!(
             issues.iter().any(|i| i.key == "spanning"
                 && matches!(&i.kind, ConfigIssueKind::SpanningNotSingleParent { inverse } if inverse == "whole")),
+            "{issues:?}"
+        );
+    }
+
+    /// A field declaration used to require a vocabulary to exist at all. A type
+    /// is the other, independent half: `created` is a date that nothing controls.
+    #[test]
+    fn a_field_may_declare_a_type_without_a_vocabulary() {
+        let mut created = Mapping::new();
+        created.insert("type".into(), Value::String("date".into()));
+        let mut fields = Mapping::new();
+        fields.insert("created".into(), Value::Mapping(created));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+
+        let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
+        let spec = config.fields.get("created").expect("a recorded field");
+        assert_eq!(spec.ty, Some(FieldType::Extended(ExtKind::LocalDate)));
+        assert_eq!(spec.vocabulary, None);
+    }
+
+    /// The inverse guard: an entry that declares neither is not a description of
+    /// anything, so it is not recorded as one.
+    #[test]
+    fn a_field_declaring_neither_type_nor_vocabulary_is_not_recorded() {
+        let mut empty = Mapping::new();
+        empty.insert("reify".into(), Value::Bool(true));
+        let mut fields = Mapping::new();
+        fields.insert("mystery".into(), Value::Mapping(empty));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+
+        let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
+        assert!(config.fields.is_empty(), "{:?}", config.fields);
+    }
+
+    #[test]
+    fn every_field_type_spelling_round_trips() {
+        for spelling in FIELD_TYPES {
+            let ty = field_type_from_config_str(spelling)
+                .unwrap_or_else(|| panic!("{spelling} is offered but does not parse"));
+            assert_eq!(field_type_as_config_str(ty), Some(*spelling));
+        }
+    }
+
+    #[test]
+    fn diagnose_flags_an_unknown_field_type_and_offers_the_near_miss() {
+        let mut created = Mapping::new();
+        created.insert("type".into(), Value::String("datetime2".into()));
+        let mut fields = Mapping::new();
+        fields.insert("created".into(), Value::Mapping(created));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+
+        let issues = diagnose(&Value::Mapping(top));
+        assert!(
+            issues.iter().any(|i| i.key == "fields.created.type"
+                && matches!(
+                    &i.kind,
+                    ConfigIssueKind::InvalidValue { expected, .. }
+                        if expected.iter().any(|e| e == "datetime")
+                )),
             "{issues:?}"
         );
     }
