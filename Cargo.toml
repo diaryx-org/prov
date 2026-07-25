@@ -23,7 +23,17 @@ license = "MIT OR Apache-2.0"
 # features* — see `prov/Cargo.toml` `[features]`, which forwards `yaml` →
 # `fig/yaml`, etc. This lets a downstream user compile out the formats they don't
 # use (each unused format is a Zig parser/printer left out of `libfig.a`).
-fig = { version = "2.5.0", default-features = false, features = ["serde", "derive", "indexmap"] }
+#
+# **2.5.3 is a floor, not a preference.** It is the release where the editor
+# splice seeds a path's missing ancestors as *block* rather than inline flow.
+# Before it, `set_meta_in_text` had to write a value, re-parse the document and
+# compare the value's kind at the path, because a block value spliced into flow
+# ancestors came out corrupt (`a: {b: - x}`, which re-reads as a string) and
+# still reported success. That check and its leaf-by-leaf fallback are gone;
+# lowering this bound brings the silent corruption back with nothing left to
+# catch it. Note the fix is in the Zig `fig-sys`, which fig 2.5.3 requires at
+# `^2.5.3` — so the floor holds transitively.
+fig = { version = "2.5.3", default-features = false, features = ["serde", "derive", "indexmap"] }
 # The schema layer over fig's value tree. prov uses only its `FieldType` — the
 # vocabulary a `fields.<name>.type` declaration is spelled in — so that prov, a
 # schema-aware frontend, and (later) a view engine all name field types
