@@ -208,13 +208,185 @@ pub fn set_in_text(
 /// counterpart to [`set_in_text`], which takes only a `fig::Value` scalar. Lets a
 /// caller set a whole nested block (e.g. the root's `prov:` policy block) without
 /// naming `fig`, converting through the crate's `Value → fig::Value` bridge.
+///
+/// # Why a mapping is written leaf by leaf
+///
+/// A single `set` of a mapping value only lands when every ancestor of `dotted`
+/// already exists in the document. fig renders a YAML mapping as *block* text
+/// but auto-creates missing ancestors as *inline flow* (`a: {b: {}}`), and a
+/// block value spliced into a flow container does not re-parse — so
+/// `set("diaryx.views.daily", {…})` against a document with no `diaryx:` key
+/// failed outright with a parse error. Seeding the ancestors as empty mappings
+/// first does not help either: an empty flow map has no insertion point, so the
+/// next set reports `NotFound`.
+///
+/// Decomposing the value into its scalar leaves sidesteps both. Each leaf is a
+/// scalar splice, which fig creates ancestors for correctly at any depth, so the
+/// same call now works whether the block is already there or is being
+/// introduced.
+///
+/// The write is an **upsert of the whole subtree**: keys the document carries
+/// under `dotted` that `value` does not are removed, so replacing a mapping
+/// replaces it rather than merging into whatever was there before.
 pub fn set_meta_in_text(
     text: &str,
     carrier: Option<MetaCarrier>,
     dotted: &str,
     value: &crate::meta::Value,
 ) -> Result<String> {
-    set_in_text(text, carrier, dotted, fig::Value::from(value))
+    // A non-mapping value is a single splice — the original path, unchanged.
+    // An empty mapping goes the same way: it has no leaves to write, and `k: {}`
+    // is a legitimate thing to record.
+    let crate::meta::Value::Mapping(mapping) = value else {
+        return set_in_text(text, carrier, dotted, fig::Value::from(value));
+    };
+    if mapping.is_empty() {
+        return set_in_text(text, carrier, dotted, fig::Value::from(value));
+    }
+
+    // What the document holds here *before* the writes — the basis for pruning.
+    let stale = meta_of(text, carrier).and_then(|meta| value_at(&meta, dotted).cloned());
+
+    let mut leaves = Vec::new();
+    collect_leaves(dotted, value, &mut leaves);
+    let mut out = text.to_string();
+    for (path, leaf) in &leaves {
+        // Block layout first — it is what a YAML config should look like — with
+        // flow as the fallback when the ancestors this write had to create are
+        // themselves flow, which a block value cannot splice into.
+        //
+        // The fallback is chosen by **reading the result back**, not by trusting
+        // the return: a block sequence spliced into a flow ancestor reports
+        // success and emits text that no longer parses, so the damage would
+        // otherwise surface much later as a mangled document. Scalars always
+        // survive the block path; only a container leaf ever reaches the retry.
+        let written = set_in_text(&out, carrier, path, fig::Value::from(*leaf))?;
+        // **Read the result back rather than trusting the return.** fig
+        // auto-creates a path's missing ancestors as inline flow, and a
+        // block-rendered container spliced into flow reports success while
+        // emitting text that no longer means what was written — a YAML sequence
+        // lands as `terms: - public`, which re-reads as the string `"- public"`.
+        // Scalars always survive, so only a sequence at a not-yet-existing depth
+        // trips this. Flow rendering cannot rescue it either (fig cannot
+        // serialize a bare sequence for YAML at all), so this is reported rather
+        // than repaired: a loud error beats a document quietly rewritten into
+        // something else.
+        if !reads_back(&written, carrier, path, leaf) {
+            return Err(Error::Structure(format!(
+                "cannot write a list at {path:?}: its parent block does not exist yet, \
+                 and fig would splice it into a flow container that cannot hold it. \
+                 Create the parent block first, then set the list."
+            )));
+        }
+        out = written;
+    }
+
+    // Prune what the old subtree had and the new one does not. Done after the
+    // writes so a failure part-way leaves a superset rather than a hole.
+    if let Some(stale) = stale {
+        let fresh: std::collections::BTreeSet<&str> =
+            leaves.iter().map(|(path, _)| path.as_str()).collect();
+        let mut gone = Vec::new();
+        collect_stale(dotted, &stale, &fresh, &mut gone);
+        // Deepest first, so removing a child never invalidates a sibling's path.
+        gone.sort_by_key(|path| std::cmp::Reverse(path.matches('.').count()));
+        for path in gone {
+            out = unset_in_text(&out, carrier, &path)?;
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `text`'s metadata still parses and carries a value of `leaf`'s shape
+/// at `dotted` — the check that turns fig's silently-corrupting splice into a
+/// retry.
+///
+/// Shape, not just presence: a block sequence spliced into a flow ancestor emits
+/// `terms: - public` on one line, which still *parses* — as the string
+/// `"- public"`. Only comparing the kind catches that the list stopped being a
+/// list.
+fn reads_back(
+    text: &str,
+    carrier: Option<MetaCarrier>,
+    dotted: &str,
+    leaf: &crate::meta::Value,
+) -> bool {
+    let Some(meta) = meta_of(text, carrier) else {
+        return false;
+    };
+    let Some(found) = value_at(&meta, dotted) else {
+        return false;
+    };
+    std::mem::discriminant(found) == std::mem::discriminant(leaf)
+}
+
+/// A document's metadata, read the way its carrier stores it.
+///
+/// Deliberately not `Document::parse`, which decides the carrier from a *path*:
+/// this function is given the carrier and has no path to offer, and a stand-in
+/// filename would silently read a whole-file config as a document with no
+/// metadata at all — leaving nothing to prune, which is exactly the bug that
+/// makes a replace behave like a merge.
+fn meta_of(text: &str, carrier: Option<MetaCarrier>) -> Option<crate::meta::Value> {
+    match carrier? {
+        MetaCarrier::WholeFile(format) => crate::meta::parse_value(text, format).ok(),
+        MetaCarrier::Fenced(kind) => {
+            let (content, _) = fig::split(text, kind)?;
+            crate::meta::parse_value(content, kind.inner_format()).ok()
+        }
+    }
+}
+
+/// The value at a dotted path in `meta`, or `None`. Mapping keys only — a
+/// sequence index along the way reads as absent, which is right here: the caller
+/// is replacing a *mapping*, and a path running through a sequence is not one
+/// this upsert wrote.
+fn value_at<'a>(meta: &'a crate::meta::Value, dotted: &str) -> Option<&'a crate::meta::Value> {
+    let mut current = meta;
+    for part in dotted.split('.') {
+        current = current.as_mapping()?.get(part)?;
+    }
+    Some(current)
+}
+
+/// Flatten `value` into `(dotted path, leaf)` pairs — one per non-mapping leaf.
+/// A sequence is a leaf: it splices as one value, and addressing into it by
+/// index would make list edits depend on the order they are applied in.
+fn collect_leaves<'a>(
+    prefix: &str,
+    value: &'a crate::meta::Value,
+    out: &mut Vec<(String, &'a crate::meta::Value)>,
+) {
+    match value {
+        crate::meta::Value::Mapping(map) if !map.is_empty() => {
+            for (key, child) in map {
+                collect_leaves(&format!("{prefix}.{key}"), child, out);
+            }
+        }
+        _ => out.push((prefix.to_string(), value)),
+    }
+}
+
+/// Paths under `prefix` the document still carries but the new value does not
+/// define — the keys an upsert has to remove for a replace to be a replace.
+fn collect_stale(
+    prefix: &str,
+    existing: &crate::meta::Value,
+    fresh: &std::collections::BTreeSet<&str>,
+    out: &mut Vec<String>,
+) {
+    match existing {
+        crate::meta::Value::Mapping(map) if !map.is_empty() => {
+            for (key, child) in map {
+                collect_stale(&format!("{prefix}.{key}"), child, fresh, out);
+            }
+        }
+        _ => {
+            if !fresh.contains(prefix) {
+                out.push(prefix.to_string());
+            }
+        }
+    }
 }
 
 /// Delete the entry at `dotted` from `text`'s metadata (carrier-aware).
@@ -434,5 +606,193 @@ mod tests {
         let title_pos = out.find("title:").unwrap();
         assert!(part_of_pos < title_pos, "{out}");
         assert!(out.contains("# workspace registry"), "comment lost: {out}");
+    }
+
+    /// **The regression this function exists for.** Setting a mapping at a path
+    /// whose ancestors are absent used to fail outright: fig creates missing
+    /// ancestors as inline flow, and the block-rendered YAML mapping spliced
+    /// into that flow did not re-parse.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_mapping_lands_at_a_path_whose_ancestors_do_not_exist_yet() {
+        let text = "title: prov config\nspec: 1\n";
+        let carrier = carrier_of("config.yaml", text).unwrap();
+        let mut view = crate::meta::Mapping::new();
+        view.insert("group".into(), crate::meta::Value::String("date".into()));
+        view.insert("by".into(), crate::meta::Value::String("year".into()));
+
+        let out = set_meta_in_text(
+            text,
+            Some(carrier),
+            "diaryx.views.daily",
+            &crate::meta::Value::Mapping(view),
+        )
+        .expect("a three-deep mapping into a document with no `diaryx` key");
+
+        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let daily = value_at(&doc.meta, "diaryx.views.daily").expect("the block reads back");
+        let map = daily.as_mapping().expect("a mapping");
+        assert_eq!(
+            map.get("group").and_then(crate::meta::Value::as_str),
+            Some("date")
+        );
+        assert_eq!(
+            map.get("by").and_then(crate::meta::Value::as_str),
+            Some("year")
+        );
+        assert!(
+            out.contains("title: prov config"),
+            "the rest survived: {out}"
+        );
+    }
+
+    /// Replacing a mapping is a replace, not a merge: a key the old block had
+    /// and the new one does not is removed. Without this, clearing a view's
+    /// `under:` would leave the lens scoped to an anchor nobody declared.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn replacing_a_mapping_drops_the_keys_it_no_longer_declares() {
+        let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n      under: '[Daily](id:abc)'\n";
+        let carrier = carrier_of("config.yaml", text).unwrap();
+        let mut view = crate::meta::Mapping::new();
+        view.insert("group".into(), crate::meta::Value::String("date".into()));
+
+        let out = set_meta_in_text(
+            text,
+            Some(carrier),
+            "diaryx.views.daily",
+            &crate::meta::Value::Mapping(view),
+        )
+        .expect("replace");
+
+        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let map = value_at(&doc.meta, "diaryx.views.daily")
+            .and_then(crate::meta::Value::as_mapping)
+            .expect("still a mapping");
+        assert_eq!(
+            map.get("group").and_then(crate::meta::Value::as_str),
+            Some("date")
+        );
+        assert!(
+            map.get("under").is_none(),
+            "a dropped key must not linger: {out}"
+        );
+    }
+
+    /// A sibling under the same parent is untouched — the write is scoped to
+    /// the path it was given, so declaring a second view keeps the first.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_sibling_mapping_survives_the_write() {
+        let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n";
+        let carrier = carrier_of("config.yaml", text).unwrap();
+        let mut view = crate::meta::Mapping::new();
+        view.insert("group".into(), crate::meta::Value::String("people".into()));
+
+        let out = set_meta_in_text(
+            text,
+            Some(carrier),
+            "diaryx.views.folks",
+            &crate::meta::Value::Mapping(view),
+        )
+        .expect("a second view");
+
+        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        assert_eq!(
+            value_at(&doc.meta, "diaryx.views.daily.group").and_then(crate::meta::Value::as_str),
+            Some("date"),
+            "the first view survived: {out}"
+        );
+        assert_eq!(
+            value_at(&doc.meta, "diaryx.views.folks.group").and_then(crate::meta::Value::as_str),
+            Some("people")
+        );
+    }
+
+    /// Nested mappings flatten all the way down, however deep.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn nested_mappings_flatten_all_the_way_down() {
+        let text = "title: t\n";
+        let carrier = carrier_of("config.yaml", text).unwrap();
+        let mut inner = crate::meta::Mapping::new();
+        inner.insert("closed".into(), crate::meta::Value::Bool(true));
+        let mut outer = crate::meta::Mapping::new();
+        outer.insert("audience".into(), crate::meta::Value::Mapping(inner));
+
+        let out = set_meta_in_text(
+            text,
+            Some(carrier),
+            "a.b",
+            &crate::meta::Value::Mapping(outer),
+        )
+        .expect("nested write");
+        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        assert_eq!(
+            value_at(&doc.meta, "a.b.audience.closed"),
+            Some(&crate::meta::Value::Bool(true)),
+            "{out}"
+        );
+    }
+
+    /// A sequence lands fine when its parent block already exists — the common
+    /// case, and the one that must keep its block layout.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_sequence_lands_under_a_parent_that_already_exists() {
+        let text = "title: t\nvocab:\n  audience:\n    closed: true\n";
+        let carrier = carrier_of("config.yaml", text).unwrap();
+        let mut inner = crate::meta::Mapping::new();
+        inner.insert(
+            "terms".into(),
+            crate::meta::Value::Sequence(vec![
+                crate::meta::Value::String("public".into()),
+                crate::meta::Value::String("private".into()),
+            ]),
+        );
+        let mut outer = crate::meta::Mapping::new();
+        outer.insert("audience".into(), crate::meta::Value::Mapping(inner));
+
+        let out = set_meta_in_text(
+            text,
+            Some(carrier),
+            "vocab",
+            &crate::meta::Value::Mapping(outer),
+        )
+        .expect("a sequence under an existing block");
+        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let terms = value_at(&doc.meta, "vocab.audience.terms")
+            .and_then(crate::meta::Value::as_sequence)
+            .expect("the sequence reads back as a sequence");
+        assert_eq!(terms.len(), 2, "{out}");
+    }
+
+    /// **A limit this reports rather than papers over.** fig creates missing
+    /// ancestors as inline flow and cannot render a bare YAML sequence at all,
+    /// so a list at a depth that does not exist yet has nowhere valid to land.
+    /// Left alone it wrote `terms: - public`, which re-reads as a *string*; the
+    /// read-back check turns that silent rewrite into an error naming the fix.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_sequence_at_a_path_with_no_parent_block_is_an_error_not_a_silent_rewrite() {
+        let text = "title: t\n";
+        let carrier = carrier_of("config.yaml", text).unwrap();
+        let mut outer = crate::meta::Mapping::new();
+        outer.insert(
+            "terms".into(),
+            crate::meta::Value::Sequence(vec![crate::meta::Value::String("public".into())]),
+        );
+
+        let err = set_meta_in_text(
+            text,
+            Some(carrier),
+            "deep.nested",
+            &crate::meta::Value::Mapping(outer),
+        )
+        .expect_err("a list with no parent block must not land silently");
+        assert!(
+            format!("{err}").contains("cannot write a list"),
+            "the error should name what to do: {err}"
+        );
     }
 }
