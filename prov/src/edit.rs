@@ -267,11 +267,14 @@ pub fn set_meta_in_text(
     for (path, leaf) in &leaves {
         let written = set_in_text(&out, carrier, path, fig::Value::from(*leaf))?;
         // A *sequence* leaf at a depth that does not exist yet has nowhere valid
-        // to land: flow cannot rescue it (fig cannot serialize a bare sequence
-        // for YAML at all), and the block splice reports success while emitting
-        // `terms: - public`, which re-reads as the string `"- public"`. Reported
-        // rather than repaired — a loud error beats a document quietly rewritten
-        // into something else.
+        // to land. fig creates a path's missing ancestors as inline containers,
+        // and a block-rendered value spliced into one reports success while
+        // emitting `a: {b: - public}` — which re-reads as a string, not a list.
+        // There is no layout knob that avoids this: `set_value_with` takes
+        // `SerializeOptions` but cannot create a key, and `width` is a no-op for
+        // YAML, so a caller cannot ask for a block ancestor. Reported rather
+        // than repaired — a loud error beats a document quietly rewritten into
+        // something else.
         if !reads_back(&written, carrier, path, leaf) {
             return Err(Error::Structure(format!(
                 "cannot write a list at {path:?}: its parent block does not exist yet, \
