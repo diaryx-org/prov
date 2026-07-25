@@ -209,25 +209,27 @@ pub fn set_in_text(
 /// caller set a whole nested block (e.g. the root's `prov:` policy block) without
 /// naming `fig`, converting through the crate's `Value → fig::Value` bridge.
 ///
-/// # Why a mapping is written leaf by leaf
+/// # How a mapping is written
 ///
-/// A single `set` of a mapping value only lands when every ancestor of `dotted`
-/// already exists in the document. fig renders a YAML mapping as *block* text
-/// but auto-creates missing ancestors as *inline flow* (`a: {b: {}}`), and a
-/// block value spliced into a flow container does not re-parse — so
+/// The direct splice is tried first, because it is what keeps a config document
+/// readable: fig renders a mapping as block YAML, and a block write preserves
+/// the layout, comments and key order around it.
+///
+/// It only lands when every ancestor of `dotted` already exists, though. fig
+/// auto-creates missing ancestors as *inline flow* (`a: {b: {}}`), and a
+/// block-rendered value spliced into a flow container does not survive — so
 /// `set("diaryx.views.daily", {…})` against a document with no `diaryx:` key
-/// failed outright with a parse error. Seeding the ancestors as empty mappings
-/// first does not help either: an empty flow map has no insertion point, so the
-/// next set reports `NotFound`.
+/// failed outright. Seeding the ancestors as empty mappings first does not help:
+/// an empty flow map has no insertion point, so the next set reports `NotFound`.
 ///
-/// Decomposing the value into its scalar leaves sidesteps both. Each leaf is a
-/// scalar splice, which fig creates ancestors for correctly at any depth, so the
-/// same call now works whether the block is already there or is being
-/// introduced.
+/// When the direct write does not survive, the value is decomposed into its
+/// scalar leaves and written one splice at a time. fig creates ancestors for a
+/// scalar correctly at any depth, so the block gets written; it lands in flow
+/// layout, which is the honest cost of introducing a block that was not there.
 ///
-/// The write is an **upsert of the whole subtree**: keys the document carries
-/// under `dotted` that `value` does not are removed, so replacing a mapping
-/// replaces it rather than merging into whatever was there before.
+/// Either way the write is an **upsert of the whole subtree**: keys the document
+/// carries under `dotted` that `value` does not are removed, so replacing a
+/// mapping replaces it rather than merging into what was there before.
 pub fn set_meta_in_text(
     text: &str,
     carrier: Option<MetaCarrier>,
@@ -244,33 +246,32 @@ pub fn set_meta_in_text(
         return set_in_text(text, carrier, dotted, fig::Value::from(value));
     }
 
-    // What the document holds here *before* the writes — the basis for pruning.
+    // What the document holds here *before* the write — the basis for pruning.
     let stale = meta_of(text, carrier).and_then(|meta| value_at(&meta, dotted).cloned());
+
+    // The direct write, kept whenever it survives — block layout, comments and
+    // key order intact. Verified by **reading it back**, never by trusting the
+    // return: a block value spliced into flow ancestors reports success and
+    // emits text that no longer means what was written.
+    let direct = set_in_text(text, carrier, dotted, fig::Value::from(value));
+    if let Ok(written) = &direct
+        && reads_back(written, carrier, dotted, value)
+    {
+        // A direct set replaces the node whole, so nothing is left to prune.
+        return Ok(written.clone());
+    }
 
     let mut leaves = Vec::new();
     collect_leaves(dotted, value, &mut leaves);
     let mut out = text.to_string();
     for (path, leaf) in &leaves {
-        // Block layout first — it is what a YAML config should look like — with
-        // flow as the fallback when the ancestors this write had to create are
-        // themselves flow, which a block value cannot splice into.
-        //
-        // The fallback is chosen by **reading the result back**, not by trusting
-        // the return: a block sequence spliced into a flow ancestor reports
-        // success and emits text that no longer parses, so the damage would
-        // otherwise surface much later as a mangled document. Scalars always
-        // survive the block path; only a container leaf ever reaches the retry.
         let written = set_in_text(&out, carrier, path, fig::Value::from(*leaf))?;
-        // **Read the result back rather than trusting the return.** fig
-        // auto-creates a path's missing ancestors as inline flow, and a
-        // block-rendered container spliced into flow reports success while
-        // emitting text that no longer means what was written — a YAML sequence
-        // lands as `terms: - public`, which re-reads as the string `"- public"`.
-        // Scalars always survive, so only a sequence at a not-yet-existing depth
-        // trips this. Flow rendering cannot rescue it either (fig cannot
-        // serialize a bare sequence for YAML at all), so this is reported rather
-        // than repaired: a loud error beats a document quietly rewritten into
-        // something else.
+        // A *sequence* leaf at a depth that does not exist yet has nowhere valid
+        // to land: flow cannot rescue it (fig cannot serialize a bare sequence
+        // for YAML at all), and the block splice reports success while emitting
+        // `terms: - public`, which re-reads as the string `"- public"`. Reported
+        // rather than repaired — a loud error beats a document quietly rewritten
+        // into something else.
         if !reads_back(&written, carrier, path, leaf) {
             return Err(Error::Structure(format!(
                 "cannot write a list at {path:?}: its parent block does not exist yet, \
