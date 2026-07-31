@@ -326,6 +326,28 @@ mod tests {
         assert_eq!(out, "---\n# keep me\ntitle: New\n---\nbody\n");
     }
 
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn an_all_digit_id_survives_the_round_trip_as_a_string() {
+        // The NOID alphabet has digits, so a minted id can look like a number.
+        // Stamping one must not turn it into an integer (which would drop the
+        // leading zero and make `Value::as_str` return `None` on read-back).
+        let text = "---\ntitle: T\n---\nbody\n";
+        let out = set_in_text(
+            text,
+            carrier_of("x.md", text),
+            "id",
+            fig::Value::Str("0123456".into()),
+        )
+        .unwrap();
+        let back = crate::document::Document::parse("x.md", &out).unwrap();
+        assert_eq!(
+            back.meta.get("id").and_then(crate::Value::as_str),
+            Some("0123456"),
+            "{out}"
+        );
+    }
+
     #[cfg(feature = "fig-lang")]
     #[test]
     fn set_in_a_fig_block_stays_fig() {
@@ -674,8 +696,13 @@ mod tests {
         let mut fresh = crate::meta::Mapping::new();
         fresh.insert("keep".into(), crate::meta::Value::String("new".into()));
 
-        let out = set_meta_in_text(text, Some(carrier), "a", &crate::meta::Value::Mapping(fresh))
-            .expect("replace an existing block");
+        let out = set_meta_in_text(
+            text,
+            Some(carrier),
+            "a",
+            &crate::meta::Value::Mapping(fresh),
+        )
+        .expect("replace an existing block");
         let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         assert_eq!(
             value_at(&doc.meta, "a.keep").and_then(crate::meta::Value::as_str),

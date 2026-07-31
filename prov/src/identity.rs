@@ -16,10 +16,14 @@
 //! carry no NAAN or shoulder — they are workspace-internal, not published
 //! permalinks (DESIGN §4's two identity layers). The minting primitives come
 //! from the [`moid`] crate (*minimal opaque ID*): an ID is [`BLADE_RANDOM_LEN`]
-//! random characters from the 28-character betanumeric alphabet
-//! ([`moid::Alphabet::betanumeric`] — no vowels, so no accidental words; no
-//! `0`/`1`/`l`, so no ambiguity) plus one NOID-style check character, so a
-//! typo'd ID is *detected* rather than silently resolving to nothing. Minting
+//! random characters from the 29-character NOID extended-digit alphabet
+//! ([`moid::Alphabet::noid_xdigit`] — digits plus consonants: no vowels, so no
+//! accidental words; no `l`, so no ambiguity with `1`) plus one NOID check
+//! character, so a typo'd ID is *detected* rather than silently resolving to
+//! nothing. The alphabet is the canonical NOID one, so the check character
+//! agrees with a real NOID minter and not merely with our own arithmetic. An ID
+//! may therefore contain — and begin with — a digit; anything stamping one into
+//! metadata must keep it a *string* (see [`crate::edit::infer_scalar`]). Minting
 //! is random (opaque for free), with uniqueness enforced by rejection against
 //! the index — including its tombstones, so a deleted document's ID is never
 //! reissued.
@@ -50,7 +54,7 @@ impl std::fmt::Display for Id {
     }
 }
 
-/// Random characters per ID (excluding the check character). 28^6 ≈ 481M —
+/// Random characters per ID (excluding the check character). 29^6 ≈ 595M —
 /// collision-free in practice for a workspace, enforced absolutely by
 /// mint-with-rejection.
 pub const BLADE_RANDOM_LEN: usize = 6;
@@ -59,11 +63,11 @@ pub const BLADE_RANDOM_LEN: usize = 6;
 pub const BLADE_LEN: usize = BLADE_RANDOM_LEN + 1;
 
 /// The canonical [`moid`] minter for prov IDs: [`BLADE_RANDOM_LEN`] random
-/// betanumeric characters plus a NOID-style check character. Every mint and
+/// NOID extended-digit characters plus a NOID check character. Every mint and
 /// every [`verify`] goes through this exact configuration, so they agree by
 /// construction.
 fn canonical_minter() -> moid::Minter {
-    moid::Minter::new(Alphabet::betanumeric(), BLADE_RANDOM_LEN)
+    moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
 }
 
 /// Whether `id` is a well-formed prov ID: correct length, alphabet-only,
@@ -160,7 +164,7 @@ impl IdentityPolicy for NoIdentity {
     }
 }
 
-/// The bundled minting policy: betanumeric + check IDs from a seeded PRNG.
+/// The bundled minting policy: NOID xdigit + check IDs from a seeded PRNG.
 ///
 /// Minting is delegated to [`moid`]: a [`moid::Minter`] over the canonical
 /// alphabet ([`canonical_minter`]) driven by a [`moid::SeededRng`]. The RNG is
@@ -260,18 +264,28 @@ mod tests {
         chars[0] = if chars[0] == 'b' { 'c' } else { 'b' };
         let typo: String = chars.iter().collect();
         assert!(!verify(&typo), "{typo}");
-        // Wrong length, wrong alphabet.
+        // Wrong length, wrong alphabet (vowels and `y` are both out).
         assert!(!verify("bcd"));
         assert!(!verify("aeiouAy"));
+        assert!(!verify("bcdfghy"));
     }
 
     #[test]
-    fn check_char_matches_the_ark_lineage() {
-        // Independently computed: ordinals b=0,c=1,d=2,f=3,g=4,h=5 weighted by
-        // position 1..=6 → 0+2+6+12+20+30 = 70; 70 % 28 = 14 → the 14th
-        // betanumeric symbol is 't'. moid computes the same check character, so
-        // a full ID with that body validates.
-        assert_eq!(Alphabet::betanumeric().check_char("bcdfgh"), 't');
-        assert!(verify("bcdfght"));
+    fn check_char_matches_the_noid_lineage() {
+        // Independently computed: the xdigit alphabet leads with the digits, so
+        // ordinals b=10,c=11,d=12,f=13,g=14,h=15 weighted by position 1..=6 →
+        // 10+22+36+52+70+90 = 280; 280 % 29 = 19 → the 19th xdigit symbol is
+        // 'n'. moid computes the same check character, so a full ID with that
+        // body validates.
+        assert_eq!(Alphabet::noid_xdigit().check_char("bcdfgh"), 'n');
+        assert!(verify("bcdfghn"));
+    }
+
+    #[test]
+    fn an_id_may_be_all_digits() {
+        // The point of the xdigit alphabet: digits are in it, so an ID can look
+        // like a number — which is why every stamp writes a string scalar.
+        let check = Alphabet::noid_xdigit().check_char("012345");
+        assert!(verify(&format!("012345{check}")));
     }
 }

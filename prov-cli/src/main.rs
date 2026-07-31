@@ -469,7 +469,15 @@ fn stamp_ids(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<
         if doc.meta.get("id").and_then(Value::as_str) == Some(id.0.as_str()) {
             continue;
         }
-        let updated = edit::set_in_text(&text, doc.carrier, "id", edit::infer_scalar(&id.0))?;
+        // Always a string scalar, never `infer_scalar`: an ID from the NOID
+        // alphabet may be all digits, and inferring would stamp it as an integer
+        // (dropping any leading zero) that `Value::as_str` then can't read back.
+        let updated = edit::set_in_text(
+            &text,
+            doc.carrier,
+            "id",
+            (&Value::String(id.0.clone())).into(),
+        )?;
         std::fs::write(&full, updated)?;
     }
     Ok(())
