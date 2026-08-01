@@ -108,6 +108,25 @@ fn every_command_runs_end_to_end() {
     ok(&dir, &["rm", "zig-copy.md"]);
     ok(&dir, &["empty-bin"]);
 
+    // ── history: capture → read → restore ──
+    ok(&dir, &["config", "history", "manual"]);
+    let event = ok(&dir, &["history-capture", "--label", "smoke"])
+        .lines()
+        .next()
+        .expect("capture prints the event id")
+        .to_string();
+    ok(&dir, &["history-list"]);
+    ok(&dir, &["history-show", &event]);
+    ok(&dir, &["history-log", "index.md"]);
+    ok(&dir, &["history-restore", &event, "--dry-run"]);
+    std::fs::write(dir.join("notes/rust.md"), "clobbered by a sync conflict").unwrap();
+    let restored = ok(&dir, &["history-restore", &event]);
+    assert!(
+        restored.contains("notes/rust.md"),
+        "restore names what it wrote back: {restored}"
+    );
+    ok(&dir, &["history-restore", &event, "--exact", "--yes"]);
+
     // ── config: read, write, materialize ──
     ok(&dir, &["config"]);
     assert_eq!(ok(&dir, &["config", "identity"]).trim(), "lazy");

@@ -186,6 +186,15 @@ fn main() -> ExitCode {
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
         Command::HistoryLog { target } => cmd_history_log(&target),
+        Command::HistoryRestore {
+            event,
+            paths,
+            id,
+            exact,
+            force,
+            dry_run,
+            yes,
+        } => cmd_history_restore(&event, &paths, id.as_deref(), exact, force, dry_run, yes),
     };
     match result {
         Ok(code) => code,
@@ -1951,6 +1960,216 @@ fn cmd_history_log(target: &str) -> CmdResult {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Narrate a restore plan on stderr: every row, annotated.
+///
+/// The rows a pipeline skips are exactly the ones a person needs — "already
+/// matches" answers "did my restore do anything", and "no bytes" answers "why is
+/// that file still wrong". The pipeable half is
+/// [`report_restored`], and it waits until the write has actually happened.
+fn narrate_plan(plan: &prov::RestorePlan) {
+    for op in &plan.ops {
+        let (verb, note) = match op.disposition {
+            prov::Disposition::Create => ("create   ", ""),
+            prov::Disposition::Overwrite => ("overwrite", ""),
+            prov::Disposition::Unchanged => ("unchanged", "  (already matches the capture)"),
+            prov::Disposition::NoBytes => ("no bytes ", "  (blob not in this store)"),
+            prov::Disposition::Remove => ("remove   ", ""),
+        };
+        eprintln!("  {verb}  {}{note}", op.path.display());
+    }
+}
+
+/// The paths a restore changed, undecorated, one per line on stdout — the `| xargs
+/// git add` handle.
+///
+/// Only what actually changed: a row the restore left alone is not something a
+/// pipeline should act on. Called **after** the write, never before, so a dry run
+/// and a declined confirmation both leave stdout empty — nothing changed, so there
+/// is nothing to name.
+fn report_restored(plan: &prov::RestorePlan) {
+    for op in &plan.ops {
+        if matches!(
+            op.disposition,
+            prov::Disposition::Create | prov::Disposition::Overwrite | prov::Disposition::Remove
+        ) {
+            println!("{}", op.path.display());
+        }
+    }
+}
+
+/// Write a captured state back over the workspace.
+///
+/// The shape of the command is the shape of the argument in the proposal: build
+/// the plan before a byte moves, show it, refuse what only the author can
+/// arbitrate, ask before deleting, and bracket the write with `check` so the
+/// three questions a restore raises — what did it fix, what did it break, what
+/// was already wrong — are answered separately.
+///
+/// Works regardless of the `history` axis. The workspace is re-opened afterwards
+/// rather than reused, because a restore can rewrite the registry and the config
+/// document themselves: the `check` that judges the result has to read the
+/// workspace the restore actually produced, not the one this process started with.
+#[allow(clippy::too_many_arguments)]
+fn cmd_history_restore(
+    event_id: &str,
+    paths: &[String],
+    id: Option<&str>,
+    exact: bool,
+    force: bool,
+    dry_run: bool,
+    yes: bool,
+) -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+    let Some(event) = block_on(ws.history_event(&ctx.root_doc, event_id))? else {
+        return Err(format!(
+            "no history event `{event_id}` — list what is in the store with `prov history-list`"
+        )
+        .into());
+    };
+
+    // Paths and `--id` are mutually exclusive at the clap layer; this only has to
+    // say which of the two was given.
+    let scope = match (paths.is_empty(), id) {
+        (true, None) => prov::Scope::Whole,
+        (_, Some(id)) if id.trim().is_empty() => return Err("`--id` needs an id after it".into()),
+        (_, Some(id)) => prov::Scope::Id(Id(id.to_string())),
+        (false, None) => prov::Scope::Paths(
+            paths
+                .iter()
+                .map(|p| ws_rel(&ctx, Path::new(p)))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+    };
+    // `--exact` is a statement about the whole tree; a scope is a statement about
+    // part of it. The library refuses the combination too, but the CLI is where
+    // the user can be told which flag to drop.
+    if exact && scope != prov::Scope::Whole {
+        return Err("--exact restores the whole capture; drop the paths, or drop --exact".into());
+    }
+
+    let plan = block_on(ws.history_restore_plan(&ctx.root_doc, &event, &scope, exact))?;
+    narrate_plan(&plan);
+    let (created, overwritten) = (
+        plan.count(prov::Disposition::Create),
+        plan.count(prov::Disposition::Overwrite),
+    );
+    let no_bytes = plan.count(prov::Disposition::NoBytes);
+    let removals = plan.count(prov::Disposition::Remove);
+    eprintln!(
+        "{}: {created} to create, {overwritten} to overwrite, {} unchanged, \
+         {no_bytes} without bytes, {removals} to remove",
+        plan.event,
+        plan.count(prov::Disposition::Unchanged),
+    );
+
+    // Two causes, and the message must admit both: bytes genuinely lost, and a
+    // sync still in flight. Crying corruption at a routine, self-resolving state
+    // is how a report teaches people to ignore it.
+    if no_bytes > 0 {
+        eprintln!(
+            "note: {no_bytes} captured file(s) have no bytes in this store, so this \
+             restore cannot supply them — either the blobs have not arrived from \
+             another device yet, or they are gone. `prov history-show {}` marks them.",
+            plan.event
+        );
+    }
+
+    // The registry cannot arbitrate a genuine collision and must not try. Print
+    // every one of them, not just the first the library would refuse on.
+    if !plan.conflicts.is_empty() {
+        for conflict in &plan.conflicts {
+            eprintln!(
+                "conflict: restoring {} would displace a registration — {}",
+                conflict.path.display(),
+                conflict.collision
+            );
+        }
+        if !force {
+            return Err(format!(
+                "{} registration(s) would be displaced; only you can say which document \
+                 should keep an id. Resolve them, or re-run with --force to restore \
+                 anyway (and expect `prov check` to have something to say).",
+                plan.conflicts.len()
+            )
+            .into());
+        }
+        eprintln!(
+            "--force: restoring across {} conflict(s)",
+            plan.conflicts.len()
+        );
+    }
+
+    if dry_run {
+        eprintln!("nothing written (--dry-run)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Scope-neutral on purpose: a whole restore with nothing to do means the
+    // workspace matches the capture, but a scoped one only means the slice does.
+    if plan.is_noop() {
+        eprintln!("nothing to do — every file this would restore is already in place");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // The delete pass discards legitimate work done since the capture, so the list
+    // is shown and confirmed rather than merely flagged. Non-interactive runs
+    // proceed: a script that passed --exact has already made the decision.
+    if removals > 0 && !yes && std::io::stdin().is_terminal() {
+        eprintln!("--exact will remove {removals} reachable file(s), listed above.");
+        if !matches!(prompt("proceed? [y/N]: ")?.as_str(), "y" | "yes") {
+            eprintln!("stopped; nothing written");
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    // You restore precisely when something is already broken, so a bare list of
+    // findings afterwards cannot distinguish what the restore fixed, introduced,
+    // or inherited. Bracket it.
+    let before = block_on(ws.check(&ctx.root_doc))?;
+    block_on(ws.history_restore(&ctx.root_doc, &plan, force))?;
+    report_restored(&plan);
+    // Deliberately no `persist`: the restore wrote documents (and possibly the
+    // registry document itself) without touching the in-memory index, and
+    // stamping ids from a stale index over freshly restored frontmatter is
+    // exactly the damage this command exists to undo.
+    drop(ws);
+
+    let after_ctx = find_root_quiet()?;
+    let after_ws = workspace(&after_ctx)?;
+    let after = block_on(after_ws.check(&after_ctx.root_doc))?;
+    let diff = prov::CheckDiff::between(&before, &after);
+
+    for finding in &diff.fixed {
+        eprintln!("fixed:      {finding}");
+    }
+    for finding in &diff.introduced {
+        eprintln!("introduced: {finding}");
+    }
+    if !diff.pre_existing.is_empty() {
+        // A count, not a reprint: findings this restore inherited are not its
+        // verdict, and burying the introduced ones under them would hide the only
+        // bucket that matters.
+        eprintln!(
+            "{} pre-existing finding(s) untouched by the restore — `prov check` lists them",
+            diff.pre_existing.len()
+        );
+    }
+    if diff.is_empty() && after.is_empty() {
+        eprintln!("ok: no findings");
+    }
+
+    match diff.is_clean() {
+        true => Ok(ExitCode::SUCCESS),
+        false => {
+            eprintln!(
+                "the restore introduced {} finding(s) — `prov check --fix` is the next step",
+                diff.introduced.len()
+            );
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 /// Report a convert sweep: the changed document paths to stdout (one per line,

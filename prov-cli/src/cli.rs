@@ -618,6 +618,74 @@ pub(crate) enum Command {
         /// still works for a document that has since been deleted.
         target: String,
     },
+    /// Write a captured state back over the workspace: additive by default,
+    /// exact on request.
+    ///
+    /// An event is a *consistent cut*. If a bad merge corrupted a renamed file
+    /// and its parent's child list, both were hashed in the same capture, so
+    /// restoring the whole event puts the set back together — which is what
+    /// actually undoes the damage. Restoring one file out of it does not:
+    /// writing one file's old bytes back without the rest of the same
+    /// corruption's footprint can reintroduce the inconsistency history exists
+    /// to fix. Scope this to paths or an id when a sync clobbered one file's
+    /// prose; leave it whole when the graph broke.
+    ///
+    /// The default writes every captured path and deletes nothing. That leaves
+    /// a gap on purpose: bad-merge damage is characteristically additive (a
+    /// `.sync-conflict` copy, a rename-vs-rename landing both names), and none
+    /// of it goes away by writing captured bytes over the top. `--exact` is the
+    /// honest "undo this merge entirely" tool — see its own help.
+    ///
+    /// Restore does not repair links or the registry. It runs `check` before and
+    /// after and reports the difference in three buckets — fixed, introduced,
+    /// pre-existing — because you are restoring precisely when something is
+    /// already broken, and a bare list of findings afterwards cannot tell you
+    /// which of them you just caused. A non-empty *introduced* bucket exits
+    /// non-zero; `prov check --fix` is the explicit next step.
+    ///
+    /// The history store itself is never written or deleted, and the root's
+    /// `history` pointer is never removed — a captured root predating the store
+    /// must not strand it unreachable.
+    ///
+    /// Works regardless of the `history` config axis: recovery must never be
+    /// gated behind re-enabling a setting, least of all on the machine that just
+    /// suffered the damage.
+    HistoryRestore {
+        /// The event id, as `history-list` prints it — for example
+        /// `2026-07-31-0915-pre-sync-4f2a9c1e`.
+        event: String,
+        /// Restore only these captured paths (a directory restores everything
+        /// the capture held beneath it). Content recovery, not structural
+        /// repair — see the command help. Omit to restore the whole capture.
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+        /// Restore only the document the capture recorded under this id, wherever
+        /// it lived at the time. Rename-robust where a path is not.
+        #[arg(long, value_name = "ID", conflicts_with = "paths")]
+        id: Option<String>,
+        /// Also remove every reachable file the capture does not contain, so the
+        /// tree *matches* the event rather than merely including it.
+        ///
+        /// This is what undoes an additive bad merge — and the same pass discards
+        /// legitimate work done since the capture. It restores the whole event by
+        /// definition, so it cannot be combined with a scope, and it lists what it
+        /// would remove and asks first on a terminal.
+        #[arg(long)]
+        exact: bool,
+        /// Proceed even though restoring would displace a registration: an id the
+        /// registry now binds to a different document, or a path it now binds to a
+        /// different id. Refused by default — two documents claiming one id is
+        /// something only their author can arbitrate.
+        #[arg(long)]
+        force: bool,
+        /// Print the plan — what would be created, overwritten, left alone, left
+        /// unrecoverable for want of bytes, and removed — and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation `--exact` asks before removing files.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

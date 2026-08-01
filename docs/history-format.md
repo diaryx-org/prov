@@ -9,9 +9,10 @@ part_of: '[prov](/README.md)'
 > in [the proposal](/docs/proposals/history/proposal-history-v3.md).
 
 Implemented in `prov/src/history.rs`. Phase 0 of the proposal covers the store,
-`history-capture` and `history-list`; `history-show` and `history-log` are the
-read-only queries over it (§10); `history-restore`, `history-prune` and
-`history-forget` are later phases that read this same format.
+`history-capture` and `history-list`; Phase 1 adds the read-only queries over it
+(`history-show`, `history-log`, §10) and `history-restore` (§11).
+`history-prune` and `history-forget` are a later phase that reads this same
+format.
 
 ## 1. Where the store lives
 
@@ -363,3 +364,106 @@ one pass over every event.
   starts where its document does.
 - **Forks interleave rather than branch.** This is a display; `history-list` is
   where a concurrent capture on another device is named as a fork.
+
+## 11. Restoring from the store
+
+`history-restore <id> [<path>...] [--id <docid>] [--exact] [--force]` writes a
+captured state back. It works regardless of the config axis (§8), for the same
+reason the read verbs do.
+
+### 11.1 What an event restores *as*
+
+An event is a **consistent cut**. If a bad merge corrupted a renamed file and its
+parent's child list, both were hashed in the same capture, so both are in the
+same manifest — restoring the whole event puts the set back together, which is
+what actually undoes the damage.
+
+A **scope** (paths, or `--id`) is therefore a different tool wearing the same
+verb: content recovery, not structural repair. Writing one file's old bytes back
+without the rest of the same corruption's footprint can *reintroduce* the
+inconsistency history exists to fix. Right when a sync clobbered one file's
+prose; wrong when the graph broke. A path scope takes everything the capture held
+at or beneath it; a scope that selects no row is an error, not an empty restore.
+
+### 11.2 Additive by default, exact on request
+
+The default writes every selected path and **deletes nothing**. That leaves a gap
+on purpose: bad-merge damage is characteristically *additive* — a
+`.sync-conflict` copy, a rename-vs-rename landing both names, a duplicated child
+entry — and none of it goes away by writing captured bytes over the top.
+
+`--exact` additionally removes **reachable** paths (§2's capture set: `history/`
+and `recyclebin/items/` already excluded) the manifest does not contain. It is
+the honest "undo this merge entirely" tool, and the same pass discards legitimate
+work done since the capture — so it is opt-in, it lists what it would remove, and
+it asks first on a terminal.
+
+Two boundaries the wording has to keep:
+
+- **It cannot be scoped.** "Make the tree match this capture" is a statement
+  about the whole tree; a slice of the capture cannot make it. Refused.
+- **Reachable is the operative word.** A file nothing links is not in the capture
+  set, so `--exact` leaves it and `check` reports it as an orphan. A restore puts
+  a captured graph back; deciding that some unreferenced file is rubble is not a
+  call it gets to make. The plan is computed against the tree as it stands, so a
+  file the *restored* root would stop linking is still reachable when the delete
+  set is taken, and is removed.
+
+### 11.3 The plan, and the guards that need no graph walk
+
+Everything below falls out of comparing the manifest against disk. Each selected
+row is one of:
+
+| Disposition | Meaning |
+|---|---|
+| create | nothing is at that path |
+| overwrite | something else is at that path |
+| unchanged | the captured bytes are already there — nothing is written |
+| no bytes | the manifest's hash names no blob in this store — skipped, by name |
+
+A `no bytes` row is **ordinary, not broken** (§10.1's two causes: in flight, or
+lost), and it is skipped rather than fatal — including under `--exact`, where the
+path is still one the manifest holds and so is never removed for want of bytes
+that merely have not arrived.
+
+Before a byte moves, restore also refuses what only the author can arbitrate: a
+**registration it would displace**, in either direction, since `id_storage`
+defaults to `both` and so a restored document's frontmatter carries an id the
+live registry may bind elsewhere — or the target path may be bound to a different
+id while the id itself is free. `--force` proceeds anyway.
+
+A collision the restore *itself* resolves is not reported: if the document
+currently holding the id is one this restore overwrites or (under `--exact`)
+removes, nothing is displaced. This is what lets `--exact` undo a move without
+`--force`, while an additive restore of the same event — which would put the old
+path back and leave the new one there, two documents spelling one id — still
+refuses.
+
+### 11.4 What it never touches
+
+- **`history/` itself.** No manifest row can name a path inside the store (§2),
+  and the delete set is drawn from that same set — so neither half of a restore
+  can reach in. An `--exact` restore of an old event deleting every event newer
+  than it is the failure this rules out.
+- **The root's `history` pointer.** A restored root that declares no pointer gets
+  one before it is written, so a captured root predating the store cannot strand
+  it unreachable. A pointer naming some *other* index is left alone: that is the
+  capture's truth about where the store lived.
+- **The registry, as a data structure.** The registry *document* is an ordinary
+  captured file and comes back with the rest; nothing edits the index in place.
+
+### 11.5 How it ends
+
+Restore does not repair links or the registry — §7 already defines graph
+inconsistency and `check` already finds it. So restore runs **`check` before and
+after and reports the difference** in three buckets: **fixed**, **introduced**,
+**pre-existing** (a count, not a reprint). You restore precisely when something
+is already broken, and a bare list of findings afterwards cannot say which of
+them the restore caused. A non-empty *introduced* bucket exits non-zero;
+`prov check --fix` is the explicit next step.
+
+Writes ride the journaled change set as **copies from the blob**, not as embedded
+bytes: the journal records the source path, so restoring a whole workspace costs
+O(file count) of journal rather than a second copy of every byte. A
+content-addressed blob is exactly the immutable referent that makes replaying
+such a reference deterministic — the path is the digest of the contents.

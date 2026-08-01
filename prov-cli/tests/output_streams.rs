@@ -343,3 +343,61 @@ fn the_history_readers_keep_the_manifest_on_stdout_and_the_warning_on_stderr() {
         "the note is on stderr: {err:?}"
     );
 }
+
+#[test]
+fn a_restore_puts_the_changed_paths_on_stdout_and_the_plan_on_stderr() {
+    // `history-restore` is a mutation, so stdout is the list of paths it changed —
+    // undecorated, pipeable, and *only* the ones it changed. The annotated plan is
+    // narration: the rows it skipped are what a person needs and what a pipeline
+    // must never be handed.
+    let dir = sandbox("history-restore");
+    ok(&dir, &["init", "--yes"]);
+    ok(&dir, &["config", "history", "manual"]);
+    ok(&dir, &["new", "Alpha", "--in", "index.md"]);
+    ok(&dir, &["new", "Beta", "--in", "index.md"]);
+    let (out, _) = ok(&dir, &["history-capture", "--label", "first"]);
+    let event = out.trim().to_string();
+
+    std::fs::write(dir.join("alpha.md"), "clobbered by a sync conflict").unwrap();
+
+    // The dry run previews the whole plan on stderr and leaves stdout empty —
+    // nothing changed, so there is nothing for a pipeline to act on. Same rule as
+    // `new --dry-run`.
+    let (out, err) = ok(&dir, &["history-restore", &event, "--dry-run"]);
+    assert!(out.trim().is_empty(), "dry-run stdout is empty: {out:?}");
+    assert!(
+        err.contains("overwrite  alpha.md") && err.contains("unchanged  beta.md"),
+        "the annotated plan is stderr narration: {err:?}"
+    );
+    assert!(
+        err.contains("nothing written (--dry-run)"),
+        "a dry run says so: {err:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("alpha.md")).unwrap(),
+        "clobbered by a sync conflict",
+        "and writes nothing"
+    );
+
+    let (out, err) = ok(&dir, &["history-restore", &event]);
+    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["alpha.md"]);
+    assert!(
+        !out.contains("overwrite") && !out.contains("to create"),
+        "no verb or summary may leak onto stdout: {out:?}"
+    );
+    assert!(
+        err.contains("ok: no findings"),
+        "a restore ends on what `check` says about it: {err:?}"
+    );
+    assert!(
+        std::fs::read_to_string(dir.join("alpha.md"))
+            .unwrap()
+            .contains("Alpha"),
+        "the captured bytes came back"
+    );
+
+    // Nothing left to do: stdout is empty, so a pipeline acts on nothing.
+    let (out, err) = ok(&dir, &["history-restore", &event]);
+    assert!(out.trim().is_empty(), "a no-op restore is empty: {out:?}");
+    assert!(err.contains("nothing to do"), "and says so: {err:?}");
+}
