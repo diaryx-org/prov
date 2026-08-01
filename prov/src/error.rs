@@ -87,6 +87,19 @@ pub enum Error {
         /// The failure the rollback itself hit.
         rollback: String,
     },
+
+    /// An operation would have registered an ID across a registration the index
+    /// already holds — see [`Collision`](crate::index::Collision). Refused rather
+    /// than resolved, because the displaced document still spells the ID in its
+    /// own frontmatter and only its author can say which one should keep it.
+    #[error("{0}; refusing to displace it")]
+    Collision(crate::index::Collision),
+}
+
+impl From<crate::index::Collision> for Error {
+    fn from(collision: crate::index::Collision) -> Self {
+        Error::Collision(collision)
+    }
 }
 
 /// Convenience alias for results in this crate.

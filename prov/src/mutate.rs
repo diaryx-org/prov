@@ -1208,6 +1208,19 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             _ => None,
         };
 
+        // The record's id has been out of the registry since the delete, and the
+        // workspace has moved on meanwhile — a sync can land a document that
+        // spells it, or leave another id registered at the path this is coming
+        // back to. Re-registering across either would take an id from a document
+        // whose own frontmatter still claims it, so the restore refuses instead:
+        // only the author can say which document should keep it. Checked up
+        // front, beside the path guard, before any byte moves.
+        if let Some(id) = &id
+            && let Some(conflict) = self.registration_conflict(id, &from)
+        {
+            return Err(conflict.into());
+        }
+
         if self.fs().try_exists(&self.root().join(&from)).await? {
             return Err(Error::Structure(format!(
                 "{} already exists; cannot restore over it",
@@ -4515,6 +4528,91 @@ mod tests {
             findings.is_empty(),
             "a restore should leave check clean: {findings:?}"
         );
+    }
+
+    #[test]
+    fn a_restore_refuses_to_take_an_id_from_the_document_that_now_holds_it() {
+        // The bin record carries the id, and that id has been out of the registry
+        // since the delete. `id_storage` defaults to `both`, so a sync can land a
+        // document that spells it meanwhile — and re-registering would take the id
+        // from a document whose own frontmatter still claims it, leaving the
+        // registry naming one of two files that both say they are it. Only the
+        // author can settle that, so the restore refuses.
+        let dir = tempdir("restore-id-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- note.md\n- other.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: My Note\npart_of: index.md\nid: b7k2m\n---\nbody\n",
+        );
+        write(
+            &dir,
+            "other.md",
+            "---\ntitle: Other\npart_of: index.md\nid: b7k2m\n---\n",
+        );
+
+        let mut w = id_ws(&dir);
+        let id = crate::identity::Id("b7k2m".into());
+        w.index_mut().register(&id, Path::new("note.md"));
+        block_on(w.recycle(Path::new("note.md"), false, None)).unwrap();
+        // The arrival: while note.md sat in the bin, the id turned up elsewhere.
+        w.index_mut().register(&id, Path::new("other.md"));
+
+        let err = block_on(w.restore(Path::new("note.md"), Path::new("index.md"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Id { .. })),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("other.md"),
+            "the message must name what holds the id: {err}"
+        );
+        // Refused up front: not a byte moved.
+        assert!(!dir.join("note.md").exists());
+        assert!(dir.join("recyclebin/items/note.md").exists());
+
+        // Precise, not blanket: once nothing else claims the id, it restores.
+        w.index_mut().unregister(&id);
+        block_on(w.restore(Path::new("note.md"), Path::new("index.md"))).unwrap();
+        assert!(dir.join("note.md").exists());
+    }
+
+    #[test]
+    fn a_restore_refuses_when_another_id_already_claims_the_path() {
+        // The other direction, which the existing "already exists" guard cannot
+        // see: the file is gone (so the path looks free) but the registry still
+        // binds that path to a different id. Restoring would drop that id out of
+        // the registry while the document still spells it — a live id silently
+        // demoted to an unregistered one.
+        let dir = tempdir("restore-path-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: My Note\npart_of: index.md\nid: b7k2m\n---\nbody\n",
+        );
+
+        let mut w = id_ws(&dir);
+        w.index_mut()
+            .register(&crate::identity::Id("b7k2m".into()), Path::new("note.md"));
+        block_on(w.recycle(Path::new("note.md"), false, None)).unwrap();
+        w.index_mut()
+            .register(&crate::identity::Id("zzzzzzz".into()), Path::new("note.md"));
+
+        let err = block_on(w.restore(Path::new("note.md"), Path::new("index.md"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            "{err:?}"
+        );
+        assert!(!dir.join("note.md").exists(), "nothing moved");
     }
 
     #[test]

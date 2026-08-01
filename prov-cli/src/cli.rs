@@ -429,6 +429,13 @@ pub(crate) enum Command {
     },
     /// Restore a document from the recycle bin to the path it was deleted from,
     /// re-linking it under its original parent.
+    ///
+    /// Refuses when something already occupies that path, or when the record's
+    /// id has been claimed in the meantime — by another document, or by another
+    /// id at that path. Ids travel in frontmatter, so a sync can hand one to a
+    /// second document while this one sits in the bin; restoring over that would
+    /// take the id from a document that still spells it, and only you can say
+    /// which should keep it.
     Restore {
         /// The original path of a binned document (as listed in the recycle bin).
         #[arg(value_name = "PATH")]

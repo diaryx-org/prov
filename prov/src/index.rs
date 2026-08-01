@@ -24,6 +24,52 @@ use crate::error::Result;
 use crate::identity::Id;
 use crate::meta::{Mapping, Value};
 
+/// A registration that would displace one the index already holds.
+///
+/// The index is a **bijection**: one id names one path, one path carries one id.
+/// Registering across an existing entry breaks that, and in one of two
+/// directions — worth telling apart, because what the user has to do about them
+/// differs.
+///
+/// Both are ordinary under sync. `id_storage` defaults to `both`, so a document's
+/// id travels *in its own frontmatter*: a transport can land a copy of a document
+/// under a new name, and now two files spell one id with the registry able to
+/// name only one of them. The registry cannot arbitrate that — only the author
+/// can — so an operation that would resolve it silently refuses instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Collision {
+    /// The id already resolves to a *different* live document. Registering would
+    /// take the id away from a document whose frontmatter still spells it.
+    Id {
+        /// The id being registered.
+        id: Id,
+        /// The document that currently holds it.
+        held_by: PathBuf,
+    },
+    /// The path already carries a *different* id. Registering would drop that id
+    /// out of the registry while the document on disk still spells it — turning a
+    /// live id into an unregistered one.
+    Path {
+        /// The path being registered.
+        path: PathBuf,
+        /// The id it currently carries.
+        held: Id,
+    },
+}
+
+impl std::fmt::Display for Collision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Collision::Id { id, held_by } => {
+                write!(f, "{id} is already registered to {}", held_by.display())
+            }
+            Collision::Path { path, held } => {
+                write!(f, "{} already carries {held}", path.display())
+            }
+        }
+    }
+}
+
 /// Somewhere IDs (and eventually derived graph data) are persisted and queried.
 pub trait IndexStore {
     /// Record that `id` names the document at `path`.
@@ -174,9 +220,27 @@ impl InMemoryIndex {
 }
 
 impl IndexStore for InMemoryIndex {
+    /// Displacing an existing registration must not leave the *other* map
+    /// pointing at the old counterpart — the care [`set_path`](IndexStore::set_path)
+    /// already takes, which this owes equally. Without it a collision leaves the
+    /// registry claiming two paths for one id (or two ids for one path), which
+    /// nothing downstream can make sense of.
+    ///
+    /// Eviction is the last line of defence, not the intended path: callers that
+    /// register an id they did not just mint should ask
+    /// [`registration_conflict`](crate::Workspace::registration_conflict) first
+    /// and refuse, because the document being displaced still spells the id in
+    /// its own frontmatter. What this guarantees is only that the index stays
+    /// *consistent* when something slips through.
     fn register(&mut self, id: &Id, path: &Path) {
-        self.forward.insert(id.clone(), path.to_path_buf());
-        self.reverse.insert(path.to_path_buf(), id.clone());
+        if let Some(old_path) = self.forward.insert(id.clone(), path.to_path_buf()) {
+            self.reverse.remove(&old_path);
+        }
+        if let Some(old_id) = self.reverse.insert(path.to_path_buf(), id.clone())
+            && old_id != *id
+        {
+            self.forward.remove(&old_id);
+        }
     }
 
     fn resolve(&self, id: &Id) -> Option<PathBuf> {
@@ -682,6 +746,39 @@ mod tests {
         assert_eq!(ix.resolve(&id), Some(PathBuf::from("moved/a.md")));
         assert_eq!(ix.id_for_path(Path::new("a.md")), None);
         assert_eq!(ix.id_for_path(Path::new("moved/a.md")), Some(id));
+    }
+
+    #[test]
+    fn a_displacing_register_leaves_no_stale_entry_in_either_map() {
+        // The index is a bijection, and `register` is the one mutator that used to
+        // be able to break it: displacing in one direction left the other map
+        // pointing at the old counterpart, so the registry claimed two paths for
+        // one id. A caller should refuse the collision up front
+        // (`registration_conflict`); this is what keeps the store coherent when
+        // one slips through anyway.
+        let (a, b) = (Id("aaaaaaa".into()), Id("bbbbbbb".into()));
+
+        // Same id, new path: the path it left must stop claiming it.
+        let mut ix = InMemoryIndex::new();
+        ix.register(&a, Path::new("one.md"));
+        ix.register(&a, Path::new("two.md"));
+        assert_eq!(ix.resolve(&a), Some(PathBuf::from("two.md")));
+        assert_eq!(ix.id_for_path(Path::new("one.md")), None);
+        assert_eq!(ix.len(), 1);
+
+        // Same path, new id: the id it displaced must stop resolving to it.
+        let mut ix = InMemoryIndex::new();
+        ix.register(&a, Path::new("one.md"));
+        ix.register(&b, Path::new("one.md"));
+        assert_eq!(ix.id_for_path(Path::new("one.md")), Some(b.clone()));
+        assert_eq!(ix.resolve(&a), None);
+        assert_eq!(ix.len(), 1);
+
+        // Re-registering the pair already held changes nothing.
+        ix.register(&b, Path::new("one.md"));
+        assert_eq!(ix.resolve(&b), Some(PathBuf::from("one.md")));
+        assert_eq!(ix.id_for_path(Path::new("one.md")), Some(b));
+        assert_eq!(ix.len(), 1);
     }
 
     #[test]

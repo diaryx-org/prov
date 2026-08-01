@@ -30,7 +30,7 @@ use crate::content::ContentFormat;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
-use crate::index::{IndexStore, NoIndex};
+use crate::index::{Collision, IndexStore, NoIndex};
 use crate::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
 use crate::meta::Value;
 use crate::relation::RelationSet;
@@ -234,6 +234,46 @@ pub enum Target {
 }
 
 impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
+    /// Whether registering `id` at `path` would displace a registration the index
+    /// already holds — the guard for any op that registers an id it did **not**
+    /// just mint.
+    ///
+    /// A freshly minted id cannot collide, which is why most registrations need
+    /// no check. The ones that do are the ops that carry an id in from somewhere
+    /// else: a recycle-bin record re-registering a document's old id, and a
+    /// history restore re-registering an id out of a captured manifest. In both,
+    /// time has passed, and the workspace may have acquired that id — or that
+    /// path — meanwhile.
+    ///
+    /// Checks **both directions**, because `id_storage` defaults to `both` and so
+    /// the two fail independently: the target path can be free while the id is
+    /// taken, and the id can be free while the path already carries another one.
+    /// Returns `None` when the exact pair is already registered — re-registering
+    /// what is already there displaces nothing.
+    pub fn registration_conflict(
+        &self,
+        id: &crate::identity::Id,
+        path: &Path,
+    ) -> Option<Collision> {
+        if let Some(held_by) = self.index.resolve(id)
+            && held_by != path
+        {
+            return Some(Collision::Id {
+                id: id.clone(),
+                held_by,
+            });
+        }
+        if let Some(held) = self.index.id_for_path(path)
+            && held != *id
+        {
+            return Some(Collision::Path {
+                path: path.to_path_buf(),
+                held,
+            });
+        }
+        None
+    }
+
     /// Resolve `link` (declared in the document at `doc`) to a workspace target,
     /// without nominal (alias) resolution — path and `id:` targets only. Use
     /// [`resolve_link_with`](Self::resolve_link_with) when a [`TitleIndex`] is
