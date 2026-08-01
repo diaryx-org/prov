@@ -10,6 +10,7 @@ contents:
 - '[Init Adoption](/docs/init-adoption.md)'
 - '[Next Steps](/docs/next-steps.md)'
 - '[Reference Styles](/docs/reference-styles.md)'
+- '[`prov` proposals](/docs/proposals/proposals.md)'
 config: prov.yaml
 ---
 
