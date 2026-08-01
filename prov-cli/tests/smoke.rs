@@ -126,6 +126,11 @@ fn every_command_runs_end_to_end() {
         "restore names what it wrote back: {restored}"
     );
     ok(&dir, &["history-restore", &event, "--exact", "--yes"]);
+    ok(&dir, &["history-prune", "--keep", "5", "--dry-run"]);
+    ok(&dir, &["history-prune", "--keep", "1", "--yes"]);
+    // The bound is required: a verb that deletes bytes must not have a default.
+    let (bounded, out) = run(&dir, &["history-prune"]);
+    assert!(!bounded, "history-prune needs a bound: {out}");
 
     // ── config: read, write, materialize ──
     ok(&dir, &["config"]);

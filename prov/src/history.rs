@@ -324,6 +324,52 @@ impl RestorePlan {
     }
 }
 
+/// How much history a prune keeps. There is no default: an operation that
+/// deletes bytes should not do so because a flag was forgotten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retention {
+    /// Keep the newest `n` events and drop everything older. The count axis:
+    /// "however far back that reaches, keep this many recovery points."
+    Keep(usize),
+    /// Drop every event captured strictly before this instant. The age axis, and
+    /// the natural way to say "everything from before the migration".
+    ///
+    /// A date (`2026-06-01`) or a full timestamp; both compare correctly, because
+    /// a date is a *prefix* of every timestamp in that day, so an event on the
+    /// named day is not before it.
+    Before(String),
+}
+
+/// What a prune would drop — computed before anything is deleted.
+///
+/// A snapshot, like [`RestorePlan`]: build it, show it, and hand *that* to
+/// [`history_prune`](Workspace::history_prune), so what runs is what the user
+/// was asked about.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// The events to drop, oldest first. Ids, which resolve to their documents by
+    /// the pure id → path function.
+    pub events: Vec<String>,
+    /// The blob files to collect: everything under `blobs/` that no surviving
+    /// manifest names, workspace-relative and sorted.
+    ///
+    /// This is the same sweep [`Finding::HistoryBlobOrphaned`] reports, taken
+    /// against the survivors — so a prune also collects orphans that were already
+    /// there, which is exactly what that finding promises.
+    pub blobs: Vec<PathBuf>,
+    /// What those blobs occupy on disk.
+    pub bytes: u64,
+    /// How many events survive.
+    pub keeping: usize,
+}
+
+impl Pruned {
+    /// Whether the prune would delete nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.blobs.is_empty()
+    }
+}
+
 /// What one event's manifest said about one document — the unit a lineage
 /// reports a change in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,6 +579,30 @@ fn comparable(created: &str) -> std::borrow::Cow<'_, str> {
         padded.push('0');
     }
     Cow::Owned(format!("{whole}.{padded}Z"))
+}
+
+/// Reject a [`Retention::Before`] cutoff that is not a date, so a typo deletes
+/// nothing rather than everything.
+///
+/// Only the `YYYY-MM-DD` head is checked. Anything after it is compared as text
+/// against a normalized `created` ([`comparable`]), where a bare date is a prefix
+/// of every timestamp in its day — which is what makes "before 2026-06-01" mean
+/// "before that day started" without parsing a calendar.
+fn check_cutoff(cutoff: &str) -> Result<()> {
+    let ok = cutoff.len() >= 10
+        && cutoff.as_bytes()[4] == b'-'
+        && cutoff.as_bytes()[7] == b'-'
+        && cutoff
+            .bytes()
+            .take(10)
+            .enumerate()
+            .all(|(i, b)| matches!(i, 4 | 7) || b.is_ascii_digit());
+    match ok {
+        true => Ok(()),
+        false => Err(Error::Structure(format!(
+            "`{cutoff}` is not a date — expected YYYY-MM-DD, or a full RFC 3339 timestamp"
+        ))),
+    }
 }
 
 /// `YYYY-MM-DD-HHMM` from an RFC 3339 UTC timestamp — the human-readable head of
@@ -1177,14 +1247,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             render_month_index(&year, &month, &ids, ext, embed)?,
         );
 
-        let mut months = self.subdirs(&events_root.join(&year)).await?;
+        let mut months = self.event_months(&events_root.join(&year), ext).await?;
         months.insert(month.clone());
         cs.write(
             events_root.join(&year).join(format!("index.{ext}")),
             render_year_index(&year, &months, ext, embed)?,
         );
 
-        let mut years = self.subdirs(&events_root).await?;
+        let mut years = self.event_years(&events_root, ext).await?;
         years.insert(year.clone());
         cs.write(store_index, render_store_index(&years, ext, embed)?);
         Ok(())
@@ -1492,6 +1562,203 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.commit(cs).await
     }
 
+    /// What pruning to `retention` would drop: the events, and the blobs no
+    /// surviving manifest would name.
+    ///
+    /// Read-only. With full manifests this is delete + GC and nothing else — no
+    /// folding, no re-anchoring, no rewriting of surviving events, which under the
+    /// delta design was the hardest problem in the store (a dropped event's
+    /// entries could be load-bearing for later events' effective state, so pruning
+    /// had to rewrite an "immutable" event, the one operation that conflicts under
+    /// exactly the sync this store exists to survive).
+    ///
+    /// The blob sweep is [`Finding::HistoryBlobOrphaned`]'s, taken against the
+    /// survivors rather than against every event — so what `check` calls an orphan
+    /// and what a prune collects are the same set by construction, and a prune
+    /// sweeps up the orphans that were already there.
+    pub async fn history_prune_plan(
+        &self,
+        root_doc: &Path,
+        retention: &Retention,
+    ) -> Result<Pruned> {
+        let root_doc = link::normalize(root_doc);
+        let (store_index, exists) = self.history_store_index(&root_doc).await?;
+        if !exists {
+            return Ok(Pruned::default());
+        }
+        let events = self
+            .history_events_in(&store_index, self.history_ext(&root_doc))
+            .await?;
+
+        // Events arrive oldest first, so both axes cut a prefix — but `Before`
+        // states its own predicate rather than trusting that, since a store that
+        // mixes timestamp precisions is exactly where an assumed sort order goes
+        // wrong quietly.
+        let (dropped, kept): (Vec<&Event>, Vec<&Event>) = match retention {
+            Retention::Keep(n) => {
+                let cut = events.len().saturating_sub(*n);
+                (
+                    events[..cut].iter().collect(),
+                    events[cut..].iter().collect(),
+                )
+            }
+            Retention::Before(cutoff) => {
+                check_cutoff(cutoff)?;
+                events
+                    .iter()
+                    .partition(|event| comparable(&event.created) < comparable(cutoff))
+            }
+        };
+
+        let referenced: BTreeSet<PathBuf> = kept
+            .iter()
+            .flat_map(|event| event.files.iter())
+            .filter_map(|file| blob_path(&store_index, &file.hash).ok())
+            .collect();
+        let mut blobs = Vec::new();
+        let mut bytes = 0u64;
+        for blob in self.history_blob_files(&store_index).await? {
+            if referenced.contains(&blob) {
+                continue;
+            }
+            // A size that cannot be read is not worth failing a prune over; the
+            // total is a report, not a decision.
+            bytes += match self.fs().metadata(&self.root().join(&blob)).await {
+                Ok(meta) => meta.len(),
+                Err(_) => 0,
+            };
+            blobs.push(blob);
+        }
+
+        Ok(Pruned {
+            events: dropped.iter().map(|event| event.id.clone()).collect(),
+            blobs,
+            bytes,
+            keeping: kept.len(),
+        })
+    }
+
+    /// Execute a [`Pruned`] plan: drop the events, rebuild the indexes the drop
+    /// changed, then collect the blobs.
+    ///
+    /// **In that order, and the order is the safety argument.** Events first means
+    /// a crash mid-prune leaves blobs no manifest references — a
+    /// [`Finding::HistoryBlobOrphaned`], which the next prune collects. Blobs
+    /// first would leave surviving manifests naming bytes that are gone, which is
+    /// real loss. The benign residue is the one prov already tolerates from
+    /// capture, in the opposite direction.
+    ///
+    /// **Blobs do not ride the change set**, mirroring capture. There the reason
+    /// is that the journal embeds contents; here it is that
+    /// [`ChangeSet::remove`] buffers the bytes it deletes so it can put them
+    /// back, and a GC that frees a gigabyte would hold a gigabyte in memory to do
+    /// it. Deleting content-addressed bytes directly is safe for the same reason
+    /// writing them is: the operation is idempotent, and a half-finished one is an
+    /// orphan rather than a corruption.
+    ///
+    /// A surviving index is rewritten only when its content would actually change.
+    /// Every index this touches is a file some transport has to carry, and a prune
+    /// that rewrote five years of untouched shards would be five years of
+    /// needless merge surface.
+    pub async fn history_prune(&mut self, root_doc: &Path, plan: &Pruned) -> Result<()> {
+        let root_doc = link::normalize(root_doc);
+        let (store_index, exists) = self.history_store_index(&root_doc).await?;
+        if !exists || plan.is_empty() {
+            return Ok(());
+        }
+        let ext = self.history_ext(&root_doc);
+        let embed = self.history_embed()?;
+        let dropped: BTreeSet<&str> = plan.events.iter().map(String::as_str).collect();
+        let events_root = store_dir(&store_index).join(EVENTS_DIR);
+
+        let mut cs = self.change();
+        for id in &plan.events {
+            cs.remove(event_path(&store_index, id, ext)?);
+        }
+
+        // Rebuilt from the directory listing minus what this prune drops — the
+        // same "an index is a pure function of its directory" rule capture and the
+        // autofix follow, evaluated against the tree the prune is about to leave.
+        let mut surviving_years = BTreeSet::new();
+        for year in self.subdirs(&events_root).await? {
+            let year_dir = events_root.join(&year);
+            let mut surviving_months = BTreeSet::new();
+            for month in self.subdirs(&year_dir).await? {
+                let shard = year_dir.join(&month);
+                let ids: BTreeSet<String> = self
+                    .shard_event_ids(&shard, ext)
+                    .await?
+                    .into_iter()
+                    .filter(|id| !dropped.contains(id.as_str()))
+                    .collect();
+                let index = shard.join(format!("index.{ext}"));
+                if ids.is_empty() {
+                    self.stage_index_removal(&mut cs, &index).await?;
+                    continue;
+                }
+                surviving_months.insert(month.clone());
+                self.stage_index_text(
+                    &mut cs,
+                    &index,
+                    render_month_index(&year, &month, &ids, ext, embed)?,
+                )
+                .await?;
+            }
+            let index = year_dir.join(format!("index.{ext}"));
+            if surviving_months.is_empty() {
+                self.stage_index_removal(&mut cs, &index).await?;
+                continue;
+            }
+            surviving_years.insert(year.clone());
+            self.stage_index_text(
+                &mut cs,
+                &index,
+                render_year_index(&year, &surviving_months, ext, embed)?,
+            )
+            .await?;
+        }
+        // The store index always survives: it is the root's pointer target, and a
+        // store pruned to nothing is still a store.
+        self.stage_index_text(
+            &mut cs,
+            &store_index,
+            render_store_index(&surviving_years, ext, embed)?,
+        )
+        .await?;
+        self.commit(cs).await?;
+
+        for blob in &plan.blobs {
+            let full = self.root().join(blob);
+            // Tolerant of an already-absent blob: this runs after the commit, so a
+            // re-run of an interrupted prune must be able to finish rather than
+            // fail on the bytes the first run already freed.
+            if self.fs().try_exists(&full).await? {
+                self.fs().remove_file(&full).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stage an index write only when it would change the file — see
+    /// [`history_prune`](Self::history_prune) on why a prune must not churn
+    /// indexes it has no reason to touch.
+    async fn stage_index_text(&self, cs: &mut ChangeSet, index: &Path, text: String) -> Result<()> {
+        let unchanged = matches!(self.load(index).await, Ok((current, _)) if current == text);
+        if !unchanged {
+            cs.write(index, text);
+        }
+        Ok(())
+    }
+
+    /// Stage the removal of an index whose directory no longer holds any event —
+    /// but only if it is actually there.
+    async fn stage_index_removal(&self, cs: &mut ChangeSet, index: &Path) -> Result<()> {
+        if self.fs().try_exists(&self.root().join(index)).await? {
+            cs.remove(index);
+        }
+        Ok(())
+    }
+
     /// A captured root document's text, with its `history` pointer restored if the
     /// capture carried none — the one edit a restore makes to bytes it is putting
     /// back verbatim.
@@ -1615,7 +1882,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let events_root = store_dir(&store_index).join(EVENTS_DIR);
         let mut findings = Vec::new();
 
-        let years = self.subdirs(&events_root).await?;
+        let years = self.event_years(&events_root, ext).await?;
         self.compare_index(
             &mut findings,
             &store_index,
@@ -1624,7 +1891,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         .await?;
 
         for year in &years {
-            let months = self.subdirs(&events_root.join(year)).await?;
+            let months = self.event_months(&events_root.join(year), ext).await?;
             self.compare_index(
                 &mut findings,
                 &events_root.join(year).join(format!("index.{ext}")),
@@ -1696,12 +1963,34 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
 
+        let orphaned: Vec<PathBuf> = self
+            .history_blob_files(store_index)
+            .await?
+            .into_iter()
+            .filter(|blob| !promised.contains(blob))
+            .collect();
+        if !orphaned.is_empty() {
+            findings.push(Finding::HistoryBlobOrphaned {
+                store: store_index.to_path_buf(),
+                blobs: orphaned,
+            });
+        }
+        Ok(findings)
+    }
+
+    /// Every file parked under `blobs/`, workspace-relative and sorted — the
+    /// "sweep" half of the mark-and-sweep, shared by
+    /// [`Finding::HistoryBlobOrphaned`] and by
+    /// [`history_prune`](Self::history_prune)'s collector, so what `check` calls
+    /// an orphan and what `prune` collects are the same set by construction.
+    ///
+    /// The top level as well as each `<2 hex>` shard: a transport's conflict copy
+    /// of a blob can land at either. **Anything non-hidden counts**, not only
+    /// well-formed digests — that cruft would never match a hash, which is
+    /// precisely why listing files rather than parsing names is the right sweep. A
+    /// dotfile is the transport's own bookkeeping and is left alone.
+    async fn history_blob_files(&self, store_index: &Path) -> Result<Vec<PathBuf>> {
         let blobs_root = store_dir(store_index).join(BLOBS_DIR);
-        let mut orphaned = Vec::new();
-        // The top level as well as each `<2 hex>` shard: a transport's conflict
-        // copy of a blob can land at either, and cruft in the store is exactly
-        // what this is for. Anything non-hidden that no manifest claims counts —
-        // a conflict copy would never match a hash by construction.
         let mut dirs = vec![blobs_root.clone()];
         dirs.extend(
             self.subdirs(&blobs_root)
@@ -1709,6 +1998,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .into_iter()
                 .map(|prefix| blobs_root.join(prefix)),
         );
+        let mut files = Vec::new();
         for dir in dirs {
             let Ok(entries) = self.fs().read_dir(&self.root().join(&dir)).await else {
                 continue;
@@ -1717,23 +2007,52 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if !entry.file_type().is_file() || name.starts_with('.') {
-                    continue;
-                }
-                let path = dir.join(name);
-                if !promised.contains(&path) {
-                    orphaned.push(path);
+                if entry.file_type().is_file() && !name.starts_with('.') {
+                    files.push(dir.join(name));
                 }
             }
         }
-        if !orphaned.is_empty() {
-            orphaned.sort();
-            findings.push(Finding::HistoryBlobOrphaned {
-                store: store_index.to_path_buf(),
-                blobs: orphaned,
-            });
+        files.sort();
+        Ok(files)
+    }
+
+    /// The months under `year_dir` that actually hold an event.
+    ///
+    /// **A directory with no event in it is not a shard.** A change set removes
+    /// files, not directories, so [`history_prune`](Self::history_prune) leaves an
+    /// empty one behind every time it drops a month's last event — and a transport
+    /// that deletes files can leave one too. Filtering where the indexes are
+    /// *rendered* means neither capture nor `check` has to special-case it: an
+    /// empty directory is invisible rather than a permanent
+    /// [`Finding::HistoryIndexStale`] naming an index that should not exist.
+    async fn event_months(&self, year_dir: &Path, ext: &str) -> Result<BTreeSet<String>> {
+        let mut months = BTreeSet::new();
+        for month in self.subdirs(year_dir).await? {
+            if !self
+                .shard_event_ids(&year_dir.join(&month), ext)
+                .await?
+                .is_empty()
+            {
+                months.insert(month);
+            }
         }
-        Ok(findings)
+        Ok(months)
+    }
+
+    /// The years under the store's `events/` that hold at least one month that
+    /// holds at least one event. See [`event_months`](Self::event_months).
+    async fn event_years(&self, events_root: &Path, ext: &str) -> Result<BTreeSet<String>> {
+        let mut years = BTreeSet::new();
+        for year in self.subdirs(events_root).await? {
+            if !self
+                .event_months(&events_root.join(&year), ext)
+                .await?
+                .is_empty()
+            {
+                years.insert(year);
+            }
+        }
+        Ok(years)
     }
 
     /// Compare one index document against what it *should* say, by the set of
@@ -1821,10 +2140,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                render_year_index(&year, &self.subdirs(dir).await?, ext, embed)
+                render_year_index(&year, &self.event_months(dir, ext).await?, ext, embed)
             }
             // `<store>/index.<ext>` — the store index itself.
-            _ => render_store_index(&self.subdirs(&dir.join(EVENTS_DIR)).await?, ext, embed),
+            _ => render_store_index(
+                &self.event_years(&dir.join(EVENTS_DIR), ext).await?,
+                ext,
+                embed,
+            ),
         }
     }
 }
@@ -2964,6 +3287,209 @@ mod tests {
             );
         }
         assert_eq!(read(&dir, "notes/photo.jpg").len(), payload.len());
+    }
+
+    // ── Prune ────────────────────────────────────────────────────────────────
+
+    /// Plan and run a prune, the sequence the CLI performs.
+    fn prune(dir: &Path, retention: &Retention) -> Pruned {
+        let mut w = ws(dir);
+        let root = Path::new("index.md");
+        let plan = block_on(w.history_prune_plan(root, retention)).unwrap();
+        block_on(w.history_prune(root, &plan)).unwrap();
+        plan
+    }
+
+    /// Capture with `notes/a.md` rewritten first, so each capture has something to
+    /// record — and so the untouched files keep sharing the blob they already
+    /// parked.
+    fn capture_edited(dir: &Path, now: &str, label: &str, body: &str) -> String {
+        write(
+            dir,
+            "notes/a.md",
+            &format!("---\ntitle: A\npart_of: '../index.md'\n---\n{body}\n"),
+        );
+        match capture(dir, now, Some(label)) {
+            Captured::Written { id, .. } => id,
+            Captured::Unchanged { id } => panic!("expected a new event, got {id}"),
+        }
+    }
+
+    #[test]
+    fn a_prune_drops_the_oldest_and_collects_only_what_nothing_still_references() {
+        let dir = seed("prune-basic");
+        let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        let second = capture_edited(&dir, "2026-07-31T10:00:00.000000Z", "two", "beta");
+        let third = capture_edited(&dir, "2026-07-31T11:00:00.000000Z", "three", "gamma");
+
+        // The blob only the dropped events name, and one every event names — the
+        // whole correctness question a GC has to get right.
+        let dropped_bytes = blob_path(
+            Path::new("history/index.md"),
+            &crate::fixity::digest(b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"),
+        )
+        .unwrap();
+        let shared_bytes = blob_path(
+            Path::new("history/index.md"),
+            &crate::fixity::digest(b"JPEGBYTES"),
+        )
+        .unwrap();
+        assert!(dir.join(&dropped_bytes).exists() && dir.join(&shared_bytes).exists());
+
+        let plan = prune(&dir, &Retention::Keep(1));
+        assert_eq!(plan.events, vec![first, second]);
+        assert_eq!(plan.keeping, 1);
+        assert!(plan.bytes > 0, "the report has to name what it freed");
+
+        assert!(
+            !dir.join(&dropped_bytes).exists(),
+            "bytes only the dropped events named must go"
+        );
+        assert!(
+            dir.join(&shared_bytes).exists(),
+            "bytes a surviving manifest still names must not"
+        );
+
+        // The store is valid, and the surviving event is still a complete
+        // recovery point — which is the property that makes prune safe at all.
+        assert_eq!(
+            block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
+            vec![]
+        );
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec![third.as_str()]
+        );
+        let survivor = &events[0];
+        assert!(
+            block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), survivor))
+                .unwrap()
+                .is_empty(),
+            "every row of a surviving event must still have its bytes"
+        );
+    }
+
+    #[test]
+    fn a_prune_also_collects_the_orphans_that_were_already_there() {
+        // `HistoryBlobOrphaned` points at this verb, so the two have to agree on
+        // what an orphan is. They share the sweep, and this is the assertion that
+        // says so.
+        let dir = seed("prune-orphans");
+        capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        write(&dir, "history/blobs/ab/sync-conflict-20260731", "junk");
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(matches!(
+            findings.as_slice(),
+            [Finding::HistoryBlobOrphaned { blobs, .. }]
+                if blobs == &[PathBuf::from("history/blobs/ab/sync-conflict-20260731")]
+        ));
+
+        // Keeping every event still collects it: the sweep is "what nothing
+        // references", not "what this drop orphaned".
+        let plan = prune(&dir, &Retention::Keep(10));
+        assert!(plan.events.is_empty());
+        assert_eq!(
+            plan.blobs,
+            vec![PathBuf::from("history/blobs/ab/sync-conflict-20260731")]
+        );
+        assert_eq!(
+            block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn an_emptied_shard_leaves_no_index_and_no_finding() {
+        let dir = seed("prune-shards");
+        capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "july", "alpha");
+        capture_edited(&dir, "2026-08-01T09:00:00.000000Z", "august", "beta");
+        assert!(dir.join("history/events/2026/07/index.md").exists());
+
+        // Drop July: its shard index goes with it, but the year survives because
+        // August is still there.
+        prune(&dir, &Retention::Before("2026-08-01".into()));
+        assert!(!dir.join("history/events/2026/07/index.md").exists());
+        assert!(dir.join("history/events/2026/index.md").exists());
+        assert!(dir.join("history/events/2026/08/index.md").exists());
+        assert_eq!(
+            block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
+            vec![]
+        );
+
+        // Now the year, too. A change set removes files rather than directories,
+        // so `2026/07/` is still sitting there — and must be invisible, not a
+        // permanent finding about an index that should not exist.
+        prune(&dir, &Retention::Keep(0));
+        assert!(!dir.join("history/events/2026/index.md").exists());
+        assert!(
+            dir.join("history/events/2026/07").is_dir(),
+            "the empty directory is expected to linger"
+        );
+        assert_eq!(
+            block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
+            vec![],
+            "an event-less directory is not a shard"
+        );
+
+        // …and the store still works: a later capture rebuilds the tree around it.
+        capture_edited(&dir, "2026-09-01T09:00:00.000000Z", "after", "delta");
+        assert_eq!(
+            block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn a_date_cutoff_keeps_the_day_it_names_and_a_typo_drops_nothing() {
+        let dir = seed("prune-before");
+        capture_edited(&dir, "2026-07-31T23:59:59.999999Z", "eve", "alpha");
+        let boundary = capture_edited(&dir, "2026-08-01T00:00:00.000000Z", "dawn", "beta");
+        let later = capture_edited(&dir, "2026-08-02T09:00:00.000000Z", "later", "gamma");
+
+        // "before 2026-08-01" means before that day *started*: a bare date is a
+        // prefix of every timestamp in its day, which is what makes the boundary
+        // read the way a person means it without parsing a calendar.
+        let w = ws(&dir);
+        let plan = block_on(w.history_prune_plan(
+            Path::new("index.md"),
+            &Retention::Before("2026-08-01".into()),
+        ))
+        .unwrap();
+        assert_eq!(plan.keeping, 2);
+        assert!(!plan.events.contains(&boundary) && !plan.events.contains(&later));
+
+        // A cutoff that is not a date deletes nothing rather than everything.
+        let typo = block_on(w.history_prune_plan(
+            Path::new("index.md"),
+            &Retention::Before("yesterday".into()),
+        ));
+        assert!(typo.is_err(), "a typo must not be a silent full sweep");
+    }
+
+    #[test]
+    fn a_prune_with_nothing_to_drop_touches_no_file() {
+        let dir = seed("prune-noop");
+        capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        let index = read(&dir, "history/events/2026/07/index.md");
+        let before = std::fs::metadata(dir.join("history/index.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        let plan = prune(&dir, &Retention::Keep(5));
+        assert!(plan.is_empty());
+        // Every index a prune touches is a file some transport has to carry, so
+        // one with nothing to do must not churn them.
+        assert_eq!(read(&dir, "history/events/2026/07/index.md"), index);
+        assert_eq!(
+            std::fs::metadata(dir.join("history/index.md"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before
+        );
     }
 
     // ── Lineage: `history-log` ───────────────────────────────────────────────

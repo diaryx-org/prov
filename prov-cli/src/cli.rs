@@ -686,6 +686,39 @@ pub(crate) enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Drop the oldest captures and collect the bytes no surviving capture
+    /// references. Manual, never automatic, and irreversible.
+    ///
+    /// With full manifests this is delete plus garbage collection and nothing
+    /// else: every event is self-contained, so dropping one cannot make another
+    /// unreadable. What it *can* do is destroy the only copy of some content —
+    /// including content another device captured and this one never had live —
+    /// so it lists what it would drop and asks first.
+    ///
+    /// Exactly one bound is required. There is no default: an operation that
+    /// deletes bytes should not do so because a flag was forgotten.
+    ///
+    /// The blob sweep is the same one `check` reports as orphaned, taken against
+    /// the survivors — so a prune also collects blobs that were already
+    /// unreferenced, which is what that finding points here for.
+    ///
+    /// Works regardless of the `history` config axis: turning the feature off
+    /// must not strand bytes you can no longer clean up.
+    HistoryPrune {
+        /// Keep the newest N captures and drop everything older.
+        #[arg(long, value_name = "N")]
+        keep: Option<usize>,
+        /// Drop every capture taken strictly before this date (`2026-06-01`) or
+        /// RFC 3339 instant. A capture *on* the named day is kept.
+        #[arg(long, value_name = "DATE", conflicts_with = "keep")]
+        before: Option<String>,
+        /// Print what would be dropped and collected, and delete nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

@@ -195,6 +195,12 @@ fn main() -> ExitCode {
             dry_run,
             yes,
         } => cmd_history_restore(&event, &paths, id.as_deref(), exact, force, dry_run, yes),
+        Command::HistoryPrune {
+            keep,
+            before,
+            dry_run,
+            yes,
+        } => cmd_history_prune(keep, before.as_deref(), dry_run, yes),
     };
     match result {
         Ok(code) => code,
@@ -2185,6 +2191,119 @@ fn cmd_history_restore(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// Render a byte count the way a person reads one. Storage is the whole point of
+/// pruning, so the report has to be legible at the scale that motivates it.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{bytes} B"),
+        _ => format!("{size:.1} {}", UNITS[unit]),
+    }
+}
+
+/// Drop the oldest captures and collect the bytes nothing references any more.
+///
+/// Irreversible, so it follows the same shape as `history-restore --exact`: build
+/// the plan before anything is deleted, show it, confirm on a terminal, then act.
+///
+/// Works regardless of the `history` axis — turning the feature off must not
+/// strand bytes you can no longer clean up.
+fn cmd_history_prune(
+    keep: Option<usize>,
+    before: Option<&str>,
+    dry_run: bool,
+    yes: bool,
+) -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+
+    // No default bound, and the refusal is informative rather than a usage dump:
+    // what the store actually holds is what tells you which bound you want.
+    let retention = match (keep, before) {
+        (Some(n), _) => prov::Retention::Keep(n),
+        (None, Some(date)) => prov::Retention::Before(date.to_string()),
+        (None, None) => {
+            let events = block_on(ws.history_list(&ctx.root_doc))?;
+            let span = match (events.first(), events.last()) {
+                (Some(first), Some(last)) => {
+                    format!(", oldest {}, newest {}", first.describe(), last.describe())
+                }
+                _ => String::new(),
+            };
+            return Err(format!(
+                "history-prune needs a bound — {} event(s){span}. \
+                 Try `--keep <n>` to keep the newest few, or `--before <date>` to \
+                 drop everything older than a day.",
+                events.len()
+            )
+            .into());
+        }
+    };
+
+    let plan = block_on(ws.history_prune_plan(&ctx.root_doc, &retention))?;
+    for id in &plan.events {
+        eprintln!("  drop      {id}");
+    }
+    for blob in &plan.blobs {
+        eprintln!("  collect   {}", blob.display());
+    }
+    eprintln!(
+        "{} event(s) to drop, {} kept; {} blob(s) to collect, {}",
+        plan.events.len(),
+        plan.keeping,
+        plan.blobs.len(),
+        human_bytes(plan.bytes)
+    );
+
+    if dry_run {
+        eprintln!("nothing deleted (--dry-run)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if plan.is_empty() {
+        eprintln!("nothing to prune");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The judgment the store cannot make for you: a dropped event may be the only
+    // capture of some state — including one another device took and this one never
+    // had live.
+    if !yes && std::io::stdin().is_terminal() {
+        eprintln!(
+            "this is irreversible, and a dropped capture may be the only copy of \
+             what it recorded."
+        );
+        if !matches!(prompt("proceed? [y/N]: ")?.as_str(), "y" | "yes") {
+            eprintln!("stopped; nothing deleted");
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    block_on(ws.history_prune(&ctx.root_doc, &plan))?;
+    // The dropped ids to stdout: what a script would record as gone.
+    for id in &plan.events {
+        println!("{id}");
+    }
+    eprintln!(
+        "pruned {} event(s), freed {}",
+        plan.events.len(),
+        human_bytes(plan.bytes)
+    );
+
+    let findings = block_on(ws.check(&ctx.root_doc))?;
+    if !findings.is_empty() {
+        eprintln!(
+            "note: the workspace has {} outstanding check finding(s) — run `prov check`",
+            findings.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Report a convert sweep: the changed document paths to stdout (one per line,

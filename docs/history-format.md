@@ -11,8 +11,8 @@ part_of: '[prov](/README.md)'
 Implemented in `prov/src/history.rs`. Phase 0 of the proposal covers the store,
 `history-capture` and `history-list`; Phase 1 adds the read-only queries over it
 (`history-show`, `history-log`, §10) and `history-restore` (§11).
-`history-prune` and `history-forget` are a later phase that reads this same
-format.
+Phase 2 adds `history-prune` (§12) and the blob findings; `history-forget` is
+the remaining verb.
 
 ## 1. Where the store lives
 
@@ -545,3 +545,82 @@ bytes: the journal records the source path, so restoring a whole workspace costs
 O(file count) of journal rather than a second copy of every byte. A
 content-addressed blob is exactly the immutable referent that makes replaying
 such a reference deterministic — the path is the digest of the contents.
+
+## 12. Pruning
+
+`history-prune (--keep <n> | --before <date>)` drops the oldest captures and
+collects the bytes no surviving capture references. **Manual, never automatic**,
+and irreversible. It works regardless of the config axis (§8): turning the
+feature off must not strand bytes you can no longer clean up.
+
+With full manifests this is **delete plus garbage collection and nothing else**.
+Every event is self-contained, so dropping one cannot make another unreadable —
+no folding, no re-anchoring, and above all no rewriting of surviving events,
+which under a delta log was the hardest problem in the store: a pruned event's
+entries could be load-bearing for later events' effective state, so pruning had
+to rewrite an "immutable" event, the one operation that conflicts under exactly
+the sync this store exists to survive.
+
+### 12.1 The bound
+
+**Exactly one is required, and there is no default.** An operation that deletes
+bytes should not do so because a flag was forgotten; a bare `history-prune`
+refuses and reports what the store holds, since that is what tells you which
+bound you want.
+
+- `--keep <n>` — keep the newest `n` events, drop the rest. The count axis.
+- `--before <date>` — drop every event captured **strictly before** that
+  instant. A bare date is a *prefix* of every timestamp in its day, so an event
+  on the named day is kept: `--before 2026-06-01` means "before that day
+  started". Compared against `created` normalized per §3.2, so a store mixing
+  precisions cuts in the right place. A cutoff that is not a `YYYY-MM-DD` head
+  is refused, so a typo drops nothing rather than everything.
+
+### 12.2 What it deletes, and in what order
+
+1. **The event documents**, and the shard indexes the drop empties.
+2. **The blobs** no surviving manifest names.
+
+The order is the safety argument. Events first means a crash mid-prune leaves
+blobs nothing references — a `HistoryBlobOrphaned`, which the next prune
+collects. Blobs first would leave surviving manifests naming bytes that are
+gone, which is real loss. The residue is benign in one direction and damage in
+the other, so the order is not a preference.
+
+**Blobs do not ride the journaled change set**, mirroring capture (§6) with the
+reason inverted: there, the journal embeds contents, so parking a genesis
+capture through it would duplicate the workspace into `.prov-journal`; here, a
+staged removal buffers the bytes it deletes so it can put them back, and a GC
+freeing a gigabyte would hold a gigabyte to do it. Deleting content-addressed
+bytes directly is safe for the same reason writing them is — the operation is
+idempotent, and a half-finished one is an orphan rather than a corruption.
+
+The blob sweep is `HistoryBlobOrphaned`'s (§7), taken against the survivors. So
+the two agree by construction, and a prune also collects orphans that were
+already there — which is what that finding points here for.
+
+### 12.3 Indexes, and the directories left behind
+
+Surviving indexes are rebuilt from their own directory listing minus what the
+prune drops — the same "an index is a pure function of its directory" rule
+capture and the autofix follow. An index is **rewritten only when its content
+would actually change**: every one is a file some transport has to carry, and a
+prune that rewrote five years of untouched shards would be five years of
+needless merge surface.
+
+A shard that loses its last event loses its index document too, and so does a
+year that loses its last shard. The store index always survives — it is the
+root's pointer target, and a store pruned to nothing is still a store.
+
+**A directory with no event in it is not a shard.** A change set removes files,
+not directories, so an emptied `2026/07/` lingers; a transport that deletes
+files can leave one too. Every place an index is *rendered* ignores event-less
+directories, so a leftover is invisible rather than a permanent
+`HistoryIndexStale` naming an index that should not exist.
+
+### 12.4 What prune does not decide
+
+Dropping an event can destroy the only copy of some content — including content
+another device captured and this one never had live. Nothing in the store can
+arbitrate that, so `history-prune` lists what it would drop and confirms before
+acting, and offers `--dry-run` to see the list without any of it happening.
