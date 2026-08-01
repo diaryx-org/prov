@@ -358,8 +358,13 @@ index.md: child rust-lang.md does not declare part_of back to it
 $ printf 'y\n' | prov check --fix
 ⚑  index.md: child rust-lang.md does not declare part_of back to it
    → declare part_of → index.md in rust-lang.md
-   apply? [y]es / [n]o / [a]ll / [q]uit: applied 1 fix(es); 0 finding(s) need attention
+   apply? [y]es / [n]o / [a]ll / [q]uit: applied 1 fix(es): 1 finding(s) resolved, 0 introduced, 0 still outstanding
 ```
+
+A fix is a real mutation of the graph, so `--fix` re-runs `check` afterwards and
+reports the difference in three buckets: what the fixes **resolved**, what they
+**introduced**, and what was already there and still is. Only the middle one is
+this run's fault, and it is the only one that makes `--fix` exit non-zero.
 
 <!-- exec -->
 ```sh

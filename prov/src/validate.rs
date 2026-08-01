@@ -605,6 +605,72 @@ impl fmt::Display for Finding {
     }
 }
 
+/// What an operation did to the workspace's integrity: the difference between a
+/// [`check`](Workspace::check) taken before it and one taken after.
+///
+/// The reason this exists rather than a bare post-operation list: the operations
+/// that most need to report their effect on integrity are the ones you run
+/// *because something is already wrong* — an autofix sweep, a restore from a
+/// captured event. A list of findings afterwards cannot distinguish the damage
+/// the operation repaired from the damage it caused from the damage it merely
+/// inherited, and those three call for entirely different responses. Only
+/// [`introduced`](CheckDiff::introduced) is a reason to stop; only
+/// [`fixed`](CheckDiff::fixed) is a reason to celebrate;
+/// [`pre_existing`](CheckDiff::pre_existing) is a count, not a reprint.
+///
+/// [`Finding`] is `Eq`, so this is set arithmetic over values. A finding carries
+/// the document, the site and the target, so two findings that compare equal
+/// *are* the same problem — there is nothing to key on beyond the value itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckDiff {
+    /// Present before, gone after — what the operation repaired.
+    pub fixed: Vec<Finding>,
+    /// Absent before, present after — what the operation broke. The bucket that
+    /// matters, and the one that should drive an exit code.
+    pub introduced: Vec<Finding>,
+    /// Present before and still present after — untouched, and not this
+    /// operation's doing.
+    pub pre_existing: Vec<Finding>,
+}
+
+impl CheckDiff {
+    /// Bucket two `check` runs against each other.
+    pub fn between(before: &[Finding], after: &[Finding]) -> Self {
+        Self {
+            fixed: before
+                .iter()
+                .filter(|f| !after.contains(f))
+                .cloned()
+                .collect(),
+            introduced: after
+                .iter()
+                .filter(|f| !before.contains(f))
+                .cloned()
+                .collect(),
+            // Drawn from `after`, so this reads "still there" rather than "was
+            // there" — the two differ once anything has been fixed.
+            pre_existing: after
+                .iter()
+                .filter(|f| before.contains(f))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Whether the operation broke nothing — the question an exit code asks.
+    /// True even when the workspace is still dirty: findings this operation
+    /// inherited are not its verdict.
+    pub fn is_clean(&self) -> bool {
+        self.introduced.is_empty()
+    }
+
+    /// Whether the operation changed nothing about the workspace's integrity —
+    /// it neither fixed nor broke anything.
+    pub fn is_empty(&self) -> bool {
+        self.fixed.is_empty() && self.introduced.is_empty()
+    }
+}
+
 /// A concrete repair for a finding — **metadata only**. Autofix never edits body
 /// prose: a `[[…]]` that is really code (`[[None] * width]`) must not be
 /// "repaired", and structure-aware body editing belongs to a later layer. So the
@@ -2991,5 +3057,42 @@ mod tests {
             !text.contains("content_hash"),
             "fixity off records no hash: {text}"
         );
+    }
+
+    #[test]
+    fn a_check_diff_separates_what_an_operation_fixed_broke_and_inherited() {
+        let orphan = |name: &str| Finding::Orphan {
+            doc: PathBuf::from(name),
+        };
+        let (repaired, inherited, broken) = (orphan("a.md"), orphan("b.md"), orphan("c.md"));
+
+        let diff = CheckDiff::between(
+            &[repaired.clone(), inherited.clone()],
+            &[inherited.clone(), broken.clone()],
+        );
+        assert_eq!(diff.fixed, vec![repaired]);
+        assert_eq!(diff.introduced, vec![broken]);
+        assert_eq!(diff.pre_existing, vec![inherited]);
+        // The verdict is about what this operation *did* — a workspace still
+        // dirty from problems it inherited is not this operation's failure.
+        assert!(!diff.is_clean());
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn a_check_diff_over_an_unchanged_workspace_is_empty_but_not_clean_of_findings() {
+        let standing = Finding::Orphan {
+            doc: PathBuf::from("a.md"),
+        };
+        let same = std::slice::from_ref(&standing);
+        let diff = CheckDiff::between(same, same);
+        assert!(diff.fixed.is_empty() && diff.introduced.is_empty());
+        assert_eq!(diff.pre_existing, vec![standing]);
+        // Broke nothing, so clean — even though the workspace is not.
+        assert!(diff.is_clean());
+        assert!(diff.is_empty());
+
+        // And two clean runs agree on everything.
+        assert_eq!(CheckDiff::between(&[], &[]), CheckDiff::default());
     }
 }

@@ -1200,8 +1200,38 @@ fn cmd_check_fix(
         ensure_registry(ctx)?;
         persist(ctx, ws)?;
     }
-    println!("applied {applied} fix(es); {needs_attention} finding(s) need attention");
-    Ok(ExitCode::SUCCESS)
+    if applied == 0 {
+        // Nothing ran, so a second walk would return what the first one did.
+        eprintln!("applied 0 fix(es); {needs_attention} finding(s) need attention");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Re-check and diff against the run these fixes were chosen from. A fix is a
+    // *mutation of the graph*, so "applied N" is a report of effort, not of
+    // outcome — and the count of what still needs attention was computed before
+    // any of them ran. Only a second walk can say what actually changed, and only
+    // the three buckets can separate what these fixes repaired from what they
+    // broke from what was already wrong.
+    let after = block_on(ws.check(root))?;
+    let diff = prov::CheckDiff::between(findings, &after);
+
+    for finding in &diff.introduced {
+        println!("{finding}");
+    }
+    eprintln!(
+        "applied {applied} fix(es): {} finding(s) resolved, {} introduced, {} still outstanding",
+        diff.fixed.len(),
+        diff.introduced.len(),
+        diff.pre_existing.len()
+    );
+    if diff.is_clean() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    // A repair that broke something is the one outcome a script must not miss.
+    // Outstanding findings on their own are not this run's verdict, and keep the
+    // exit code they have always had.
+    eprintln!("a fix introduced the finding(s) above — run `prov check` and review");
+    Ok(ExitCode::FAILURE)
 }
 
 /// Prompt on stderr, read a trimmed, lowercased line from stdin (EOF → empty).

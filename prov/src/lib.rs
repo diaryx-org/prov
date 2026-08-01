@@ -112,6 +112,6 @@ pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use route::{Layout, RoutePlan};
 pub use title::{TitleIndex, TitleMatch};
 pub use tree::{Node, NodeKind, TreeOptions};
-pub use validate::{Backlink, CensusEntry, Finding, Fix, LinkSite, Resolution};
+pub use validate::{Backlink, CensusEntry, CheckDiff, Finding, Fix, LinkSite, Resolution};
 pub use vocabulary::{Term, Vocabulary};
 pub use workspace::{Target, Workspace, WorkspaceBuilder};

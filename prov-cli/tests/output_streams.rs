@@ -29,6 +29,34 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Run a command with `input` on stdin — for the interactive prompts (`check
+/// --fix`) that `output()`'s null stdin would otherwise answer with EOF.
+fn run_with_input(dir: &Path, args: &[&str], input: &str) -> (bool, String, String) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .current_dir(dir)
+        .args(args)
+        .env("PROV_QUIET", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn prov");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("run prov");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
 /// Assert a command succeeded, surfacing both streams on failure.
 fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     let (ok, out, err) = run(dir, args);
@@ -217,6 +245,37 @@ fn readers_keep_data_on_stdout_and_chatter_on_stderr() {
         err.contains("no backlinks"),
         "the note is on stderr: {err:?}"
     );
+}
+
+#[test]
+fn a_fix_sweep_reports_the_outcome_of_a_second_check_not_the_first() {
+    // `--fix` mutates the graph, so "applied N" is effort, not outcome. It
+    // re-checks and reports the difference — and the only bucket that is this
+    // run's own doing (what it introduced) is the data, on stdout.
+    let dir = sandbox("fix-diff");
+    ok(&dir, &["init", "--yes"]);
+    ok(&dir, &["new", "Rust", "--in", "index.md"]);
+
+    // Break the inverse, so there is exactly one finding and it is fixable.
+    ok(&dir, &["unset", "rust.md", "part_of"]);
+    let (still_ok, out, _) = run(&dir, &["check"]);
+    assert!(!still_ok, "a broken inverse should fail check");
+    assert!(out.contains("part_of"), "the finding is on stdout: {out:?}");
+
+    let (ok_status, out, err) = run_with_input(&dir, &["check", "--fix"], "y\n");
+    assert!(ok_status, "a fix that breaks nothing exits zero:\n{err}");
+    assert!(
+        err.contains("1 finding(s) resolved") && err.contains("0 introduced"),
+        "the three buckets are stderr narration: {err:?}"
+    );
+    assert!(
+        !out.contains("introduced"),
+        "stdout carries findings, never the summary: {out:?}"
+    );
+
+    // And the repair was real, not just reported.
+    let (clean, _, err) = run(&dir, &["check"]);
+    assert!(clean, "the workspace should be clean now: {err}");
 }
 
 #[test]
