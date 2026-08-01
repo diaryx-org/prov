@@ -4,6 +4,9 @@ author: adammharris
 created: 2026-07-31
 status: not fully written yet
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+contents:
+- '[Prov 1.draft](/docs/proposals/self-hosted-kernel/examples/prov-1.draft.md.yaml)'
+- '[ORGANIZATION](/docs/proposals/self-hosted-kernel/examples/ORGANIZATION.md.yaml)'
 ---
 
 `prov` needs to be able to describe itself.
