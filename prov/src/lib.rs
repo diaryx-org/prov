@@ -57,6 +57,7 @@ pub mod error;
 pub mod exec;
 pub mod fixity;
 pub mod fs;
+pub mod history;
 pub mod identity;
 pub mod index;
 pub mod intake;
@@ -75,7 +76,7 @@ pub mod workspace;
 
 pub use change::{ChangeSet, FileOp};
 pub use config::{
-    ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, IdStorage, OpenClosed,
+    ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, IdStorage, OpenClosed,
     RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
     field_type_from_config_str, metadata_format_from_str, metadata_format_str, spec_ahead,
 };
@@ -96,6 +97,7 @@ pub use fig::ExtKind;
 pub use fig::Format;
 pub use fig_schema::FieldType;
 pub use fs::{Capabilities, DirEntry, FileType, InMemoryFs, Metadata, StdFs, Storage};
+pub use history::{Captured, Event, FileEntry};
 pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};

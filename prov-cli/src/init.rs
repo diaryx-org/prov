@@ -859,6 +859,11 @@ pub(crate) fn cmd_init(
         content_format: content.into(),
         recycle_bin,
         fixity: fixity.into(),
+        // Off, and deliberately not prompted for: history is a narrow feature
+        // (it earns its keep only on a transport that keeps no history of its
+        // own) and adds ongoing storage. `prov config history manual` turns it
+        // on for the workspaces that want it.
+        history: prov::History::Off,
         updated: updated_field.clone(),
     };
     reference.write_onto(&mut ws_config);

@@ -151,7 +151,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | Target | Declared as | Contract |
 | --- | --- | --- |
 | **Content node** | a relation (`contents`/`part_of`/`links`/your vocabulary) | in the graph; two-way (inverse maintained); ID-able; rewritten on move; orphan-checked |
-| **Machinery** | a one-way pointer relation (`registry`, `config`, `recycle_bin`, a `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
+| **Machinery** | a one-way pointer relation (`registry`, `config`, `recycle_bin`, `history`, a `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
 | **Opaque payload** | the `content` field | *not a node* — the bytes are the body of a sidecar node (an attachment); hashed for fixity, never parsed |
 | **Controlled term** | a `fields` value | resolved against a vocabulary store, checked (§3) — not traversed |
 | **External** | a URL | recognized by syntax, never resolved or validated |

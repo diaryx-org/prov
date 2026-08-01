@@ -93,6 +93,7 @@ pub struct RelationSet {
     registry: Option<String>,
     config: Option<String>,
     recycle: Option<String>,
+    history: Option<String>,
 }
 
 impl RelationSet {
@@ -147,11 +148,24 @@ impl RelationSet {
         self
     }
 
+    /// Mark the named relation as the **history pointer**: the root document links
+    /// its history-store index through this relation — the same reachability move
+    /// as the registry, config and recycle bin (§6). The store holds one immutable
+    /// event document per capture plus a content-addressed blob store, so a bad
+    /// sync merge can be rolled back file by file. Making it *reachable* is what
+    /// lets `check` validate it like any other member, and what keeps prov's own
+    /// safety net out of an app-private folder.
+    pub fn history(mut self, name: impl Into<String>) -> Self {
+        self.history = Some(name.into());
+        self
+    }
+
     /// The diaryx vocabulary: `contents`/`part_of` containment (spanning),
     /// `links`/`link_of` arbitrary cross-references, `registry` (the root's
     /// pointer to its ID registry document), `config` (the root's pointer to its
-    /// workspace-config document), and `recycle_bin` (the root's pointer to its
-    /// recycle-bin index).
+    /// workspace-config document), `recycle_bin` (the root's pointer to its
+    /// recycle-bin index), and `history` (the root's pointer to its history
+    /// store).
     pub fn diaryx() -> Self {
         Self::new()
             .with(Relation::many("contents").inverse("part_of"))
@@ -161,10 +175,12 @@ impl RelationSet {
             .with(Relation::one("registry"))
             .with(Relation::one("config"))
             .with(Relation::one("recycle_bin"))
+            .with(Relation::one("history"))
             .spanning("contents")
             .registry("registry")
             .config("config")
             .recycle("recycle_bin")
+            .history("history")
     }
 
     /// Build a workspace's relation vocabulary from its [`WorkspaceConfig`] — the
@@ -195,7 +211,7 @@ impl RelationSet {
             }
             // Keep the structural pointer relations reachable even under a fully
             // custom vocabulary — but never shadow one the user already declared.
-            for pointer in ["registry", "config", "recycle_bin"] {
+            for pointer in ["registry", "config", "recycle_bin", "history"] {
                 if !s.relations.iter().any(|r| r.name == pointer) {
                     s = s.with(Relation::one(pointer));
                 }
@@ -203,6 +219,7 @@ impl RelationSet {
             s.registry("registry")
                 .config("config")
                 .recycle("recycle_bin")
+                .history("history")
         };
         if let Some(spanning) = &config.spanning {
             set = set.spanning(spanning);
@@ -264,6 +281,11 @@ impl RelationSet {
     /// The name of the recycle-bin-pointer relation, if one is configured.
     pub fn recycle_relation(&self) -> Option<&str> {
         self.recycle.as_deref()
+    }
+
+    /// The name of the history-pointer relation, if one is configured.
+    pub fn history_relation(&self) -> Option<&str> {
+        self.history.as_deref()
     }
 
     /// Extract every link declared by a document's metadata, tagged by relation.
@@ -332,14 +354,16 @@ mod tests {
     }
 
     #[test]
-    fn diaryx_declares_registry_config_and_recycle_pointers() {
+    fn diaryx_declares_registry_config_recycle_and_history_pointers() {
         let set = RelationSet::diaryx();
         assert_eq!(set.registry_relation(), Some("registry"));
         assert_eq!(set.config_relation(), Some("config"));
         assert_eq!(set.recycle_relation(), Some("recycle_bin"));
+        assert_eq!(set.history_relation(), Some("history"));
         // Each is a single-valued pointer relation in the vocabulary.
         assert!(set.relations().iter().any(|r| r.name == "config"));
         assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
+        assert!(set.relations().iter().any(|r| r.name == "history"));
     }
 
     #[test]
@@ -428,5 +452,7 @@ mod tests {
         // stay reachable.
         assert_eq!(set.registry_relation(), Some("registry"));
         assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
+        assert_eq!(set.history_relation(), Some("history"));
+        assert!(set.relations().iter().any(|r| r.name == "history"));
     }
 }

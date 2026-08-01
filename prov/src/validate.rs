@@ -340,6 +340,24 @@ pub enum Finding {
         value: String,
         suggestion: String,
     },
+    /// A history-store index document has drifted from the directory it
+    /// describes: `missing` holds what is on disk but unlinked, `extra` what is
+    /// linked but gone.
+    ///
+    /// The **expected** outcome of a sync transport mangling a derived cache, and
+    /// the reason the store can tolerate having any mutable file at all: the
+    /// index is a rebuildable cache, so a conflicted one is a finding with a
+    /// mechanical autofix ([`Fix::RebuildHistoryIndex`]) rather than data loss.
+    /// Authority lives in the immutable event documents, which is why the repair
+    /// can be a pure function of the directory listing.
+    ///
+    /// Raised per shard, so a mangled `2026/07/index.<ext>` is reported — and
+    /// repaired — without touching any other month.
+    HistoryIndexStale {
+        index: PathBuf,
+        missing: Vec<PathBuf>,
+        extra: Vec<PathBuf>,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -523,6 +541,25 @@ impl fmt::Display for Finding {
                 "{}: `{field}: {value}` is not a known term — did you mean `{suggestion}`?",
                 doc.display(),
             ),
+            Finding::HistoryIndexStale {
+                index,
+                missing,
+                extra,
+            } => {
+                let mut parts = Vec::new();
+                if !missing.is_empty() {
+                    parts.push(format!("{} unlisted", missing.len()));
+                }
+                if !extra.is_empty() {
+                    parts.push(format!("{} listed but gone", extra.len()));
+                }
+                write!(
+                    f,
+                    "{}: history index is stale ({}) — rebuildable from the directory",
+                    index.display(),
+                    parts.join(", ")
+                )
+            }
         }
     }
 }
@@ -570,6 +607,11 @@ pub enum Fix {
     /// when the change was *not* intended, is the one thing prov cannot decide
     /// for you, which is why this is never applied without confirmation.
     RestampFixity { doc: PathBuf, hash: String },
+    /// Repair a [`Finding::HistoryIndexStale`] by rebuilding `index` from the
+    /// directory it describes. Safe because a history index is a *derived* cache
+    /// — the immutable event documents are the authority — so the rebuild is a
+    /// pure function of that one directory's listing, and touches no other shard.
+    RebuildHistoryIndex { index: PathBuf },
 }
 
 impl fmt::Display for Fix {
@@ -617,11 +659,77 @@ impl fmt::Display for Fix {
                     doc.display()
                 )
             }
+            Fix::RebuildHistoryIndex { index } => {
+                write!(
+                    f,
+                    "rebuild {} from the events in its directory",
+                    index.display()
+                )
+            }
         }
     }
 }
 
+/// The set of workspace-relative paths a walk from `start` reaches: `start`
+/// itself, every path a census link resolves to (any relation, a body wikilink,
+/// or an id through the registry), and every `content` target.
+///
+/// A **case-mismatched** link counts its *actual* on-disk file as reached, so a
+/// file is never both case-mismatched and orphaned. Prose bodies (and attachment
+/// payloads) arrive through `content_bodies` rather than the census, because a
+/// `content` pointer is not a graph edge — but it does reach a file, which is
+/// what every caller here cares about.
+///
+/// The one definition of "reachable" that the orphan check, the fixity pass, the
+/// vocabulary pass, and the history capture set all share (DESIGN §8).
+pub(crate) fn reachable_set(
+    start: &Path,
+    census: &[CensusEntry],
+    content_bodies: &[PathBuf],
+) -> BTreeSet<PathBuf> {
+    let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
+    reachable.insert(link::normalize(start));
+    reachable.extend(content_bodies.iter().cloned());
+    for entry in census {
+        match &entry.resolution {
+            Resolution::Path(p) | Resolution::Id { to: p, .. } => {
+                reachable.insert(p.clone());
+            }
+            Resolution::CaseMismatch { got, actual } => {
+                reachable.insert(got.with_file_name(actual));
+            }
+            _ => {}
+        }
+    }
+    reachable
+}
+
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Every file the workspace reaches from `start` that actually exists on
+    /// disk — [`reachable_set`] over a fresh walk, filtered to real files.
+    ///
+    /// This is §8's bounded walk expressed as a *file set* rather than a findings
+    /// list: the same population `check` validates. [`history_capture`] captures
+    /// it (minus prov's two byte-parking stores) precisely so that an event is a
+    /// consistent cut across everything the workspace considers its own.
+    ///
+    /// [`history_capture`]: Workspace::history_capture
+    pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
+        let start = link::normalize(start);
+        let Walk {
+            census,
+            content_bodies,
+            ..
+        } = self.walk(&start).await?;
+        let mut files = BTreeSet::new();
+        for path in reachable_set(&start, &census, &content_bodies) {
+            if self.fs().try_exists(&self.root().join(&path)).await? {
+                files.insert(path);
+            }
+        }
+        Ok(files)
+    }
+
     /// Suggest a safe, metadata-only [`Fix`] for `finding`, or `None` when it is
     /// not safely auto-fixable — a body-link finding (left for the
     /// structure-aware layer), or a contested containment (a human must pick the
@@ -708,6 +816,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 })),
                 _ => Ok(None),
             },
+            // Rebuild the drifted index from its own directory. Unambiguous: the
+            // event documents are the authority and the index only caches them,
+            // so there is no competing claim to weigh.
+            Finding::HistoryIndexStale { index, .. } => Ok(Some(Fix::RebuildHistoryIndex {
+                index: index.clone(),
+            })),
             _ => Ok(None),
         }
     }
@@ -740,6 +854,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .await?,
         );
         findings.extend(self.stale_label_findings(&census).await?);
+        // The history store's interior is validated from the directories
+        // themselves rather than by this walk — descent is spanning-only, and the
+        // store is reached through the one-way `history` pointer. See
+        // [`history_findings`](Workspace::history_findings).
+        findings.extend(self.history_findings(start).await?);
         Ok(findings)
     }
 
@@ -874,20 +993,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
 
         // The reachable document set (mirrors `fixity_findings`).
-        let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
-        reachable.insert(link::normalize(start));
-        reachable.extend(content_bodies.iter().cloned());
-        for entry in census {
-            match &entry.resolution {
-                Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                    reachable.insert(p.clone());
-                }
-                Resolution::CaseMismatch { got, actual } => {
-                    reachable.insert(got.with_file_name(actual));
-                }
-                _ => {}
-            }
-        }
+        let reachable = reachable_set(start, census, content_bodies);
 
         let mut findings = Vec::new();
         for path in reachable {
@@ -996,20 +1102,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         census: &[CensusEntry],
         content_bodies: &[PathBuf],
     ) -> Result<Vec<Finding>> {
-        let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
-        reachable.insert(link::normalize(start));
-        reachable.extend(content_bodies.iter().cloned());
-        for entry in census {
-            match &entry.resolution {
-                Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                    reachable.insert(p.clone());
-                }
-                Resolution::CaseMismatch { got, actual } => {
-                    reachable.insert(got.with_file_name(actual));
-                }
-                _ => {}
-            }
-        }
+        let reachable = reachable_set(start, census, content_bodies);
 
         let mut findings = Vec::new();
         for path in reachable {
@@ -1161,24 +1254,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         census: &[CensusEntry],
         content_bodies: &[PathBuf],
     ) -> Result<Vec<Finding>> {
-        let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
-        reachable.insert(link::normalize(start));
-        // Prose bodies of separated nodes are linked via `content`, not a census
-        // edge — reach them so a separated workspace's bodies are not orphans.
-        reachable.extend(content_bodies.iter().cloned());
-        for entry in census {
-            match &entry.resolution {
-                Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                    reachable.insert(p.clone());
-                }
-                // The link is by the wrong case, but the file it *means* is on
-                // disk and thereby linked — reach the real name, not the miss.
-                Resolution::CaseMismatch { got, actual } => {
-                    reachable.insert(got.with_file_name(actual));
-                }
-                _ => {}
-            }
-        }
+        let reachable = reachable_set(start, census, content_bodies);
         // Scan only the directories the reachable set occupies (their direct
         // children), never descending into unreached subdirectories.
         let reached_dirs = Self::reached_dirs(&reachable);
@@ -1627,6 +1703,14 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     fig::Value::Str(hash.clone()),
                 )?;
                 cs.write(doc, updated);
+            }
+            // Rebuild the index from its own directory. Wholesale rather than a
+            // surgical edit, because the index is derived: the events are the
+            // authority, so the repaired file is byte-identical to one a fresh
+            // capture would have written.
+            Fix::RebuildHistoryIndex { index } => {
+                let text = self.history_index_text(index).await?;
+                cs.write(index, text);
             }
         }
         self.commit(cs).await

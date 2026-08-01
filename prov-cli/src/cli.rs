@@ -545,6 +545,36 @@ pub(crate) enum Command {
         #[arg(long)]
         zip: bool,
     },
+    /// Capture the workspace into the history store: hash every reachable file,
+    /// park any bytes not already stored, and write one immutable event
+    /// document recording the complete file set at this moment.
+    ///
+    /// The safety net for damage an external sync transport does to the
+    /// workspace's *structure* — a rename, move or delete touches several files
+    /// at once, and a transport reconciling bytes has no idea about prov's
+    /// graph. An event is a consistent cut across every file it captured
+    /// together, so a later restore puts the whole set back rather than one
+    /// file's bytes.
+    ///
+    /// Adds files only (plus the current month's rebuildable index), so two
+    /// devices capturing concurrently never conflict. If nothing has changed
+    /// since the newest event, nothing is written.
+    ///
+    /// Requires `history: manual` in the workspace config. Leave it off when
+    /// the transport is git — git already keeps every pre-image.
+    HistoryCapture {
+        /// A short note recorded on the event and slugged into its id
+        /// (`pre-sync`, `nightly`, `pre-migration`). Free-form.
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+    },
+    /// List the captures in the history store, newest first: id, timestamp,
+    /// label, and how many files changed since each event's parent.
+    ///
+    /// Works regardless of the `history` config axis — recovery must never be
+    /// gated behind re-enabling a setting, least of all on the machine that just
+    /// suffered the damage.
+    HistoryList,
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

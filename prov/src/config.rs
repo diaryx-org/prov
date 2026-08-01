@@ -349,6 +349,62 @@ impl Fixity {
     }
 }
 
+/// Whether the workspace keeps a **history store** — one immutable event
+/// document per capture, plus content-addressed pre-image blobs — and how a
+/// capture is triggered.
+///
+/// The feature is a safety net for *structural* damage introduced by an external
+/// sync transport: a rename, move or delete touches several files at once, and a
+/// transport reconciling bytes with no idea about prov's graph can produce a
+/// clean-looking merge that is semantically broken. An event is a consistent cut
+/// across every file it captured together, so restoring one puts the set back.
+///
+/// Default **off**, unlike `recycle_bin`: history adds ongoing storage the user
+/// has not asked for, and a manual-only trigger buys nothing until the user is in
+/// the habit anyway. It is also the wrong tool when the transport is **git**,
+/// which already stores every pre-image, dedupes by content, and reconciles
+/// concurrent histories — the feature earns its keep on Dropbox, Syncthing,
+/// iCloud, a synced network share.
+///
+/// `off` gates *capture* only. The read and recovery verbs work regardless:
+/// recovery must never be gated behind re-enabling a setting, least of all on the
+/// machine that just suffered the damage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum History {
+    /// No history store is maintained (`off`, the default). `history-capture`
+    /// refuses; an existing store is still readable, restorable and validated.
+    #[default]
+    Off,
+    /// Captures happen when the user asks (`manual`) — `prov history-capture`,
+    /// run by hand or by a pre-sync script the user wires up themselves. prov
+    /// does not run the sync, so there is no event for it to hook.
+    Manual,
+}
+
+impl History {
+    /// Whether `history-capture` is permitted to write a new event.
+    pub fn captures(self) -> bool {
+        matches!(self, History::Manual)
+    }
+
+    /// Parse the `history` config spelling; unknown → `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+
+    /// The `history` config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 /// The workspace-wide policy a config declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceConfig {
@@ -411,6 +467,10 @@ pub struct WorkspaceConfig {
     /// How far content-checksum (fixity) coverage extends — attachments only (the
     /// default), attachments plus document bodies, or off.
     pub fixity: Fixity,
+    /// Whether the workspace keeps a **history store** of captured pre-images —
+    /// the safety net for structural damage an external sync transport introduces.
+    /// Off by default; see [`History`].
+    pub history: History,
     /// The frontmatter field `prov edit` stamps with the current time when a
     /// document's content changes — the machine-maintained "last updated" field.
     /// Empty (the default) disables it. The *name* is yours (`updated`,
@@ -442,6 +502,7 @@ impl Default for WorkspaceConfig {
             content_format: ContentFormat::Markdown,
             recycle_bin: true,
             fixity: Fixity::Payloads,
+            history: History::Off,
             updated: String::new(),
         }
     }
@@ -721,6 +782,13 @@ impl WorkspaceConfig {
         if let Some(v) = meta.get("recycle_bin").and_then(Value::as_bool) {
             self.recycle_bin = v;
         }
+        if let Some(v) = meta
+            .get("history")
+            .and_then(Value::as_str)
+            .and_then(History::from_config_str)
+        {
+            self.history = v;
+        }
     }
 
     /// A fresh config with `meta`'s recognized keys applied over the defaults.
@@ -857,6 +925,10 @@ impl WorkspaceConfig {
             Value::String(self.fixity.as_config_str().into()),
         );
         map.insert("recycle_bin".into(), Value::Bool(self.recycle_bin));
+        map.insert(
+            "history".into(),
+            Value::String(self.history.as_config_str().into()),
+        );
         map
     }
 }
@@ -913,6 +985,7 @@ const TOP_KEYS: &[&str] = &[
     "identity",
     "fixity",
     "recycle_bin",
+    "history",
 ];
 /// Keys inside the `metadata:` block.
 const METADATA_KEYS: &[&str] = &["format", "embed"];
@@ -988,6 +1061,15 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                 );
             }
             "recycle_bin" => bool_axis(&mut issues, key, value),
+            "history" => {
+                enum_axis(
+                    &mut issues,
+                    key,
+                    value,
+                    |s| History::from_config_str(s).is_some(),
+                    &["off", "manual"],
+                );
+            }
             "updated" => {} // free-form field name
             "spanning" => {
                 // A relation name — must be a string; its coherence with the
@@ -1532,6 +1614,8 @@ mod tests {
             content_format: ContentFormat::Djot,
             recycle_bin: false,
             fixity: Fixity::Full,
+            // Non-default, so the round trip actually exercises the axis.
+            history: History::Manual,
             updated: "modified".to_string(),
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));

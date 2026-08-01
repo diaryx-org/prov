@@ -54,13 +54,13 @@ nothing implicit.)
 
 ### Pointers stay top-level
 
-The `config`, `registry`, and `recycle_bin` **pointer relations** are *not*
-policy — they are structural links the root declares so the workspace unfolds
-from its own root (DESIGN §6). They remain at the root's top level alongside
-`part_of`/`contents`, resolved by the same link machinery. This also resolves the
-`recycle_bin` name clash by location: the top-level `recycle_bin` is a *pointer*
-(a path to the bin index); the `prov:`-block `recycle_bin` is a *policy* (a
-bool).
+The `config`, `registry`, `recycle_bin`, and `history` **pointer relations** are
+*not* policy — they are structural links the root declares so the workspace
+unfolds from its own root (DESIGN §6). They remain at the root's top level
+alongside `part_of`/`contents`, resolved by the same link machinery. This also
+resolves the `recycle_bin` and `history` name clashes by location: the top-level
+key is a *pointer* (a path to the bin index / the history store index); the
+`prov:`-block key of the same name is a *policy* (a bool / an enum).
 
 ```yaml
 title: My Vault
@@ -68,6 +68,7 @@ author: adammharris
 config: prov.yaml             # pointer (structure) — top level
 registry: registry.yaml           # pointer — top level
 recycle_bin: recyclebin/index.md  # pointer (a path) — top level
+history: history/index.md         # pointer (a path) — top level
 tags: [personal]                  # user field — prov never reads it
 prov:                         # policy namespace (description home)
   spec: 1
@@ -117,13 +118,14 @@ prov:
   identity: lazy              # none (a.k.a. off) | lazy | eager
   fixity: all                # off | attachments | all
   recycle_bin: true          # bool — route delete to the recoverable bin
+  history: off               # off | manual — keep captured pre-images of the workspace
 ```
 
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `updated: ""`, `identity: lazy`, `fixity: attachments`,
-`recycle_bin: true`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
+`recycle_bin: true`, `history: off`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content). The `spanning`, relation-definition
@@ -206,7 +208,8 @@ applies to path targets only.
 | `fixity: full` | `fixity: all` | attachments + bodies |
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
 | — | `spec: 1` | new version marker |
-| `config`/`registry`/`recycle_bin` pointers | unchanged, top-level | structure, not policy |
+| `config`/`registry`/`recycle_bin`/`history` pointers | unchanged, top-level | structure, not policy |
+| — | `history: off` | new axis — captured pre-images, off by default |
 
 ## Linting (`check`)
 

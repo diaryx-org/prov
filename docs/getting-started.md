@@ -454,6 +454,7 @@ updated: ''
 identity: lazy
 fixity: attachments
 recycle_bin: true
+history: off
 $ prov config references.target id
 set references.target = id in prov.yaml
 ```
@@ -473,6 +474,7 @@ The knobs (dotted keys address nested axes):
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
 | `fixity`                  | `off`, `attachments`, `all`                                    | how far content-checksum coverage extends        |
 | `recycle_bin`             | `true`/`false`                                                 | route a delete to the recoverable bin            |
+| `history`                 | `off`, `manual`                                                | keep captured pre-images (`prov history-capture`) |
 | `updated`                 | *a field name*                                                 | the machine-maintained "last updated" field      |
 
 The two `init` identity prompts map onto these keys: **Identity** sets

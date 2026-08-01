@@ -182,6 +182,8 @@ fn main() -> ExitCode {
             home,
         } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
+        Command::HistoryCapture { label } => cmd_history_capture(label.as_deref()),
+        Command::HistoryList => cmd_history_list(),
     };
     match result {
         Ok(code) => code,
@@ -1633,6 +1635,115 @@ fn cmd_empty_bin() -> CmdResult {
     persist(&ctx, &mut ws)?;
     // A bulk purge yields no object to name — narration only, stdout stays empty.
     eprintln!("purged {purged} document(s) from the recycle bin");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Capture the workspace into the history store.
+///
+/// Gated on the `history` config axis: capture is the one verb `off` refuses,
+/// because it is the one that *grows* the store. Everything that reads or
+/// recovers works regardless.
+///
+/// Ends by running `check` and *printing* — never blocking on — its findings. A
+/// capture of a known-broken workspace is still useful (it is a pre-image of
+/// whatever is there), but a silently-dirty "safe rollback point" is false
+/// confidence.
+fn cmd_history_capture(label: Option<&str>) -> CmdResult {
+    let ctx = find_root()?;
+    if !ctx.config.history.captures() {
+        return Err("history is off for this workspace — enable it with \
+             `prov config history manual`\n\
+             \n  Leave it off if you sync with git: git already stores every \
+             pre-image, dedupes by\n  content, and reconciles concurrent \
+             histories. History earns its keep on Dropbox,\n  Syncthing, iCloud \
+             and synced network shares, where the transport keeps none."
+            .into());
+    }
+    let mut ws = workspace(&ctx)?;
+    let outcome = block_on(ws.history_capture(&ctx.root_doc, &now_rfc3339(), label))?;
+    persist(&ctx, &mut ws)?;
+
+    match outcome {
+        prov::Captured::Unchanged { id } => {
+            println!("{id}");
+            eprintln!("nothing has changed since {id} — no event written");
+        }
+        prov::Captured::Written {
+            id,
+            files,
+            blobs,
+            diff,
+        } => {
+            // The id to stdout, so `prov history-capture | ...` is scriptable.
+            println!("{id}");
+            let changes = match diff {
+                Some((changed, removed)) => {
+                    format!(", {changed} changed and {removed} removed since the previous event")
+                }
+                None => String::new(),
+            };
+            eprintln!("captured {files} file(s){changes}; parked {blobs} new blob(s)");
+        }
+    }
+
+    // Symmetric with how a restore ends: say what state was actually captured.
+    let findings = block_on(ws.check(&ctx.root_doc))?;
+    if !findings.is_empty() {
+        eprintln!(
+            "note: the workspace has {} outstanding check finding(s) — this event \
+             captured that state, not a clean one. Run `prov check` for details.",
+            findings.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// List the captures in the history store, newest first.
+///
+/// Works regardless of the `history` axis, and reads the shard *directories*
+/// rather than the index documents — the indexes are a rebuildable cache, so a
+/// mangled one must not be able to hide an event that is sitting right there.
+fn cmd_history_list() -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+    let events = block_on(ws.history_list(&ctx.root_doc))?;
+    if events.is_empty() {
+        eprintln!("no history events (capture one with `prov history-capture`)");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // A parent claimed by more than one event is a fork: two devices captured
+    // concurrently. Shown rather than silently flattened.
+    let mut children: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for event in &events {
+        if let Some(parent) = &event.parent {
+            *children.entry(parent.as_str()).or_default() += 1;
+        }
+    }
+    let by_id: std::collections::BTreeMap<&str, &prov::Event> =
+        events.iter().map(|e| (e.id.as_str(), e)).collect();
+
+    for event in events.iter().rev() {
+        let counts = event
+            .parent
+            .as_deref()
+            .and_then(|parent| by_id.get(parent))
+            .map(|previous| {
+                let (changed, removed) = event.diff(previous);
+                format!("  {changed} changed, {removed} removed")
+            })
+            .unwrap_or_default();
+        let fork = match event.parent.as_deref() {
+            Some(parent) if children.get(parent).copied().unwrap_or(0) > 1 => "  (fork)",
+            _ => "",
+        };
+        println!(
+            "{}  {}  {} file(s){counts}{fork}",
+            event.id,
+            event.describe(),
+            event.files.len()
+        );
+    }
+    eprintln!("{} event(s)", events.len());
     Ok(ExitCode::SUCCESS)
 }
 
