@@ -104,7 +104,7 @@ One document per capture. Frontmatter:
 | Key | Required | Meaning |
 |---|---|---|
 | `part_of` | yes | Spanning inverse to the month shard index. |
-| `created` | yes | RFC 3339 UTC timestamp of the capture. |
+| `created` | yes | RFC 3339 UTC timestamp of the capture, to **microsecond** precision (§3.2). |
 | `trigger` | yes | How the capture was invoked. `manual` is the only Phase 0 value. |
 | `label` | no | The `--label` text verbatim (the *slug* of it appears in the id). |
 | `parent` | no | The id of the newest event that existed locally at capture time. |
@@ -113,7 +113,7 @@ One document per capture. Frontmatter:
 ```markdown
 ---
 part_of: '[July 2026](index.md)'
-created: 2026-07-31T09:15:22Z
+created: 2026-07-31T09:15:22.481903Z
 trigger: manual
 label: pre-sync
 parent: 2026-07-30-1804-nightly-8c1d55aa
@@ -153,6 +153,41 @@ the UTF-8 path string. One entry per captured file:
 A path absent from the manifest was not in the capture set. There is no
 `removed:` list: omission *is* deletion, and "what changed" is computed at
 display time by comparing a manifest with its predecessor's.
+
+### 3.2 `created`, and how two events are ordered
+
+`created` is written with **exactly six fractional digits** — microseconds, never
+trimmed:
+
+```
+2026-07-31T09:15:22.481903Z
+```
+
+Sub-second precision exists for one reason: so that two captures inside the same
+second can be *ordered*. Everything that reads the store in capture order —
+`history-list`, `history-log`, and a capture choosing the `parent` it records —
+takes the maximum by `(created, id)` (§6), and at second granularity two captures
+in one second tie and fall through to the id, whose middle is the label slug. The
+observable result was an event ordering alphabetically by label and a
+`history-list` reporting forks that never happened.
+
+Two rules follow, and a reader that skips either gets the order wrong:
+
+- **Fixed width, always.** A trimmed fraction defeats the point: `…10.1Z` against
+  `…10.12Z` compares `Z` (0x5A) with `2` (0x32) at the second fraction digit, so
+  the shorter one sorts later. Writers emit six digits or none.
+- **Normalize before comparing.** A store keeps every precision it was ever
+  written at — event documents are immutable, and sync interleaves devices rather
+  than separating them by version — so second-granularity stamps and microsecond
+  ones coexist permanently. Compared raw they invert, because `Z` (0x5A) sorts
+  after `.` (0x2E) and `…10Z` would land *after* `…10.500000Z` inside its own
+  second. A reader pads the fraction to six digits before comparing; a stamp not
+  in `…Z` form is left alone. Nothing is rewritten, which is what makes this a
+  widening of the format rather than a break in it.
+
+The id's `HHMM` head is unaffected: it reads the calendar head only, so ids stay
+minute-granular (§4) and the digest suffix is what tells two captures in one
+minute apart.
 
 ## 4. Event ids
 
@@ -263,7 +298,11 @@ prints that event's id and stops. Otherwise a git hook or a habitual user fills
 the log with duplicates.
 
 The **newest existing event** is the maximum by `(created, id)` over every
-event in the store. That is also what a new event records as its `parent`.
+event in the store, comparing `created` **normalized** to six fractional
+digits (§3.2). That is also what a new event records as its `parent`. The id
+tiebreak survives for the genuine tie — two devices landing on the same
+microsecond — where it is arbitrary but deterministic, which is all an
+ordering owes a fork.
 
 ## 7. Validation
 
@@ -341,8 +380,8 @@ from loss. A restore reports the same set rather than computing its own.
 
 ### 10.2 `history-log <target>` — one document's lineage
 
-Pull the subject's row out of each manifest in **capture order** (`created`, then
-id) and keep only the events where that row changed. Nothing in the store is
+Pull the subject's row out of each manifest in **capture order** (`created`
+normalized per §3.2, then id) and keep only the events where that row changed. Nothing in the store is
 keyed by document: this is a derived query over the `id` column, at the cost of
 one pass over every event.
 

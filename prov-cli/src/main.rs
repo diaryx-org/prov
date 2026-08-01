@@ -797,26 +797,41 @@ fn cmd_edit(file: &Path) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The current time as an RFC 3339 UTC timestamp (`2026-07-16T14:30:00Z`) — the
-/// machine-standard value prov stores for provenance fields like `updated`
-/// (DESIGN §2). Hand-rolled from the system clock rather than pulling in a date
-/// crate, in the spirit of the dependency-free SHA-256 and journal checksum. A
-/// pre-epoch clock (only a badly-wrong system) formats as the epoch.
+/// The current time as an RFC 3339 UTC timestamp with microsecond precision
+/// (`2026-07-16T14:30:00.123456Z`) — the machine-standard value prov stores for
+/// provenance fields like `updated` and a history event's `created` (DESIGN §2:
+/// prov-maintained ⟹ prov owns the format, and human-friendly rendering is a
+/// viewer's job).
+///
+/// **This is the workspace's only clock.** Every timestamp prov writes comes from
+/// here, which is what keeps one decision about precision from having to be
+/// remembered at each site.
+///
+/// Hand-rolled from the system clock rather than pulling in a date crate, in the
+/// spirit of the dependency-free SHA-256 and journal checksum. A pre-epoch clock
+/// (only a badly-wrong system) formats as the epoch.
 fn now_rfc3339() -> String {
-    let secs = std::time::SystemTime::now()
+    let since = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    secs_to_rfc3339(secs)
+        .unwrap_or_default();
+    rfc3339(since.as_secs(), since.subsec_micros())
 }
 
-/// Format seconds-since-Unix-epoch as an RFC 3339 UTC timestamp. Split out from
-/// [`now_rfc3339`] so the calendar arithmetic is testable without a clock.
-fn secs_to_rfc3339(secs: u64) -> String {
+/// Format an instant since the Unix epoch as an RFC 3339 UTC timestamp. Split out
+/// from [`now_rfc3339`] so the calendar arithmetic is testable without a clock.
+///
+/// The fraction is **always six digits, never trimmed**. Sub-second precision
+/// exists so that two events in the same second can be *ordered*, and a variable
+/// number of digits would defeat exactly that: `…10.1Z` against `…10.12Z`
+/// compares `Z` (0x5A) with `2` (0x32) at the second fraction digit, so the
+/// shorter one sorts later. Fixed width keeps a plain string comparison a correct
+/// total order. (Timestamps written before this precision existed carry no
+/// fraction at all; readers normalize — see `prov::history`.)
+fn rfc3339(secs: u64, micros: u32) -> String {
     let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     let (year, month, day) = civil_from_days(days);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{micros:06}Z")
 }
 
 /// Days since 1970-01-01 → (year, month, day), by Howard Hinnant's civil-calendar
@@ -2696,16 +2711,45 @@ fn cmd_resolve(id: &str) -> CmdResult {
 
 #[cfg(test)]
 mod tests {
-    use super::secs_to_rfc3339;
+    use super::{now_rfc3339, rfc3339};
 
     #[test]
     fn rfc3339_matches_known_instants() {
         // Cross-checked against `date -u -r <secs>` / any RFC 3339 reference.
-        assert_eq!(secs_to_rfc3339(0), "1970-01-01T00:00:00Z");
-        assert_eq!(secs_to_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
+        assert_eq!(rfc3339(0, 0), "1970-01-01T00:00:00.000000Z");
+        assert_eq!(rfc3339(1_700_000_000, 0), "2023-11-14T22:13:20.000000Z");
         // A leap day, to exercise the calendar arithmetic.
-        assert_eq!(secs_to_rfc3339(1_582_934_400), "2020-02-29T00:00:00Z");
+        assert_eq!(rfc3339(1_582_934_400, 0), "2020-02-29T00:00:00.000000Z");
         // End-of-year boundary.
-        assert_eq!(secs_to_rfc3339(1_609_459_199), "2020-12-31T23:59:59Z");
+        assert_eq!(rfc3339(1_609_459_199, 0), "2020-12-31T23:59:59.000000Z");
+    }
+
+    #[test]
+    fn the_fraction_is_six_digits_whatever_the_value() {
+        // Fixed width is the whole point: sub-second precision exists so two
+        // instants in the same second can be *ordered*, and a trimmed fraction
+        // breaks that. A leading-zero microsecond count must not lose its zeros,
+        // and a whole-number one must not lose its trailing ones.
+        assert_eq!(rfc3339(0, 1), "1970-01-01T00:00:00.000001Z");
+        assert_eq!(rfc3339(0, 100_000), "1970-01-01T00:00:00.100000Z");
+        assert_eq!(rfc3339(0, 999_999), "1970-01-01T00:00:00.999999Z");
+
+        // …and with that, a plain string comparison is a correct total order.
+        let mut stamps = [rfc3339(0, 120_000), rfc3339(0, 100_000), rfc3339(0, 99_999)];
+        stamps.sort();
+        assert_eq!(
+            stamps,
+            [rfc3339(0, 99_999), rfc3339(0, 100_000), rfc3339(0, 120_000)]
+        );
+    }
+
+    #[test]
+    fn the_clock_is_microsecond_precise_and_never_goes_backwards() {
+        // The one assertion about the real clock: the format it produces is the
+        // one the store's ordering rests on.
+        let now = now_rfc3339();
+        assert_eq!(now.len(), "2026-07-16T14:30:00.123456Z".len(), "{now}");
+        assert!(now.ends_with('Z') && now.as_bytes()[19] == b'.', "{now}");
+        assert!(now_rfc3339() >= now, "the clock must not run backwards");
     }
 }

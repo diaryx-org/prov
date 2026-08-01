@@ -493,8 +493,54 @@ fn mint_id(
     })
 }
 
+/// How many fractional digits a `created` written by this version carries. Fixed,
+/// never trimmed — see [`comparable`].
+const FRACTION_DIGITS: usize = 6;
+
+/// A `created` value in the form two events can be **ordered** by, whatever
+/// precision each was written at.
+///
+/// A store outlives any one version of prov, and event documents are immutable,
+/// so a store holds second-granularity timestamps (everything written before
+/// microsecond precision existed) alongside sub-second ones — permanently, and
+/// interleaved by sync rather than neatly separated by date. Comparing those as
+/// raw strings is wrong in precisely the case that matters: `Z` (0x5A) sorts
+/// after `.` (0x2E), so `…10Z` would order *after* `…10.500000Z` inside the same
+/// second, inverting the two events a finer clock was introduced to tell apart.
+///
+/// Padding the fraction to a fixed width restores the total order without parsing
+/// a calendar and without rewriting a single event — which matters, because
+/// rewriting one is the operation this format does not have.
+///
+/// A stamp not in `…Z` form is returned untouched. prov only ever writes `Z`, and
+/// an offset form is already outside the order a string comparison can give;
+/// mangling it here would only hide that.
+fn comparable(created: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let Some(rest) = created.strip_suffix('Z') else {
+        return Cow::Borrowed(created);
+    };
+    let (whole, fraction) = match rest.split_once('.') {
+        Some((whole, fraction)) => (whole, fraction),
+        None => (rest, ""),
+    };
+    if fraction.len() == FRACTION_DIGITS {
+        return Cow::Borrowed(created);
+    }
+    let mut padded = fraction.to_string();
+    padded.truncate(FRACTION_DIGITS);
+    while padded.len() < FRACTION_DIGITS {
+        padded.push('0');
+    }
+    Cow::Owned(format!("{whole}.{padded}Z"))
+}
+
 /// `YYYY-MM-DD-HHMM` from an RFC 3339 UTC timestamp — the human-readable head of
 /// an event id. Full precision stays in the document's `created`.
+///
+/// Reads only the calendar head, so a fractional-second suffix passes through
+/// untouched: event ids stay minute-granular (§4 — they are for humans), and the
+/// eight-hex content digest is what tells two captures in one minute apart.
 fn id_stamp(created: &str) -> Result<String> {
     let bad = || Error::Structure(format!("`{created}` is not an RFC 3339 UTC timestamp"));
     let bytes = created.as_bytes();
@@ -773,7 +819,15 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 }
             }
         }
-        events.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
+        // Normalized, not raw: a store mixes the precisions of every version that
+        // ever wrote into it (see [`comparable`]). The id tiebreak survives for
+        // the genuine tie — two devices landing on the same microsecond — where it
+        // is arbitrary but deterministic, which is all an ordering owes a fork.
+        events.sort_by(|a, b| {
+            comparable(&a.created)
+                .cmp(&comparable(&b.created))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         Ok(events)
     }
 
@@ -1935,6 +1989,54 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_of_two_precisions_still_order_against_each_other() {
+        // The migration hazard, stated as an assertion. A store keeps every
+        // precision it was ever written at, because events are immutable and sync
+        // interleaves devices — so the comparison, not the clock, is what has to
+        // make them one order.
+        let coarse = "2026-07-31T09:15:10Z";
+        let fine = "2026-07-31T09:15:10.500000Z";
+        assert!(
+            coarse > fine,
+            "the raw strings really are backwards — `Z` sorts after `.`"
+        );
+        assert!(
+            comparable(coarse) < comparable(fine),
+            "normalized, 09:15:10.000000 precedes 09:15:10.500000"
+        );
+
+        // Padding is to a fixed width, from either side, so a stamp written by
+        // some other tool at millisecond or nanosecond precision still lands in
+        // the right place.
+        assert_eq!(
+            comparable("2026-07-31T09:15:10Z"),
+            "2026-07-31T09:15:10.000000Z"
+        );
+        assert_eq!(
+            comparable("2026-07-31T09:15:10.5Z"),
+            "2026-07-31T09:15:10.500000Z"
+        );
+        assert_eq!(
+            comparable("2026-07-31T09:15:10.123456789Z"),
+            "2026-07-31T09:15:10.123456Z"
+        );
+        // Already canonical: borrowed, not rebuilt.
+        assert!(matches!(
+            comparable("2026-07-31T09:15:10.123456Z"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // Not a `Z` stamp: left exactly as found rather than quietly mangled.
+        assert_eq!(
+            comparable("2026-07-31T09:15:10+01:00"),
+            "2026-07-31T09:15:10+01:00"
+        );
+
+        // And the id is unaffected: it reads the calendar head only, so the
+        // fraction changes nothing about where an event lives or what it is called.
+        assert_eq!(id_stamp(coarse).unwrap(), id_stamp(fine).unwrap());
+    }
+
+    #[test]
     fn diff_counts_changed_and_removed_against_the_previous_manifest() {
         let previous = Event {
             id: "p".into(),
@@ -2149,6 +2251,77 @@ mod tests {
         // And the parked blob is those same bytes, so a restore is byte-exact.
         let blob = blob_path(Path::new("history/index.md"), &root_row.hash).unwrap();
         assert_eq!(read(&dir, blob.to_str().unwrap()), read(&dir, "index.md"));
+    }
+
+    #[test]
+    fn same_second_captures_chain_in_the_order_they_happened() {
+        // The bug microsecond precision exists to close: with `created` pinned to
+        // the second, two captures in one second tied, the sort fell through to
+        // the id — whose *middle* is the label slug — and every later event
+        // recorded the alphabetically-last label as its `parent`, so
+        // `history-list` reported forks that never happened.
+        let dir = seed("ordering");
+        let stamps = [
+            ("2026-07-31T09:15:10.000000Z", "zulu"),
+            ("2026-07-31T09:15:10.200000Z", "alpha"),
+            ("2026-07-31T09:15:10.900000Z", "mike"),
+        ];
+        for (i, (now, label)) in stamps.iter().enumerate() {
+            // Each capture must change something, or the second one writes nothing.
+            write(
+                &dir,
+                "notes/a.md",
+                &format!("---\ntitle: A\npart_of: '../index.md'\n---\nrevision {i}\n"),
+            );
+            capture(&dir, now, Some(label));
+        }
+
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.label.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("zulu"), Some("alpha"), Some("mike")],
+            "capture order, not alphabetical order by label"
+        );
+        // A chain, not a fan: each event's parent is the one actually before it,
+        // which is what makes a real fork mean something in `history-list`.
+        assert_eq!(events[0].parent, None);
+        assert_eq!(events[1].parent.as_deref(), Some(events[0].id.as_str()));
+        assert_eq!(events[2].parent.as_deref(), Some(events[1].id.as_str()));
+    }
+
+    #[test]
+    fn an_event_written_before_sub_second_precision_keeps_its_place() {
+        // The mixed store, end to end: an event carrying a second-granularity
+        // `created` (every event written before this precision existed) against
+        // ones that carry a fraction. Compared raw, the old event would sort last
+        // in its second and the newest-event lookup would pick it — so a later
+        // capture would record a *superseded* event as its parent.
+        let dir = seed("ordering-mixed");
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nfirst\n",
+        );
+        capture(&dir, "2026-07-31T09:15:10Z", Some("legacy"));
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nsecond\n",
+        );
+        capture(&dir, "2026-07-31T09:15:10.500000Z", Some("current"));
+
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.label.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("legacy"), Some("current")]
+        );
+        assert_eq!(events[1].parent.as_deref(), Some(events[0].id.as_str()));
     }
 
     #[test]
