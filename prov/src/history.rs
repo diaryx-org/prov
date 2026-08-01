@@ -802,8 +802,15 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if !exists {
             return Ok(Vec::new());
         }
-        let ext = self.history_ext(root_doc);
-        let events_root = store_dir(&store_index).join(EVENTS_DIR);
+        self.history_events_in(&store_index, self.history_ext(root_doc))
+            .await
+    }
+
+    /// [`history_list`](Self::history_list) against a store index already in hand —
+    /// so a pass that has resolved the store once does not resolve it again
+    /// through the root.
+    async fn history_events_in(&self, store_index: &Path, ext: &str) -> Result<Vec<Event>> {
+        let events_root = store_dir(store_index).join(EVENTS_DIR);
         let mut events = Vec::new();
         for year in self.subdirs(&events_root).await? {
             for month in self.subdirs(&events_root.join(&year)).await? {
@@ -1635,6 +1642,97 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .await?;
             }
         }
+        findings.extend(self.history_blob_findings(&store_index, ext).await?);
+        Ok(findings)
+    }
+
+    /// The two blob findings: what the manifests promise and the store cannot
+    /// deliver, and what the store holds that no manifest promises.
+    ///
+    /// Both fall out of one **mark-and-sweep** — union every event's `files`
+    /// hashes, compare against the blob listing — which is what full manifests
+    /// buy. Under a delta log the same question would require folding ancestry,
+    /// and could not be answered at all for an event whose ancestors had not
+    /// arrived.
+    ///
+    /// The honest cost: this parses every event document in the store, on every
+    /// `check`. That is the price of validating a store whose authority is
+    /// distributed across immutable documents rather than concentrated in an
+    /// index — the same price [`history_log`](Self::history_log) pays, and for the
+    /// same reason. Bounded by event count × manifest size.
+    async fn history_blob_findings(&self, store_index: &Path, ext: &str) -> Result<Vec<Finding>> {
+        // hash → the captured paths that named it, across every event. A manifest
+        // routinely names one blob from several paths, and one blob is one thing
+        // to put back, so the report is keyed by hash rather than by event.
+        let mut referenced: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+        for event in self.history_events_in(store_index, ext).await? {
+            for file in event.files {
+                referenced.entry(file.hash).or_default().insert(file.path);
+            }
+        }
+
+        let mut findings = Vec::new();
+        let mut promised: BTreeSet<PathBuf> = BTreeSet::new();
+        for (hash, paths) in referenced {
+            let missing = Finding::HistoryBlobMissing {
+                store: store_index.to_path_buf(),
+                hash: hash.clone(),
+                paths: paths.into_iter().collect(),
+            };
+            // A digest prov could never have parked (a foreign scheme, a mangled
+            // string) names no blob that could be found, so it reports as missing
+            // rather than failing the whole check — a foreign event stays legible,
+            // the same call `history_missing_blobs` makes.
+            let Ok(blob) = blob_path(store_index, &hash) else {
+                findings.push(missing);
+                continue;
+            };
+            // Recorded whether or not the bytes are there: this is the set of
+            // paths the manifests *claim*, and a blob is an orphan by not being
+            // claimed, not by being absent.
+            promised.insert(blob.clone());
+            if !self.fs().try_exists(&self.root().join(&blob)).await? {
+                findings.push(missing);
+            }
+        }
+
+        let blobs_root = store_dir(store_index).join(BLOBS_DIR);
+        let mut orphaned = Vec::new();
+        // The top level as well as each `<2 hex>` shard: a transport's conflict
+        // copy of a blob can land at either, and cruft in the store is exactly
+        // what this is for. Anything non-hidden that no manifest claims counts —
+        // a conflict copy would never match a hash by construction.
+        let mut dirs = vec![blobs_root.clone()];
+        dirs.extend(
+            self.subdirs(&blobs_root)
+                .await?
+                .into_iter()
+                .map(|prefix| blobs_root.join(prefix)),
+        );
+        for dir in dirs {
+            let Ok(entries) = self.fs().read_dir(&self.root().join(&dir)).await else {
+                continue;
+            };
+            for entry in entries {
+                let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if !entry.file_type().is_file() || name.starts_with('.') {
+                    continue;
+                }
+                let path = dir.join(name);
+                if !promised.contains(&path) {
+                    orphaned.push(path);
+                }
+            }
+        }
+        if !orphaned.is_empty() {
+            orphaned.sort();
+            findings.push(Finding::HistoryBlobOrphaned {
+                store: store_index.to_path_buf(),
+                blobs: orphaned,
+            });
+        }
         Ok(findings)
     }
 
@@ -2346,6 +2444,132 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a capture must leave the workspace valid: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn lost_bytes_are_reported_once_per_hash_however_many_events_named_them() {
+        let dir = seed("blob-missing");
+        capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+        // A second capture that changes one file: everything else keeps the blob
+        // the first capture parked, so one blob is now named by two manifests.
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n",
+        );
+        capture(&dir, "2026-07-31T10:00:00.000000Z", None);
+
+        let payload = crate::fixity::digest(b"JPEGBYTES");
+        std::fs::remove_file(dir.join(blob_path(Path::new("history/index.md"), &payload).unwrap()))
+            .unwrap();
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::HistoryBlobMissing {
+                store: PathBuf::from("history/index.md"),
+                hash: payload.clone(),
+                paths: vec![PathBuf::from("notes/photo.jpg")],
+            }],
+            "one lost blob is one thing to put back, not one report per event"
+        );
+        // Both causes have to be readable in the text — a store that syncs is in
+        // this state routinely, and a finding that cries corruption at a
+        // self-resolving state is one people learn to ignore.
+        let text = findings[0].to_string();
+        assert!(
+            text.contains("has not arrived yet") && text.contains("gone"),
+            "{text}"
+        );
+        assert!(text.contains("notes/photo.jpg"), "{text}");
+
+        // Deleting the blob left nothing behind, so there is no orphan to pair
+        // with it: the two findings answer opposite questions.
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryBlobOrphaned { .. }))
+        );
+    }
+
+    #[test]
+    fn a_manifest_row_prov_could_never_have_parked_reports_rather_than_failing() {
+        // A foreign event has to stay legible: `check` reads what arrived from
+        // another device, and a digest in a scheme this build does not know is a
+        // report, not a parse error that takes the whole run down.
+        let dir = seed("blob-foreign");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:00:00.000000Z", None)
+        else {
+            panic!("the first capture must write an event");
+        };
+        let event = event_path(Path::new("history/index.md"), &id, "md").unwrap();
+        let text = read(&dir, event.to_str().unwrap());
+        write(
+            &dir,
+            event.to_str().unwrap(),
+            &text.replace(
+                &crate::fixity::digest(b"JPEGBYTES"),
+                "blake3:beefbeefbeefbeef",
+            ),
+        );
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        let missing: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::HistoryBlobMissing { .. }))
+            .collect();
+        assert_eq!(missing.len(), 1, "{findings:?}");
+        assert!(
+            missing[0].to_string().contains("blake3:"),
+            "{:?}",
+            missing[0]
+        );
+        // …and the blob it no longer names is now unreferenced, which is the
+        // other half of the same sweep.
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryBlobOrphaned { .. })),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn bytes_no_manifest_claims_are_reported_as_orphaned() {
+        let dir = seed("blob-orphan");
+        capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+        assert!(
+            block_on(ws(&dir).check(Path::new("index.md")))
+                .unwrap()
+                .is_empty(),
+            "a fresh capture claims every blob it parked"
+        );
+
+        // Cruft of the two shapes a transport actually leaves: a conflict copy
+        // beside a real blob, and a stray at the top of the store. Neither could
+        // ever match a hash, which is the point — this is not a digest check.
+        write(&dir, "history/blobs/ab/sync-conflict-20260731", "junk");
+        write(&dir, "history/blobs/stray.txt", "junk");
+        // A hidden file is transport bookkeeping, not cruft prov should name.
+        write(&dir, "history/blobs/.DS_Store", "junk");
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::HistoryBlobOrphaned {
+                store: PathBuf::from("history/index.md"),
+                blobs: vec![
+                    PathBuf::from("history/blobs/ab/sync-conflict-20260731"),
+                    PathBuf::from("history/blobs/stray.txt"),
+                ],
+            }],
+            "one sweep, one finding, sorted — and the dotfile left alone"
+        );
+        assert!(
+            findings[0].to_string().contains("history-prune"),
+            "the report names the verb that collects them: {}",
+            findings[0]
         );
     }
 

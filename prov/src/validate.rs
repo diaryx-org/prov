@@ -385,6 +385,58 @@ pub enum Finding {
         from: PathBuf,
         missing: Vec<PathBuf>,
     },
+    /// An event manifest names a content hash with **no blob behind it**, so the
+    /// files captured under that hash cannot be restored from this store. `store`
+    /// is the store index, `hash` the digest as a manifest spells it, and `paths`
+    /// the captured path(s) that named it, deduped across every event.
+    ///
+    /// Raised per **hash**, not per event: one lost blob is one thing to put back,
+    /// and a store where fifty events all captured the same unchanged file should
+    /// say "these bytes are gone" once rather than fifty times. Which *events* are
+    /// thereby incomplete is [`history-show`]'s question, and it already marks the
+    /// rows.
+    ///
+    /// **Two causes, and the wording must admit both.** Bytes genuinely lost — and
+    /// a sync still in flight, because an event document and the blobs it names
+    /// travel over the transport independently, and a small document routinely
+    /// lands well before a hundred megabytes it points at. A finding that cries
+    /// corruption at a routine, self-resolving state is one users learn to ignore.
+    ///
+    /// **Diagnosis only.** Nothing here can synthesize bytes, and the real repair —
+    /// letting the transport finish, or restoring `blobs/` from a backup — makes
+    /// the finding go away on its own. Deleting the manifest rows that name the
+    /// hash would be the only "fix" available, and it would destroy the record of
+    /// what was captured to silence a report about it: the judgment
+    /// [`RecycledBytesMissing`](Finding::RecycledBytesMissing) also declines.
+    ///
+    /// [`history-show`]: crate::Workspace::history_missing_blobs
+    HistoryBlobMissing {
+        store: PathBuf,
+        hash: String,
+        paths: Vec<PathBuf>,
+    },
+    /// Bytes parked under `blobs/` that **no event manifest names** — storage
+    /// nothing in the store can reach. `store` is the store index, `blobs` the
+    /// unreferenced files, workspace-relative and sorted.
+    ///
+    /// Plain mark-and-sweep, which is what full manifests buy: union every event's
+    /// `files` hashes and subtract the blob listing. Under a delta log the same
+    /// question would require folding ancestry.
+    ///
+    /// **Expected transiently** — a blob can arrive from another device before the
+    /// event that references it — so this is not evidence of damage on its own.
+    /// [`history-prune`](crate::Workspace::history_prune) and `history-forget` are
+    /// the durable producers, and both collect after themselves, which is what
+    /// makes a *persistent* orphan worth reporting.
+    ///
+    /// Anything non-hidden under `blobs/` that is not a referenced blob counts,
+    /// not only well-formed digests: a transport's `.sync-conflict` copy of a blob
+    /// is exactly the cruft this should surface, and it would never match a hash.
+    ///
+    /// **Diagnosis only.** Collecting is destruction, and autofix is metadata-only
+    /// by construction (see [`Fix`]) — `history-prune` is where bytes are deleted,
+    /// deliberately and on request.
+    HistoryBlobOrphaned { store: PathBuf, blobs: Vec<PathBuf> },
 }
 
 impl fmt::Display for Finding {
@@ -599,6 +651,28 @@ impl fmt::Display for Finding {
                     index.display(),
                     from.display(),
                     gone.join(", ")
+                )
+            }
+            Finding::HistoryBlobMissing { store, hash, paths } => {
+                let named: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+                // Both causes, in the order of likelihood: a store that syncs is
+                // in this state routinely, and only the second reading is damage.
+                write!(
+                    f,
+                    "{}: no bytes for {hash} — {} cannot be restored from this store \
+                     (the blob has not arrived yet, or it is gone)",
+                    store.display(),
+                    named.join(", ")
+                )
+            }
+            Finding::HistoryBlobOrphaned { store, blobs } => {
+                let stray: Vec<String> = blobs.iter().map(|p| p.display().to_string()).collect();
+                write!(
+                    f,
+                    "{}: {} parked blob(s) no event references ({}) — `prov history-prune` collects them",
+                    store.display(),
+                    blobs.len(),
+                    stray.join(", ")
                 )
             }
         }

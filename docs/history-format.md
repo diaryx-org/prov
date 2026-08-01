@@ -306,8 +306,8 @@ ordering owes a fork.
 
 ## 7. Validation
 
-`check` validates the store like any other reachable member. Phase 0 adds one
-finding:
+`check` validates the store like any other reachable member, through three
+findings.
 
 - **`HistoryIndexStale`** — a shard directory holds an event (or a sub-index)
   its index document does not link, or links one that is gone. This is the
@@ -315,14 +315,53 @@ finding:
   rebuilding that one index from its own directory listing, per-shard, so a
   mangled `2026/07/index.<ext>` is repaired without touching any other month —
   the same confirmation-gated posture as every existing fix.
+- **`HistoryBlobMissing`** — a manifest names a hash with no blob behind it, so
+  the files captured under it cannot be restored from this store. Raised **per
+  hash**, not per event: one lost blob is one thing to put back, and a store
+  where fifty events captured the same unchanged file should say so once. Which
+  *events* are thereby incomplete is `history-show`'s question (§10.1), and it
+  already marks the rows.
+- **`HistoryBlobOrphaned`** — bytes under `blobs/` that no manifest names. One
+  finding per sweep, listing them sorted.
 
-An event document that fails to parse is a plain `Unreadable`, unchanged. There
-is no `HistoryParentMissing`: no correctness depends on `parent`, so a hole in
-the display ancestry is cosmetic.
+Both blob findings come from one **mark-and-sweep**: union every event's `files`
+hashes and compare against the blob listing. That is what full manifests buy —
+under a delta log the same question would require folding ancestry, and could
+not be answered at all for an event whose ancestors had not arrived. The cost is
+one parse of every event document per `check`, which is the price of a store
+whose authority is distributed across immutable documents rather than
+concentrated in an index.
 
-`HistoryBlobMissing` and `HistoryBlobOrphaned` arrive with Phase 2, alongside
-the `history-prune`/`history-forget` operations that are their durable
-producers.
+**Both are diagnosis only, and for the same reason in opposite directions.**
+Nothing can synthesize missing bytes, and the real repair — letting the
+transport finish, or restoring `blobs/` from a backup — retires the finding on
+its own; the only "fix" available would be deleting the manifest rows that name
+the hash, destroying the record of what was captured in order to silence a
+report about it. And collecting an orphan is *destruction*, which autofix is
+never (§ `Fix` is metadata-only): `history-prune` is where bytes are deleted,
+deliberately and on request.
+
+Two things the wording is load-bearing about:
+
+- **`HistoryBlobMissing` has two causes and must admit both.** Bytes genuinely
+  lost, and a sync still in flight — an event document and its blobs travel
+  separately, and a small document routinely lands well before the megabytes it
+  points at. A finding that cries corruption at a routine, self-resolving state
+  is one users learn to ignore. (`history-forget` adds a third — deliberately
+  forgotten — which `check` tells apart via the forget list and reports as
+  informational rather than as loss.)
+- **`HistoryBlobOrphaned` is expected transiently**, because a blob can arrive
+  before the event that references it. `history-prune` and `history-forget` are
+  the durable producers and both collect after themselves, which is what makes a
+  *persistent* orphan worth reporting. Anything non-hidden under `blobs/` counts,
+  not only well-formed digests: a transport's conflict copy of a blob is exactly
+  the cruft this should surface, and it would never match a hash.
+
+A manifest row whose hash is not a digest prov could have parked (a foreign
+scheme, a mangled string) reports as `HistoryBlobMissing` rather than failing the
+run — a foreign event has to stay legible. An event document that fails to parse
+is a plain `Unreadable`, unchanged. There is no `HistoryParentMissing`: no
+correctness depends on `parent`, so a hole in the display ancestry is cosmetic.
 
 ## 8. The config axis
 
