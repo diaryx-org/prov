@@ -87,6 +87,13 @@ stores**:
 Everything else structural stays in: the registry document, the config
 document, and the recycle bin's *index*.
 
+Capturing the index but not the items keeps the common case correct — a
+document live at capture time comes back live, and the bin index reverts to a
+state that does not list it. The narrow residue is a restored bin index naming
+items whose bytes were purged in the meantime, which `check` reports per record
+as `RecycledBytesMissing`. That finding is not specific to history (a partial
+sync produces the same state) and does not depend on it.
+
 Exclusion is by directory prefix on the normalized, workspace-relative path.
 
 ## 3. The event document
