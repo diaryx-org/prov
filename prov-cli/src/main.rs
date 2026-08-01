@@ -201,6 +201,7 @@ fn main() -> ExitCode {
             dry_run,
             yes,
         } => cmd_history_prune(keep, before.as_deref(), dry_run, yes),
+        Command::HistoryForget { target, force, yes } => cmd_history_forget(&target, force, yes),
     };
     match result {
         Ok(code) => code,
@@ -1836,6 +1837,10 @@ fn cmd_history_show(id: &str) -> CmdResult {
         .into());
     };
     let missing = block_on(ws.history_missing_blobs(&ctx.root_doc, &event))?;
+    // Absent bytes have two very different meanings, and the tombstone is what
+    // tells them apart. A row destroyed on purpose is not damage, and reading like
+    // damage would make the report worth less every time it was right.
+    let forgotten = block_on(ws.history_forgotten(&ctx.root_doc))?;
 
     println!("{}", event.id);
     println!("  captured: {}", event.created);
@@ -1867,9 +1872,10 @@ fn cmd_history_show(id: &str) -> CmdResult {
             .as_ref()
             .map(|id| format!("  {id}"))
             .unwrap_or_default();
-        let mark = match missing.contains(&file.path) {
-            true => "  (bytes missing)",
-            false => "",
+        let mark = match (missing.contains(&file.path), forgotten.contains(&file.hash)) {
+            (true, true) => "  (forgotten)",
+            (true, false) => "  (bytes missing)",
+            (false, _) => "",
         };
         println!(
             "    {}  {}{id}{mark}",
@@ -1878,13 +1884,25 @@ fn cmd_history_show(id: &str) -> CmdResult {
         );
     }
 
-    if !missing.is_empty() {
+    let destroyed = event
+        .files
+        .iter()
+        .filter(|f| missing.contains(&f.path) && forgotten.contains(&f.hash))
+        .count();
+    if missing.len() > destroyed {
         eprintln!(
             "note: {} of {} captured file(s) have no bytes in this store — the event \
              document arrived but its blobs have not (yet). Those files are not \
              recoverable from this event until the transport finishes.",
-            missing.len(),
+            missing.len() - destroyed,
             event.files.len()
+        );
+    }
+    if destroyed > 0 {
+        eprintln!(
+            "note: {destroyed} captured file(s) were deliberately forgotten \
+             (`prov history-forget`). Their bytes are gone on purpose; this event \
+             still records that they existed."
         );
     }
     Ok(ExitCode::SUCCESS)
@@ -1903,20 +1921,7 @@ fn cmd_history_log(target: &str) -> CmdResult {
     // An explicit `id:` is followed verbatim, never resolved through the live
     // registry: the point of a lineage query is that it answers for documents
     // that are no longer there to resolve.
-    let (subject, subject_name) = match parse_target(target) {
-        TargetSpec::Id(id) if id.trim().is_empty() => {
-            return Err("`id:` needs an id after it".into());
-        }
-        TargetSpec::Id(id) => (prov::Subject::Id(Id(id.to_string())), format!("id:{id}")),
-        _ => {
-            let path = ws_rel(&ctx, &resolve_target(target)?)?;
-            let name = path.display().to_string();
-            match ws.index().id_for_path(&path) {
-                Some(id) => (prov::Subject::Id(id), name),
-                None => (prov::Subject::Path(path), name),
-            }
-        }
-    };
+    let (subject, subject_name) = history_subject(&ctx, &ws, target)?;
 
     let log = block_on(ws.history_log(&ctx.root_doc, &subject))?;
     if log.is_empty() {
@@ -1989,12 +1994,16 @@ fn cmd_history_log(target: &str) -> CmdResult {
 /// matches" answers "did my restore do anything", and "no bytes" answers "why is
 /// that file still wrong". The pipeable half is
 /// [`report_restored`], and it waits until the write has actually happened.
-fn narrate_plan(plan: &prov::RestorePlan) {
+fn narrate_plan(plan: &prov::RestorePlan, forgotten: &std::collections::BTreeSet<String>) {
     for op in &plan.ops {
+        let destroyed = op.hash.as_deref().is_some_and(|h| forgotten.contains(h));
         let (verb, note) = match op.disposition {
             prov::Disposition::Create => ("create   ", ""),
             prov::Disposition::Overwrite => ("overwrite", ""),
             prov::Disposition::Unchanged => ("unchanged", "  (already matches the capture)"),
+            // Absent by decision reads differently from absent by accident, and
+            // the row is where a reader looks first.
+            prov::Disposition::NoBytes if destroyed => ("no bytes ", "  (forgotten)"),
             prov::Disposition::NoBytes => ("no bytes ", "  (blob not in this store)"),
             prov::Disposition::Remove => ("remove   ", ""),
         };
@@ -2072,7 +2081,8 @@ fn cmd_history_restore(
     }
 
     let plan = block_on(ws.history_restore_plan(&ctx.root_doc, &event, &scope, exact))?;
-    narrate_plan(&plan);
+    let forgotten = block_on(ws.history_forgotten(&ctx.root_doc))?;
+    narrate_plan(&plan, &forgotten);
     let (created, overwritten) = (
         plan.count(prov::Disposition::Create),
         plan.count(prov::Disposition::Overwrite),
@@ -2090,12 +2100,34 @@ fn cmd_history_restore(
     // sync still in flight. Crying corruption at a routine, self-resolving state
     // is how a report teaches people to ignore it.
     if no_bytes > 0 {
-        eprintln!(
-            "note: {no_bytes} captured file(s) have no bytes in this store, so this \
-             restore cannot supply them — either the blobs have not arrived from \
-             another device yet, or they are gone. `prov history-show {}` marks them.",
-            plan.event
-        );
+        // Named, not merely counted: a restore that silently skipped bytes their
+        // owner destroyed on purpose would be reporting a transport problem for a
+        // decision the user made.
+        let destroyed: Vec<&Path> = plan
+            .ops
+            .iter()
+            .filter(|op| {
+                op.disposition == prov::Disposition::NoBytes
+                    && op.hash.as_deref().is_some_and(|h| forgotten.contains(h))
+            })
+            .map(|op| op.path.as_path())
+            .collect();
+        if no_bytes > destroyed.len() {
+            eprintln!(
+                "note: {} captured file(s) have no bytes in this store, so this \
+                 restore cannot supply them — either the blobs have not arrived from \
+                 another device yet, or they are gone. `prov history-show {}` marks them.",
+                no_bytes - destroyed.len(),
+                plan.event
+            );
+        }
+        for path in destroyed {
+            eprintln!(
+                "note: {} was deliberately forgotten — its bytes are gone on purpose \
+                 and no restore can bring them back.",
+                path.display()
+            );
+        }
     }
 
     // The registry cannot arbitrate a genuine collision and must not try. Print
@@ -2191,6 +2223,83 @@ fn cmd_history_restore(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// Resolve a `<path|id:…>` argument to a lineage subject, the way `history-log`
+/// does — an id wherever one exists, since that is what survives a rename, and a
+/// path only for the documents that carry no id.
+///
+/// Shared by `history-log` and `history-forget` because a subject is a subject:
+/// the two verbs read and destroy the same slice of the store, and a document
+/// they disagreed about would be a document you could inspect but not forget.
+fn history_subject(
+    ctx: &Ctx,
+    ws: &Workspace<StdFs, Minter, FileIndex>,
+    target: &str,
+) -> Result<(prov::Subject, String), AnyError> {
+    match parse_target(target) {
+        TargetSpec::Id(id) if id.trim().is_empty() => Err("`id:` needs an id after it".into()),
+        TargetSpec::Id(id) => Ok((prov::Subject::Id(Id(id.to_string())), format!("id:{id}"))),
+        _ => {
+            let path = ws_rel(ctx, &resolve_target(target)?)?;
+            let name = path.display().to_string();
+            Ok(match ws.index().id_for_path(&path) {
+                Some(id) => (prov::Subject::Id(id), name),
+                None => (prov::Subject::Path(path), name),
+            })
+        }
+    }
+}
+
+/// Destroy one document's captured bytes, and record that it was deliberate.
+fn cmd_history_forget(target: &str, force: bool, yes: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+    let (subject, name) = history_subject(&ctx, &ws, target)?;
+
+    // Shown before the prompt rather than after the act: what is about to be
+    // destroyed is the only thing worth knowing here.
+    let log = block_on(ws.history_log(&ctx.root_doc, &subject))?;
+    if log.is_empty() {
+        eprintln!("no history event has captured {name} — nothing to forget");
+        return Ok(ExitCode::SUCCESS);
+    }
+    eprintln!("{name} appears in {} capture(s).", log.len());
+    if !yes && std::io::stdin().is_terminal() {
+        eprintln!(
+            "forgetting destroys its captured bytes for good. The manifests still \
+             record that it existed, at that path, with that hash — this destroys \
+             the bytes, not the record."
+        );
+        if !matches!(prompt("proceed? [y/N]: ")?.as_str(), "y" | "yes") {
+            eprintln!("stopped; nothing destroyed");
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    let forgotten = block_on(ws.history_forget(&ctx.root_doc, &subject, &now_rfc3339(), force))?;
+    for hash in &forgotten.hashes {
+        println!("{hash}");
+    }
+    if forgotten.is_empty() {
+        eprintln!("nothing to destroy — no bytes are held for {name} alone");
+    } else {
+        eprintln!(
+            "forgot {} blob(s) for {name}, freeing {}",
+            forgotten.blobs.len(),
+            human_bytes(forgotten.bytes)
+        );
+    }
+    // Overstating what was destroyed is the one thing this report must not do.
+    if !forgotten.shared.is_empty() {
+        eprintln!(
+            "note: {} of its captured version(s) survive — the same bytes were \
+             captured at another path, and content addressing means forgetting one \
+             document cannot reach into another's history.",
+            forgotten.shared.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Render a byte count the way a person reads one. Storage is the whole point of

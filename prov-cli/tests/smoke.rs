@@ -131,6 +131,15 @@ fn every_command_runs_end_to_end() {
     // The bound is required: a verb that deletes bytes must not have a default.
     let (bounded, out) = run(&dir, &["history-prune"]);
     assert!(!bounded, "history-prune needs a bound: {out}");
+    // Forget refuses a live document, then works once it is gone for good.
+    let (live, out) = run(&dir, &["history-forget", "notes/rust.md", "--yes"]);
+    assert!(
+        !live,
+        "forget must refuse a document still in the workspace: {out}"
+    );
+    ok(&dir, &["rm", "notes/rust.md", "--purge"]);
+    ok(&dir, &["history-forget", "notes/rust.md", "--yes"]);
+    ok(&dir, &["check"]);
 
     // ── config: read, write, materialize ──
     ok(&dir, &["config"]);

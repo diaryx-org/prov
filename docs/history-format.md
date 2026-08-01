@@ -11,8 +11,8 @@ part_of: '[prov](/README.md)'
 Implemented in `prov/src/history.rs`. Phase 0 of the proposal covers the store,
 `history-capture` and `history-list`; Phase 1 adds the read-only queries over it
 (`history-show`, `history-log`, §10) and `history-restore` (§11).
-Phase 2 adds `history-prune` (§12) and the blob findings; `history-forget` is
-the remaining verb.
+Phase 2 adds the blob findings, `history-prune` (§12) and `history-forget`
+(§13).
 
 ## 1. Where the store lives
 
@@ -392,6 +392,9 @@ already-binned bytes. It does **not** make purges final for content captured
 earlier. With history on, `empty_bin` and `rm --purge` are irreversible only
 for content that was never captured live.
 
+Two verbs make it irreversible again: `history-prune` (§12) by age or count, and
+`history-forget` (§13) for one document deliberately.
+
 ## 10. Reading the store
 
 Two read-only queries. Neither writes anything, and both work regardless of the
@@ -624,3 +627,99 @@ Dropping an event can destroy the only copy of some content — including conten
 another device captured and this one never had live. Nothing in the store can
 arbitrate that, so `history-prune` lists what it would drop and confirms before
 acting, and offers `--dry-run` to see the list without any of it happening.
+
+## 13. Forgetting
+
+`history-forget <path|id>` destroys one document's captured bytes and records
+that it was deliberate. Works regardless of the config axis (§8).
+
+This is the counterpart to the retention the store creates (§9). A document's
+bytes normally end at `empty_bin` or `rm --purge`; with history on, any event
+that captured it while it was live still holds them, and `history-restore`
+brings them back. This makes that irreversible on purpose. Full manifests are
+what make it tractable: every hash a document ever had is a column lookup across
+the events, not a fold.
+
+### 13.1 Two limits, both load-bearing
+
+- **It destroys only bytes nothing else names.** A hash the subject shares with
+  another captured path survives, and is reported. Content addressing means
+  forgetting one document cannot reach into another's history — a safety
+  property and a limit in the same breath.
+- **It destroys bytes, not the record.** Event documents are immutable, so every
+  manifest still names the path, the id and the hash. **If what has to disappear
+  is the name, this is not that tool**, and no wording may let a user believe
+  otherwise.
+
+The subject follows `history-log`'s rule (§10.2): an id wherever one exists,
+since that is what survives a rename and therefore reaches versions a path key
+would miss; a path only for the documents that carry no id.
+
+### 13.2 It refuses a live document
+
+Forgetting the captured bytes of a document still in the workspace is very
+nearly a no-op — the next capture parks them again. Refused by default, naming
+the document, with `--force` for the deliberate "purge the history, keep the
+file" case.
+
+"Live" means **in the capture set** (§2), not merely present on disk: that is
+exactly the population a capture parks, so a file sitting unreachable in the
+tree would not come back, and refusing on its account would be refusing for a
+reason that is not true.
+
+### 13.3 `forgotten.<ext>`
+
+A **whole-file record store** beside the store index, under the `MalformedStore`
+rule the registry and the bin index live under — it is a mutable record store
+prov edits in place, which an immutable event document deliberately is not. One
+row per destroyed hash:
+
+```yaml
+title: Forgotten
+forgotten:
+  - hash: sha256:b7d98ce3…
+    at: 2026-08-01T23:41:04.300145Z
+    subject: notes/secrets.md
+```
+
+- **It is linked from `history/index.<ext>`.** `history/` is orphan-scanned (the
+  store index is reachable, so its directory is in the walk's reached set), so an
+  unlinked tombstone would be reported as an orphan — the record of what was
+  destroyed, flagged as litter.
+- **Recording the subject leaks nothing.** Every manifest already names that
+  path or id beside that hash, because events are immutable. Without it the list
+  cannot answer why anything on it is there.
+- **Re-forgetting a hash keeps the first row.** *When* it was destroyed is the
+  fact worth preserving, and a re-run finishing an interrupted forget must not
+  rewrite it.
+- It is located by **stem**, not by the workspace's current metadata format: a
+  workspace that switched formats after a forget must not lose track of what it
+  destroyed.
+- It is a mutable file and can conflict under sync. Acceptable for an explicitly
+  invoked, rare act of destruction.
+
+### 13.4 What the tombstone buys
+
+A hash on the list is absent **by record**, so:
+
+- `check` does not raise `HistoryBlobMissing` for it (§7). Reporting it would
+  mean `check` never returned to clean after a legitimate forget, which is how a
+  user learns to stop reading `check` — and telling this state from loss is the
+  entire reason the list exists. The suppression is precise: bytes that went
+  missing *without* a record still say so.
+- `history-show` marks the row **forgotten** rather than *bytes missing*, and
+  `history-restore` names it: absent by decision reads differently from absent by
+  accident.
+
+### 13.5 Ordering
+
+The tombstone is written and committed **before** the bytes are freed —
+write-ahead, like every other mutation here — and the blobs are deleted outside
+the change set, for §12.2's reason: a staged removal buffers the bytes it deletes
+in order to be able to put them back, which is the one thing a destruction verb
+must not do.
+
+A crash between the two leaves a hash tombstoned whose blob is still present.
+Re-running the same forget finishes the job. That is the residue this ordering
+can leave, and it is the quiet one — the tradeoff write-ahead always makes. The
+alternative is destroying bytes before recording the intent.

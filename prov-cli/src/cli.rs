@@ -719,6 +719,38 @@ pub(crate) enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Destroy one document's captured bytes, and record that it was deliberate.
+    ///
+    /// History extends retention of everything ever captured: if any event caught
+    /// a document while it was live, its bytes are in the store, and neither
+    /// `empty-bin` nor `rm --purge` touches them. This is the tool that makes that
+    /// irreversible on purpose.
+    ///
+    /// Two limits, both load-bearing. It destroys **only bytes nothing else
+    /// names** — a hash shared with another captured path survives, because
+    /// content addressing means forgetting one document cannot reach into
+    /// another's history. And it destroys **bytes, not the record**: event
+    /// documents are immutable, so every manifest still names the path, the id and
+    /// the hash. If what has to disappear is the name, this is not that tool.
+    ///
+    /// The forgotten hashes are recorded in `history/forgotten.<ext>` so `check`
+    /// can tell deliberate destruction from loss, and so the read verbs can say
+    /// "forgotten" rather than "missing".
+    ///
+    /// Works regardless of the `history` config axis.
+    HistoryForget {
+        /// The document: a path, or `id:<id>` to follow an id directly — which
+        /// still works for a document that has since been deleted, and is the
+        /// rename-robust key.
+        target: String,
+        /// Forget even though the document is still in the workspace. Refused by
+        /// default, because the next capture would simply park its bytes again.
+        #[arg(long)]
+        force: bool,
+        /// Skip the confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The
