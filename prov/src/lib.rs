@@ -97,7 +97,7 @@ pub use fig::ExtKind;
 pub use fig::Format;
 pub use fig_schema::FieldType;
 pub use fs::{Capabilities, DirEntry, FileType, InMemoryFs, Metadata, StdFs, Storage};
-pub use history::{Captured, Event, FileEntry};
+pub use history::{Captured, Event, FileEntry, Presence, Subject, Version};
 pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use index::{FileIndex, InMemoryIndex, IndexStore, NoIndex};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};

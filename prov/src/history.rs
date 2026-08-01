@@ -187,6 +187,60 @@ pub enum Captured {
     },
 }
 
+/// What one event's manifest said about one document — the unit a lineage
+/// reports a change in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Presence {
+    /// Captured: the manifest row, whole.
+    At {
+        /// Where the document lived at that capture, workspace-relative.
+        path: PathBuf,
+        /// The id the manifest recorded for it, or `None` when it carried none.
+        ///
+        /// Carried even for a lineage that was *found* by path, because it is
+        /// what tells a path-keyed query that a stronger one exists.
+        id: Option<Id>,
+        /// Its content digest, spelled `sha256:<hex>`.
+        hash: String,
+    },
+    /// Absent from that capture set — deleted, or moved out of the reachable
+    /// graph, between the previous event and this one. There is no removal list
+    /// to consult: in a full manifest, **omission is deletion**.
+    Gone,
+}
+
+/// One point in a document's lineage: an event whose manifest recorded a state
+/// different from the event before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Version {
+    /// The event that recorded this state.
+    pub event: String,
+    /// That event's `created` timestamp.
+    pub created: String,
+    /// That event's label, verbatim.
+    pub label: Option<String>,
+    /// What that event's manifest said about the document.
+    pub state: Presence,
+}
+
+/// What a lineage query follows a document *by*.
+///
+/// The two are not equals. An id survives a rename, so following one yields the
+/// lineage of a document; a path is the fallback for the documents that carry no
+/// id — and those (the config document, the registry, the recycle-bin index, an
+/// attachment payload) are disproportionately the victims of the sync damage
+/// this store exists to survive, so the weaker key still has to exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Subject {
+    /// A registry id, read from the manifest's `id` column. Never resolved
+    /// through the live registry — the point of the query is that it answers for
+    /// documents that are no longer there to resolve.
+    Id(Id),
+    /// A workspace-relative path. A rename before or after the run shows up as a
+    /// separate lineage; that is the nature of a path key, not a defect here.
+    Path(PathBuf),
+}
+
 // ── Layout: id ⇄ path, hash → blob ───────────────────────────────────────────
 
 /// The shard directory an event id belongs in, relative to the store's `events/`
@@ -584,6 +638,128 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         events.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
         Ok(events)
+    }
+
+    /// One event by id, resolved through the **pure id → path function** rather
+    /// than through any index — so an event answers for itself with every index
+    /// document in the store destroyed.
+    ///
+    /// `Ok(None)` when the store holds no such event (including when there is no
+    /// store yet). An error when `id` is not an event id at all, or when the
+    /// document is sitting there but is not an event.
+    pub async fn history_event(&self, root_doc: &Path, id: &str) -> Result<Option<Event>> {
+        let (store_index, exists) = self.history_store_index(root_doc).await?;
+        if !exists {
+            return Ok(None);
+        }
+        let path = event_path(&store_index, id, self.history_ext(root_doc))?;
+        if !self.fs().try_exists(&self.root().join(&path)).await? {
+            return Ok(None);
+        }
+        let (_, doc) = self.load(&path).await?;
+        parse_event(&path, id, &doc.meta)
+            .map(Some)
+            .ok_or_else(|| Error::Structure(format!("`{id}` is not a history event document")))
+    }
+
+    /// The captured paths in `event` whose pre-image bytes are **not** parked in
+    /// the store — the "this event is half-synced" report.
+    ///
+    /// A manifest and the blobs it names travel over the transport
+    /// independently, and a small event document routinely lands well before a
+    /// hundred megabytes of bytes it points at. That is ordinary in-flight state
+    /// rather than damage, which is exactly why it has to be legible under a
+    /// *read* verb before anyone asks a restore to act on it — and why a restore
+    /// reports this same set rather than computing its own.
+    ///
+    /// Presence is tested once per distinct hash, not once per row: a manifest
+    /// routinely names one blob from several paths, and a workspace is captured
+    /// whole. A row whose hash prov could not have parked in the first place
+    /// (a foreign digest, a mangled string) names no blob that could be found, so
+    /// it counts as missing rather than failing the whole read.
+    pub async fn history_missing_blobs(
+        &self,
+        root_doc: &Path,
+        event: &Event,
+    ) -> Result<BTreeSet<PathBuf>> {
+        let (store_index, _) = self.history_store_index(root_doc).await?;
+        let mut seen: BTreeMap<&str, bool> = BTreeMap::new();
+        let mut missing = BTreeSet::new();
+        for file in &event.files {
+            let present = match seen.get(file.hash.as_str()) {
+                Some(present) => *present,
+                None => {
+                    let present = match blob_path(&store_index, &file.hash) {
+                        Ok(blob) => self.fs().try_exists(&self.root().join(blob)).await?,
+                        Err(_) => false,
+                    };
+                    seen.insert(&file.hash, present);
+                    present
+                }
+            };
+            if !present {
+                missing.insert(file.path.clone());
+            }
+        }
+        Ok(missing)
+    }
+
+    /// One document's lineage across every capture, oldest first: pull its row
+    /// out of each manifest in turn, and keep only the events where that row
+    /// *changed*.
+    ///
+    /// This is the payoff for the manifest's `id` column, and it is a **derived
+    /// query, not a storage design** — nothing in the store is keyed by document,
+    /// and nothing here writes. Following a [`Subject::Id`] makes the lineage
+    /// rename-robust in a way no path-keyed store can be: a move shows as one
+    /// document that changed path, where a path-keyed view shows two unrelated
+    /// lineages that happen to abut.
+    ///
+    /// Consecutive events are deduped on the **whole manifest row** — path, id
+    /// and hash — not on the hash alone. A rename leaves the bytes
+    /// byte-identical, so a hash-only dedupe would swallow precisely the event
+    /// that following an id exists to surface. Including the id means a document
+    /// acquiring one is a point too, which is right: the row changed.
+    ///
+    /// An event that does not mention the subject records [`Presence::Gone`], but
+    /// only once the document has been seen, so a lineage starts where its
+    /// document does rather than with a run of absences. Events are walked in
+    /// capture order (`created`, then id), so concurrent captures on two devices
+    /// interleave rather than branching — this is a display, and `history-list`
+    /// is where forks are named.
+    ///
+    /// Cost is one pass over every event document in the store. That is the
+    /// honest price of storing by consistent cut and querying by document, and it
+    /// is why this is a query rather than an index.
+    pub async fn history_log(&self, root_doc: &Path, subject: &Subject) -> Result<Vec<Version>> {
+        let mut log: Vec<Version> = Vec::new();
+        for event in self.history_list(root_doc).await? {
+            let row = event.files.iter().find(|file| match subject {
+                Subject::Id(id) => file.id.as_ref() == Some(id),
+                Subject::Path(path) => &file.path == path,
+            });
+            let state = match row {
+                Some(file) => Presence::At {
+                    path: file.path.clone(),
+                    id: file.id.clone(),
+                    hash: file.hash.clone(),
+                },
+                None => Presence::Gone,
+            };
+            match log.last() {
+                // The document did not exist yet when this capture was taken.
+                None if state == Presence::Gone => continue,
+                Some(previous) if previous.state == state => continue,
+                _ => {}
+            }
+            log.push(Version {
+                event: event.id,
+                created: event.created,
+                label: event.label,
+                state,
+            });
+        }
+        Ok(log)
     }
 
     /// Capture the workspace: hash the capture set, park newly-seen blobs, and
@@ -1785,6 +1961,246 @@ mod tests {
                 .iter()
                 .any(|f| f.path == Path::new("notes/a.md")),
             "the merged state must be in the manifest"
+        );
+    }
+
+    // ── Reading one event: `history-show` ────────────────────────────────────
+
+    #[test]
+    fn an_event_resolves_by_id_with_every_index_destroyed() {
+        let dir = seed("show-resolve");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", Some("pre-sync"))
+        else {
+            panic!("the first capture must write an event");
+        };
+        // The indexes are a cache. Burn all three; the id still resolves, because
+        // its path is a pure function of it.
+        for index in [
+            "history/index.md",
+            "history/events/2026/index.md",
+            "history/events/2026/07/index.md",
+        ] {
+            std::fs::remove_file(dir.join(index)).unwrap();
+        }
+        let event = block_on(ws(&dir).history_event(Path::new("index.md"), &id))
+            .unwrap()
+            .expect("the event must resolve without any index");
+        assert_eq!(event.id, id);
+        assert_eq!(event.label.as_deref(), Some("pre-sync"));
+        assert_eq!(event.files.len(), 4);
+
+        // An id that names nothing is absence, not an error; a string that is not
+        // an event id at all is an error.
+        assert!(
+            block_on(ws(&dir).history_event(Path::new("index.md"), "2026-07-31-0000-deadbeef"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(block_on(ws(&dir).history_event(Path::new("index.md"), "yesterday")).is_err());
+    }
+
+    #[test]
+    fn missing_blobs_name_the_paths_a_restore_could_not_recover() {
+        let dir = seed("show-blobs");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("the first capture must write an event");
+        };
+        let event = block_on(ws(&dir).history_event(Path::new("index.md"), &id))
+            .unwrap()
+            .unwrap();
+        assert!(
+            block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), &event))
+                .unwrap()
+                .is_empty(),
+            "a capture parks every file's bytes"
+        );
+
+        // The half-synced case: the event document arrived, one blob did not.
+        let payload = crate::fixity::digest(b"JPEGBYTES");
+        let blob = blob_path(Path::new("history/index.md"), &payload).unwrap();
+        std::fs::remove_file(dir.join(&blob)).unwrap();
+        let missing =
+            block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), &event)).unwrap();
+        assert_eq!(
+            missing.into_iter().collect::<Vec<_>>(),
+            vec![PathBuf::from("notes/photo.jpg")],
+            "only the file whose bytes are gone should be reported"
+        );
+
+        // A row prov could never have parked reports as missing rather than
+        // failing the read — a foreign event must stay legible.
+        let foreign = Event {
+            files: vec![FileEntry {
+                path: PathBuf::from("notes/a.md"),
+                id: None,
+                hash: "blake3:beef".into(),
+            }],
+            ..event
+        };
+        assert_eq!(
+            block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), &foreign))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    // ── Lineage: `history-log` ───────────────────────────────────────────────
+
+    /// Re-point the root at `contents`, so a rename is visible to the reachable
+    /// walk the capture set is taken from.
+    fn relink(dir: &Path, contents: &[&str]) {
+        let list = contents
+            .iter()
+            .map(|c| format!("- {c}\n"))
+            .collect::<String>();
+        write(
+            dir,
+            "index.md",
+            &format!("---\ntitle: Home\ncontents:\n{list}---\nroot\n"),
+        );
+    }
+
+    #[test]
+    fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
+        let dir = seed("log-rename");
+        let mut w = ws(&dir);
+        let id = Id("b7k2m".into());
+        w.index_mut().register(&id, Path::new("notes/a.md"));
+        let take = |w: &mut Workspace<StdFs, Minter, FileIndex>, now: &str| {
+            block_on(w.history_capture(Path::new("index.md"), now, None)).unwrap()
+        };
+        take(&mut w, "2026-07-31T09:00:00Z");
+
+        // The move: same bytes, new path. A path-keyed store shows two unrelated
+        // lineages here; the id column shows one document that moved.
+        std::fs::rename(dir.join("notes/a.md"), dir.join("notes/b.md")).unwrap();
+        relink(&dir, &["notes/b.md", "notes/photo.jpg.yaml"]);
+        w.index_mut().set_path(&id, Path::new("notes/b.md"));
+        take(&mut w, "2026-07-31T10:00:00Z");
+
+        // An edit at the new path.
+        write(
+            &dir,
+            "notes/b.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n",
+        );
+        take(&mut w, "2026-07-31T11:00:00Z");
+
+        // …and a capture that changes nothing about this document, which must not
+        // add a point to its lineage.
+        write(&dir, "notes/photo.jpg", "OTHERBYTES");
+        take(&mut w, "2026-07-31T12:00:00Z");
+
+        let log = block_on(w.history_log(Path::new("index.md"), &Subject::Id(id.clone()))).unwrap();
+        let paths: Vec<&Path> = log
+            .iter()
+            .map(|v| match &v.state {
+                Presence::At { path, .. } => path.as_path(),
+                Presence::Gone => Path::new("(gone)"),
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("notes/a.md"),
+                Path::new("notes/b.md"),
+                Path::new("notes/b.md")
+            ],
+            "the move must be a point in the lineage, and the untouched capture must not"
+        );
+        // Deduping on the hash alone would have swallowed the move: the bytes did
+        // not change when the path did.
+        let (Presence::At { hash: first, .. }, Presence::At { hash: second, .. }) =
+            (&log[0].state, &log[1].state)
+        else {
+            panic!("both points should be present states");
+        };
+        assert_eq!(first, second, "a rename leaves the bytes identical");
+
+        // The same document asked for by its old *path*: the lineage fragments at
+        // the move, which is the nature of a path key. But the row it does find
+        // still remembers the id — which is what lets the weaker query hand the
+        // caller the stronger one instead of quietly under-reporting.
+        let by_path = block_on(w.history_log(
+            Path::new("index.md"),
+            &Subject::Path(PathBuf::from("notes/a.md")),
+        ))
+        .unwrap();
+        assert!(matches!(
+            &by_path[0].state,
+            Presence::At { id: Some(found), .. } if *found == id
+        ));
+        assert_eq!(
+            by_path.last().unwrap().state,
+            Presence::Gone,
+            "a path-keyed lineage sees the move as the document disappearing"
+        );
+    }
+
+    #[test]
+    fn a_lineage_records_a_deletion_and_a_return() {
+        let dir = seed("log-gone");
+        let mut w = ws(&dir);
+        let id = Id("b7k2m".into());
+        w.index_mut().register(&id, Path::new("notes/a.md"));
+        let take = |w: &mut Workspace<StdFs, Minter, FileIndex>, now: &str| {
+            block_on(w.history_capture(Path::new("index.md"), now, None)).unwrap()
+        };
+        take(&mut w, "2026-07-31T09:00:00Z");
+
+        // Out of the reachable graph and off disk.
+        std::fs::remove_file(dir.join("notes/a.md")).unwrap();
+        relink(&dir, &["notes/photo.jpg.yaml"]);
+        take(&mut w, "2026-07-31T10:00:00Z");
+
+        // Back again — which is what a restore looks like from the lineage's side.
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n",
+        );
+        relink(&dir, &["notes/a.md", "notes/photo.jpg.yaml"]);
+        take(&mut w, "2026-07-31T11:00:00Z");
+
+        let log = block_on(w.history_log(Path::new("index.md"), &Subject::Id(id))).unwrap();
+        assert_eq!(log.len(), 3);
+        assert!(matches!(log[0].state, Presence::At { .. }));
+        // Omission *is* deletion: there is no removal list to have consulted.
+        assert_eq!(log[1].state, Presence::Gone);
+        assert!(matches!(log[2].state, Presence::At { .. }));
+        assert_eq!(log[2].created, "2026-07-31T11:00:00Z");
+    }
+
+    #[test]
+    fn an_id_less_document_still_has_a_lineage_by_path() {
+        // The documents with no id — the config document, the registry, the bin
+        // index, an attachment payload — are disproportionately what a sync
+        // transport damages, so the weaker key has to work.
+        let dir = seed("log-path");
+        capture(&dir, "2026-07-31T09:00:00Z", None);
+        write(&dir, "notes/photo.jpg", "OTHERBYTES");
+        capture(&dir, "2026-07-31T10:00:00Z", None);
+
+        let log = block_on(ws(&dir).history_log(
+            Path::new("index.md"),
+            &Subject::Path(PathBuf::from("notes/photo.jpg")),
+        ))
+        .unwrap();
+        assert_eq!(log.len(), 2, "the payload's bytes changed once");
+        let Presence::At { hash, .. } = &log[1].state else {
+            panic!("the payload should be present in the second event");
+        };
+        assert_eq!(*hash, crate::fixity::digest(b"OTHERBYTES"));
+
+        // A subject no event ever captured has an empty lineage, not an error.
+        assert!(
+            block_on(ws(&dir).history_log(
+                Path::new("index.md"),
+                &Subject::Path(PathBuf::from("notes/never.md")),
+            ))
+            .unwrap()
+            .is_empty()
         );
     }
 }

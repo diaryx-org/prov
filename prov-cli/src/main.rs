@@ -184,6 +184,8 @@ fn main() -> ExitCode {
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
         Command::HistoryCapture { label } => cmd_history_capture(label.as_deref()),
         Command::HistoryList => cmd_history_list(),
+        Command::HistoryShow { event } => cmd_history_show(&event),
+        Command::HistoryLog { target } => cmd_history_log(&target),
     };
     match result {
         Ok(code) => code,
@@ -1744,6 +1746,180 @@ fn cmd_history_list() -> CmdResult {
         );
     }
     eprintln!("{} event(s)", events.len());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The leading 8 hex of a `sha256:<hex>` digest — enough to eyeball whether two
+/// manifest rows describe the same bytes, without a 71-character column.
+fn short_hash(hash: &str) -> &str {
+    let hex = hash.split_once(':').map(|(_, hex)| hex).unwrap_or(hash);
+    hex.get(..8).unwrap_or(hex)
+}
+
+/// Print one event: its metadata, then its manifest.
+///
+/// The manifest *is* the effective state — no reconstruction, which is what full
+/// manifests buy over a delta log — so this is a read of one document plus one
+/// existence check per distinct blob. A row whose bytes are not in the store is
+/// marked: an event and its blobs sync independently, and a half-synced event
+/// must be legible before anyone restores it.
+///
+/// Works regardless of the `history` axis, and resolves the id through the pure
+/// id → path function rather than through any index.
+fn cmd_history_show(id: &str) -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+    let Some(event) = block_on(ws.history_event(&ctx.root_doc, id))? else {
+        return Err(format!(
+            "no history event `{id}` — list what is in the store with `prov history-list`"
+        )
+        .into());
+    };
+    let missing = block_on(ws.history_missing_blobs(&ctx.root_doc, &event))?;
+
+    println!("{}", event.id);
+    println!("  captured: {}", event.created);
+    println!("  trigger:  {}", event.trigger);
+    if let Some(label) = &event.label {
+        println!("  label:    {label}");
+    }
+    match &event.parent {
+        // The parent is display metadata: when it is absent, or names an event
+        // that never reached this device, the counts are simply not shown.
+        Some(parent) => {
+            let counts = block_on(ws.history_event(&ctx.root_doc, parent))
+                .ok()
+                .flatten()
+                .map(|previous| {
+                    let (changed, removed) = event.diff(&previous);
+                    format!(" ({changed} changed, {removed} removed)")
+                })
+                .unwrap_or_default();
+            println!("  parent:   {parent}{counts}");
+        }
+        None => println!("  parent:   (none — the first event in this line)"),
+    }
+
+    println!("  files:    {}", event.files.len());
+    for file in &event.files {
+        let id = file
+            .id
+            .as_ref()
+            .map(|id| format!("  {id}"))
+            .unwrap_or_default();
+        let mark = match missing.contains(&file.path) {
+            true => "  (bytes missing)",
+            false => "",
+        };
+        println!(
+            "    {}  {}{id}{mark}",
+            short_hash(&file.hash),
+            file.path.display()
+        );
+    }
+
+    if !missing.is_empty() {
+        eprintln!(
+            "note: {} of {} captured file(s) have no bytes in this store — the event \
+             document arrived but its blobs have not (yet). Those files are not \
+             recoverable from this event until the transport finishes.",
+            missing.len(),
+            event.files.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Print one document's lineage: the captures where its bytes or its path
+/// changed, newest first — the same direction `history-list` reads.
+///
+/// The subject is an id wherever one exists, because that is what survives a
+/// rename. A path is used only when the document carries no id, and the fallback
+/// is called out on stderr rather than passed off as equivalent.
+fn cmd_history_log(target: &str) -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+
+    // An explicit `id:` is followed verbatim, never resolved through the live
+    // registry: the point of a lineage query is that it answers for documents
+    // that are no longer there to resolve.
+    let (subject, subject_name) = match parse_target(target) {
+        TargetSpec::Id(id) if id.trim().is_empty() => {
+            return Err("`id:` needs an id after it".into());
+        }
+        TargetSpec::Id(id) => (prov::Subject::Id(Id(id.to_string())), format!("id:{id}")),
+        _ => {
+            let path = ws_rel(&ctx, &resolve_target(target)?)?;
+            let name = path.display().to_string();
+            match ws.index().id_for_path(&path) {
+                Some(id) => (prov::Subject::Id(id), name),
+                None => (prov::Subject::Path(path), name),
+            }
+        }
+    };
+
+    let log = block_on(ws.history_log(&ctx.root_doc, &subject))?;
+    if log.is_empty() {
+        eprintln!("no history event has captured {subject_name}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Each point is described relative to the one *before* it, so the rows are
+    // built oldest-first and printed in reverse.
+    let mut rows = Vec::with_capacity(log.len());
+    let mut previous: Option<PathBuf> = None;
+    let mut seen = false;
+    // An id the *manifests* recorded at this path, even though the live registry
+    // has none — the path query telling the caller a stronger one exists.
+    let mut recorded_id = None;
+    for point in &log {
+        match &point.state {
+            prov::Presence::At { path, id, hash } => {
+                let note = match &previous {
+                    Some(old) if old != path => "  (moved)",
+                    Some(_) => "",
+                    None if seen => "  (restored)",
+                    None => "  (first captured)",
+                };
+                rows.push(format!(
+                    "{}  {}  {}{}{note}",
+                    point.event,
+                    short_hash(hash),
+                    path.display(),
+                    id.as_ref().map(|id| format!("  {id}")).unwrap_or_default(),
+                ));
+                previous = Some(path.clone());
+                seen = true;
+                recorded_id = recorded_id.or_else(|| id.clone());
+            }
+            // Omission is deletion: a full manifest keeps no removal list.
+            prov::Presence::Gone => {
+                rows.push(format!("{}  (gone)", point.event));
+                previous = None;
+            }
+        }
+    }
+    for row in rows.iter().rev() {
+        println!("{row}");
+    }
+
+    eprintln!("{} change point(s) for {subject_name}", log.len());
+    if let prov::Subject::Path(_) = subject {
+        // A path key fragments a renamed document into unrelated lineages. Say so
+        // — and when the manifests remember an id the live registry has lost
+        // (a deleted document, a damaged registry), hand over the better query.
+        match recorded_id {
+            Some(id) => eprintln!(
+                "note: this lineage is keyed by path, so it stops at any rename. \
+                 The manifests record {id} at this path — `prov history-log id:{id}` \
+                 follows the document across moves."
+            ),
+            None => eprintln!(
+                "note: no capture recorded an id at this path, so this lineage is \
+                 keyed by path and stops at any rename."
+            ),
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

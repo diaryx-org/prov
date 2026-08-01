@@ -9,9 +9,9 @@ part_of: '[prov](/README.md)'
 > in [the proposal](/docs/proposals/history/proposal-history-v3.md).
 
 Implemented in `prov/src/history.rs`. Phase 0 of the proposal covers the store,
-`history-capture` and `history-list`; `history-restore`, `history-log`,
-`history-prune` and `history-forget` are later phases that read this same
-format.
+`history-capture` and `history-list`; `history-show` and `history-log` are the
+read-only queries over it (§10); `history-restore`, `history-prune` and
+`history-forget` are later phases that read this same format.
 
 ## 1. Where the store lives
 
@@ -312,3 +312,54 @@ The `recyclebin/items/` exclusion (§2) prevents a capture from *newly* parking
 already-binned bytes. It does **not** make purges final for content captured
 earlier. With history on, `empty_bin` and `rm --purge` are irreversible only
 for content that was never captured live.
+
+## 10. Reading the store
+
+Two read-only queries. Neither writes anything, and both work regardless of the
+config axis (§8) — including on a workspace whose store arrived entirely from
+another device.
+
+### 10.1 `history-show <id>` — one event
+
+The id resolves to its document by §4 alone, with no index consulted. The
+manifest **is** the effective state, so there is nothing to reconstruct: `show`
+prints the event's frontmatter fields and its rows.
+
+Each row is marked when the blob its hash names (§5) is not on disk. An event
+document and the blobs it names travel over the transport independently, and a
+small document routinely lands well before the bytes — so a **half-synced event
+is ordinary in-flight state, not damage**, and has to be legible under a read
+verb before anything acts on it. Presence is tested once per distinct hash, since
+a manifest routinely names one blob from several paths. A row whose hash is not a
+digest prov could have parked names no blob that could be found, so it counts as
+missing rather than failing the read: a foreign event stays legible.
+
+This is deliberately **not** a `check` finding. Phase 2 owns `HistoryBlobMissing`,
+which needs the `forgotten.<ext>` tombstone store to tell deliberate destruction
+from loss. A restore reports the same set rather than computing its own.
+
+### 10.2 `history-log <target>` — one document's lineage
+
+Pull the subject's row out of each manifest in **capture order** (`created`, then
+id) and keep only the events where that row changed. Nothing in the store is
+keyed by document: this is a derived query over the `id` column, at the cost of
+one pass over every event.
+
+- **The subject is an id wherever one exists** — including an id given
+  explicitly, which is never resolved through the live registry, so a deleted
+  document still answers. This is the rename-robust key: a move is one document
+  that changed path, where a path-keyed view shows two unrelated lineages.
+- **A path is the fallback**, for the documents that carry no id — the config
+  document, the registry, the recycle-bin index, an attachment payload. Those are
+  disproportionately what a sync transport damages, so the weaker key has to
+  exist. A path-keyed lineage stops at any rename; when the rows it *does* find
+  carry an id, the query says so and names the stronger one.
+- **Dedupe is on the whole row** — path, id and hash. A rename leaves the bytes
+  byte-identical, so deduping on the hash alone would swallow precisely the event
+  the `id` column exists to surface. A document acquiring an id is a point too:
+  the row changed.
+- **Omission is deletion** (§3.1). An event that does not name the subject
+  records it as gone — but only once the document has been seen, so a lineage
+  starts where its document does.
+- **Forks interleave rather than branch.** This is a display; `history-list` is
+  where a concurrent capture on another device is named as a fork.

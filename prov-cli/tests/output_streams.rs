@@ -218,3 +218,69 @@ fn readers_keep_data_on_stdout_and_chatter_on_stderr() {
         "the note is on stderr: {err:?}"
     );
 }
+
+#[test]
+fn the_history_readers_keep_the_manifest_on_stdout_and_the_warning_on_stderr() {
+    // `history-show` and `history-log` are readers over what a capture wrote, and
+    // both carry a *caveat* — "these bytes have not arrived", "this lineage is
+    // keyed by path". The caveat is narration: it must never contaminate the
+    // manifest a script is reading.
+    let dir = sandbox("history");
+    ok(&dir, &["init", "--yes"]);
+    ok(&dir, &["config", "history", "manual"]);
+    ok(&dir, &["new", "Alpha", "--in", "index.md"]);
+
+    let (out, _) = ok(&dir, &["history-capture", "--label", "first"]);
+    let event = out.trim().to_string();
+    assert!(!event.is_empty(), "capture stdout is the event id: {out:?}");
+
+    // A fully-synced event: the manifest is the data, and there is nothing to say
+    // about it beyond that.
+    let (out, err) = ok(&dir, &["history-show", &event]);
+    assert!(
+        out.contains(&event) && out.contains("alpha.md") && out.contains("index.md"),
+        "show puts the manifest on stdout: {out:?}"
+    );
+    assert!(
+        err.trim().is_empty(),
+        "a complete event warns about nothing: {err:?}"
+    );
+
+    // The half-synced case a sync transport actually produces: the event document
+    // is here, its blobs are not. Still a successful read — the marked-up manifest
+    // on stdout, the warning on stderr.
+    std::fs::remove_dir_all(dir.join("history/blobs")).unwrap();
+    let (out, err) = ok(&dir, &["history-show", &event]);
+    assert!(
+        out.contains("(bytes missing)"),
+        "show marks the unrecoverable rows: {out:?}"
+    );
+    assert!(
+        err.contains("no bytes in this store"),
+        "the half-synced warning is stderr narration: {err:?}"
+    );
+
+    // `history-log`: the change points are stdout, the count and the path-key
+    // caveat are stderr.
+    let (out, err) = ok(&dir, &["history-log", "alpha.md"]);
+    assert!(
+        out.contains(&event) && out.contains("alpha.md"),
+        "log puts the lineage on stdout: {out:?}"
+    );
+    assert!(
+        !out.contains("change point"),
+        "the count must not leak onto stdout: {out:?}"
+    );
+    assert!(
+        err.contains("change point"),
+        "log narrates the count on stderr: {err:?}"
+    );
+
+    // A document no capture ever saw: stdout empty, so a pipeline acts on nothing.
+    let (out, err) = ok(&dir, &["history-log", "never.md"]);
+    assert!(out.trim().is_empty(), "an empty lineage is empty: {out:?}");
+    assert!(
+        err.contains("no history event"),
+        "the note is on stderr: {err:?}"
+    );
+}

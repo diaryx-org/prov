@@ -575,6 +575,42 @@ pub(crate) enum Command {
     /// gated behind re-enabling a setting, least of all on the machine that just
     /// suffered the damage.
     HistoryList,
+    /// Print one event: its metadata, and the complete manifest of the file set
+    /// exactly as it stood at that capture — each row marked when the pre-image
+    /// bytes it names are not in the store.
+    ///
+    /// There is nothing to reconstruct: a full manifest *is* the effective
+    /// state, which is what this format buys over a delta log. A manifest and
+    /// its blobs travel over a sync transport separately, so an event whose
+    /// bytes have not all arrived is ordinary rather than broken — and legible
+    /// here, before anyone asks a restore to act on it.
+    ///
+    /// Works regardless of the `history` config axis.
+    HistoryShow {
+        /// The event id, as `history-list` prints it — for example
+        /// `2026-07-31-0915-pre-sync-4f2a9c1e`. Resolves to its document
+        /// directly, with no index consulted.
+        event: String,
+    },
+    /// Print one document's lineage across every capture: the events where its
+    /// bytes or its path changed, newest first.
+    ///
+    /// Following an id is rename-robust — a move shows as one document that
+    /// changed path, where a path-keyed history shows two unrelated lineages
+    /// that happen to abut. A path argument naming a registered document is
+    /// therefore followed by its id. A path with no id (the config document,
+    /// the registry, an attachment payload) is followed by path, which is the
+    /// best there is for a document that carries no identity.
+    ///
+    /// A derived query over the manifests, not a stored per-document chain: it
+    /// reads every event in the store and writes nothing.
+    ///
+    /// Works regardless of the `history` config axis.
+    HistoryLog {
+        /// The document: a path, or `id:<id>` to follow an id directly — which
+        /// still works for a document that has since been deleted.
+        target: String,
+    },
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The
