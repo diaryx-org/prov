@@ -512,6 +512,7 @@ these reminders.
 | `rm PATH [--force] [--purge]`   | delete (to recycle bin by default), removing the parent's entry |
 | `restore PATH` / `empty-bin`    | recover a binned document / purge the bin                |
 | `attach FILE [--in P]`          | give a non-document file a metadata sidecar, linked in    |
+| `attach FILE --opaque`          | the same for a file prov *could* read — a specimen it must not interpret |
 | `tree [ROOT]`                   | print the containment tree                               |
 | `explore [FILE]`                | walk the graph interactively                             |
 | `check [ROOT] [--fix]`          | report (and optionally repair) integrity problems        |

@@ -21,6 +21,14 @@
 //! - [`loose_attachments`](Workspace::loose_attachments) — every opaque file with
 //!   no sidecar yet, the work-list an importer walks.
 //!
+//! Opacity is a *role*, not a format. A file prov can read is refused by
+//! `attach` — it can carry its own metadata, so it should — but
+//! [`attach_opaque`](Workspace::attach_opaque) waives that for a specimen: an
+//! example document whose metadata block is an exhibit rather than a claim about
+//! this workspace. The sidecar's `attachment: true` marker is what shadows it,
+//! and [`is_shadowed_payload`](Workspace::is_shadowed_payload) is what holds prov
+//! to it in the scans that would otherwise read the file.
+//!
 //! Move and delete need no new code: a sidecar is a separated node, so
 //! [`rename`](Workspace::rename) already relocates the payload beside it (keeping
 //! `content` correct) and [`delete`](Workspace::delete) removes the pair.
@@ -50,6 +58,23 @@ use crate::workspace::Workspace;
 /// whole-file document), so the list is safe to keep static.
 const SIDECAR_EXTENSIONS: &[&str] = &["yaml", "yml", "json", "toml", "fig", "figl"];
 
+/// Every path that could be `payload`'s sidecar under the `<payload>.<ext>`
+/// convention, in reverse-lookup preference order. The probe half of the lookup;
+/// the `content` pointer confirms a hit ([`Workspace::sidecar_claims`]).
+///
+/// Note the convention cannot collide with a *separated* document's metadata
+/// half, which replaces the extension (`note.md` → `note.yaml`) rather than
+/// appending to it (`note.md.yaml`).
+pub(crate) fn sidecar_candidates(payload: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    let name = payload
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    SIDECAR_EXTENSIONS
+        .iter()
+        .map(move |ext| payload.with_file_name(format!("{name}.{ext}")))
+}
+
 /// The sidecar path for `payload` in metadata `format`: the payload's full name
 /// plus the format's whole-file extension, as a sibling (`sub/a.pdf` →
 /// `sub/a.pdf.yaml`), so the sidecar's `content` pointer is just the basename.
@@ -73,23 +98,58 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// is the caller's to track.)
     pub async fn attachment_for(&self, payload: &Path) -> Result<Option<PathBuf>> {
         let payload = link::normalize(payload);
-        let Some(name) = payload.file_name().and_then(|n| n.to_str()) else {
-            return Ok(None);
-        };
-        for ext in SIDECAR_EXTENSIONS {
-            let candidate = payload.with_file_name(format!("{name}.{ext}"));
+        for candidate in sidecar_candidates(&payload) {
             if !self.fs().try_exists(&self.root().join(&candidate)).await? {
                 continue;
             }
-            let (_, doc) = self.load(&candidate).await?;
-            if let Some(content) = doc.content_attr() {
-                let dir = candidate.parent().unwrap_or(Path::new(""));
-                if link::normalize(dir.join(content)) == payload {
-                    return Ok(Some(candidate));
-                }
+            if self.sidecar_claims(&candidate, &payload).await {
+                return Ok(Some(candidate));
             }
         }
         Ok(None)
+    }
+
+    /// Whether the document at `candidate` is an attachment sidecar whose
+    /// `content` resolves to `payload` — the authoritative half of the reverse
+    /// lookup, the `<payload>.<ext>` convention above being only the probe.
+    ///
+    /// Requires [`is_attachment`](crate::Document::is_attachment), so a separated
+    /// *prose* node never reads as one: its body is a document in its own right,
+    /// and prov must keep scanning it. Unreadable or unparsable candidates simply
+    /// do not claim (this runs inside best-effort scans).
+    async fn sidecar_claims(&self, candidate: &Path, payload: &Path) -> bool {
+        let Ok((_, doc)) = self.load(candidate).await else {
+            return false;
+        };
+        let Some(content) = doc.content_attr() else {
+            return false;
+        };
+        let dir = candidate.parent().unwrap_or(Path::new(""));
+        doc.is_attachment() && link::normalize(dir.join(content)) == payload
+    }
+
+    /// Whether `path` — a file prov *can* read — has been deliberately shadowed:
+    /// claimed as an opaque payload by an attachment sidecar beside it. The
+    /// promise `attach --opaque` makes, enforced: prov links, moves and fixity-
+    /// checks the file but never reads it *as a document*, so its title stays out
+    /// of the title index and any `id` it shows stays out of the registry.
+    ///
+    /// `listing` is the set of workspace-relative files the calling scan already
+    /// enumerated (its directory read), so a shadow check costs a set lookup
+    /// rather than a stat per metadata extension — this runs per file in the flat
+    /// title and id scans. A sidecar outside the listing therefore does not
+    /// shadow, which is the same bound the scans themselves observe.
+    pub(crate) async fn is_shadowed_payload(
+        &self,
+        path: &Path,
+        listing: &BTreeSet<PathBuf>,
+    ) -> bool {
+        for candidate in sidecar_candidates(path) {
+            if listing.contains(&candidate) && self.sidecar_claims(&candidate, path).await {
+                return true;
+            }
+        }
+        false
     }
 
     /// Every opaque file under the root that has no sidecar yet — the *recursive*
@@ -186,20 +246,46 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// body, so it is *not* rewritten, read, or required to be text — only its
     /// existence is checked. Refuses a payload prov can read as a document
     /// (that is [`adopt`](Workspace::adopt)'s job: it can hold its own
-    /// frontmatter) and refuses when a sidecar already exists (query
+    /// frontmatter; [`attach_opaque`](Self::attach_opaque) overrides) and refuses
+    /// when a sidecar already exists (query
     /// [`attachment_for`](Workspace::attachment_for) first for idempotency).
     pub async fn attach(&mut self, payload: &Path, parent: &Path) -> Result<PathBuf> {
-        self.attach_titled(payload, parent, None).await
+        self.attach_titled(payload, parent, None, false).await
+    }
+
+    /// [`attach`](Self::attach) for a payload prov *can* read — a file shadowed
+    /// on purpose rather than by its extension.
+    ///
+    /// Ordinarily a readable file is a document that should carry its own
+    /// metadata, so `attach` refuses it. But opacity is a statement about a
+    /// file's *role*, not its format: a specimen prov document — an example in a
+    /// spec, a fixture, a captured export — is a text file whose metadata block
+    /// is the exhibit, not a claim about this workspace. [`adopt`](Workspace::adopt)
+    /// would write an inverse link into that block and so edit the thing being
+    /// demonstrated; its example links would then be censused as real. Shadowing
+    /// it keeps the bytes exact (and, under `fixity: attachments`, pinned by a
+    /// `content_hash` that `check` verifies).
+    ///
+    /// The sidecar carries `attachment: true`, which the reader already honors
+    /// over the payload's extension ([`Document::is_attachment`](crate::Document::is_attachment)),
+    /// and which keeps the payload out of the title and id scans
+    /// ([`is_shadowed_payload`](Self::is_shadowed_payload)). An already-opaque
+    /// payload is accepted too — the flag is then simply redundant.
+    pub async fn attach_opaque(&mut self, payload: &Path, parent: &Path) -> Result<PathBuf> {
+        self.attach_titled(payload, parent, None, true).await
     }
 
     /// [`attach`](Self::attach) with an explicit sidecar title (else the payload's
     /// titleized stem). Authoring the title here keeps the parent's spanning-entry
     /// *label* in step with it, exactly as [`create_titled`](Self::create_titled).
+    /// `opaque` waives the readable-payload refusal (see
+    /// [`attach_opaque`](Self::attach_opaque)).
     pub(crate) async fn attach_titled(
         &mut self,
         payload: &Path,
         parent: &Path,
         title_override: Option<&str>,
+        opaque: bool,
     ) -> Result<PathBuf> {
         let payload = link::normalize(payload);
         let parent = link::normalize(parent);
@@ -209,9 +295,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         // An attachment shadows *external* content. A file prov can read is a
         // document that should carry its own metadata — adopt it, don't sidecar it.
-        if !is_opaque_payload(&payload) {
+        // Unless the caller says otherwise: opacity is a role, and a specimen
+        // document is text prov must agree not to interpret (`attach_opaque`).
+        if !opaque && !is_opaque_payload(&payload) {
             return Err(Error::Structure(format!(
-                "{} is a prov document, not an opaque attachment — use `adopt`",
+                "{} is a prov document, not an opaque attachment — use `adopt`, \
+                 or `--opaque` to shadow it unread",
                 payload.display()
             )));
         }
@@ -306,6 +395,7 @@ mod tests {
     use super::*;
     use crate::exec::block_on;
     use crate::fs::StdFs;
+    use crate::title::TitleMatch;
     use crate::validate::Finding;
 
     fn write(dir: &Path, rel: &str, bytes: &[u8]) {
@@ -487,6 +577,113 @@ mod tests {
         assert!(
             err.to_string().contains("not an opaque attachment"),
             "{err}"
+        );
+    }
+
+    /// A specimen: a *readable* prov document whose metadata block is an
+    /// exhibit — an example title, an example id, an example link to a file that
+    /// was never meant to exist here.
+    const SPECIMEN: &[u8] = b"---\ntitle: How this workspace is organized\nid: fpk38j\n\
+                              contents:\n- some-other-workspace.md\n---\n# Example\n";
+
+    #[test]
+    fn attach_opaque_shadows_a_readable_document_without_touching_it() {
+        let dir = tempdir("opaque");
+        write(&dir, "index.md", b"---\ntitle: Home\n---\n");
+        write(&dir, "examples/sample.md", SPECIMEN);
+
+        let node = block_on(
+            ws(&dir).attach_opaque(Path::new("examples/sample.md"), Path::new("index.md")),
+        )
+        .unwrap();
+        assert_eq!(node, PathBuf::from("examples/sample.md.yaml"));
+
+        // The marker the reader honors over the payload's extension, and the
+        // pointer that names what is shadowed.
+        let sidecar = read(&dir, "examples/sample.md.yaml");
+        assert!(sidecar.contains("attachment: true"), "{sidecar}");
+        assert!(sidecar.contains("content: sample.md"), "{sidecar}");
+        assert!(
+            sidecar.contains(&crate::fixity::digest(SPECIMEN)),
+            "{sidecar}"
+        );
+
+        // The exhibit is byte-exact: `adopt` would have written a link into it.
+        assert_eq!(
+            std::fs::read(dir.join("examples/sample.md")).unwrap(),
+            SPECIMEN
+        );
+
+        // And prov keeps out of it: the specimen's example link is not censused,
+        // so it is neither a broken link nor an orphan.
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_shadowed_payloads_title_and_id_stay_out_of_the_scans() {
+        let dir = tempdir("opaque-scans");
+        write(&dir, "index.md", b"---\ntitle: Home\n---\n");
+        write(&dir, "examples/sample.md", SPECIMEN);
+
+        // Before shadowing, the specimen is an ordinary document: prov reads it,
+        // and its exhibit competes for both the name and the id.
+        assert_eq!(
+            block_on(ws(&dir).title_index())
+                .unwrap()
+                .resolve("How this workspace is organized"),
+            TitleMatch::Unique(PathBuf::from("examples/sample.md"))
+        );
+        assert_eq!(block_on(ws(&dir).scan_ids()).unwrap().len(), 1);
+
+        block_on(ws(&dir).attach_opaque(Path::new("examples/sample.md"), Path::new("index.md")))
+            .unwrap();
+
+        // After: bytes prov agreed not to read as a document.
+        for index in [
+            block_on(ws(&dir).title_index()).unwrap(),
+            block_on(ws(&dir).title_index_scoped(Path::new("index.md"))).unwrap(),
+        ] {
+            assert_eq!(
+                index.resolve("How this workspace is organized"),
+                TitleMatch::Unknown,
+                "a specimen's title must not answer an alias"
+            );
+            assert_eq!(index.resolve("sample"), TitleMatch::Unknown, "nor its stem");
+        }
+        assert_eq!(
+            block_on(ws(&dir).scan_ids()).unwrap(),
+            vec![],
+            "an example id is not a claim on the registry"
+        );
+    }
+
+    #[test]
+    fn a_separated_prose_body_is_not_shadowed() {
+        // The neighbouring shape: `note.yaml` + `note.md` is a *separated*
+        // document, and its body is a document in its own right — prov must keep
+        // reading it. (The conventions cannot collide: a sidecar appends the
+        // extension, `note.md.yaml`, rather than replacing it.)
+        let dir = tempdir("opaque-separated");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\ncontents:\n- note.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "note.yaml",
+            b"title: Split Note\npart_of: index.md\ncontent: note.md\n",
+        );
+        write(&dir, "note.md", b"# Split Note\n");
+
+        // The body keeps its place in the index (sharing the stem with its own
+        // metadata half, as a separated node always has).
+        assert!(
+            matches!(
+                block_on(ws(&dir).title_index()).unwrap().resolve("note"),
+                TitleMatch::Ambiguous(paths) if paths.contains(&PathBuf::from("note.md"))
+            ),
+            "a separated body is still a document the scans read"
         );
     }
 

@@ -315,7 +315,8 @@ pub(crate) enum Command {
     Attach {
         /// The file to attach. Anything prov can't read as a document; a
         /// readable document should be created with `new` (it carries its own
-        /// metadata) rather than shadowed by a sidecar. Omit with `--all`.
+        /// metadata) rather than shadowed by a sidecar — unless you mean it, see
+        /// `--opaque`. Omit with `--all`.
         payload: Option<PathBuf>,
         /// The parent that gains a spanning link to the attachment (default: the
         /// workspace root): a path (`daily.md`), a title route
@@ -329,6 +330,14 @@ pub(crate) enum Command {
         /// Where `-p` writes the nodes it creates. File placement only.
         #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
         layout: LayoutArg,
+        /// Attach a file prov *can* read as a document, shadowing it: prov links,
+        /// moves and checksums it but never reads it — its title stays out of
+        /// alias resolution and any `id` it shows stays out of the registry. For a
+        /// specimen: an example document, a fixture, a captured export, whose
+        /// metadata block is an exhibit rather than a claim about this workspace.
+        /// `adopt` would instead write a link into that block, editing it.
+        #[arg(long, conflicts_with = "all")]
+        opaque: bool,
         /// Attach every loose file under the workspace — each opaque file that
         /// has no sidecar yet — instead of a single payload. Bounded to the
         /// directories the workspace already reaches (an unlinked subtree, a

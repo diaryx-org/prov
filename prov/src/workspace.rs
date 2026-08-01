@@ -196,6 +196,26 @@ fn is_document_path(path: &Path) -> bool {
     !crate::document::is_opaque_payload(path)
 }
 
+/// The workspace-relative paths of the *files* among a directory's `entries`,
+/// the listing a shadow check probes
+/// ([`is_shadowed_payload`](Workspace::is_shadowed_payload)). Hidden entries are
+/// skipped, matching the scans that build this.
+fn file_listing(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> BTreeSet<PathBuf> {
+    entries
+        .iter()
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.file_name().and_then(|n| n.to_str()).map(str::to_owned))
+        .filter(|name| !name.starts_with('.'))
+        .map(|name| {
+            if rel_dir.as_os_str().is_empty() {
+                PathBuf::from(name)
+            } else {
+                rel_dir.join(name)
+            }
+        })
+        .collect()
+}
+
 /// The resolution of one link target against a workspace: a path, an ID the
 /// registry does not currently resolve, or an off-workspace reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,8 +427,10 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             return self.title_index().await;
         }
         let mut index = TitleIndex::new();
-        for rel in self.direct_child_files(&dirs).await? {
-            if !is_document_path(&rel) {
+        let files = self.direct_child_files(&dirs).await?;
+        let listing: BTreeSet<PathBuf> = files.iter().cloned().collect();
+        for rel in files {
+            if !is_document_path(&rel) || self.is_shadowed_payload(&rel, &listing).await {
                 continue;
             }
             if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
@@ -606,6 +628,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
                 return Ok(());
             };
+            let listing = file_listing(&rel_dir, &entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -626,6 +649,9 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     self.scan_ids_dir(rel, ids).await?;
                 } else if entry.file_type().is_file()
                     && is_document_path(&rel)
+                    // An `id:` inside a shadowed payload is an example, not a
+                    // claim on the registry (see `attach_opaque`).
+                    && !self.is_shadowed_payload(&rel, &listing).await
                     && let Ok((_, doc)) = self.load(&rel).await
                     && let Some(id) = doc.meta.get("id").and_then(Value::as_str)
                     && !id.trim().is_empty()
@@ -650,6 +676,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
                 return Ok(());
             };
+            let listing = file_listing(&rel_dir, &entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -668,7 +695,12 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 };
                 if entry.file_type().is_dir() {
                     self.scan_titles(rel, index).await?;
-                } else if entry.file_type().is_file() && is_document_path(&rel) {
+                } else if entry.file_type().is_file()
+                    && is_document_path(&rel)
+                    // A shadowed payload is bytes prov agreed not to read: its
+                    // title is a specimen's, and must not answer `[[alias]]`.
+                    && !self.is_shadowed_payload(&rel, &listing).await
+                {
                     // Always index by stem (name-based resolution, Obsidian-style)…
                     if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
                         index.insert(stem, rel.clone());

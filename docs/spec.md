@@ -162,6 +162,16 @@ Two consequences worth stating outright:
   the workspace, `attach` mints a sidecar (`photo.jpg.yaml`) — an ordinary content
   node whose `content` field names the opaque payload. The graph stays all-plaintext;
   the binary rides along as a node's body.
+- **Opacity is declared, not inferred.** A payload is normally opaque because its
+  extension is not one prov reads, but a sidecar may also say so outright with
+  `attachment: true`, and that marker wins. It is how a *specimen* is carried — an
+  example document, a fixture, a captured export, whose metadata block is an
+  exhibit rather than a claim about this workspace (`attach --opaque`). A reader
+  must not interpret a declared payload as a document: its links are not edges,
+  its `title` does not answer a nominal reference, its `id` does not enter the
+  registry. Contrast a *separated* node, whose `content` names a prose body that
+  **is** a document in its own right: the marker is what distinguishes the two
+  when the extension no longer can.
 - **Machinery is reached one-way.** The root points *down* at a machine file
   through its typed pointer (`config: prov.yaml`); the machine file declares no
   back-link. It is not content — not in the containment tree, not ID'd, not

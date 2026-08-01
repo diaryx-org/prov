@@ -136,6 +136,7 @@ fn main() -> ExitCode {
             in_target,
             parents,
             layout,
+            opaque,
             all,
             recursive,
         } => cmd_attach(
@@ -143,6 +144,7 @@ fn main() -> ExitCode {
             in_target.as_deref(),
             parents,
             layout.into(),
+            opaque,
             all,
             recursive,
         ),
@@ -1433,6 +1435,7 @@ fn cmd_attach(
     in_target: Option<&str>,
     parents: bool,
     layout: Layout,
+    opaque: bool,
     all: bool,
     recursive: bool,
 ) -> CmdResult {
@@ -1490,7 +1493,12 @@ fn cmd_attach(
     let Some(payload) = payload else {
         return Err("specify a file to attach, or pass --all".into());
     };
-    let node = block_on(ws.attach(&ws_rel(&ctx, payload)?, &parent_rel))?;
+    let payload_rel = ws_rel(&ctx, payload)?;
+    let node = if opaque {
+        block_on(ws.attach_opaque(&payload_rel, &parent_rel))?
+    } else {
+        block_on(ws.attach(&payload_rel, &parent_rel))?
+    };
     persist(&ctx, &mut ws)?;
     eprintln!(
         "attached {} (sidecar {} in {})",
