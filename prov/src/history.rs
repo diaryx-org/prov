@@ -2045,6 +2045,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_captured_workspace_goes_back_from_its_blobs_without_a_journal_its_size() {
+        // What restore will rest on, proved against what Phase 0 actually writes:
+        // a manifest plus `blob_path` is enough to stage the whole capture set as
+        // copies, and the journal that makes that set crash-atomic is bounded by
+        // the file *count*, not by the size of the workspace. Staged as `write`s,
+        // this same set would put every byte below into `.prov-journal` first.
+        let dir = seed("restore-primitive");
+        let payload = "J".repeat(256 * 1024);
+        write(&dir, "notes/photo.jpg", &payload);
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("the first capture must write an event");
+        };
+
+        // Damage of the shape a bad merge leaves: bytes clobbered at several paths
+        // at once, which is why an event is a consistent cut rather than a file.
+        write(&dir, "notes/a.md", "clobbered by a sync conflict");
+        write(&dir, "notes/photo.jpg", "truncated");
+
+        let mut w = ws(&dir);
+        let event = block_on(w.history_event(Path::new("index.md"), &id))
+            .unwrap()
+            .unwrap();
+        let store_index = Path::new("history/index.md");
+        let mut cs = w.change();
+        for file in &event.files {
+            cs.copy_from(&file.path, blob_path(store_index, &file.hash).unwrap());
+        }
+        let journal = crate::journal::encode(cs.ops()).unwrap();
+        assert!(
+            journal.len() < 2048,
+            "the journal for a {payload_len}-byte workspace should be paths only, \
+             got {journal_len} bytes",
+            payload_len = payload.len(),
+            journal_len = journal.len()
+        );
+        block_on(w.commit(cs)).unwrap();
+
+        // Byte-exact at every captured path — checked against the manifest's own
+        // hashes, which is the only claim a restore actually owes.
+        for file in &event.files {
+            let bytes = std::fs::read(dir.join(&file.path)).unwrap();
+            assert_eq!(
+                crate::fixity::digest(&bytes),
+                file.hash,
+                "{} did not come back byte-exact",
+                file.path.display()
+            );
+        }
+        assert_eq!(read(&dir, "notes/photo.jpg").len(), payload.len());
+    }
+
     // ── Lineage: `history-log` ───────────────────────────────────────────────
 
     /// Re-point the root at `contents`, so a rename is visible to the reachable

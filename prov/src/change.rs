@@ -86,6 +86,35 @@ pub enum FileOp {
         /// The file to remove.
         path: PathBuf,
     },
+    /// Copy the bytes already on disk at `source` to `path`, verbatim.
+    ///
+    /// [`Write`](FileOp::Write) with the payload left where it lies. The journal
+    /// records the *source path* instead of the bytes, so a set that writes a
+    /// large payload costs O(path) of journal rather than a second copy of every
+    /// byte — which is what makes putting a whole captured workspace back
+    /// tractable, where `Write` would duplicate the entire tree into
+    /// `.prov-journal` at the commit point.
+    ///
+    /// **The source must be immutable for the lifetime of the change**, because
+    /// that is the entire correctness argument. A `Write` journals the exact bytes
+    /// it intends, so replay after a crash is deterministic by construction; a
+    /// `CopyFrom` journals a reference, and replay is deterministic only if the
+    /// referent cannot have changed underneath it. A content-addressed history
+    /// blob satisfies this by definition — its path *is* the digest of its
+    /// contents, so bytes found there are the bytes intended, or the file is gone
+    /// and replay fails loudly. Do not point this at a mutable document, at a
+    /// path some other op in the same set writes, or at anything outside the
+    /// workspace.
+    ///
+    /// This bounds *journal* growth, not peak memory: rollback still buffers the
+    /// bytes it overwrites, exactly as `Write` does.
+    CopyFrom {
+        /// The file to write.
+        path: PathBuf,
+        /// The workspace-relative file to copy from — immutable, and ideally
+        /// content-addressed.
+        source: PathBuf,
+    },
 }
 
 impl FileOp {
@@ -93,7 +122,7 @@ impl FileOp {
     /// rename, the victim for a remove. What a dry run lists.
     pub fn path(&self) -> &Path {
         match self {
-            FileOp::Write { path, .. } => path,
+            FileOp::Write { path, .. } | FileOp::CopyFrom { path, .. } => path,
             FileOp::Rename { to, .. } => to,
             FileOp::Remove { path } => path,
         }
@@ -142,6 +171,19 @@ impl ChangeSet {
         self
     }
 
+    /// Stage a copy of the file at `source` to `path` (both workspace-relative),
+    /// instead of carrying its bytes through the set.
+    ///
+    /// See [`FileOp::CopyFrom`] for the immutability the source has to satisfy —
+    /// it is what keeps crash recovery deterministic.
+    pub fn copy_from(&mut self, path: impl Into<PathBuf>, source: impl Into<PathBuf>) -> &mut Self {
+        self.ops.push(FileOp::CopyFrom {
+            path: path.into(),
+            source: source.into(),
+        });
+        self
+    }
+
     /// The staged ops, in execution order. The dry-run view.
     pub fn ops(&self) -> &[FileOp] {
         &self.ops
@@ -158,8 +200,11 @@ impl ChangeSet {
     /// until commit, so the set has to answer instead.
     ///
     /// `None` if the set does not write `path` — including when it renames or
-    /// removes it. This is deliberately a lookup, not a filesystem overlay: it
-    /// resolves the one hazard staging introduces and nothing more.
+    /// removes it, and including a [`FileOp::CopyFrom`], whose bytes are on disk
+    /// at the source rather than held in the set. This is deliberately a lookup,
+    /// not a filesystem overlay: it resolves the one hazard staging introduces and
+    /// nothing more. A caller that must read back a path it staged a copy to has
+    /// to read the source itself.
     pub fn staged(&self, path: &Path) -> Option<&[u8]> {
         self.ops.iter().rev().find_map(|op| match op {
             FileOp::Write { path: p, bytes } if p == path => Some(bytes.as_slice()),
@@ -249,6 +294,13 @@ impl ChangeSet {
                 FileOp::Rename { from, to } => {
                     guard_in_root(from)?;
                     guard_in_root(to)?;
+                }
+                // The source is clamped too: it is read, and a set assembled by a
+                // caller must not be able to pull `../../../etc/passwd` into the
+                // workspace any more than it may write out of one.
+                FileOp::CopyFrom { path, source } => {
+                    guard_in_root(path)?;
+                    guard_in_root(source)?;
                 }
             }
         }
@@ -367,6 +419,25 @@ async fn exec<FS: Storage>(fs: &FS, root: &Path, op: &FileOp, undo: &mut Vec<Und
                 bytes: old,
             });
         }
+        // A `Write` whose bytes were left at the source. The read happens here, at
+        // execution time, rather than when the op was staged — that is the whole
+        // saving, and it is why the source has to be immutable.
+        FileOp::CopyFrom { path, source } => {
+            let (full, source_full) = (root.join(path), root.join(source));
+            let bytes = fs.read(&source_full).await?;
+            match fs.read(&full).await {
+                Ok(old) => undo.push(Undo::Restore {
+                    path: full.clone(),
+                    bytes: old,
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    undo.push(Undo::Delete { path: full.clone() });
+                }
+                Err(e) => return Err(e.into()),
+            }
+            ensure_parent(fs, &full).await?;
+            fs.write_atomic(&full, &bytes).await?;
+        }
     }
     Ok(())
 }
@@ -458,6 +529,72 @@ mod tests {
         cs.write("deep/nested/child.md", "hi");
         block_on(cs.apply(&StdFs, &root)).unwrap();
         assert_eq!(read(&root, "deep/nested/child.md").as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn a_copy_lands_the_source_bytes_and_leaves_the_source_alone() {
+        let root = tmp("copy");
+        std::fs::create_dir_all(root.join("history/blobs/9f")).unwrap();
+        std::fs::write(root.join("history/blobs/9f/86d081"), "captured").unwrap();
+        std::fs::write(root.join("notes.md"), "damaged").unwrap();
+
+        let mut cs = ChangeSet::new();
+        cs.copy_from("notes.md", "history/blobs/9f/86d081");
+        // A path that does not exist yet gets its parent made, as a write does.
+        cs.copy_from("deep/fresh.md", "history/blobs/9f/86d081");
+        block_on(cs.apply(&StdFs, &root)).unwrap();
+
+        assert_eq!(read(&root, "notes.md").as_deref(), Some("captured"));
+        assert_eq!(read(&root, "deep/fresh.md").as_deref(), Some("captured"));
+        // The blob is shared by every event naming it: read, never consumed.
+        assert_eq!(
+            read(&root, "history/blobs/9f/86d081").as_deref(),
+            Some("captured")
+        );
+    }
+
+    #[test]
+    fn a_failed_copy_rolls_back_exactly_as_a_failed_write_does() {
+        // A copy is a write whose payload was fetched late, so it must record the
+        // same undo: restore what it overwrote, delete what it created.
+        let root = tmp("rollback-copy");
+        std::fs::create_dir_all(root.join("history/blobs/9f")).unwrap();
+        std::fs::write(root.join("history/blobs/9f/86d081"), "captured").unwrap();
+        std::fs::write(root.join("notes.md"), "damaged").unwrap();
+
+        let mut cs = ChangeSet::new();
+        cs.copy_from("notes.md", "history/blobs/9f/86d081");
+        cs.copy_from("fresh.md", "history/blobs/9f/86d081");
+        cs.write("doomed.md", "never lands");
+        let err = block_on(cs.apply(&FailAtWrite::nth(2), &root)).unwrap_err();
+        assert!(err.to_string().contains("disk full"), "{err}");
+
+        assert_eq!(read(&root, "notes.md").as_deref(), Some("damaged"));
+        assert_eq!(read(&root, "fresh.md"), None);
+    }
+
+    #[test]
+    fn a_copy_from_a_missing_source_fails_before_the_target_is_touched() {
+        // The half-synced event: the manifest names a blob the transport has not
+        // delivered. Better to fail the set than to write a hole into the tree.
+        let root = tmp("copy-missing-source");
+        std::fs::write(root.join("notes.md"), "damaged").unwrap();
+        let mut cs = ChangeSet::new();
+        cs.copy_from("notes.md", "history/blobs/9f/86d081");
+        assert!(block_on(cs.apply(&StdFs, &root)).is_err());
+        assert_eq!(read(&root, "notes.md").as_deref(), Some("damaged"));
+    }
+
+    #[test]
+    fn a_copy_cannot_read_from_outside_the_root() {
+        // The source is read, so it is clamped like every written path: a set a
+        // caller assembled must not be able to pull the host's files into the tree.
+        let root = tmp("copy-escape");
+        let mut cs = ChangeSet::new();
+        cs.copy_from("stolen.md", "../../../etc/passwd");
+        let err = block_on(cs.apply(&StdFs, &root)).unwrap_err();
+        assert!(matches!(err, Error::Escape(_)), "{err:?}");
+        assert_eq!(read(&root, "stolen.md"), None);
     }
 
     #[test]

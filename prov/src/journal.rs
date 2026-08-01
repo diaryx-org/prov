@@ -6,7 +6,7 @@
 //! one failure that leaves behind — a `kill -9` or a power cut *between* two of a
 //! set's writes — is what this closes. The mechanism is the classic write-ahead
 //! log, specialized to the one shape prov's change sets take: a sequence of
-//! whole-file writes, renames, and removes, each self-contained.
+//! whole-file writes, copies, renames, and removes, each self-contained.
 //!
 //! ## The protocol
 //!
@@ -45,6 +45,23 @@
 //! all-or-nothing, so a torn *write* is impossible, but bit-rot on the way back
 //! is not, and a journal that cannot be trusted must be refused loudly rather
 //! than replayed into corruption.
+//!
+//! ## Payload by reference
+//!
+//! One op — [`FileOp::CopyFrom`] — journals a *source path* in place of the bytes
+//! it will write. Without it, a change set putting a whole captured workspace
+//! back would duplicate that entire tree into the journal at the commit point,
+//! making a restore two full-workspace writes and bounding it by the size of the
+//! workspace rather than the number of files in it.
+//!
+//! Journaling a reference stays deterministic to replay, but only because the
+//! referent is *required* to be immutable. A content-addressed history blob
+//! satisfies that by construction — its path is the digest of its own contents —
+//! so replay either finds exactly the bytes the set intended, or finds nothing
+//! and fails loudly. That requirement is a real obligation on whoever stages the
+//! op: pointed at a mutable document, it would let recovery write bytes the
+//! original change never intended, which is the one thing a write-ahead log
+//! exists to prevent.
 
 use std::path::{Path, PathBuf};
 
@@ -97,6 +114,13 @@ pub(crate) fn encode(ops: &[FileOp]) -> Result<Vec<u8>> {
                 buf.push(2);
                 put_path(&mut buf, path)?;
             }
+            // Two paths, no payload — the point of the op. See [`FileOp::CopyFrom`]
+            // for why journaling a *reference* is still deterministic to replay.
+            FileOp::CopyFrom { path, source } => {
+                buf.push(3);
+                put_path(&mut buf, path)?;
+                put_path(&mut buf, source)?;
+            }
         }
     }
     let checksum = fnv1a(&buf);
@@ -137,6 +161,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<FileOp>> {
             },
             2 => FileOp::Remove {
                 path: cur.take_path()?,
+            },
+            3 => FileOp::CopyFrom {
+                path: cur.take_path()?,
+                source: cur.take_path()?,
             },
             other => return Err(corrupt(&format!("unknown op tag {other}"))),
         };
@@ -192,6 +220,24 @@ async fn replay<FS: Storage>(fs: &FS, root: &Path, op: &FileOp) -> Result<()> {
             let full = root.join(path);
             ensure_parent(fs, &full).await?;
             fs.write_atomic(&full, bytes).await?;
+        }
+        // Idempotent for the same reason a `Write` is — with the bytes fetched
+        // from the source rather than carried in the journal. That is sound
+        // exactly as far as the source is immutable ([`FileOp::CopyFrom`]): a
+        // content-addressed blob either holds the intended bytes or is gone, and
+        // gone is an error rather than a silent divergence, because replay must
+        // never invent a state the original set did not intend.
+        FileOp::CopyFrom { path, source } => {
+            let (full, source_full) = (root.join(path), root.join(source));
+            let bytes = fs.read(&source_full).await.map_err(|e| {
+                Error::Structure(format!(
+                    "journal replay: cannot copy {} from {} — {e}",
+                    full.display(),
+                    source_full.display()
+                ))
+            })?;
+            ensure_parent(fs, &full).await?;
+            fs.write_atomic(&full, &bytes).await?;
         }
         // A remove of a file already gone is the state we wanted, not a failure.
         FileOp::Remove { path } => {
@@ -345,6 +391,32 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_journals_a_reference_not_the_payload() {
+        // The point of the op, stated as an assertion: the journal for a copy is
+        // bounded by the path lengths, not by the size of what it will write.
+        // Without this, restoring a captured workspace writes that whole workspace
+        // into `.prov-journal` before touching a single document.
+        let payload: Vec<u8> = vec![7; 512 * 1024];
+        let by_value = encode(&[FileOp::Write {
+            path: "notes/photo.jpg".into(),
+            bytes: payload.clone(),
+        }])
+        .unwrap();
+        let by_reference = encode(&[FileOp::CopyFrom {
+            path: "notes/photo.jpg".into(),
+            source: "history/blobs/9f/86d081".into(),
+        }])
+        .unwrap();
+        assert!(by_value.len() > payload.len(), "a Write carries its bytes");
+        assert!(
+            by_reference.len() < 128,
+            "a CopyFrom carries two paths: {} bytes",
+            by_reference.len()
+        );
+        assert_eq!(decode(&by_reference).unwrap().len(), 1);
+    }
+
+    #[test]
     fn binary_payloads_survive_the_journal_verbatim() {
         // An attached photo staged for a write is opaque bytes, not text — the
         // journal must carry it exactly, with no escaping or UTF-8 assumption.
@@ -463,6 +535,56 @@ mod tests {
             assert!(!root.join("a.md").exists());
             assert!(!root.join(JOURNAL_NAME).exists());
         }
+    }
+
+    #[test]
+    fn recovery_rolls_a_copy_forward_from_its_immutable_source() {
+        // The restore shape: a crash after the commit point, with the payload
+        // still sitting in a content-addressed blob. Replay reads it back and
+        // lands the file, whether or not the copy ran before the crash.
+        for already_copied in [false, true] {
+            let root = tmp(&format!("recover-copy-{already_copied}"));
+            std::fs::create_dir_all(root.join("history/blobs/9f")).unwrap();
+            std::fs::write(root.join("history/blobs/9f/86d081"), "captured bytes").unwrap();
+            std::fs::write(root.join("notes.md"), "damaged bytes").unwrap();
+            let ops = vec![FileOp::CopyFrom {
+                path: "notes.md".into(),
+                source: "history/blobs/9f/86d081".into(),
+            }];
+            std::fs::write(root.join(JOURNAL_NAME), encode(&ops).unwrap()).unwrap();
+            if already_copied {
+                std::fs::write(root.join("notes.md"), "captured bytes").unwrap();
+            }
+
+            block_on(recover(&StdFs, &root)).unwrap();
+
+            assert_eq!(read(&root, "notes.md").as_deref(), Some("captured bytes"));
+            assert!(!root.join(JOURNAL_NAME).exists());
+            // The source is read, never consumed: the blob is shared by every
+            // event that names it and must survive the restore.
+            assert!(root.join("history/blobs/9f/86d081").exists());
+        }
+    }
+
+    #[test]
+    fn a_copy_whose_source_is_gone_fails_replay_rather_than_inventing_a_state() {
+        // The cost of journaling a reference: if the referent is missing at replay
+        // time there is nothing to fall back on. That must be loud — writing
+        // nothing, or writing something else, would be recovery reaching a state
+        // the original change set never intended.
+        let root = tmp("recover-copy-missing");
+        std::fs::write(root.join("notes.md"), "damaged bytes").unwrap();
+        let ops = vec![FileOp::CopyFrom {
+            path: "notes.md".into(),
+            source: "history/blobs/9f/86d081".into(),
+        }];
+        std::fs::write(root.join(JOURNAL_NAME), encode(&ops).unwrap()).unwrap();
+
+        let err = block_on(recover(&StdFs, &root)).unwrap_err();
+        assert!(err.to_string().contains("cannot copy"), "{err}");
+        // The journal stays, so the next recovery can finish once the blob arrives.
+        assert!(root.join(JOURNAL_NAME).exists());
+        assert_eq!(read(&root, "notes.md").as_deref(), Some("damaged bytes"));
     }
 
     #[test]
