@@ -22,28 +22,38 @@ prov workspace:
 
 1. **Find the root.** The root document is the file named by a one-line `.prov`
    pointer if present, else the first of `README.md`, `readme.md`, `index.md`
-   that exists. *(Invariant: the root is the reachable document carrying a
-   `prov:` key with no spanning-parent; the name convention just finds it without
-   scanning.)*
+   that exists. *(Invariant: the root is the reachable document with no
+   spanning-parent, and the one that declares or points at the workspace's
+   policy (rule 3); the name convention just finds it without scanning.)*
 2. **Read its metadata block.** Split frontmatter from body by fence — `---`
    (YAML), `;;;` (JSON), or a ```` ```fig ```` block. The block is a key→value map.
-3. **Read `prov.spec`.** An integer naming which version of these rules applies.
-   A higher number than you know means you may still traverse structure (rules
-   4–5 are stable) but should treat unknown policy keys as opaque.
-4. **Read `prov.relations` + `prov.spanning`.** These declare the graph
-   vocabulary (§2). Absent ⇒ the default vocabulary: `contents`/`part_of`
-   containment, spanning `contents`.
-5. **Unfold.** From the root, follow the field named by `prov.spanning` to reach
+3. **Read the policy, from both homes.** Workspace policy is one vocabulary
+   with two homes: the root's `prov:` key, and the **config document** the root
+   names through a top-level `config` pointer (`config: prov.yaml`), where the
+   same keys sit at *top level* because the whole document is policy. Resolve
+   per key, `config document > root prov: block > default`. A workspace may use
+   either home or both, so a reader that consults only one will miss policy that
+   is really there.
+
+   `spec` is an integer naming which version of these rules applies. A higher
+   number than you know means you may still traverse structure (rules 4–5 are
+   stable) but should treat unknown policy keys as opaque.
+4. **Read `relations` + `spanning`** — resolved across both homes as in rule 3.
+   These declare the graph vocabulary (§2). Absent ⇒ the default vocabulary:
+   `contents`/`part_of` containment, spanning `contents`.
+5. **Unfold.** From the root, follow the field named by `spanning` to reach
    every node; each node's own block repeats the process. Non-spanning relations
    are the overlay graph.
 
-Everything past rule 3 is *learned from the document*, not known in advance —
+Everything past rule 3 is *learned from the workspace*, not known in advance —
 which is what lets the vocabulary vary per workspace without a foreign reader
 needing to know it beforehand.
 
 ## 2. Self-describing the vocabulary
 
-The relation vocabulary is declared in the root's `prov:` block. Each
+The relation vocabulary is declared in **either policy home** (rule 3) — shown
+here in the root's `prov:` block, where it nests under `prov:`; in a config
+document the identical keys sit at top level, with no `prov:` wrapper. Each
 `relations.<name>` entry may carry structural definition keys, and one relation
 is named spanning:
 
@@ -64,6 +74,13 @@ prov:
       cardinality: many
       inverse: see_also        # a symmetric overlay relation
 ```
+
+The same vocabulary in a config document drops the wrapper — `spec: 1`,
+`spanning: contents`, `relations:` at top level — which is how this repository's
+own `prov.yaml` spells it. Neither form is preferred; `prov config --home
+<root|sidecar>` moves policy between them without changing what it means. See
+[Config vocabulary](/docs/config-vocab.md) for the full key list and the
+precedence chain.
 
 This is a faithful serialization of the in-memory `RelationSet`
 (`prov/src/relation.rs`): prov reads `cardinality`, `inverse`, and `spanning`;
@@ -154,9 +171,10 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **Machinery** | a one-way pointer relation (`registry`, `config`, `recycle_bin`, `history`, a `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
 | **Opaque payload** | the `content` field | *not a node* — the bytes are the body of a sidecar node (an attachment); hashed for fixity, never parsed |
 | **Controlled term** | a `fields` value | resolved against a vocabulary store, checked (§3) — not traversed |
+| **Generated prose** | a one-way pointer relation (`about`) | plaintext in the workspace's *content* format; reached from the root only; **no inverse, no `part_of`, no id, not in the spanning tree, not orphan-checked**; rewritten **whole** by prov and never merged; a pure function of configuration, therefore **discardable** — deleting it loses nothing |
 | **External** | a URL | recognized by syntax, never resolved or validated |
 
-Two consequences worth stating outright:
+Four consequences worth stating outright:
 
 - **A non-plaintext file is wrapped, not linked.** To bring an image or PDF into
   the workspace, `attach` mints a sidecar (`photo.jpg.yaml`) — an ordinary content
@@ -177,6 +195,15 @@ Two consequences worth stating outright:
   back-link. It is not content — not in the containment tree, not ID'd, not
   orphan-checked — so a `part_of` back to the root would assert a tree membership
   it does not have. Its only self-description is a human `title`.
+- **Generated prose has machinery's shape but not its carrier.** `about.md` is
+  reached one-way from the root, carries no `part_of` and no id, and stays out of
+  the spanning tree — machinery in every structural respect. It is a separate
+  kind because §5's MUST does not fit it: record stores are whole-file config
+  documents precisely because prov re-lays-out their sorted records and prose has
+  no stable home there, whereas this file is *entirely* prose, written in the
+  workspace's content format. What makes that safe is the other half of the
+  contract — prov rewrites it whole from configuration, so it is derived rather
+  than authoritative, and a conflicted copy is regenerated rather than merged.
 
 ## 5. Where things live — placement rules
 
