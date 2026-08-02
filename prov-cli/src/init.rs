@@ -864,6 +864,11 @@ pub(crate) fn cmd_init(
         // own) and adds ongoing storage. `prov config history manual` turns it
         // on for the workspaces that want it.
         history: prov::History::Off,
+        // On, and deliberately not prompted for either — but for the opposite
+        // reason. A workspace that explains itself to a stranger by default is
+        // the whole thesis (DESIGN §1); asking would invite people to decline
+        // the one artifact that makes the directory readable without prov.
+        about: prov::About::Structure,
         updated: updated_field.clone(),
     };
     reference.write_onto(&mut ws_config);
@@ -1078,6 +1083,30 @@ pub(crate) fn cmd_init(
         }
     }
 
+    // The very first workspace a user makes already explains itself — which is
+    // the whole point of `about` defaulting on. Written last so it describes the
+    // workspace as finally configured, including anything adoption added.
+    //
+    // Best-effort, like every other derived artifact: a workspace that was
+    // written successfully must not be reported as a failed `init` because a
+    // regenerable page could not be produced.
+    let mut about_note = String::new();
+    if prov::about::enabled(&ws_config) {
+        let ctx = Ctx {
+            root_dir: dir.clone(),
+            root_doc: PathBuf::from(&root_name),
+            registry: None,
+            config: ws_config.clone(),
+        };
+        match workspace(&ctx).and_then(|ws| {
+            let about_ctx = about_context(&ctx)?;
+            Ok(block_on(ws.write_about(&ctx.root_doc, &ctx.config, &about_ctx))?)
+        }) {
+            Ok(path) => about_note = format!("\nabout: {}", path.display()),
+            Err(e) => eprintln!("prov: could not write about.md ({e}); run `prov about`"),
+        }
+    }
+
     let author_note = author
         .as_deref()
         .map(|a| format!(", author {a}"))
@@ -1115,7 +1144,7 @@ pub(crate) fn cmd_init(
     };
     let details = format!(
         "root: {root_name} — {title}{author_note}\n\
-         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{recycle_note}{fixity_note}{updated_note}",
+         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{recycle_note}{fixity_note}{updated_note}{about_note}",
         content.label(),
         embed.as_config_str(),
         embed_label.to_lowercase(),

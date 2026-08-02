@@ -552,6 +552,29 @@ pub(crate) enum Command {
         #[arg(long)]
         zip: bool,
     },
+    /// Regenerate `about.md` — the prose page that tells a reader with no prior
+    /// knowledge how to read this directory — from the workspace's own
+    /// configuration, and point the root at it.
+    ///
+    /// The page is the spec *specialized* against this workspace: every rule
+    /// resolved to a concrete fact, every branch this workspace does not take
+    /// left out. It is written for a person who has the directory and nothing
+    /// else, and it is found by its filename rather than by following a link.
+    ///
+    /// Derived from configuration alone, never from the files, so it is rewritten
+    /// when configuration changes and at no other time. A conflicted copy is
+    /// always resolved by regenerating rather than merging — nothing in it is a
+    /// fact about anything but the config.
+    About {
+        /// Exit non-zero if the page is missing or does not match what prov
+        /// would generate, printing what differs. Writes nothing. For CI in a
+        /// repository that wants the page guaranteed current.
+        #[arg(long)]
+        check: bool,
+        /// Write the generated page to stdout, touching nothing.
+        #[arg(long, conflicts_with = "check")]
+        print: bool,
+    },
     /// Capture the workspace into the history store: hash every reachable file,
     /// park any bytes not already stored, and write one immutable event
     /// document recording the complete file set at this moment.

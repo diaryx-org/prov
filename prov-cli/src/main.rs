@@ -182,6 +182,7 @@ fn main() -> ExitCode {
             home,
         } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
+        Command::About { check, print } => cmd_about(check, print),
         Command::HistoryCapture { label } => cmd_history_capture(label.as_deref()),
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
@@ -297,7 +298,14 @@ fn warn_config(ctx: &Ctx) {
 /// see [`find_root`].
 fn find_root_quiet() -> Result<Ctx, AnyError> {
     let cwd = std::env::current_dir()?;
-    match block_on(prov::discover(&StdFs, &cwd))? {
+    find_root_quiet_at(&cwd)
+}
+
+/// [`find_root_quiet`], but discovering from `dir` rather than the process's
+/// current directory — for a re-discovery after a write has changed the config
+/// on disk, where the caller already knows the root.
+fn find_root_quiet_at(dir: &Path) -> Result<Ctx, AnyError> {
+    match block_on(prov::discover(&StdFs, dir))? {
         prov::Discovery::Found(d) => Ok(Ctx {
             root_dir: d.root_dir,
             root_doc: d.root_doc,
@@ -412,6 +420,11 @@ fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
             registry_rel.display(),
             ctx.root_doc.display()
         );
+        // A new machinery file the root now points at, which `about.md` lists
+        // among the files the spine will never reach. Bootstrapping one is a
+        // change to the workspace's declared structure, not to its contents, so
+        // it is squarely inside what the page describes.
+        refresh_about(&ctx.root_dir)?;
     }
     ctx.registry = Some(registry_rel);
     Ok(())
@@ -1139,7 +1152,18 @@ fn cmd_check(root: Option<&Path>, fix: bool) -> CmdResult {
         None => ctx.root_doc.clone(),
     };
     let mut ws = workspace(&ctx)?;
-    let findings = block_on(ws.check(&root))?;
+    let mut findings = block_on(ws.check(&root))?;
+    // The generated page is checked alongside the graph, so "run `check` before
+    // handing this workspace to someone" guarantees one more thing: that the
+    // page describing it is not lying. Only when checking the workspace root —
+    // a scoped `check <subtree>` is asking about that subtree.
+    if root == ctx.root_doc {
+        let about_ctx = about_context(&ctx)?;
+        if let Some(finding) = block_on(ws.check_about(&ctx.root_doc, &ctx.config, &about_ctx))? {
+            findings.push(finding);
+        }
+    }
+    let findings = findings;
     if fix {
         return cmd_check_fix(&mut ctx, &mut ws, &root, &findings);
     }
@@ -1672,6 +1696,10 @@ fn cmd_rm(path: &str, force: bool, purge: bool) -> CmdResult {
         println!("deleted {}", resolved.display());
         danglers
     };
+    // The first recycle *bootstraps* the bin and adds the root's `recycle_bin`
+    // pointer — another machinery file the page lists. A no-op on every later
+    // delete, since the pointer already exists.
+    refresh_about(&ctx.root_dir)?;
     for finding in &danglers {
         eprintln!("warning: now dangling — {finding}");
     }
@@ -1699,6 +1727,76 @@ fn cmd_empty_bin() -> CmdResult {
     // A bulk purge yields no object to name — narration only, stdout stays empty.
     eprintln!("purged {purged} document(s) from the recycle bin");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Build the [`AboutContext`] for this workspace — the root's name and its
+/// resolved pointer targets, which is everything the generator needs that is not
+/// already in the config.
+fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
+    let probe: Workspace<StdFs> = Workspace::builder(StdFs)
+        .root(&ctx.root_dir)
+        .relations(RelationSet::from_config(&ctx.config))
+        .build();
+    Ok(prov::AboutContext {
+        root_doc: ctx.root_doc.clone(),
+        config_doc: block_on(probe.config_path(&ctx.root_doc))?,
+        registry_doc: block_on(probe.registry_path(&ctx.root_doc))?,
+        recycle_doc: block_on(probe.recycle_bin_path(&ctx.root_doc))?,
+        history_doc: block_on(probe.history_path(&ctx.root_doc))?,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+/// Regenerate `about.md`, or inspect what would be generated.
+///
+/// Not gated on the `about` axis the way `history-capture` is gated on
+/// `history`: `--print` and `--check` are read-only, and a bare `prov about` in
+/// a workspace with `about: off` is a clear enough request to be worth honoring
+/// — but it says so, because the page it just wrote will not be maintained.
+fn cmd_about(check: bool, print: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+    let about_ctx = about_context(&ctx)?;
+
+    if print {
+        print!(
+            "{}",
+            prov::about::generate(&ctx.config, ws.relations(), &about_ctx)?
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if check {
+        let Some(diff) = block_on(ws.about_diff(&ctx.root_doc, &ctx.config, &about_ctx))? else {
+            eprintln!("{} is current", diff_path_display(&ctx, None));
+            return Ok(ExitCode::SUCCESS);
+        };
+        match &diff.actual {
+            None => eprintln!("{}: missing", diff.path.display()),
+            Some(_) => eprintln!("{}: stale", diff.path.display()),
+        }
+        eprintln!("regenerate it with `prov about`");
+        return Ok(ExitCode::FAILURE);
+    }
+
+    if !prov::about::enabled(&ctx.config) {
+        eprintln!(
+            "note: `about` is off for this workspace, so nothing will keep this \
+             page current — turn it on with `prov config about structure`"
+        );
+    }
+    let path = block_on(ws.write_about(&ctx.root_doc, &ctx.config, &about_ctx))?;
+    eprintln!("wrote {}", path.display());
+    println!("{}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The page's path for a message, when there may be no diff to name it.
+fn diff_path_display(ctx: &Ctx, path: Option<&Path>) -> String {
+    match path {
+        Some(path) => path.display().to_string(),
+        None => prov::workspace::default_about_name(ctx.config.content_format),
+    }
 }
 
 /// Capture the workspace into the history store.
@@ -1748,6 +1846,13 @@ fn cmd_history_capture(label: Option<&str>) -> CmdResult {
             eprintln!("captured {files} file(s){changes}; parked {blobs} new blob(s)");
         }
     }
+
+    // The first capture *bootstraps* the history store and adds the root's
+    // `history` pointer — and the page names the store when there is one. The
+    // page's inputs are configuration and the root's declared structure, so a
+    // pointer coming into existence is exactly the kind of change it must track.
+    // A no-op on every later capture, since the pointer already exists.
+    refresh_about(&ctx.root_dir)?;
 
     // Symmetric with how a restore ends: say what state was actually captured.
     let findings = block_on(ws.check(&ctx.root_doc))?;
@@ -2793,11 +2898,22 @@ fn cmd_config(
     home: Option<ConfigHome>,
 ) -> CmdResult {
     let ctx = find_root_quiet()?;
+    // Both of these can change what the page says even though neither sets an
+    // axis: `--home` moves policy between the two homes (and may delete or
+    // create the sidecar the footer names), and `--setup` bootstraps a config
+    // document where none was linked. The page names its config document, so
+    // either one can leave it describing a file that is no longer there.
     if setup {
-        return cmd_config_setup(ctx);
+        let root_dir = ctx.root_dir.clone();
+        let code = cmd_config_setup(ctx)?;
+        refresh_about(&root_dir)?;
+        return Ok(code);
     }
     if let Some(home) = home {
-        return cmd_config_home(ctx, home);
+        let root_dir = ctx.root_dir.clone();
+        let code = cmd_config_home(ctx, home)?;
+        refresh_about(&root_dir)?;
+        return Ok(code);
     }
     match (key, value) {
         // No key: print the effective config (defaults + root + config document).
@@ -2865,12 +2981,58 @@ fn cmd_config(
             let updated = edit::set_in_text(&text, doc.carrier, key, inferred)?;
             std::fs::write(&full, updated)?;
             eprintln!("set {key} = {value} in {}", config_doc.display());
+            refresh_about(&ctx.root_dir)?;
             // Echo the value now in effect, so `v=$(prov config set …)` round-trips
             // with `prov config <key>`.
             println!("{value}");
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Bring `about.md` back in line after a config write — the one trigger that
+/// matters, because the page is a function of configuration and of nothing else.
+///
+/// Re-discovers the workspace rather than reusing the caller's [`Ctx`]: the
+/// config has just changed on disk, and the page must describe the *new* policy.
+///
+/// Deliberately best-effort. DESIGN §5's rule applies directly — "what can be
+/// rebuilt need not be transactional" — so a failure here costs a `check`
+/// finding and an easy `prov about`, never a failed config write. A config
+/// change that succeeded must not be reported as failed because a derived file
+/// could not be refreshed.
+fn refresh_about(root_dir: &Path) -> Result<(), AnyError> {
+    let ctx = find_root_quiet_at(root_dir)?;
+    let ws = workspace(&ctx)?;
+    if prov::about::enabled(&ctx.config) {
+        let about_ctx = about_context(&ctx)?;
+        // Write only when the page would actually change. Most config writes
+        // move an axis the page does not mention, and a derived file that is
+        // rewritten with identical bytes is a sync transport's problem for no
+        // reader's benefit.
+        match block_on(ws.about_diff(&ctx.root_doc, &ctx.config, &about_ctx)) {
+            Ok(None) => return Ok(()),
+            Ok(Some(_)) => {}
+            Err(e) => {
+                eprintln!("prov: could not check about.md ({e}); run `prov about`");
+                return Ok(());
+            }
+        }
+        match block_on(ws.write_about(&ctx.root_doc, &ctx.config, &about_ctx)) {
+            Ok(path) => eprintln!("regenerated {}", path.display()),
+            Err(e) => eprintln!("prov: could not regenerate about.md ({e}); run `prov about`"),
+        }
+        return Ok(());
+    }
+    // `structure` → `off`: the page and its pointer go. Safe to delete outright
+    // and deliberately *not* routed to the recycle bin — the page is derived, so
+    // there is nothing to recover that regenerating would not reproduce.
+    match block_on(ws.remove_about(&ctx.root_doc)) {
+        Ok(Some(path)) => eprintln!("removed {} (about is off)", path.display()),
+        Ok(None) => {}
+        Err(e) => eprintln!("prov: could not remove about.md ({e})"),
+    }
+    Ok(())
 }
 
 /// Ensure the workspace *declares* a config document, bootstrapping one when it
