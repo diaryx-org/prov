@@ -437,6 +437,35 @@ pub enum Finding {
     /// by construction (see [`Fix`]) — `history-prune` is where bytes are deleted,
     /// deliberately and on request.
     HistoryBlobOrphaned { store: PathBuf, blobs: Vec<PathBuf> },
+    /// The generated `about.md` does not match what prov would produce from the
+    /// current configuration — or the `about` pointer names a file that is not
+    /// there. `path` is the page, `expected` what prov would write, and
+    /// `missing` distinguishes "gone" from "drifted".
+    ///
+    /// This is what keeps the page's byline honest. "Derived from this
+    /// workspace's own settings" is a claim a human byline cannot make, and it is
+    /// worth more than a name precisely *because* it is checkable — so it has to
+    /// actually be checked.
+    ///
+    /// Reached by ordinary means: a config edit made by hand rather than through
+    /// `prov config`, a sync transport resolving a conflict by merging, someone
+    /// improving the prose in place, or a prov old enough to predate a wording
+    /// change. Every one of them is repaired the same way.
+    ///
+    /// **Autofixed by regeneration** ([`Fix::RegenerateAbout`]), and — unlike
+    /// [`FixityMismatch`](Finding::FixityMismatch), which declines to guess on
+    /// the author's behalf — with no confirmation gate. The correct content is
+    /// fully determined by the configuration, so there is no judgment to get
+    /// wrong, and nothing user-authored can be destroyed: spec §4 calls the page
+    /// discardable, and it means it.
+    ///
+    /// A workspace with `about: off` and no pointer is silent here — not a
+    /// finding. Nothing was promised, so nothing is broken.
+    AboutStale {
+        path: PathBuf,
+        expected: String,
+        missing: bool,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -675,6 +704,27 @@ impl fmt::Display for Finding {
                     stray.join(", ")
                 )
             }
+            // The expected content is deliberately not printed: it is the whole
+            // page, and the repair is one command away.
+            // Covers both shapes of "missing": a pointer naming a page that is
+            // not there, and a workspace whose `about` axis is on but which has
+            // never generated one.
+            Finding::AboutStale {
+                path, missing: true, ..
+            } => {
+                write!(
+                    f,
+                    "{}: not written — `prov about` writes the page that explains this workspace",
+                    path.display()
+                )
+            }
+            Finding::AboutStale { path, .. } => {
+                write!(
+                    f,
+                    "{}: does not match what this workspace's configuration describes — `prov about` rewrites it",
+                    path.display()
+                )
+            }
         }
     }
 }
@@ -793,6 +843,11 @@ pub enum Fix {
     /// — the immutable event documents are the authority — so the rebuild is a
     /// pure function of that one directory's listing, and touches no other shard.
     RebuildHistoryIndex { index: PathBuf },
+    /// Rewrite the generated page whole. Carries the content rather than
+    /// recomputing it: the finding already generated it to detect the drift, and
+    /// carrying it keeps `apply_fix` free of any dependency on configuration —
+    /// the repair is a write, not a decision.
+    RegenerateAbout { path: PathBuf, content: String },
 }
 
 impl fmt::Display for Fix {
@@ -845,6 +900,13 @@ impl fmt::Display for Fix {
                     f,
                     "rebuild {} from the events in its directory",
                     index.display()
+                )
+            }
+            Fix::RegenerateAbout { path, .. } => {
+                write!(
+                    f,
+                    "regenerate {} from this workspace's configuration",
+                    path.display()
                 )
             }
         }
@@ -1003,6 +1065,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Finding::HistoryIndexStale { index, .. } => Ok(Some(Fix::RebuildHistoryIndex {
                 index: index.clone(),
             })),
+            // Rewrite the derived page. Unambiguous for the same reason as the
+            // index rebuild: configuration is the authority and the page only
+            // restates it, so there is no competing claim to weigh.
+            Finding::AboutStale { path, expected, .. } => Ok(Some(Fix::RegenerateAbout {
+                path: path.clone(),
+                content: expected.clone(),
+            })),
             _ => Ok(None),
         }
     }
@@ -1021,6 +1090,19 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             content_bodies,
         } = self.walk(start).await?;
         for entry in &census {
+            // An `about` pointer at a page that is not there is not a broken
+            // link. The page is *derived* (spec §4, generated prose — "a pure
+            // function of configuration, therefore discardable"), so an absent
+            // one is a page waiting to be written, not a reference to something
+            // lost. Reporting it here would also duplicate
+            // [`Finding::AboutStale`], which says the same thing and names the
+            // repair; and a generic broken-link fix would invite the wrong one.
+            if matches!(entry.resolution, Resolution::Broken)
+                && matches!(&entry.site, LinkSite::Relation(name)
+                    if Some(name.as_str()) == self.relations().about_relation())
+            {
+                continue;
+            }
             findings.extend(entry.finding());
         }
         findings.extend(self.orphans(start, &census, &content_bodies).await?);
@@ -1962,6 +2044,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 let text = self.history_index_text(index).await?;
                 cs.write(index, text);
             }
+            // Wholesale, like the index rebuild and for the same reason: the page
+            // is derived, so the repaired file is byte-identical to one a fresh
+            // `prov about` would have written.
+            Fix::RegenerateAbout { path, content } => {
+                cs.write(path, content.clone());
+            }
         }
         self.commit(cs).await
     }
@@ -1993,13 +2081,13 @@ mod tests {
     use crate::index::FileIndex;
     use crate::link::LinkStyle;
 
-    fn write(dir: &Path, rel: &str, text: &str) {
+    pub(super) fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, text).unwrap();
     }
 
-    fn tempdir(tag: &str) -> PathBuf {
+    pub(super) fn tempdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-check-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3168,5 +3256,148 @@ mod tests {
 
         // And two clean runs agree on everything.
         assert_eq!(CheckDiff::between(&[], &[]), CheckDiff::default());
+    }
+}
+
+// The `about` page's own findings — its staleness check and the autofix that
+// repairs it. YAML fixtures, so gated like the rest of this module's tests.
+#[cfg(all(test, feature = "yaml"))]
+mod about_tests {
+    use super::tests::{tempdir, write};
+    use super::*;
+    use crate::about::AboutContext;
+    use crate::config::WorkspaceConfig;
+    use crate::exec::block_on;
+    use crate::fs::StdFs;
+
+    fn fixture(tag: &str) -> (std::path::PathBuf, WorkspaceConfig, AboutContext) {
+        let dir = tempdir(tag);
+        write(&dir, "index.md", "---\ntitle: T\nabout: about.md\n---\nbody\n");
+        let config = WorkspaceConfig::default();
+        let ctx = AboutContext::new("index.md", "0.0.0");
+        (dir, config, ctx)
+    }
+
+    #[test]
+    fn a_current_page_is_not_a_finding() {
+        let (dir, config, ctx) = fixture("about-current");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        let finding =
+            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        assert!(finding.is_none(), "{finding:?}");
+    }
+
+    #[test]
+    fn a_missing_page_the_pointer_promises_is_a_finding_but_not_a_broken_link() {
+        let (dir, config, ctx) = fixture("about-missing");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let finding =
+            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        assert!(matches!(finding, Some(Finding::AboutStale { missing: true, .. })));
+
+        // The derived page is discardable, so a pointer at an absent one must not
+        // also surface as a broken link — that would be a duplicate finding
+        // inviting the wrong repair.
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::BrokenLink { target, .. } if target == "about.md")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_hand_edited_page_is_stale_and_the_fix_restores_it() {
+        let (dir, config, ctx) = fixture("about-edited");
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+        let path = block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        let generated = std::fs::read_to_string(dir.join(&path)).unwrap();
+
+        std::fs::write(
+            dir.join(&path),
+            generated.replace("is the root", "is definitely the root"),
+        )
+        .unwrap();
+        let finding = block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx))
+            .unwrap()
+            .expect("stale");
+        assert!(matches!(finding, Finding::AboutStale { missing: false, .. }));
+
+        let fix = block_on(ws.suggest_fix(&finding)).unwrap().expect("a fix");
+        assert!(matches!(fix, Fix::RegenerateAbout { .. }));
+        block_on(ws.apply_fix(&fix)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(&path)).unwrap(), generated);
+    }
+
+    #[test]
+    fn a_version_bump_in_the_byline_is_not_staleness() {
+        // The comparison is over the body only, so upgrading prov must not mark
+        // every workspace on earth stale and rewrite files whose prose is
+        // identical.
+        let (dir, config, ctx) = fixture("about-version");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let path = block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        let page = std::fs::read_to_string(dir.join(&path)).unwrap();
+        std::fs::write(
+            dir.join(&path),
+            page.replace("generated_by: prov 0.0.0", "generated_by: prov 99.0.0"),
+        )
+        .unwrap();
+
+        let finding =
+            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        assert!(finding.is_none(), "a stale byline is not a stale page: {finding:?}");
+    }
+
+    #[test]
+    fn a_workspace_that_asked_for_no_page_is_silent() {
+        let dir = tempdir("about-off");
+        // No `about` pointer, and the axis is off: nothing was promised.
+        write(&dir, "index.md", "---\ntitle: T\n---\nbody\n");
+        let config = WorkspaceConfig {
+            about: crate::config::About::Off,
+            ..WorkspaceConfig::default()
+        };
+        let ctx = AboutContext::new("index.md", "0.0.0");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let finding =
+            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        assert!(finding.is_none(), "{finding:?}");
+    }
+
+    #[test]
+    fn the_derived_page_is_never_parked_in_the_history_store() {
+        // Capturing it would park a new blob on every config change to store
+        // something the captured config already determines — and the first
+        // capture bootstraps the store, which changes what the page says, so the
+        // captured copy would be one the capture itself invalidated.
+        let (dir, config, ctx) = fixture("about-not-captured");
+        write(&dir, "index.md", "---\ntitle: T\nabout: about.md\n---\nbody\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+
+        let set = block_on(ws.history_capture_set(std::path::Path::new("index.md"))).unwrap();
+        assert!(
+            !set.iter().any(|p| p == std::path::Path::new("about.md")),
+            "the derived page must stay out of the capture set: {set:?}"
+        );
+        // The root itself is still captured — only the derived page is excluded.
+        assert!(set.iter().any(|p| p == std::path::Path::new("index.md")), "{set:?}");
+    }
+
+    #[test]
+    fn a_pointer_left_behind_is_still_checked_even_with_the_axis_off() {
+        // Turning the axis off does not retract a promise the root still makes.
+        let (dir, _, ctx) = fixture("about-off-but-pointed");
+        let config = WorkspaceConfig {
+            about: crate::config::About::Off,
+            ..WorkspaceConfig::default()
+        };
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let finding =
+            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        assert!(matches!(finding, Some(Finding::AboutStale { missing: true, .. })));
     }
 }

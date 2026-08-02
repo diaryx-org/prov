@@ -94,6 +94,7 @@ pub struct RelationSet {
     config: Option<String>,
     recycle: Option<String>,
     history: Option<String>,
+    about: Option<String>,
 }
 
 impl RelationSet {
@@ -160,12 +161,30 @@ impl RelationSet {
         self
     }
 
+    /// Mark the named relation as the **about pointer**: the root document links
+    /// its generated `about.md` through this relation — structurally the same
+    /// one-way move as the registry, config, recycle bin and history (§6), but a
+    /// distinct target kind (spec §4, *generated prose*), because the file is
+    /// entirely prose in the workspace's content format rather than a whole-file
+    /// record store.
+    ///
+    /// The pointer exists so *prov* can find the page to regenerate and validate
+    /// it, and so the file is reachable rather than loose in the tree. It is
+    /// deliberately **not** the human reader's way in: a person opening the
+    /// directory finds `about.md` by its name, needing no pointer, no parser and
+    /// no convention beyond being able to read a text file. That is the whole
+    /// point of the artifact, and why the default filename is load-bearing.
+    pub fn about(mut self, name: impl Into<String>) -> Self {
+        self.about = Some(name.into());
+        self
+    }
+
     /// The diaryx vocabulary: `contents`/`part_of` containment (spanning),
     /// `links`/`link_of` arbitrary cross-references, `registry` (the root's
     /// pointer to its ID registry document), `config` (the root's pointer to its
     /// workspace-config document), `recycle_bin` (the root's pointer to its
-    /// recycle-bin index), and `history` (the root's pointer to its history
-    /// store).
+    /// recycle-bin index), `history` (the root's pointer to its history
+    /// store), and `about` (the root's pointer to its generated `about.md`).
     pub fn diaryx() -> Self {
         Self::new()
             .with(Relation::many("contents").inverse("part_of"))
@@ -176,11 +195,13 @@ impl RelationSet {
             .with(Relation::one("config"))
             .with(Relation::one("recycle_bin"))
             .with(Relation::one("history"))
+            .with(Relation::one("about"))
             .spanning("contents")
             .registry("registry")
             .config("config")
             .recycle("recycle_bin")
             .history("history")
+            .about("about")
     }
 
     /// Build a workspace's relation vocabulary from its [`WorkspaceConfig`] — the
@@ -211,7 +232,7 @@ impl RelationSet {
             }
             // Keep the structural pointer relations reachable even under a fully
             // custom vocabulary — but never shadow one the user already declared.
-            for pointer in ["registry", "config", "recycle_bin", "history"] {
+            for pointer in ["registry", "config", "recycle_bin", "history", "about"] {
                 if !s.relations.iter().any(|r| r.name == pointer) {
                     s = s.with(Relation::one(pointer));
                 }
@@ -220,6 +241,7 @@ impl RelationSet {
                 .config("config")
                 .recycle("recycle_bin")
                 .history("history")
+                .about("about")
         };
         if let Some(spanning) = &config.spanning {
             set = set.spanning(spanning);
@@ -288,6 +310,11 @@ impl RelationSet {
         self.history.as_deref()
     }
 
+    /// The name of the about-pointer relation, if one is configured.
+    pub fn about_relation(&self) -> Option<&str> {
+        self.about.as_deref()
+    }
+
     /// Extract every link declared by a document's metadata, tagged by relation.
     pub fn edges(&self, meta: &Value) -> Vec<Edge> {
         let mut edges = Vec::new();
@@ -354,16 +381,22 @@ mod tests {
     }
 
     #[test]
-    fn diaryx_declares_registry_config_recycle_and_history_pointers() {
+    fn diaryx_declares_registry_config_recycle_history_and_about_pointers() {
         let set = RelationSet::diaryx();
         assert_eq!(set.registry_relation(), Some("registry"));
         assert_eq!(set.config_relation(), Some("config"));
         assert_eq!(set.recycle_relation(), Some("recycle_bin"));
         assert_eq!(set.history_relation(), Some("history"));
+        assert_eq!(set.about_relation(), Some("about"));
         // Each is a single-valued pointer relation in the vocabulary.
         assert!(set.relations().iter().any(|r| r.name == "config"));
         assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
         assert!(set.relations().iter().any(|r| r.name == "history"));
+        assert!(set.relations().iter().any(|r| r.name == "about"));
+        // `about` is one-way: it declares no inverse, so nothing writes a
+        // back-link into the generated page (spec §4, generated prose).
+        let about = set.relations().iter().find(|r| r.name == "about").unwrap();
+        assert_eq!(about.inverse, None);
     }
 
     #[test]
@@ -454,5 +487,7 @@ mod tests {
         assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
         assert_eq!(set.history_relation(), Some("history"));
         assert!(set.relations().iter().any(|r| r.name == "history"));
+        assert_eq!(set.about_relation(), Some("about"));
+        assert!(set.relations().iter().any(|r| r.name == "about"));
     }
 }

@@ -871,6 +871,17 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///   purpose: bytes the user has consigned to the bin should not be *newly*
     ///   retained by a routine capture.
     ///
+    /// - **The generated `about.md`.** It is *derived* — a pure function of the
+    ///   configuration, which this same manifest captures — so parking its bytes
+    ///   stores nothing that cannot be reproduced, and a new blob would be parked
+    ///   on every config change for no recovery value. Restoring an event
+    ///   restores the config that determines the page, and `check` reports the
+    ///   page as stale until `prov about` rewrites it from that config, which is
+    ///   the same repair by a shorter route. Excluding it also removes an
+    ///   ordering hazard: the first capture *bootstraps* the store, which changes
+    ///   what the page says about this workspace, so a captured page would be one
+    ///   the capture itself invalidated.
+    ///
     /// Everything else structural stays in — the registry, the config document,
     /// and the recycle bin's *index*. Capturing the bin index keeps the common
     /// case correct: a document live at capture time comes back live, and the bin
@@ -882,12 +893,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .recycle_bin_path(root_doc)
             .await?
             .map(|index| store_dir(&index).join("items"));
+        let about = self.about_path(root_doc).await?;
         Ok(self
             .reachable_files(root_doc)
             .await?
             .into_iter()
             .filter(|p| !under(p, &store))
             .filter(|p| binned.as_ref().is_none_or(|items| !under(p, items)))
+            .filter(|p| about.as_ref().is_none_or(|about| p != about))
             .collect())
     }
 

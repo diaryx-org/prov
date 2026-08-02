@@ -46,6 +46,7 @@ compile_error!(
      You have disabled the default feature without selecting a replacement."
 );
 
+pub mod about;
 pub mod attach;
 pub mod change;
 pub mod config;
@@ -74,9 +75,11 @@ pub mod validate;
 pub mod vocabulary;
 pub mod workspace;
 
+pub use about::AboutContext;
 pub use change::{ChangeSet, FileOp};
 pub use config::{
-    ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, IdStorage, OpenClosed,
+    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, IdStorage,
+    OpenClosed,
     RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
     field_type_from_config_str, metadata_format_from_str, metadata_format_str, spec_ahead,
 };

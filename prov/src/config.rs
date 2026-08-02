@@ -381,6 +381,67 @@ pub enum History {
     Manual,
 }
 
+/// Whether the workspace generates **`about.md`** — a short prose page,
+/// specialized against this workspace's own configuration, that tells a reader
+/// with no prior knowledge how to read *this* directory.
+///
+/// The gap it closes is narrow and specific. A prov workspace already explains
+/// its *structure* — the links are in the documents, visibly — but not its
+/// *conventions*: what the links mean, how they are spelled, which files are in
+/// the tree and which are not. Those live in the config, which is machine-facing
+/// and assumes the reader already knows what its keys mean. So a person who
+/// opens the directory with no prior knowledge cannot today learn to read it
+/// *from* the directory; they must obtain `docs/spec.md`, which is a dependency
+/// on an institution surviving — exactly the dependency the project refuses
+/// everywhere else.
+///
+/// The page is **not** a vendored copy of the spec. It is the spec *specialized*
+/// against this configuration: every rule resolved to a concrete fact, every
+/// branch this workspace does not take deleted. Where the spec says "the block
+/// is fenced by `---`, `;;;`, or ```` ```fig ````," the generated page says
+/// "every file here opens with a `---` line." Nothing is lost operationally, and
+/// the sentence is about *this directory* rather than about prov.
+///
+/// Default **on**, unlike [`History`]: it costs a few hundred bytes and one
+/// file, and a workspace that explains itself to a stranger by default is the
+/// whole thesis — making it opt-in concedes it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum About {
+    /// No page is generated and the root declares no `about` pointer (`off`).
+    Off,
+    /// Generate the page describing the workspace's **structure** (`structure`,
+    /// the default): the root and the spine; how a file is fenced; how a
+    /// reference is written and what else is read; the relation vocabulary; what
+    /// is machinery and not in the tree; the id, checksum and deletion
+    /// conventions.
+    #[default]
+    Structure,
+}
+
+impl About {
+    /// Whether a page is generated at all.
+    pub fn generates(self) -> bool {
+        matches!(self, About::Structure)
+    }
+
+    /// Parse the `about` config spelling; unknown → `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "structure" => Some(Self::Structure),
+            _ => None,
+        }
+    }
+
+    /// The `about` config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Structure => "structure",
+        }
+    }
+}
+
 impl History {
     /// Whether `history-capture` is permitted to write a new event.
     pub fn captures(self) -> bool {
@@ -471,6 +532,9 @@ pub struct WorkspaceConfig {
     /// the safety net for structural damage an external sync transport introduces.
     /// Off by default; see [`History`].
     pub history: History,
+    /// Whether the workspace generates **`about.md`**, the prose page that tells
+    /// a stranger how to read this directory. On by default; see [`About`].
+    pub about: About,
     /// The frontmatter field `prov edit` stamps with the current time when a
     /// document's content changes — the machine-maintained "last updated" field.
     /// Empty (the default) disables it. The *name* is yours (`updated`,
@@ -503,6 +567,7 @@ impl Default for WorkspaceConfig {
             recycle_bin: true,
             fixity: Fixity::Payloads,
             history: History::Off,
+            about: About::Structure,
             updated: String::new(),
         }
     }
@@ -789,6 +854,13 @@ impl WorkspaceConfig {
         {
             self.history = v;
         }
+        if let Some(v) = meta
+            .get("about")
+            .and_then(Value::as_str)
+            .and_then(About::from_config_str)
+        {
+            self.about = v;
+        }
     }
 
     /// A fresh config with `meta`'s recognized keys applied over the defaults.
@@ -929,6 +1001,10 @@ impl WorkspaceConfig {
             "history".into(),
             Value::String(self.history.as_config_str().into()),
         );
+        map.insert(
+            "about".into(),
+            Value::String(self.about.as_config_str().into()),
+        );
         map
     }
 }
@@ -986,6 +1062,7 @@ const TOP_KEYS: &[&str] = &[
     "fixity",
     "recycle_bin",
     "history",
+    "about",
 ];
 /// Keys inside the `metadata:` block.
 const METADATA_KEYS: &[&str] = &["format", "embed"];
@@ -1068,6 +1145,15 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     value,
                     |s| History::from_config_str(s).is_some(),
                     &["off", "manual"],
+                );
+            }
+            "about" => {
+                enum_axis(
+                    &mut issues,
+                    key,
+                    value,
+                    |s| About::from_config_str(s).is_some(),
+                    &["off", "structure"],
                 );
             }
             "updated" => {} // free-form field name
@@ -1616,6 +1702,10 @@ mod tests {
             fixity: Fixity::Full,
             // Non-default, so the round trip actually exercises the axis.
             history: History::Manual,
+            // Likewise non-default — `structure` is the default, so `off` is
+            // what proves the value survives the mapping rather than being
+            // silently re-defaulted on the way back.
+            about: About::Off,
             updated: "modified".to_string(),
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
@@ -1760,6 +1850,35 @@ mod tests {
             }
             other => panic!("expected InvalidValue, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn about_defaults_on_and_accepts_only_its_two_spellings() {
+        // Default is `structure`, not `off` — the one axis that departs from
+        // `history`'s posture, because self-description by default is the thesis.
+        assert_eq!(WorkspaceConfig::default().about, About::Structure);
+        assert!(About::Structure.generates());
+        assert!(!About::Off.generates());
+
+        let mut cfg = WorkspaceConfig::default();
+        cfg.apply(&config_doc(&[("about", "off")]));
+        assert_eq!(cfg.about, About::Off);
+
+        // An unknown spelling is a finding that names both accepted values, and
+        // leaves the default in place rather than guessing.
+        let issues = diagnose(&config_doc(&[("about", "structrue")]));
+        assert_eq!(issues.len(), 1);
+        match &issues[0].kind {
+            ConfigIssueKind::InvalidValue { value, expected } => {
+                assert_eq!(value, "structrue");
+                assert!(expected.contains(&"structure".to_string()), "{expected:?}");
+                assert!(expected.contains(&"off".to_string()), "{expected:?}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+        let mut unchanged = WorkspaceConfig::default();
+        unchanged.apply(&config_doc(&[("about", "structrue")]));
+        assert_eq!(unchanged.about, About::Structure);
     }
 
     #[test]

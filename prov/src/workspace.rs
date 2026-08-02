@@ -373,6 +373,24 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         }
     }
 
+    /// The generated `about.md` this root declares via the about-pointer
+    /// relation (§6, the same reachability move as the registry; spec §4's
+    /// *generated prose* kind). `None` when the vocabulary has no about relation
+    /// or the root declares none — the workspace has no generated page, which is
+    /// what `about: off` looks like on disk.
+    ///
+    /// Note what this is *for*. Unlike the other pointers, nothing about reading
+    /// the workspace depends on it: the page is written for a person, who finds
+    /// it by its filename. The pointer is how **prov** locates the page to
+    /// regenerate and to check for staleness, and how the file stays reachable
+    /// instead of loose in the tree.
+    pub async fn about_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        match self.relations().about_relation() {
+            Some(relation) => self.pointer_target(root_doc, relation).await,
+            None => Ok(None),
+        }
+    }
+
     /// Read a single workspace-config value by `key` from the linked config
     /// document. `None` when there is no config document or it lacks the key —
     /// the caller falls back to its default.
@@ -1092,7 +1110,177 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(created)
     }
 
+    /// Write the generated `about.md` and point the root at it, in one change
+    /// set. Returns the path written.
+    ///
+    /// Unlike [`link_sidecar`](Self::link_sidecar) — which bootstraps a
+    /// whole-file *record store* and leaves it alone thereafter — this rewrites
+    /// the file **whole** every time, because the page is a pure function of
+    /// configuration and there is nothing in it to preserve. Spec §4 calls this
+    /// target kind *generated prose*: no inverse, no `part_of`, no id, not in
+    /// the spanning tree, and never merged.
+    ///
+    /// The pointer is created if absent and left alone if present, so a
+    /// workspace that has moved its page keeps it where it put it.
+    pub async fn write_about(
+        &self,
+        root_doc: &Path,
+        config: &crate::config::WorkspaceConfig,
+        ctx: &crate::about::AboutContext,
+    ) -> Result<PathBuf> {
+        let page = crate::about::generate(config, self.relations(), ctx)?;
+        let path = match self.about_path(root_doc).await? {
+            Some(existing) => existing,
+            None => PathBuf::from(default_about_name(config.content_format)),
+        };
+
+        let mut cs = ChangeSet::new();
+        cs.write(&path, page);
+        // Point the root at it only when it is not already pointed at, so the
+        // root's own bytes are untouched on an ordinary regeneration.
+        if self.about_path(root_doc).await?.is_none()
+            && let Some(pointer) = self.relations().about_relation()
+        {
+                let (text, doc) = self.load(root_doc).await?;
+                let updated = crate::edit::set_in_text(
+                    &text,
+                    doc.carrier,
+                    pointer,
+                    crate::edit::infer_scalar(&path.to_string_lossy()),
+                )?;
+            cs.write(root_doc, updated);
+        }
+        cs.apply(&self.fs, &self.root).await?;
+        Ok(path)
+    }
+
+    /// Remove the generated page and the root's pointer to it — the
+    /// `about: structure` → `off` transition.
+    ///
+    /// Deleting is safe here in a way it is not anywhere else in prov: the page
+    /// is derived, so nothing user-authored can be lost (spec §4 — "a pure
+    /// function of configuration, therefore discardable"). It is *not* routed to
+    /// the recycle bin for the same reason; a bin entry would promise a recovery
+    /// worth having, and regeneration is always available instead.
+    ///
+    /// Returns the path removed, or `None` when there was no page to remove.
+    pub async fn remove_about(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        let Some(path) = self.about_path(root_doc).await? else {
+            return Ok(None);
+        };
+        let mut cs = ChangeSet::new();
+        if self.fs.try_exists(&self.root.join(&path)).await? {
+            cs.remove(&path);
+        }
+        if let Some(pointer) = self.relations().about_relation() {
+            let (text, doc) = self.load(root_doc).await?;
+            let updated = crate::edit::unset_in_text(&text, doc.carrier, pointer)?;
+            cs.write(root_doc, updated);
+        }
+        cs.apply(&self.fs, &self.root).await?;
+        Ok(Some(path))
+    }
+
+    /// The page prov *would* generate, beside what is on disk — the staleness
+    /// question, answered without writing anything.
+    ///
+    /// `Ok(None)` means the page is current. `Ok(Some(diff))` carries the
+    /// expected page and what is actually there (`None` when the file is
+    /// missing), which is what `check` reports and `prov about --check` prints.
+    ///
+    /// **The comparison is over the body only.** The metadata block is excluded
+    /// deliberately, and that single choice does two jobs: a content-only page
+    /// (`embed_style: separate`, where there is no block at all) has nothing
+    /// missing from the comparison, and `generated_by: prov <version>` never
+    /// makes a workspace stale merely because prov was upgraded. A byline that
+    /// names an older version is harmless; a `check` that fires in every
+    /// workspace on earth after a release is not.
+    pub async fn about_diff(
+        &self,
+        root_doc: &Path,
+        config: &crate::config::WorkspaceConfig,
+        ctx: &crate::about::AboutContext,
+    ) -> Result<Option<AboutDiff>> {
+        let expected = crate::about::generate(config, self.relations(), ctx)?;
+        let Some(path) = self.about_path(root_doc).await? else {
+            return Ok(Some(AboutDiff {
+                path: PathBuf::from(default_about_name(config.content_format)),
+                expected,
+                actual: None,
+            }));
+        };
+        if !self.fs.try_exists(&self.root.join(&path)).await? {
+            return Ok(Some(AboutDiff {
+                path,
+                expected,
+                actual: None,
+            }));
+        }
+        let actual = self.fs.read_to_string(&self.root.join(&path)).await?;
+        if crate::about::same_body(&actual, &expected, config.content_format) {
+            return Ok(None);
+        }
+        Ok(Some(AboutDiff {
+            path,
+            expected,
+            actual: Some(actual),
+        }))
+    }
+
+    /// The [`Finding::AboutStale`] this workspace's generated page warrants, if
+    /// any — the `check` view over [`about_diff`](Self::about_diff).
+    ///
+    /// Silent when the workspace asks for no page (`about: off`) *and* declares
+    /// no pointer: nothing was promised, so nothing is broken. A workspace that
+    /// still declares a pointer is still checked, because the pointer is a
+    /// promise regardless of what the axis now says.
+    ///
+    /// [`Finding::AboutStale`]: crate::validate::Finding::AboutStale
+    pub async fn check_about(
+        &self,
+        root_doc: &Path,
+        config: &crate::config::WorkspaceConfig,
+        ctx: &crate::about::AboutContext,
+    ) -> Result<Option<crate::validate::Finding>> {
+        let declared = self.about_path(root_doc).await?.is_some();
+        if !crate::about::enabled(config) && !declared {
+            return Ok(None);
+        }
+        Ok(self
+            .about_diff(root_doc, config, ctx)
+            .await?
+            .map(|diff| crate::validate::Finding::AboutStale {
+                path: diff.path,
+                missing: diff.actual.is_none(),
+                expected: diff.expected,
+            }))
+    }
+
     // TODO(port): scan/traverse from diaryx_core::workspace land here.
+}
+
+/// The default filename for the generated page, in the workspace's content
+/// format.
+///
+/// Load-bearing, and the reason it is a constant rather than a setting the user
+/// is asked about: a person opening the directory finds this file *by its name*,
+/// with no pointer traversal and no convention beyond being able to read. The
+/// pointer may name any path — placement is ergonomic (spec §5) — but the
+/// default must be the most guessable name in the most guessable place.
+pub fn default_about_name(format: crate::content::ContentFormat) -> String {
+    format!("about.{}", format.extension())
+}
+
+/// What [`Workspace::about_diff`] found: the page prov would write, and what is
+/// there instead.
+#[derive(Debug, Clone)]
+pub struct AboutDiff {
+    /// Where the page lives (or would).
+    pub path: PathBuf,
+    /// The page prov would generate from the current configuration.
+    pub expected: String,
+    /// What is on disk, or `None` when the file is missing.
+    pub actual: Option<String>,
 }
 
 /// Builder for [`Workspace`]. Setting an identity policy or index store returns
