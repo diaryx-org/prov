@@ -473,18 +473,18 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1811460fc6c84041cec14726d717f8fde6ffb0f9489b45c9582ae9f23798c7f1"
+checksum = "db6417ac43361addc72ae536fc7690ae36f60c6d1cddb922d36befac1a297260"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17158e543fe0427e4c1bacefcce4ac41111cfcc9994b5633636900fd65a71fbf"
+checksum = "9a6e20d05c418e7280e80be8ed44ec3cb4a0e8b6348211ed017bd71d3f1cf845"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -495,33 +495,33 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cff16c8514e3a5f627741d4cacd14161a729cdbbfd30db8530f66d3ce381142"
+checksum = "3a2f990683a866a62ce970a2188f5ed0efc7f7ec8f2603d0d62f9814db555dd1"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d592708b09c6a62c26f0c873daa62f294a8b87763ef738a95b2c064327abd31"
+checksum = "fdf70e09b6d893646407cc2792e5bf59af28ed3549d9b2b33937f6244f8f42f6"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a92de943081603fbdddaffa9c4487f2c68384fd5a764e11fdb17cf7908e9492a"
+checksum = "12f69b18b14264429ddc78a7c0c6cc867b50363d9e50878498f0485a044008a4"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82561f57f0fe004e3a4025f4667e706c9c7a8cedaece6db5a35447d912900e65"
+checksum = "1adc7c79f6d9ff75eee428713f4fc02160b50371e9ab323e7778e7a90c5ee2da"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "2.3.0"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ce82381216659a1dcbbe8ad13ae63884ce7833af6287c5cb59e79182abd611c"
+checksum = "757c593d1fc706b8d24c0a6540f4e6a8f15f3ee2ac5b48ad9786cf77e2ac3a9a"
 
 [[package]]
 name = "unicode-ident"

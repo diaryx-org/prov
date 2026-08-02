@@ -44,7 +44,7 @@ thiserror = "2.0"
 
 # Body-prose parsing (Djot/Markdown) — prov's body-parser dependency (see
 # `src/content.rs`).
-twig-doc = { version = "2.3.0" }
+twig-doc = { version = "2.7.0" }
 
 # Opaque document-ID minting: NOID xdigit alphabet + NOID check character
 # over a seeded PRNG. Prov supplies its own seed (uniqueness is enforced by
