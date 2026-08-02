@@ -54,7 +54,7 @@ nothing implicit.)
 
 ### Pointers stay top-level
 
-The `config`, `registry`, `recycle_bin`, and `history` **pointer relations** are
+The `config`, `registry`, `recycle_bin`, `history`, and `about` **pointer relations** are
 *not* policy — they are structural links the root declares so the workspace
 unfolds from its own root (DESIGN §6). They remain at the root's top level
 alongside `part_of`/`contents`, resolved by the same link machinery. This also
@@ -69,6 +69,7 @@ config: prov.yaml             # pointer (structure) — top level
 registry: registry.yaml           # pointer — top level
 recycle_bin: recyclebin/index.md  # pointer (a path) — top level
 history: history/index.md         # pointer (a path) — top level
+about: about.md                   # pointer (a path) — top level
 tags: [personal]                  # user field — prov never reads it
 prov:                         # policy namespace (description home)
   spec: 1
@@ -119,13 +120,14 @@ prov:
   fixity: all                # off | attachments | all
   recycle_bin: true          # bool — route delete to the recoverable bin
   history: off               # off | manual — keep captured pre-images of the workspace
+  about: structure           # off | structure — generate about.md, the page that explains this directory
 ```
 
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `updated: ""`, `identity: lazy`, `fixity: attachments`,
-`recycle_bin: true`, `history: off`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
+`recycle_bin: true`, `history: off`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content). The `spanning`, relation-definition
@@ -210,6 +212,7 @@ applies to path targets only.
 | — | `spec: 1` | new version marker |
 | `config`/`registry`/`recycle_bin`/`history` pointers | unchanged, top-level | structure, not policy |
 | — | `history: off` | new axis — captured pre-images, off by default |
+| — | `about: structure` | new axis — the generated `about.md`, **on** by default |
 
 ## Linting (`check`)
 
@@ -259,6 +262,46 @@ full effective config into the config document (bootstrapping `prov.yaml` if
 none is linked): it preserves the document's own fields and every setting already
 present, and fills in the rest at their default. The layout is canonicalized
 (comments in the config document are not preserved).
+
+## `about` — the workspace's own reading instructions
+
+`about: structure` (the default) generates **`about.md`** at the workspace root:
+a short prose page telling a reader with no prior knowledge how to read *this*
+directory. It is the spec **specialized** against this configuration — every
+rule resolved to a concrete fact, every branch this workspace does not take left
+out. Where the spec says "the block is fenced by `---`, `;;;`, or ```` ```fig
+````," the generated page says "every file here opens with a `---` line."
+
+It is derived from configuration and from what prov accepts on read — **never**
+from a scan of what the files contain. That one rule is why it is both
+permanently accurate and almost never rewritten, and why a conflicted copy is
+resolved by regenerating rather than merging.
+
+The page follows the workspace's own conventions: its metadata block is written
+in `metadata.format` and embedded per `metadata.embed`, and under
+`metadata.embed: separate` — where no file carries a fence — it is written
+**content-only**, with no block and no sidecar. Its prose is written in
+`content_format`.
+
+- `prov about` regenerates it and creates the root's `about` pointer if absent.
+- `prov about --print` writes it to stdout, touching nothing.
+- `prov about --check` exits non-zero when it is missing or stale.
+- `prov config <key> <value>`, `--setup` and `--home` regenerate it, and so do
+  the mutations that *bootstrap machinery* the page lists (the first id minted,
+  the first delete, the first capture). Ordinary mutations leave it alone.
+- `check` reports `AboutStale`; `check --fix` rewrites it.
+
+`prov history-capture` deliberately does **not** capture it: the page is a pure
+function of the config the same manifest already records.
+
+### Git
+
+The page is derived, so a merge conflict in it is never damage — the resolution
+is always to regenerate. Tell git not to try:
+
+```gitattributes
+about.md merge=ours
+```
 
 ## Implementation note (internal representation)
 

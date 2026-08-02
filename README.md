@@ -13,6 +13,7 @@ contents:
 - '[History Format](/docs/history-format.md)'
 - '[`prov` proposals](/docs/proposals/proposals.md)'
 config: prov.yaml
+about: about.md
 ---
 
 # prov (Plaintext Records, Organized and Verifiable)

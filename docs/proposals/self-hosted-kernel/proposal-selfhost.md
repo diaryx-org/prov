@@ -3,7 +3,7 @@ title: self-hosted kernels
 author: adammharris
 created: 2026-07-31
 updated: 2026-08-01
-status: drafted, not yet scheduled
+status: implemented (phases 0 and 1)
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 contents:
 - '[Prov 1.draft](/docs/proposals/self-hosted-kernel/examples/prov-1.draft.md.yaml)'
@@ -11,6 +11,13 @@ contents:
 ---
 # Self-hosted kernels — the workspace carries its own reading instructions
 
+> **Implemented.** Phases 0 and 1 have shipped: `prov/src/about.rs` holds the
+> generator, `prov about [--check] [--print]` the CLI surface, and `AboutStale`
+> its `check` finding. The two attached examples are no longer sketches — they
+> are the generator's actual output, copied verbatim, and `/about.md` is this
+> repository's live page. What the build changed is recorded under
+> [What implementation settled](#what-implementation-settled).
+>
 > Working proposal, first full draft. Supersedes the stub of 2026-07-31; its
 > two sketches are revised in place as the worked examples below. Complements
 > DESIGN §1 (self-description), §2 (the three tiers), §5 (derived vs
@@ -175,7 +182,7 @@ Mechanically this is the smallest possible change. `RelationSet` already
 exposes `registry_relation`/`config_relation`/`recycle_relation`/
 `history_relation` as siblings (`prov/src/relation.rs:271-289`);
 `about_relation` is a fifth. `Workspace::about_path` follows
-`Workspace::history_path` (`prov/src/workspace.rs:329`) exactly.
+`Workspace::history_path` exactly.
 
 **On the name.** `about` over `organization` on one decisive point:
 `organisation`/`organization`. A hand-typed config key with a live spelling
@@ -514,16 +521,75 @@ everything else, so it costs the freshness story nothing.
   generation rule made it pointless: no ordinary mutation changes anything the
   document says.
 
+## What implementation settled
+
+Recorded because each was decided *by building it*, and two of them contradict
+what this proposal assumed.
+
+**The metadata block follows the workspace's carrier — including having none.**
+The page's own block is written in `metadata.format` and embedded per
+`metadata.embed`, so it never contradicts the sentence it contains. Under
+`metadata.embed: separate`, where no file in the workspace carries a fence, the
+page is written **content-only**: no block, and no sidecar either. A two-file
+`about` is worse for the reader it exists for, and the sidecar would carry
+nothing prov reads back. The `title` survives as the `# ` heading and the byline
+as the footer.
+
+**Staleness compares the body only.** This is what makes content-only mode work
+— there is no block to compare — and it retires a problem the proposal did not
+see: with the block included, `generated_by: prov 0.3.2` would make *every
+workspace on earth* stale on a version bump, firing `check` everywhere and
+rewriting files whose prose is identical. A byline naming an older version is
+harmless. Hand-reflowing the prose *does* read as stale, correctly: the page says
+its edits are overwritten, and regenerating is free.
+
+**Pointer bootstrap is a regeneration trigger too.** The proposal's "a config
+write, and nothing else" was wrong, because the page describes the machinery the
+root points at — and those pointers are created lazily by ordinary mutations: the
+first id minted writes the registry, the first delete writes the recycle bin, the
+first capture writes the history store. Each of those now refreshes the page. The
+freshness story survives intact, because the refresh **writes only when the page
+would actually change**, so it is a no-op on every subsequent mutation and the
+hotspot objection still does not apply.
+
+**`history-capture` does not capture the page.** It is a pure function of the
+config the same manifest already records, so parking its bytes stores nothing
+that cannot be reproduced, and a new blob would be parked on every config change
+for no recovery value. Excluding it also removes an ordering hazard: the first
+capture bootstraps the store, which changes what the page says, so a captured
+page would be one the capture itself invalidated.
+
+**An absent page is not a broken link.** The `about` pointer resolving to nothing
+is reported as `AboutStale`, never as `BrokenLink`. The page is derived and
+discardable, so an absent one is a page waiting to be written rather than a
+reference to something lost — and a generic broken-link fix would invite the
+wrong repair.
+
+**Worked examples are generated, never written.** Both attached examples are
+`prov about` output copied verbatim, which is the only real check on prose
+quality. The generator's samples use the workspace's *own* vocabulary — a page
+for a `sections`/`section_of` workspace shows `section_of`, never the diaryx
+default — because a sample showing a key the reader's files do not use teaches
+them the wrong key.
+
+**The open questions, as resolved.** (1) The body format is described always, in
+one clause, rather than conditionally on being non-default — which dissolves the
+wart rather than answering it. (2) The effective vocabulary is stated as fact,
+per the proposal's lean. (3) `--check` was kept: phase 0 shipped before
+`AboutStale` existed, so it was the only staleness detector, and by the time the
+finding landed the flag was already there. (4) Nested workspaces remain out of
+scope.
+
 ## Phasing
 
-- **Phase 0 — the generator.** The `about` relation, `Workspace::about_path`,
+- **Phase 0 — the generator. Shipped.** The `about` relation, `Workspace::about_path`,
   the `about: off | structure` axis, `prov about [--check] [--print]`,
   generation from `WorkspaceConfig`, and `init` writing the first copy.
   Regeneration wired into `prov config`'s `ChangeSet`. The generated-prose row
   added to `docs/spec.md` §4, and the two spec reconciliations
   [above](#what-this-forces-in-docsspecmd) settled first — the text is written
   into every workspace, so it must not be written wrong.
-- **Phase 1 — validation.** `AboutStale` and its autofix; `prov check` reports
+- **Phase 1 — validation. Shipped.** `AboutStale` and its autofix; `prov check` reports
   it, `--fix` regenerates. The `.gitattributes` recipe documented.
 - **Deliberately unscheduled:** the machine-readable kernel; an `about: all`
   with corpus facts; localization. Each is correct to defer, and none changes

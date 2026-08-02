@@ -3,16 +3,6 @@ title: How this workspace is organized
 generated_by: prov 0.3.2
 ---
 
-<!--
-  EXAMPLE — not a live file.
-
-  This is the page `prov about` generates for *this repository*, whose settings
-  are close to the defaults, copied here verbatim. The live one is /about.md.
-  Compare it with ORGANIZATION.md, the same generator run against a workspace
-  with its own vocabulary. The difference in length is the point: there is less
-  to tell a stranger about a workspace that does the ordinary thing.
--->
-
 # How this workspace is organized
 
 This directory is a set of plain text files that describe their own
