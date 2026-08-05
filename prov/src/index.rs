@@ -83,6 +83,16 @@ pub trait IndexStore {
     fn id_for_path(&self, path: &Path) -> Option<Id>;
 
     /// Update the path an ID points at (e.g. after a move/rename).
+    ///
+    /// Bijection-safe like [`register`](IndexStore::register): if `new_path`
+    /// already carries a *different* id, that id's forward entry must not
+    /// survive pointing at a path it no longer owns. A caller that moves an id
+    /// it did not just mint should ask
+    /// [`Workspace::move_conflict`](crate::Workspace::move_conflict) first and
+    /// refuse the collision up front — the document being displaced still
+    /// spells the id in its own frontmatter. This eviction is the same last
+    /// line of defence `register` keeps: it guarantees only that the store
+    /// stays *consistent* when something slips through.
     fn set_path(&mut self, id: &Id, new_path: &Path);
 
     /// Retire an ID (e.g. after a delete). A store with tombstones keeps the
@@ -221,16 +231,17 @@ impl InMemoryIndex {
 
 impl IndexStore for InMemoryIndex {
     /// Displacing an existing registration must not leave the *other* map
-    /// pointing at the old counterpart — the care [`set_path`](IndexStore::set_path)
-    /// already takes, which this owes equally. Without it a collision leaves the
+    /// pointing at the old counterpart — [`set_path`](IndexStore::set_path)
+    /// delegates here for exactly this care. Without it a collision leaves the
     /// registry claiming two paths for one id (or two ids for one path), which
     /// nothing downstream can make sense of.
     ///
     /// Eviction is the last line of defence, not the intended path: callers that
-    /// register an id they did not just mint should ask
-    /// [`registration_conflict`](crate::Workspace::registration_conflict) first
-    /// and refuse, because the document being displaced still spells the id in
-    /// its own frontmatter. What this guarantees is only that the index stays
+    /// register (or move, via `set_path`) an id they did not just mint should
+    /// ask [`registration_conflict`](crate::Workspace::registration_conflict) or
+    /// [`move_conflict`](crate::Workspace::move_conflict) first and refuse,
+    /// because the document being displaced still spells the id in its own
+    /// frontmatter. What this guarantees is only that the index stays
     /// *consistent* when something slips through.
     fn register(&mut self, id: &Id, path: &Path) {
         if let Some(old_path) = self.forward.insert(id.clone(), path.to_path_buf()) {
@@ -251,11 +262,16 @@ impl IndexStore for InMemoryIndex {
         self.reverse.get(path).cloned()
     }
 
+    /// Moving an id onto a path is the same bijection-safe upsert as
+    /// registering it there fresh — displacing in either direction must not
+    /// leave the other map pointing at the old counterpart — so this *is*
+    /// [`register`](IndexStore::register), not a near-duplicate of it. Before
+    /// this delegated, a displacement in the new-path direction went
+    /// unevicted: `new_path`'s previous id kept a forward entry pointing at a
+    /// path it no longer owned, the exact two-ids-one-path break `register`
+    /// was fixed against in 11abd38.
     fn set_path(&mut self, id: &Id, new_path: &Path) {
-        if let Some(old) = self.forward.insert(id.clone(), new_path.to_path_buf()) {
-            self.reverse.remove(&old);
-        }
-        self.reverse.insert(new_path.to_path_buf(), id.clone());
+        self.register(id, new_path);
     }
 
     fn unregister(&mut self, id: &Id) {
@@ -578,6 +594,8 @@ impl IndexStore for FileIndex {
         self.live.id_for_path(path)
     }
 
+    /// Delegates to [`InMemoryIndex::set_path`], so the bijection-safe eviction
+    /// it performs (both directions, via `register`) covers this store too.
     fn set_path(&mut self, id: &Id, new_path: &Path) {
         self.live.set_path(id, new_path);
         self.dirty = true;
@@ -778,6 +796,34 @@ mod tests {
         ix.register(&b, Path::new("one.md"));
         assert_eq!(ix.resolve(&b), Some(PathBuf::from("one.md")));
         assert_eq!(ix.id_for_path(Path::new("one.md")), Some(b));
+        assert_eq!(ix.len(), 1);
+    }
+
+    #[test]
+    fn a_displacing_set_path_leaves_no_stale_entry_in_either_map() {
+        // `set_path` used to take only half of `register`'s care: it evicted the
+        // *moving* id's old reverse entry but ignored what `reverse.insert` at the
+        // new path returned, so a displaced id's forward entry survived pointing
+        // at a path it no longer owned — two ids resolving to one path. A caller
+        // should refuse the collision up front (`Workspace::move_conflict`); this
+        // is what keeps the store coherent when one slips through anyway, exactly
+        // as `a_displacing_register_leaves_no_stale_entry_in_either_map` covers
+        // for `register`.
+        let (a, b) = (Id("aaaaaaa".into()), Id("bbbbbbb".into()));
+        let mut ix = InMemoryIndex::new();
+        ix.register(&a, Path::new("one.md"));
+        ix.register(&b, Path::new("two.md"));
+
+        // Move `a` onto `two.md`, which `b` already holds.
+        ix.set_path(&a, Path::new("two.md"));
+
+        assert_eq!(ix.resolve(&a), Some(PathBuf::from("two.md")));
+        assert_eq!(ix.id_for_path(Path::new("two.md")), Some(a));
+        assert_eq!(ix.id_for_path(Path::new("one.md")), None);
+        // `b`'s forward entry must not survive pointing at a path it no longer
+        // owns — the exact break that made `id:b` links resolve to the wrong
+        // document.
+        assert_eq!(ix.resolve(&b), None);
         assert_eq!(ix.len(), 1);
     }
 

@@ -274,6 +274,33 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         None
     }
 
+    /// Whether moving `id` onto `dest` — via [`set_path`](IndexStore::set_path),
+    /// not a fresh [`register`](IndexStore::register) — would displace a
+    /// *different* id already registered there. The guard behind
+    /// [`rename`](crate::mutate), [`separate`](crate::mutate), and
+    /// [`combine`](crate::mutate): each relocates an id its document already
+    /// holds, and none of their destinations is provably free of a live foreign
+    /// registration (the same half-synced state [`registration_conflict`] exists
+    /// for — a registry entry can name a path with no file behind it, or under a
+    /// different id than the one now landing there).
+    ///
+    /// Deliberately **not** [`registration_conflict`]: `id` already resolves to
+    /// wherever it is moving *from*, so that check's id-direction half would read
+    /// as "already registered to a different document" on every ordinary move —
+    /// the document it is leaving. Only the path direction is the risk a move
+    /// introduces, so this checks just that half, and (matching
+    /// [`registration_conflict`]'s own `held != id` discount) a `dest` that
+    /// already carries this same `id` — a same-id no-op — is not a collision.
+    ///
+    /// [`registration_conflict`]: Self::registration_conflict
+    pub(crate) fn move_conflict(&self, id: &crate::identity::Id, dest: &Path) -> Option<Collision> {
+        let held = self.index.id_for_path(dest)?;
+        (held != *id).then(|| Collision::Path {
+            path: dest.to_path_buf(),
+            held,
+        })
+    }
+
     /// Resolve `link` (declared in the document at `doc`) to a workspace target,
     /// without nominal (alias) resolution — path and `id:` targets only. Use
     /// [`resolve_link_with`](Self::resolve_link_with) when a [`TitleIndex`] is

@@ -572,6 +572,21 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if self.fs().try_exists(&self.root().join(&to)).await? {
             return Err(Error::AlreadyExists(to.to_path_buf()));
         }
+
+        // `to` may already be registered — a live entry the on-disk check above
+        // cannot see, since `id_storage`'s default `both` lets a registry entry
+        // name a path with no file behind it (index.rs's module docs). Moving
+        // `from`'s id onto it would take that registration away from a document
+        // whose frontmatter still spells it, the exact tear `set_path`'s
+        // half-eviction cannot see either. Checked up front, beside the path
+        // guard, before any of the rewrite work below is even computed.
+        let moving_id = self.index().id_for_path(&from);
+        if let Some(id) = &moving_id
+            && let Some(conflict) = self.move_conflict(id, &to)
+        {
+            return Err(conflict.into());
+        }
+
         let (from_text, from_doc) = self.load(&from).await?;
         let mut cs = self.change();
 
@@ -649,8 +664,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // Identity hook — the registry follows the move, so every
         // `colophon:<id>` reference to this document survives untouched. Staged
         // with the documents: a move whose links are maintained but whose
-        // registry is not is the one tear IDs exist to prevent.
-        if let Some(id) = self.index().id_for_path(&from) {
+        // registry is not is the one tear IDs exist to prevent. `to` was
+        // already cleared of a foreign registration above.
+        if let Some(id) = moving_id {
             self.index_mut().set_path(&id, &to);
         }
         self.commit(cs).await
@@ -1419,6 +1435,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if self.fs().try_exists(&self.root().join(&meta_path)).await? {
             return Err(Error::AlreadyExists(meta_path.to_path_buf()));
         }
+        // `meta_path` is only an extension swap of `path` — derived, not freshly
+        // minted, so it is not provably free of a registration nobody has a file
+        // for (the on-disk check above cannot see one). Same guard as `rename`.
+        let moving_id = self.index().id_for_path(&path);
+        if let Some(id) = &moving_id
+            && let Some(conflict) = self.move_conflict(id, &meta_path)
+        {
+            return Err(conflict.into());
+        }
         let body_ref = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -1441,7 +1466,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for (source, text) in inbound {
             cs.write(source, text);
         }
-        if let Some(id) = self.index().id_for_path(&path) {
+        if let Some(id) = moving_id {
             self.index_mut().set_path(&id, &meta_path);
         }
         self.commit(cs).await?;
@@ -1481,6 +1506,16 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 content.display()
             )));
         }
+        // Unlike `meta_path` in `separate`, `content` already has a file behind
+        // it — but that is no proof the *registry* agrees it is free: a stray
+        // frontmatter (tolerated below) can carry its own `id`, distinct from
+        // `path`'s. Same guard as `rename`/`separate`, before the merge is built.
+        let moving_id = self.index().id_for_path(&path);
+        if let Some(id) = &moving_id
+            && let Some(conflict) = self.move_conflict(id, &content)
+        {
+            return Err(conflict.into());
+        }
         let (body_raw, body_doc) = self.load(&content).await?;
         // Normally the body file is pure prose; tolerate a stray frontmatter.
         let body = match body_doc.carrier {
@@ -1509,7 +1544,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for (source, text) in inbound {
             cs.write(source, text);
         }
-        if let Some(id) = self.index().id_for_path(&path) {
+        if let Some(id) = moving_id {
             self.index_mut().set_path(&id, &content);
         }
         self.commit(cs).await?;
@@ -4440,6 +4475,127 @@ mod tests {
                  (failed at write {fail_at} of {writes})"
             );
         }
+    }
+
+    #[test]
+    fn rename_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {
+        // The half-synced state the module docs describe (index.rs): the
+        // registry still binds `p2.md` to a different document's id, even
+        // though nothing sits there on disk right now — out of band, or never
+        // landed. Renaming `p1.md` onto it would move `a`'s registration over
+        // `b`'s without evicting `b`'s forward entry, leaving both ids
+        // resolving into the same path (every `id:b` link silently wrong).
+        // Refused before anything is computed, let alone moved.
+        let dir = tempdir("rename-path-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- p1.md\n---\n",
+        );
+        write(&dir, "p1.md", "---\ntitle: P1\npart_of: index.md\n---\n");
+
+        let mut w = id_ws(&dir);
+        let a = crate::identity::Id("aaaaaaa".into());
+        let b = crate::identity::Id("bbbbbbb".into());
+        w.index_mut().register(&a, Path::new("p1.md"));
+        // p2.md's file was never created here: an ordinary half-synced state,
+        // not a bug — a registry entry naming a path with no file behind it.
+        w.index_mut().register(&b, Path::new("p2.md"));
+
+        let err = block_on(w.rename(Path::new("p1.md"), Path::new("p2.md"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("p2.md") && err.to_string().contains("bbbbbbb"),
+            "the message must name the path and what it already carries: {err}"
+        );
+
+        // Refused up front: not a byte moved, and both registrations intact.
+        assert!(dir.join("p1.md").exists());
+        assert!(!dir.join("p2.md").exists());
+        assert_eq!(w.index().resolve(&a), Some(PathBuf::from("p1.md")));
+        assert_eq!(w.index().resolve(&b), Some(PathBuf::from("p2.md")));
+    }
+
+    #[test]
+    fn separate_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {
+        // `separate`'s metadata-file path is only an extension swap of the
+        // combined document's own path — derived, not freshly minted, and no
+        // more provably free of a live foreign registration than `rename`'s
+        // destination is.
+        let dir = tempdir("separate-path-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- doc.md\n---\n",
+        );
+        write(
+            &dir,
+            "doc.md",
+            "---\ntitle: Doc\npart_of: index.md\n---\nbody prose\n",
+        );
+
+        let mut w = id_ws(&dir);
+        let a = crate::identity::Id("aaaaaaa".into());
+        let b = crate::identity::Id("bbbbbbb".into());
+        w.index_mut().register(&a, Path::new("doc.md"));
+        // The metadata file `separate` would create is already bound to a
+        // different id, though nothing has ever put a file there.
+        w.index_mut().register(&b, Path::new("doc.yaml"));
+
+        let err = block_on(w.separate(Path::new("doc.md"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("doc.yaml"), "{err}");
+
+        assert!(dir.join("doc.md").exists());
+        assert!(!dir.join("doc.yaml").exists());
+        assert_eq!(w.index().resolve(&a), Some(PathBuf::from("doc.md")));
+        assert_eq!(w.index().resolve(&b), Some(PathBuf::from("doc.yaml")));
+    }
+
+    #[test]
+    fn combine_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {
+        // Unlike `separate`'s destination, `combine`'s (the body file) already
+        // has a file behind it — but that is no proof the *registry* agrees it
+        // is free: a stray frontmatter can carry its own `id`, distinct from the
+        // node's. Guarded the same way, before the merge is built.
+        let dir = tempdir("combine-path-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- doc.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "doc.yaml",
+            "title: Doc\npart_of: index.md\ncontent: doc.md\n",
+        );
+        write(&dir, "doc.md", "the prose\n");
+
+        let mut w = id_ws(&dir);
+        let a = crate::identity::Id("aaaaaaa".into());
+        let b = crate::identity::Id("bbbbbbb".into());
+        w.index_mut().register(&a, Path::new("doc.yaml"));
+        // The body file already carries a registration of its own, under a
+        // different id than the node being folded into it.
+        w.index_mut().register(&b, Path::new("doc.md"));
+
+        let err = block_on(w.combine(Path::new("doc.yaml"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("doc.md"), "{err}");
+
+        assert!(dir.join("doc.yaml").exists());
+        assert_eq!(read(&dir, "doc.md"), "the prose\n", "unmerged, untouched");
+        assert_eq!(w.index().resolve(&a), Some(PathBuf::from("doc.yaml")));
+        assert_eq!(w.index().resolve(&b), Some(PathBuf::from("doc.md")));
     }
 
     // ---- recycle bin (Part 3) ----
