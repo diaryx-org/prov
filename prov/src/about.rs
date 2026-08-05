@@ -189,7 +189,11 @@ fn markdown_body(config: &WorkspaceConfig, relations: &RelationSet, ctx: &AboutC
 }
 
 /// The title, the thesis, and the byline's prose half.
-fn opening_section(config: &WorkspaceConfig, relations: &RelationSet, ctx: &AboutContext) -> String {
+fn opening_section(
+    config: &WorkspaceConfig,
+    relations: &RelationSet,
+    ctx: &AboutContext,
+) -> String {
     let mut s = String::new();
     s.push_str("# How this workspace is organized\n\n");
 
@@ -462,9 +466,7 @@ fn reference_section(config: &WorkspaceConfig, relations: &RelationSet) -> Strin
                      them separates the target from a human label, which is \
                      decoration and safe to change."
                 }
-                Notation::Bare => {
-                    "There is no wrapper and no label — the value is the target."
-                }
+                Notation::Bare => "There is no wrapper and no label — the value is the target.",
             };
             s.push_str(&para(match config.notation {
                 Notation::Markdown => "References here are written like a Markdown link:",
@@ -496,9 +498,7 @@ fn reference_section(config: &WorkspaceConfig, relations: &RelationSet) -> Strin
                      *document*, not a location.",
                 ));
             } else {
-                s.push_str(&para(
-                    "`id:aj7eqx` names a *document*, not a location.",
-                ));
+                s.push_str(&para("`id:aj7eqx` names a *document*, not a location."));
             }
             s.push('\n');
             s.push_str(&para(&id_resolution_prose(config)));
@@ -667,8 +667,16 @@ fn fields_section(config: &WorkspaceConfig) -> Option<String> {
         "{} {} not hold free text. {} permitted values are listed in files of \
          their own.",
         capitalize(number_word(controlled.len())),
-        if controlled.len() == 1 { "field does" } else { "fields do" },
-        if controlled.len() == 1 { "Its" } else { "Their" },
+        if controlled.len() == 1 {
+            "field does"
+        } else {
+            "fields do"
+        },
+        if controlled.len() == 1 {
+            "Its"
+        } else {
+            "Their"
+        },
     )));
     s.push('\n');
 
@@ -885,7 +893,9 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
             } else {
                 ""
             };
-            format!("There is no recycle bin here. A deletion is immediate and permanent.{recoverable}")
+            format!(
+                "There is no recycle bin here. A deletion is immediate and permanent.{recoverable}"
+            )
         }
     ));
 
@@ -950,7 +960,11 @@ fn safe_to_change_section(config: &WorkspaceConfig, relations: &RelationSet) -> 
             "{} {} worth leaving alone, {}because something else may already \
              depend on {}:",
             capitalize(number_word(careful.len())),
-            if careful.len() == 1 { "field is" } else { "fields are" },
+            if careful.len() == 1 {
+                "field is"
+            } else {
+                "fields are"
+            },
             match careful.len() {
                 1 => "",
                 2 => "both ",
@@ -1025,7 +1039,8 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     if config.embed_style == EmbedStyle::Separate {
         return Ok(body.to_string());
     }
-    let Some(MetaCarrier::Fenced(kind)) = embed_carrier(config.embed_style, config.default_embed_format)
+    let Some(MetaCarrier::Fenced(kind)) =
+        embed_carrier(config.embed_style, config.default_embed_format)
     else {
         return Err(Error::Structure(format!(
             "no metadata carrier for embed style `{}` with format `{}`",
@@ -1159,7 +1174,10 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
         let _ = writeln!(
             out,
             "| {} |",
-            row.iter().map(|c| escape_cell(c)).collect::<Vec<_>>().join(" | ")
+            row.iter()
+                .map(|c| escape_cell(c))
+                .collect::<Vec<_>>()
+                .join(" | ")
         );
     }
     out
@@ -1537,11 +1555,19 @@ mod tests {
         BTreeMap::from([
             (
                 "contents".into(),
-                def(Cardinality::Many, "part_of", "documents contained by this one"),
+                def(
+                    Cardinality::Many,
+                    "part_of",
+                    "documents contained by this one",
+                ),
             ),
             (
                 "part_of".into(),
-                def(Cardinality::One, "contents", "the document that contains this one"),
+                def(
+                    Cardinality::One,
+                    "contents",
+                    "the document that contains this one",
+                ),
             ),
             (
                 "links".into(),
@@ -1650,11 +1676,19 @@ mod tests {
             relation_defs: BTreeMap::from([
                 (
                     "sections".into(),
-                    def(Cardinality::Many, "section_of", "records filed under this one"),
+                    def(
+                        Cardinality::Many,
+                        "section_of",
+                        "records filed under this one",
+                    ),
                 ),
                 (
                     "section_of".into(),
-                    def(Cardinality::One, "sections", "the record this one is filed under"),
+                    def(
+                        Cardinality::One,
+                        "sections",
+                        "the record this one is filed under",
+                    ),
                 ),
                 (
                     "cites".into(),
@@ -1798,7 +1832,10 @@ mod tests {
         let ctx = AboutContext::new("README.md", "0.0.0");
         let page = render(&config, &ctx);
 
-        assert!(page.contains("we\\|ird"), "a pipe must be escaped in a cell");
+        assert!(
+            page.contains("we\\|ird"),
+            "a pipe must be escaped in a cell"
+        );
         assert!(
             page.contains("`` back`tick ``"),
             "a backtick must widen its fence"
@@ -1819,11 +1856,19 @@ mod tests {
             relation_defs: BTreeMap::from([
                 (
                     "sections".into(),
-                    def(Cardinality::Many, "section_of", "records filed under this one"),
+                    def(
+                        Cardinality::Many,
+                        "section_of",
+                        "records filed under this one",
+                    ),
                 ),
                 (
                     "section_of".into(),
-                    def(Cardinality::One, "sections", "the record this one is filed under"),
+                    def(
+                        Cardinality::One,
+                        "sections",
+                        "the record this one is filed under",
+                    ),
                 ),
             ]),
             reference_target: Addressing::Id,
@@ -1833,8 +1878,14 @@ mod tests {
         let ctx = AboutContext::new("README.md", "0.0.0");
         let page = render(&config, &ctx);
 
-        assert!(page.contains("section_of: '[[id:aj7eqx|Board Records]]'"), "{page}");
-        assert!(!page.contains("part_of:"), "the diaryx default must not leak in");
+        assert!(
+            page.contains("section_of: '[[id:aj7eqx|Board Records]]'"),
+            "{page}"
+        );
+        assert!(
+            !page.contains("part_of:"),
+            "the diaryx default must not leak in"
+        );
     }
 
     #[test]

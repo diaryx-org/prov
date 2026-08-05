@@ -79,9 +79,9 @@ pub use about::AboutContext;
 pub use change::{ChangeSet, FileOp};
 pub use config::{
     About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, IdStorage,
-    OpenClosed,
-    RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
-    field_type_from_config_str, metadata_format_from_str, metadata_format_str, spec_ahead,
+    OpenClosed, RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose,
+    field_type_as_config_str, field_type_from_config_str, metadata_format_from_str,
+    metadata_format_str, spec_ahead,
 };
 pub use content::ContentFormat;
 pub use content::{code_spans, render_html};

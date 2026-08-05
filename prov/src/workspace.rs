@@ -1168,13 +1168,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if self.about_path(root_doc).await?.is_none()
             && let Some(pointer) = self.relations().about_relation()
         {
-                let (text, doc) = self.load(root_doc).await?;
-                let updated = crate::edit::set_in_text(
-                    &text,
-                    doc.carrier,
-                    pointer,
-                    crate::edit::infer_scalar(&path.to_string_lossy()),
-                )?;
+            let (text, doc) = self.load(root_doc).await?;
+            let updated = crate::edit::set_in_text(
+                &text,
+                doc.carrier,
+                pointer,
+                crate::edit::infer_scalar(&path.to_string_lossy()),
+            )?;
             cs.write(root_doc, updated);
         }
         cs.apply(&self.fs, &self.root).await?;
@@ -1273,14 +1273,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if !crate::about::enabled(config) && !declared {
             return Ok(None);
         }
-        Ok(self
-            .about_diff(root_doc, config, ctx)
-            .await?
-            .map(|diff| crate::validate::Finding::AboutStale {
+        Ok(self.about_diff(root_doc, config, ctx).await?.map(|diff| {
+            crate::validate::Finding::AboutStale {
                 path: diff.path,
                 missing: diff.actual.is_none(),
                 expected: diff.expected,
-            }))
+            }
+        }))
     }
 
     // TODO(port): scan/traverse from diaryx_core::workspace land here.

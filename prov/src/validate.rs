@@ -710,7 +710,9 @@ impl fmt::Display for Finding {
             // not there, and a workspace whose `about` axis is on but which has
             // never generated one.
             Finding::AboutStale {
-                path, missing: true, ..
+                path,
+                missing: true,
+                ..
             } => {
                 write!(
                     f,
@@ -1366,7 +1368,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // shadowed attachment payload — its `fields` values are an exhibit's,
         // not this workspace's, and `attach --opaque` promises never to read
         // them (see `reachable_documents`).
-        let reachable = self.reachable_documents(start, census, content_bodies).await?;
+        let reachable = self
+            .reachable_documents(start, census, content_bodies)
+            .await?;
 
         let mut findings = Vec::new();
         for path in reachable {
@@ -1483,7 +1487,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         census: &[CensusEntry],
         content_bodies: &[PathBuf],
     ) -> Result<Vec<Finding>> {
-        let reachable = self.reachable_documents(start, census, content_bodies).await?;
+        let reachable = self
+            .reachable_documents(start, census, content_bodies)
+            .await?;
 
         let mut findings = Vec::new();
         for path in reachable {
@@ -3321,7 +3327,11 @@ mod about_tests {
 
     fn fixture(tag: &str) -> (std::path::PathBuf, WorkspaceConfig, AboutContext) {
         let dir = tempdir(tag);
-        write(&dir, "index.md", "---\ntitle: T\nabout: about.md\n---\nbody\n");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: T\nabout: about.md\n---\nbody\n",
+        );
         let config = WorkspaceConfig::default();
         let ctx = AboutContext::new("index.md", "0.0.0");
         (dir, config, ctx)
@@ -3343,7 +3353,10 @@ mod about_tests {
         let ws = Workspace::builder(StdFs).root(&dir).build();
         let finding =
             block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(matches!(finding, Some(Finding::AboutStale { missing: true, .. })));
+        assert!(matches!(
+            finding,
+            Some(Finding::AboutStale { missing: true, .. })
+        ));
 
         // The derived page is discardable, so a pointer at an absent one must not
         // also surface as a broken link — that would be a duplicate finding
@@ -3361,7 +3374,8 @@ mod about_tests {
     fn a_hand_edited_page_is_stale_and_the_fix_restores_it() {
         let (dir, config, ctx) = fixture("about-edited");
         let mut ws = Workspace::builder(StdFs).root(&dir).build();
-        let path = block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        let path =
+            block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
         let generated = std::fs::read_to_string(dir.join(&path)).unwrap();
 
         std::fs::write(
@@ -3372,7 +3386,10 @@ mod about_tests {
         let finding = block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx))
             .unwrap()
             .expect("stale");
-        assert!(matches!(finding, Finding::AboutStale { missing: false, .. }));
+        assert!(matches!(
+            finding,
+            Finding::AboutStale { missing: false, .. }
+        ));
 
         let fix = block_on(ws.suggest_fix(&finding)).unwrap().expect("a fix");
         assert!(matches!(fix, Fix::RegenerateAbout { .. }));
@@ -3387,7 +3404,8 @@ mod about_tests {
         // identical.
         let (dir, config, ctx) = fixture("about-version");
         let ws = Workspace::builder(StdFs).root(&dir).build();
-        let path = block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
+        let path =
+            block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
         let page = std::fs::read_to_string(dir.join(&path)).unwrap();
         std::fs::write(
             dir.join(&path),
@@ -3397,7 +3415,10 @@ mod about_tests {
 
         let finding =
             block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(finding.is_none(), "a stale byline is not a stale page: {finding:?}");
+        assert!(
+            finding.is_none(),
+            "a stale byline is not a stale page: {finding:?}"
+        );
     }
 
     #[test]
@@ -3446,7 +3467,11 @@ mod about_tests {
         // capture bootstraps the store, which changes what the page says, so the
         // captured copy would be one the capture itself invalidated.
         let (dir, config, ctx) = fixture("about-not-captured");
-        write(&dir, "index.md", "---\ntitle: T\nabout: about.md\n---\nbody\n");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: T\nabout: about.md\n---\nbody\n",
+        );
         let ws = Workspace::builder(StdFs).root(&dir).build();
         block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
 
@@ -3456,7 +3481,10 @@ mod about_tests {
             "the derived page must stay out of the capture set: {set:?}"
         );
         // The root itself is still captured — only the derived page is excluded.
-        assert!(set.iter().any(|p| p == std::path::Path::new("index.md")), "{set:?}");
+        assert!(
+            set.iter().any(|p| p == std::path::Path::new("index.md")),
+            "{set:?}"
+        );
     }
 
     #[test]
@@ -3470,6 +3498,9 @@ mod about_tests {
         let ws = Workspace::builder(StdFs).root(&dir).build();
         let finding =
             block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(matches!(finding, Some(Finding::AboutStale { missing: true, .. })));
+        assert!(matches!(
+            finding,
+            Some(Finding::AboutStale { missing: true, .. })
+        ));
     }
 }

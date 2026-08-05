@@ -1100,7 +1100,11 @@ pub(crate) fn cmd_init(
         };
         match workspace(&ctx).and_then(|ws| {
             let about_ctx = about_context(&ctx)?;
-            Ok(block_on(ws.write_about(&ctx.root_doc, &ctx.config, &about_ctx))?)
+            Ok(block_on(ws.write_about(
+                &ctx.root_doc,
+                &ctx.config,
+                &about_ctx,
+            ))?)
         }) {
             Ok(path) => about_note = format!("\nabout: {}", path.display()),
             Err(e) => eprintln!("prov: could not write about.md ({e}); run `prov about`"),
