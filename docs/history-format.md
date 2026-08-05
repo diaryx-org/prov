@@ -306,7 +306,7 @@ ordering owes a fork.
 
 ## 7. Validation
 
-`check` validates the store like any other reachable member, through three
+`check` validates the store like any other reachable member, through four
 findings.
 
 - **`HistoryIndexStale`** — a shard directory holds an event (or a sub-index)
@@ -322,7 +322,16 @@ findings.
   *events* are thereby incomplete is `history-show`'s question (§10.1), and it
   already marks the rows.
 - **`HistoryBlobOrphaned`** — bytes under `blobs/` that no manifest names. One
-  finding per sweep, listing them sorted.
+  finding per sweep, listing them sorted. **Suppressed for the whole sweep**
+  while any event in the store is `Unreadable` (below): the mark half of the
+  mark-and-sweep is then known incomplete, not merely small, and reporting an
+  orphan on that basis would name bytes an unreadable event's own manifest
+  might still be the only thing claiming.
+- **`Unreadable`** — an event-shaped file (§4's id, plus the extension)
+  exists but its document fails to load or parse. The same finding `check`'s
+  general walk raises for any other document it cannot read, reused here
+  unchanged rather than duplicated under a history-specific name. Diagnosis
+  only: nothing can synthesize the document back.
 
 Both blob findings come from one **mark-and-sweep**: union every event's `files`
 hashes and compare against the blob listing. That is what full manifests buy —
@@ -579,6 +588,15 @@ bound you want.
   precisions cuts in the right place. A cutoff that is not a `YYYY-MM-DD` head
   is refused, so a typo drops nothing rather than everything.
 
+**Also refused: any event document in the store that fails to load or
+parse.** §12.2's blob collection is the survivors' manifests taken as a bound
+on what is still referenced; an unreadable event's manifest is invisible to
+that bound, so its blobs would be indistinguishable from orphans and would be
+collected — deleted, permanently, by a prune whose bound only looked
+*complete*. The refusal names the unreadable file(s), the same read that
+raises `Unreadable` (§7). Repair or restore them, or let the transport
+finish syncing, then retry.
+
 ### 12.2 What it deletes, and in what order
 
 1. **The event documents**, and the shard indexes the drop empties.
@@ -667,7 +685,21 @@ exactly the population a capture parks, so a file sitting unreachable in the
 tree would not come back, and refusing on its account would be refusing for a
 reason that is not true.
 
-### 13.3 `forgotten.<ext>`
+### 13.3 It refuses while any event is unreadable
+
+The `mine`/`others` split (§13.1's first limit) is computed over every event's
+manifest — that is the whole mechanism content addressing buys, a hash the
+subject shares with anything else survives. An event document that fails to
+load or parse contributes nothing to `others`, so a hash it shared with the
+subject would read as belonging to the subject alone and be destroyed: bytes
+another, unreadable document's history still names, gone because that
+document could not currently be read to say so.
+
+Refused rather than guessed, naming the unreadable file(s) — the same read
+that raises `Unreadable` (§7). Repair or restore them, or let the transport
+finish syncing, then retry.
+
+### 13.4 `forgotten.<ext>`
 
 A **whole-file record store** beside the store index, under the `MalformedStore`
 rule the registry and the bin index live under — it is a mutable record store
@@ -698,7 +730,7 @@ forgotten:
 - It is a mutable file and can conflict under sync. Acceptable for an explicitly
   invoked, rare act of destruction.
 
-### 13.4 What the tombstone buys
+### 13.5 What the tombstone buys
 
 A hash on the list is absent **by record**, so:
 
@@ -711,7 +743,7 @@ A hash on the list is absent **by record**, so:
   `history-restore` names it: absent by decision reads differently from absent by
   accident.
 
-### 13.5 Ordering
+### 13.6 Ordering
 
 The tombstone is written and committed **before** the bytes are freed —
 write-ahead, like every other mutation here — and the blobs are deleted outside

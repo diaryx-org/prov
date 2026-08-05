@@ -963,26 +963,54 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if !exists {
             return Ok(Vec::new());
         }
-        self.history_events_in(&store_index, self.history_ext(root_doc))
-            .await
+        let (events, _) = self
+            .history_events_in(&store_index, self.history_ext(root_doc))
+            .await?;
+        Ok(events)
     }
 
     /// [`history_list`](Self::history_list) against a store index already in hand —
     /// so a pass that has resolved the store once does not resolve it again
     /// through the root.
-    async fn history_events_in(&self, store_index: &Path, ext: &str) -> Result<Vec<Event>> {
+    ///
+    /// Returns the events that loaded and parsed, oldest first, **alongside every
+    /// event-shaped file that did not** — its path and why. [`shard_event_ids`]
+    /// finds a file by name alone (§4's id shape plus the extension), so a
+    /// document a transport tore in transit — half-written, or a conflict marker
+    /// landing inside its frontmatter — is still counted as an event *slot* even
+    /// though nothing in it can be trusted.
+    ///
+    /// The read-only callers ([`history_list`](Self::history_list),
+    /// `history_show`, `history_log`) drop the second list on the floor: a
+    /// degraded read is exactly what those verbs are for, and the store-format
+    /// doc says so (§7, §10). The callers that *destroy* — `history_prune_plan`
+    /// and `history_forget` — and the `check` sweep must not: a blob set built
+    /// only from the survivors is a bound with an unknown hole in it, and a prune
+    /// or forget that trusts it can free bytes a torn event was the only record
+    /// of naming.
+    async fn history_events_in(
+        &self,
+        store_index: &Path,
+        ext: &str,
+    ) -> Result<(Vec<Event>, Vec<(PathBuf, String)>)> {
         let events_root = store_dir(store_index).join(EVENTS_DIR);
         let mut events = Vec::new();
+        let mut unreadable = Vec::new();
         for year in self.subdirs(&events_root).await? {
             for month in self.subdirs(&events_root.join(&year)).await? {
                 let shard = events_root.join(&year).join(&month);
                 for id in self.shard_event_ids(&shard, ext).await? {
                     let path = shard.join(format!("{id}.{ext}"));
-                    let Ok((_, doc)) = self.load(&path).await else {
-                        continue;
-                    };
-                    if let Some(event) = parse_event(&path, &id, &doc.meta) {
-                        events.push(event);
+                    match self.load(&path).await {
+                        Ok((_, doc)) => match parse_event(&path, &id, &doc.meta) {
+                            Some(event) => events.push(event),
+                            None => unreadable.push((
+                                path,
+                                "not a history event document (no `created` or `files`)"
+                                    .to_string(),
+                            )),
+                        },
+                        Err(e) => unreadable.push((path, e.to_string())),
                     }
                 }
             }
@@ -996,7 +1024,19 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .cmp(&comparable(&b.created))
                 .then_with(|| a.id.cmp(&b.id))
         });
-        Ok(events)
+        unreadable.sort();
+        Ok((events, unreadable))
+    }
+
+    /// Format the paths [`history_events_in`](Self::history_events_in) could not
+    /// read, for a refusal message a destructive verb raises rather than acting
+    /// on an incomplete reference set.
+    fn describe_unreadable(unreadable: &[(PathBuf, String)]) -> String {
+        unreadable
+            .iter()
+            .map(|(path, error)| format!("{} ({error})", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// One event by id, resolved through the **pure id → path function** rather
@@ -1678,6 +1718,15 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// survivors rather than against every event — so what `check` calls an orphan
     /// and what a prune collects are the same set by construction, and a prune
     /// sweeps up the orphans that were already there.
+    ///
+    /// **Refuses if any event document in the store fails to load or parse.**
+    /// The `referenced` set below is a bound computed *only* over the events that
+    /// parsed; if some other event is unreadable, its manifest — and every blob
+    /// it might name — is invisible to that bound, and the blobs the unreadable
+    /// event alone referenced would be collected as orphans and deleted. That is
+    /// permanent loss from a prune whose bound silently dropped nothing. A
+    /// deliberate destruction must not proceed on an incomplete reference set, so
+    /// this names the unreadable file(s) and stops before planning anything.
     pub async fn history_prune_plan(
         &self,
         root_doc: &Path,
@@ -1688,9 +1737,18 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if !exists {
             return Ok(Pruned::default());
         }
-        let events = self
+        let (events, unreadable) = self
             .history_events_in(&store_index, self.history_ext(&root_doc))
             .await?;
+        if !unreadable.is_empty() {
+            return Err(Error::Structure(format!(
+                "history-prune refuses: {} event document(s) could not be read, so the \
+                 blobs they might reference cannot be told apart from orphans: {}. Repair \
+                 or restore them (or let the transport finish syncing) before pruning.",
+                unreadable.len(),
+                Self::describe_unreadable(&unreadable)
+            )));
+        }
 
         // Events arrive oldest first, so both axes cut a prefix — but `Before`
         // states its own predicate rather than trusting that, since a store that
@@ -1975,8 +2033,29 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // had. The difference is what can go — a set subtraction, where a delta
         // log would need the ancestry folded per event to answer the same
         // question.
+        //
+        // **Refuses if any event document fails to load or parse.** `others` is
+        // built only from the events that parsed, so an unreadable event's
+        // manifest is invisible to it — a hash that event alone shared with the
+        // subject would read as belonging only to the subject, and forget would
+        // destroy bytes a different, unreadable document's history still names.
+        // The safe default is to stop and name the file, not to guess.
+        let (events, unreadable) = self.history_events_in(&store_index, ext).await?;
+        if !unreadable.is_empty() {
+            let named = match subject {
+                Subject::Id(id) => format!("id:{id}"),
+                Subject::Path(path) => slash_path(path),
+            };
+            return Err(Error::Structure(format!(
+                "history-forget refuses: {} event document(s) could not be read, so which \
+                 other documents share {named}'s bytes cannot be determined: {}. Repair or \
+                 restore them (or let the transport finish syncing) before forgetting.",
+                unreadable.len(),
+                Self::describe_unreadable(&unreadable)
+            )));
+        }
         let (mut mine, mut others) = (BTreeSet::new(), BTreeSet::new());
-        for event in self.history_events_in(&store_index, ext).await? {
+        for event in events {
             for file in event.files {
                 match subject_matches(subject, &file) {
                     true => mine.insert(file.hash),
@@ -2272,12 +2351,20 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// distributed across immutable documents rather than concentrated in an
     /// index — the same price [`history_log`](Self::history_log) pays, and for the
     /// same reason. Bounded by event count × manifest size.
+    ///
+    /// An event-shaped file that fails to load or parse raises the store-format
+    /// doc's promised [`Finding::Unreadable`] (§7) — a plain, unchanged reuse of
+    /// the finding the general walk already raises for any other document it
+    /// cannot read, since an unreadable event is the same kind of problem. It
+    /// does **not** get folded into `referenced`, so its potential blob
+    /// references are simply unknown for the rest of this sweep.
     async fn history_blob_findings(&self, store_index: &Path, ext: &str) -> Result<Vec<Finding>> {
         // hash → the captured paths that named it, across every event. A manifest
         // routinely names one blob from several paths, and one blob is one thing
         // to put back, so the report is keyed by hash rather than by event.
+        let (events, unreadable) = self.history_events_in(store_index, ext).await?;
         let mut referenced: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-        for event in self.history_events_in(store_index, ext).await? {
+        for event in events {
             for file in event.files {
                 referenced.entry(file.hash).or_default().insert(file.path);
             }
@@ -2296,7 +2383,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             None => BTreeSet::new(),
         };
 
-        let mut findings = Vec::new();
+        let mut findings: Vec<Finding> = unreadable
+            .iter()
+            .map(|(path, error)| Finding::Unreadable {
+                doc: path.clone(),
+                error: error.clone(),
+            })
+            .collect();
         let mut promised: BTreeSet<PathBuf> = BTreeSet::new();
         for (hash, paths) in referenced {
             let missing = Finding::HistoryBlobMissing {
@@ -2324,17 +2417,30 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
 
-        let orphaned: Vec<PathBuf> = self
-            .history_blob_files(store_index)
-            .await?
-            .into_iter()
-            .filter(|blob| !promised.contains(blob))
-            .collect();
-        if !orphaned.is_empty() {
-            findings.push(Finding::HistoryBlobOrphaned {
-                store: store_index.to_path_buf(),
-                blobs: orphaned,
-            });
+        // While any event in the store is unreadable, `promised` is known to be
+        // incomplete — the unreadable event's own manifest might have promised
+        // some of these bytes. Reporting them as orphaned would be wrong in the
+        // one direction that matters: `HistoryBlobOrphaned`'s message points
+        // straight at `history-prune`, so a false orphan here is a diagnostic
+        // recommending the very command that would delete a blob still named by
+        // a document `check` cannot currently read. Suppressed for the *whole*
+        // store rather than scoped per shard: blobs are content-addressed and
+        // shared across the store, not partitioned by the shard an event lives
+        // in, so there is no shard-local subset of `blobs/` a given unreadable
+        // event could not have referenced.
+        if unreadable.is_empty() {
+            let orphaned: Vec<PathBuf> = self
+                .history_blob_files(store_index)
+                .await?
+                .into_iter()
+                .filter(|blob| !promised.contains(blob))
+                .collect();
+            if !orphaned.is_empty() {
+                findings.push(Finding::HistoryBlobOrphaned {
+                    store: store_index.to_path_buf(),
+                    blobs: orphaned,
+                });
+            }
         }
         Ok(findings)
     }
@@ -4273,6 +4379,144 @@ mod tests {
                 b"---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n"
             ))
             .exists()
+        );
+    }
+
+    // ── An unreadable event must refuse destruction, not silently drop it ────
+
+    /// Corrupt an event document the way a sync transport actually does: a
+    /// conflict lands **inside** the frontmatter fence rather than beside it —
+    /// `a_transport_conflict_copy_is_not_mistaken_for_an_event` covers the
+    /// filename shape; this is the one no filename check can catch. The result
+    /// still has an event-shaped filename, so [`shard_event_ids`] finds it, but
+    /// nothing in its content parses any more.
+    fn tear(dir: &Path, rel: &str) {
+        let text = read(dir, rel);
+        let mangled = text.replacen("---\n", "---\n<<<<<<< ours\n=======\n>>>>>>> theirs\n", 1);
+        write(dir, rel, &mangled);
+    }
+
+    #[test]
+    fn a_prune_refuses_while_any_event_is_unreadable() {
+        // The bug this guards: a `referenced` set built only from the events
+        // that parsed treats the torn event's blobs as unclaimed, and a prune
+        // would collect and delete them — permanent loss from a bound that
+        // silently dropped a whole event's worth of references.
+        let dir = seed("prune-torn");
+        let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        capture_edited(&dir, "2026-07-31T10:00:00.000000Z", "two", "beta");
+        let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
+        tear(&dir, torn.to_str().unwrap());
+
+        let w = ws(&dir);
+        let err =
+            block_on(w.history_prune_plan(Path::new("index.md"), &Retention::Keep(1))).unwrap_err();
+        assert!(
+            err.to_string().contains(torn.to_str().unwrap()),
+            "the refusal has to name the file that could not be read: {err}"
+        );
+
+        // Refused before a plan even exists — nothing on disk moved.
+        assert!(dir.join(&torn).exists());
+        assert!(
+            dir.join(blob_of(
+                b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
+            ))
+            .exists()
+        );
+    }
+
+    #[test]
+    fn a_forget_refuses_while_any_event_is_unreadable() {
+        // Same bug, `history-forget`'s side: `others` built only from the events
+        // that parsed can miss a hash the torn event shared with the subject,
+        // so a hash that should have survived (named elsewhere) reads as
+        // belonging only to the subject and gets destroyed.
+        let dir = seed("forget-torn");
+        let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        capture_edited(&dir, "2026-07-31T10:00:00.000000Z", "two", "beta");
+        let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
+        tear(&dir, torn.to_str().unwrap());
+
+        std::fs::remove_file(dir.join("notes/a.md")).unwrap();
+        relink_live(&dir, &["notes/photo.jpg.yaml"]);
+
+        let err = forget(
+            &dir,
+            &Subject::Path(PathBuf::from("notes/a.md")),
+            "2026-08-01T12:00:00.000000Z",
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(torn.to_str().unwrap()),
+            "the refusal has to name the file that could not be read: {err}"
+        );
+        assert!(
+            dir.join(blob_of(
+                b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
+            ))
+            .exists(),
+            "a refused forget destroys nothing"
+        );
+    }
+
+    #[test]
+    fn check_reports_an_unreadable_event_and_never_recommends_pruning_its_blobs() {
+        // The promise docs/history-format.md §7 makes and the codebase did not
+        // keep: an event document that fails to parse is a plain `Unreadable`.
+        // And the other half of the bug: while it is unreadable, its blobs must
+        // not be reported `HistoryBlobOrphaned` — that finding's own message
+        // points straight at `history-prune`, so a false orphan here is a
+        // diagnostic recommending the destructive verb the two tests above
+        // refuse to run.
+        let dir = seed("check-torn");
+        let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
+        tear(&dir, torn.to_str().unwrap());
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::Unreadable { doc, .. } if doc == &torn)),
+            "missing the promised finding for {}: {findings:?}",
+            torn.display()
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryBlobOrphaned { .. })),
+            "a torn event's blobs must not be reported as orphans: {findings:?}"
+        );
+
+        // Reading `check` must not be what destroys the bytes: the blob only
+        // this (now unreadable) event named is still exactly where it was.
+        assert!(
+            dir.join(blob_of(
+                b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
+            ))
+            .exists()
+        );
+    }
+
+    #[test]
+    fn read_only_verbs_keep_degrading_gracefully_around_an_unreadable_event() {
+        // §7's flip side, restated as a test: the destructive verbs and `check`
+        // must refuse or report, but `history-list` (and anything built on it)
+        // has always been allowed to skip what it cannot read — that is
+        // graceful degradation, not the destruction this fix guards against.
+        let dir = seed("list-torn");
+        let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        let second = capture_edited(&dir, "2026-07-31T10:00:00.000000Z", "two", "beta");
+        let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
+        tear(&dir, torn.to_str().unwrap());
+
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec![second.as_str()],
+            "a read still answers with whatever it could parse"
         );
     }
 
