@@ -133,18 +133,19 @@ pub struct Event {
     /// correctness hazards — which is exactly why no device identity is needed to
     /// mint, store, or lose.
     pub parent: Option<String>,
-    /// The complete capture set at that moment, sorted by path.
+    /// The complete capture set at that moment. A manifest this library writes
+    /// is sorted by [`path_sort_key`] (§3.1); one read back off disk keeps
+    /// whatever order it was written in — an event's id is the one it was
+    /// minted with, never re-derived, so an older row order is not an error.
     pub files: Vec<FileEntry>,
 }
 
 impl Event {
     /// This event's manifest as a path → (id, hash) map, for diffing against
-    /// another event's.
+    /// another event's, and for comparing two manifests **by content rather
+    /// than by row order** ([`manifest_of`]).
     fn manifest(&self) -> BTreeMap<&Path, (&Option<Id>, &str)> {
-        self.files
-            .iter()
-            .map(|f| (f.path.as_path(), (&f.id, f.hash.as_str())))
-            .collect()
+        manifest_of(&self.files)
     }
 
     /// How this event's capture set differs from `previous`: `(changed, removed)`
@@ -518,6 +519,13 @@ pub fn store_dir(store_index: &Path) -> PathBuf {
 /// Deliberately independent of the metadata serialization format, so the same
 /// workspace state yields the same id whether frontmatter is YAML, JSON or fig.
 /// Tab-separated fields, one per line; see `docs/history-format.md` §4.1.
+///
+/// Hashes `files` in the order given — it trusts the caller for that, rather
+/// than sorting here, so this stays a pure function of "the manifest, in the
+/// order it will be serialized" for a reader reconstructing an id from an
+/// event already on disk. The one caller that *mints* an id ([`mint_id`], from
+/// [`Workspace::history_capture`]) is what owes it §3.1 order — see
+/// [`path_sort_key`].
 fn canonical_bytes(
     created: &str,
     trigger: &str,
@@ -708,6 +716,36 @@ fn slash_path(path: &Path) -> String {
         .join("/")
 }
 
+/// The manifest's sort key: `path`, byte-wise ascending on the joined UTF-8
+/// string (`docs/history-format.md` §3.1) — **not** `Path::cmp`, which orders
+/// component-wise and disagrees with it. `notes.md` and `notes/x.md` are the
+/// minimal case: joined, `.` (0x2E) sorts before `/` (0x2F), so `notes.md`
+/// comes first. Component-wise, the first path is one component (`notes.md`)
+/// and the second's first component is the bare `notes` — a prefix of
+/// `notes.md` and therefore "less" than it — so `Path::cmp` puts `notes/x.md`
+/// first, backwards from the joined string it will end up serialized as. Row
+/// order feeds `canonical_bytes` (§4.1), so this is the one sort in the store
+/// two independent implementations have to agree on bit-for-bit.
+fn path_sort_key(path: &Path) -> String {
+    slash_path(path)
+}
+
+/// A manifest as a path → (id, hash) map — the same rows a `Vec<FileEntry>`
+/// holds, keyed so two manifests compare equal **by content, regardless of row
+/// order**. §6's "computed manifest is identical" is a same-state test ("same
+/// paths, same ids, same hashes"), not a same-bytes test, so it must not care
+/// that a manifest written before this fix keeps whatever row order it was
+/// written in (§4: an event's id is the one it was minted with, never
+/// re-derived) while every manifest computed from here on is sorted per §3.1.
+/// `Vec<FileEntry>`'s derived `PartialEq` is row-order-sensitive and is the
+/// wrong tool for this comparison.
+fn manifest_of(files: &[FileEntry]) -> BTreeMap<&Path, (&Option<Id>, &str)> {
+    files
+        .iter()
+        .map(|f| (f.path.as_path(), (&f.id, f.hash.as_str())))
+        .collect()
+}
+
 /// Whether `path` sits inside `dir` (or *is* it) — the capture-set exclusion
 /// test, applied to normalized workspace-relative paths.
 fn under(path: &Path, dir: &Path) -> bool {
@@ -886,6 +924,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// and the recycle bin's *index*. Capturing the bin index keeps the common
     /// case correct: a document live at capture time comes back live, and the bin
     /// index reverts to a state that does not list it.
+    ///
+    /// Returned in **manifest order** — [`path_sort_key`], byte-wise ascending on
+    /// the joined path string (§3.1) — not the component-wise order
+    /// [`reachable_files`](Workspace::reachable_files)'s `BTreeSet<PathBuf>`
+    /// iterates in. The two agree almost everywhere and disagree exactly where a
+    /// file and a same-named directory are siblings (`notes.md` next to
+    /// `notes/`), which is precisely the case a real workspace produces and a
+    /// `Path`-ordered manifest would get wrong.
     pub async fn history_capture_set(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
         let (store_index, _) = self.history_store_index(root_doc).await?;
         let store = store_dir(&store_index);
@@ -894,14 +940,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .await?
             .map(|index| store_dir(&index).join("items"));
         let about = self.about_path(root_doc).await?;
-        Ok(self
+        let mut files: Vec<PathBuf> = self
             .reachable_files(root_doc)
             .await?
             .into_iter()
             .filter(|p| !under(p, &store))
             .filter(|p| binned.as_ref().is_none_or(|items| !under(p, items)))
             .filter(|p| about.as_ref().is_none_or(|about| p != about))
-            .collect())
+            .collect();
+        files.sort_by_key(|p| path_sort_key(p));
+        Ok(files)
     }
 
     /// Every event in the store, oldest first (by `created`, then id).
@@ -1122,8 +1170,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             false => Some(self.history_pointer_text(&root_doc, &store_index).await?),
         };
 
-        // The manifest: one row per captured file, sorted by path. The capture set
-        // is already a sorted set, so the manifest inherits that order.
+        // The manifest: one row per captured file, in manifest order — the
+        // capture set is already sorted that way (§3.1), so the manifest
+        // inherits it rather than sorting again here.
         //
         // Each file's bytes are hashed and parked in the same pass, then dropped —
         // a workspace is captured whole, so accumulating every file's contents to
@@ -1157,10 +1206,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // The newest local event: what a new capture compares against, and what
         // it records as `parent` (display metadata — nothing computes through it).
+        //
+        // Compared by `manifest_of`, not `==` on the `Vec`: `previous` may be an
+        // event a pre-fix writer (or a store synced in from elsewhere) wrote with
+        // its rows in `Path`'s component order rather than §3.1's, and "the
+        // computed manifest is identical" (§6) means the same paths, ids and
+        // hashes — not the same row order.
         let existing = self.history_list(&root_doc).await?;
         let newest = existing.last();
         if let Some(previous) = newest
-            && previous.files == files
+            && manifest_of(&previous.files) == manifest_of(&files)
         {
             return Ok(Captured::Unchanged {
                 id: previous.id.clone(),
@@ -2861,6 +2916,65 @@ mod tests {
     }
 
     #[test]
+    fn manifest_order_is_byte_wise_on_the_joined_string_not_path_component_order() {
+        // The bug, stated as directly as possible: `.` (0x2E) sorts before `/`
+        // (0x2F) in the joined string, so `notes.md` belongs before
+        // `notes/x.md`. `Path::cmp` disagrees — it compares the bare `notes`
+        // component (a prefix of `notes.md`) against the whole `notes.md`
+        // component and calls `notes` smaller, putting `notes/x.md` first.
+        let notes_file = Path::new("notes.md");
+        let notes_dir_file = Path::new("notes/x.md");
+        assert!(
+            notes_dir_file < notes_file,
+            "Path::cmp really does get this backwards"
+        );
+        assert!(
+            path_sort_key(notes_file) < path_sort_key(notes_dir_file),
+            "the manifest's own key must get it the other way round"
+        );
+
+        // The same collision one directory deeper, to be sure the key is not
+        // secretly depth-limited.
+        let mut paths = [
+            Path::new("deep/notes/x.md"),
+            Path::new("deep/notes.md"),
+            Path::new("index.md"),
+            Path::new("notes/x.md"),
+            Path::new("notes.md"),
+        ];
+        paths.sort_by_key(|p| path_sort_key(p));
+        assert_eq!(
+            paths,
+            [
+                Path::new("deep/notes.md"),
+                Path::new("deep/notes/x.md"),
+                Path::new("index.md"),
+                Path::new("notes.md"),
+                Path::new("notes/x.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_equality_for_the_unchanged_check_ignores_row_order() {
+        // §6's "computed manifest is identical" is same-state, not
+        // same-serialization: a manifest a pre-fix writer left in `Path`
+        // component order must still compare equal to the correctly-ordered
+        // one this fix computes for the same state, or a habitual `history-
+        // capture` against an old store would start filling the log with
+        // duplicates the moment it hit a collision like `notes.md` /
+        // `notes/x.md`.
+        let sorted = vec![entry("notes.md", b"n"), entry("notes/x.md", b"x")];
+        let mut component_order = sorted.clone();
+        component_order.reverse();
+        assert_ne!(
+            sorted, component_order,
+            "the derived Vec equality this replaces really is row-order-sensitive"
+        );
+        assert_eq!(manifest_of(&sorted), manifest_of(&component_order));
+    }
+
+    #[test]
     fn the_capture_set_exclusion_is_by_directory_prefix() {
         let store = Path::new("history");
         assert!(under(Path::new("history"), store));
@@ -2975,6 +3089,89 @@ mod tests {
         let payload_hash = crate::fixity::digest(b"JPEGBYTES");
         let blob = blob_path(Path::new("history/index.md"), &payload_hash).unwrap();
         assert_eq!(read(&dir, blob.to_str().unwrap()), "JPEGBYTES");
+    }
+
+    #[test]
+    fn capture_sorts_the_manifest_byte_wise_not_by_path_components() {
+        // `notes.md` beside `notes/x.md` — a file and a same-stem directory as
+        // siblings — plus the identical collision one directory deeper, so a
+        // depth-limited fix would still fail this. `docs/history-format.md`
+        // §3.1 requires byte-wise ascending order on the joined path string;
+        // `BTreeSet<PathBuf>`/`Path::cmp` order component-wise and get exactly
+        // this shape backwards (see `path_sort_key`).
+        let dir = tempdir("capture-manifest-order");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- notes.md\n- notes/x.md\n- deep/notes.md\n\
+             - deep/notes/x.md\n---\nroot\n",
+        );
+        write(
+            &dir,
+            "notes.md",
+            "---\ntitle: Notes\npart_of: 'index.md'\n---\nnotes\n",
+        );
+        write(
+            &dir,
+            "notes/x.md",
+            "---\ntitle: X\npart_of: '../index.md'\n---\nx\n",
+        );
+        write(
+            &dir,
+            "deep/notes.md",
+            "---\ntitle: Deep notes\npart_of: '../index.md'\n---\ndeep notes\n",
+        );
+        write(
+            &dir,
+            "deep/notes/x.md",
+            "---\ntitle: Deep X\npart_of: '../../index.md'\n---\ndeep x\n",
+        );
+
+        let Captured::Written { id, files, .. } = capture(&dir, "2026-07-31T09:15:22Z", None)
+        else {
+            panic!("the first capture must write an event");
+        };
+        assert_eq!(files, 5, "the root plus the four collision files");
+
+        // Read the `path:` rows back off the document itself, in the order
+        // they were written — the manifest is what two implementations have
+        // to agree on, not `Event.files`' in-memory order.
+        let event_rel = event_path(Path::new("history/index.md"), &id, "md").unwrap();
+        let manifest_text = read(&dir, event_rel.to_str().unwrap());
+        let order: Vec<&str> = manifest_text
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("- path: "))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "deep/notes.md",
+                "deep/notes/x.md",
+                "index.md",
+                "notes.md",
+                "notes/x.md",
+            ],
+            "byte-wise ascending — `.` (0x2E) sorts before `/` (0x2F):\n{manifest_text}"
+        );
+
+        // And the id: read the event back and independently recompute the
+        // digest suffix from its own recorded fields via `canonical_bytes`,
+        // the same function `mint_id` used to mint it — proof the id names
+        // exactly the manifest that landed on disk, in the order it landed.
+        let event = block_on(ws(&dir).history_event(Path::new("index.md"), &id))
+            .unwrap()
+            .expect("the just-written event must read back");
+        let digest = crate::fixity::digest(&canonical_bytes(
+            &event.created,
+            &event.trigger,
+            event.label.as_deref(),
+            event.parent.as_deref(),
+            &event.files,
+        ));
+        assert_eq!(
+            &id[id.len() - 8..],
+            &digest["sha256:".len().."sha256:".len() + 8]
+        );
     }
 
     #[test]
