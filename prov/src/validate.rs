@@ -3401,6 +3401,29 @@ mod about_tests {
     }
 
     #[test]
+    fn a_prov_upgrade_between_generation_and_check_is_not_staleness() {
+        // The byline test above only ever tampers with the metadata line by
+        // hand; it never actually varies `ctx.version`, so it would pass even
+        // if the body itself leaked the version. Here the page is *generated*
+        // under one version and *checked* under another — the scenario that
+        // happens for real when two synced devices run different prov builds,
+        // or a workspace is checked the day after an upgrade. Nothing about
+        // the page's prose changed, so this must not be a finding.
+        let (dir, config, old_ctx) = fixture("about-upgrade");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        block_on(ws.write_about(std::path::Path::new("index.md"), &config, &old_ctx)).unwrap();
+
+        let new_ctx = AboutContext::new("index.md", "99.0.0");
+        let finding =
+            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &new_ctx)).unwrap();
+        assert!(
+            finding.is_none(),
+            "a page generated under one prov version must read as current under \
+             another: {finding:?}"
+        );
+    }
+
+    #[test]
     fn a_workspace_that_asked_for_no_page_is_silent() {
         let dir = tempdir("about-off");
         // No `about` pointer, and the axis is off: nothing was promised.
