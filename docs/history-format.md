@@ -508,6 +508,7 @@ row is one of:
 |---|---|
 | create | nothing is at that path |
 | overwrite | something else is at that path |
+| case only | the captured bytes are already there, under a spelling that differs from the manifest's only by case |
 | unchanged | the captured bytes are already there — nothing is written |
 | no bytes | the manifest's hash names no blob in this store — skipped, by name |
 
@@ -515,6 +516,22 @@ A `no bytes` row is **ordinary, not broken** (§10.1's two causes: in flight, or
 lost), and it is skipped rather than fatal — including under `--exact`, where the
 path is still one the manifest holds and so is never removed for want of bytes
 that merely have not arrived.
+
+**Case identity, on a filesystem that folds it.** A row's "on disk" check and
+`--exact`'s removal set both have to agree about *which* file a path names, and a
+case-insensitive filesystem (APFS, NTFS) is where a byte-exact string compare and
+a real `try_exists` lookup can disagree: the manifest's `notes/A.md` and a
+sync-renamed `notes/a.md` on disk are the same file to the filesystem, but not to
+a naive string comparison. Restore resolves every row's *actual* on-disk spelling
+once and uses that resolved identity everywhere — so a row the probe finds only
+under a different case is never a candidate for `--exact` removal, and is instead
+renamed in place to the manifest's own spelling (`case only` above; `overwrite`
+does the same rename when the bytes changed too). A manifest that itself holds
+two paths differing only by case — a state only a case-sensitive filesystem can
+produce — is refused outright on a filesystem that folds case, rather than let
+the second row's write silently clobber the first. None of this changes anything
+on a filesystem that does not fold case: two such paths are simply two ordinary,
+unrelated files there.
 
 Before a byte moves, restore also refuses what only the author can arbitrate: a
 **registration it would displace**, in either direction, since `id_storage`

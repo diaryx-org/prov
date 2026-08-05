@@ -230,6 +230,16 @@ pub enum Disposition {
     /// rather than dropped, because "the restore did nothing to this file" is the
     /// answer to a question a user restoring after a bad merge is actually asking.
     Unchanged,
+    /// The captured bytes are already there too, but under a spelling that
+    /// differs from the manifest's only by case — a case-insensitive filesystem
+    /// found them via `notes/a.md` for a row the manifest holds as `notes/A.md`,
+    /// say. Nothing about the content is wrong, so nothing is overwritten; the
+    /// file is renamed in place to the manifest's own spelling, which is the
+    /// captured truth about where it lived. Distinct from
+    /// [`Unchanged`](Disposition::Unchanged) because a rename *is* a write — a
+    /// plan reporting no-op here would be wrong, and so would an `--exact` pass
+    /// that deleted the very file this row just claimed.
+    CaseOnly,
     /// The manifest names a hash with no blob behind it, so there are no bytes to
     /// write. Ordinary rather than broken: an event document and the blobs it
     /// names travel over a transport independently, and a small document
@@ -247,9 +257,10 @@ impl Disposition {
         match self {
             Disposition::Create => 0,
             Disposition::Overwrite => 1,
-            Disposition::Unchanged => 2,
-            Disposition::NoBytes => 3,
-            Disposition::Remove => 4,
+            Disposition::CaseOnly => 2,
+            Disposition::Unchanged => 3,
+            Disposition::NoBytes => 4,
+            Disposition::Remove => 5,
         }
     }
 }
@@ -269,6 +280,16 @@ pub struct RestoreOp {
     pub hash: Option<String>,
     /// The id the manifest recorded for this path, when it recorded one.
     pub id: Option<Id>,
+    /// The on-disk path this row's file is actually found under right now, when
+    /// that differs from `path` **only by case** — set for
+    /// [`Overwrite`](Disposition::Overwrite) and
+    /// [`CaseOnly`](Disposition::CaseOnly) rows a case-insensitive filesystem
+    /// resolved to a differently-spelled entry, `None` for everything else
+    /// (including every row on a filesystem that does not fold case, where this
+    /// cannot arise). [`history_restore`](Workspace::history_restore) renames it
+    /// to `path` before writing, so the workspace ends up holding the exact
+    /// spelling the manifest recorded rather than silently keeping the old one.
+    pub rename_from: Option<PathBuf>,
 }
 
 /// A registration a restore would displace, and the path whose restoration would
@@ -326,7 +347,10 @@ impl RestorePlan {
         !self.ops.iter().any(|op| {
             matches!(
                 op.disposition,
-                Disposition::Create | Disposition::Overwrite | Disposition::Remove
+                Disposition::Create
+                    | Disposition::Overwrite
+                    | Disposition::CaseOnly
+                    | Disposition::Remove
             )
         })
     }
@@ -750,6 +774,29 @@ fn manifest_of(files: &[FileEntry]) -> BTreeMap<&Path, (&Option<Id>, &str)> {
 /// test, applied to normalized workspace-relative paths.
 fn under(path: &Path, dir: &Path) -> bool {
     dir.as_os_str().is_empty() || path == dir || path.starts_with(dir)
+}
+
+/// The first two paths in `paths` that fold to the same ASCII-lowercased key
+/// without being equal — the shape a manifest captured on a case-sensitive
+/// filesystem can legitimately hold (two real, distinct files) and that
+/// self-clobbers on a case-insensitive one: writing the second row's bytes
+/// lands on the file the first row's write just created, silently discarding
+/// it. Order is the manifest's own (paths are captured pre-sorted), so the
+/// pair reported is deterministic.
+fn case_fold_collision<'a>(paths: impl Iterator<Item = &'a Path>) -> Option<(PathBuf, PathBuf)> {
+    let mut seen: BTreeMap<String, &Path> = BTreeMap::new();
+    for path in paths {
+        let key = path.to_string_lossy().to_ascii_lowercase();
+        match seen.get(&key) {
+            Some(&other) if other != path => {
+                return Some((other.to_path_buf(), path.to_path_buf()));
+            }
+            _ => {
+                seen.insert(key, path);
+            }
+        }
+    }
+    None
 }
 
 // ── Reading the store ────────────────────────────────────────────────────────
@@ -1402,6 +1449,72 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(())
     }
 
+    /// The literal on-disk spelling `path` resolves to, or `None` if nothing
+    /// does.
+    ///
+    /// `try_exists` alone cannot say *which* spelling: on a case-insensitive
+    /// filesystem it resolves `notes/A.md` to whatever is actually stored as
+    /// `notes/a.md` without saying so — which is exactly the ambiguity that let
+    /// [`history_restore_plan`](Workspace::history_restore_plan)'s disposition
+    /// probe and its `exact` removal set disagree about identity, plan the same
+    /// file `Unchanged` and `Remove` in the same breath, and delete it.
+    ///
+    /// The parent directory is read only *after* `try_exists` has already said
+    /// the path resolves, so a filesystem that does not fold case — where a
+    /// similarly-spelled but different file sitting nearby is not a collision at
+    /// all — takes exactly the `try_exists`-false-means-absent path it always
+    /// did. Nothing here reads the target OS; the filesystem answers for itself.
+    async fn on_disk_identity(&self, path: &Path) -> Result<Option<PathBuf>> {
+        let full = self.root().join(path);
+        if !self.fs().try_exists(&full).await? {
+            return Ok(None);
+        }
+        let (Some(parent), Some(name)) = (full.parent(), full.file_name()) else {
+            return Ok(Some(path.to_path_buf()));
+        };
+        let Ok(entries) = self.fs().read_dir(parent).await else {
+            // `try_exists` already said yes; a listing that cannot then confirm
+            // it (a permission fault, a race) is not grounds to guess a
+            // different spelling than the one asked for.
+            return Ok(Some(path.to_path_buf()));
+        };
+        let mut folded = None;
+        for entry in entries {
+            let Some(entry_name) = entry.file_name() else {
+                continue;
+            };
+            if entry_name == name {
+                return Ok(Some(path.to_path_buf()));
+            }
+            if entry_name.eq_ignore_ascii_case(name) {
+                folded = Some(path.with_file_name(entry_name.to_string_lossy().into_owned()));
+            }
+        }
+        Ok(folded.or_else(|| Some(path.to_path_buf())))
+    }
+
+    /// Whether this workspace's filesystem folds ASCII case for path lookups —
+    /// probed against the workspace root with a throwaway file rather than
+    /// assumed from the platform prov is running on, because the two can
+    /// disagree (a case-sensitive volume mounted on macOS, a case-insensitive
+    /// share mounted on Linux), and getting this wrong in either direction is
+    /// exactly the hazard the case-identity fix exists to close.
+    ///
+    /// Only called once [`case_fold_collision`] has already found two manifest
+    /// rows that need the answer — the overwhelming majority of plans never hit
+    /// this and never write a byte to get one, so
+    /// [`history_restore_plan`](Workspace::history_restore_plan)'s "before a
+    /// byte moves" promise holds for every restore but this one, already-doomed
+    /// shape.
+    async fn filesystem_case_folds(&self) -> Result<bool> {
+        let probe = self.root().join(".prov-case-probe.tmp");
+        let folded = self.root().join(".PROV-CASE-PROBE.tmp");
+        self.fs().write(&probe, b"").await?;
+        let collides = self.fs().try_exists(&folded).await;
+        let _ = self.fs().remove_file(&probe).await;
+        Ok(collides?)
+    }
+
     /// What restoring `event` would do, computed **before a byte moves** — the
     /// dry run, the confirmation prompt's removal list, and the plan
     /// [`history_restore`](Self::history_restore) executes, all one value.
@@ -1512,7 +1625,42 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         };
 
+        // A manifest whose captured tree held two paths differing only by case is
+        // a state a case-sensitive filesystem can hold and a case-insensitive one
+        // cannot: writing the second row's bytes after the first would land on
+        // the file the first row's write just created, silently discarding it.
+        // This can only arrive from a manifest captured *elsewhere* — a capture
+        // taken on a case-insensitive filesystem could never observe both paths
+        // reachable at once, since the same folding that would defeat the
+        // restore already defeated the walk that would have built such a
+        // manifest. Checked against the real filesystem rather than the running
+        // OS (`filesystem_case_folds`'s own doc says why), and only for the rows
+        // this restore actually selected — a scope that names just one of the
+        // pair has nothing to self-clobber.
+        if let Some((a, b)) = case_fold_collision(selected.iter().map(|f| f.path.as_path()))
+            && self.filesystem_case_folds().await?
+        {
+            return Err(Error::Structure(format!(
+                "{} captured both {} and {}, which differ only in case — this \
+                 filesystem cannot hold both at once, so restoring them together \
+                 here would let the second overwrite the first",
+                event.id,
+                a.display(),
+                b.display()
+            )));
+        }
+
         let mut ops = Vec::new();
+        // The on-disk path each row actually resolves to right now, gathered
+        // alongside the dispositions below — built once so the `exact` removal
+        // pass can ask the identical question the probe just answered, instead
+        // of falling back to a byte-exact string compare that a case-insensitive
+        // filesystem can disagree with. That disagreement was the bug: a row the
+        // probe found `Unchanged` under a different case, and the removal pass
+        // then deleted anyway, because "captured" and "on disk" were compared as
+        // literal strings in one pass and through the filesystem's own folding
+        // in the other.
+        let mut occupied: BTreeSet<PathBuf> = BTreeSet::new();
         for file in selected {
             // Presence of the bytes first: a row prov cannot supply has no
             // disposition worth computing, and there is nothing to read.
@@ -1522,32 +1670,52 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // found — missing, rather than fatal to the whole plan.
                 Err(_) => false,
             };
-            let live = self.root().join(&file.path);
-            let disposition = if !parked {
-                Disposition::NoBytes
-            } else if !self.fs().try_exists(&live).await? {
-                Disposition::Create
-            } else if crate::fixity::digest(&self.fs().read(&live).await?) == file.hash {
-                Disposition::Unchanged
-            } else {
-                Disposition::Overwrite
+            // Computed regardless of `parked`: even a row with no bytes to
+            // restore still names a path the manifest holds, and a file already
+            // sitting there under a different case is the same file that row is
+            // about — `exact` must not delete it either.
+            let identity = self.on_disk_identity(&file.path).await?;
+            if let Some(actual) = &identity {
+                occupied.insert(actual.clone());
+            }
+            let (disposition, rename_from) = match (parked, identity) {
+                (false, _) => (Disposition::NoBytes, None),
+                (true, None) => (Disposition::Create, None),
+                (true, Some(actual)) => {
+                    let bytes = self.fs().read(&self.root().join(&actual)).await?;
+                    let matches = crate::fixity::digest(&bytes) == file.hash;
+                    let recased = actual != file.path;
+                    match (matches, recased) {
+                        (true, false) => (Disposition::Unchanged, None),
+                        (true, true) => (Disposition::CaseOnly, Some(actual)),
+                        (false, false) => (Disposition::Overwrite, None),
+                        (false, true) => (Disposition::Overwrite, Some(actual)),
+                    }
+                }
             };
             ops.push(RestoreOp {
                 path: file.path.clone(),
                 disposition,
                 hash: Some(file.hash.clone()),
                 id: file.id.clone(),
+                rename_from,
             });
         }
 
         if exact {
-            let captured: BTreeSet<&Path> = event.files.iter().map(|f| f.path.as_path()).collect();
             for path in self.history_capture_set(&root_doc).await? {
                 // The root document is never removed. A capture always holds it
                 // (it is how the walk started), so this only fires for a manifest
                 // that is not one — and a tree with no root is not a restored
                 // workspace, it is rubble.
-                if captured.contains(path.as_path()) || path == root_doc {
+                //
+                // `occupied` is keyed by the *actual* on-disk path each row
+                // resolves to, not the manifest's own spelling — so a reachable
+                // file a row claims only under a different case is spared here
+                // exactly as it was left unwritten (or renamed rather than
+                // recreated) above, rather than the two passes disagreeing about
+                // whether it is "captured".
+                if occupied.contains(&path) || path == root_doc {
                     continue;
                 }
                 ops.push(RestoreOp {
@@ -1555,6 +1723,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     disposition: Disposition::Remove,
                     hash: None,
                     id: None,
+                    rename_from: None,
                 });
             }
         }
@@ -1574,8 +1743,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut conflicts = Vec::new();
         for op in &ops {
             // Only a row actually being written can displace anything: an
-            // `Unchanged` path already holds these bytes, and a `NoBytes` one is
-            // not touched at all.
+            // `Unchanged` path already holds these bytes, a `NoBytes` one is not
+            // touched at all, and a `CaseOnly` rename moves the same bytes this
+            // id was already registered against — nothing about which id claims
+            // which content changes, only the on-disk spelling does.
             if !matches!(op.disposition, Disposition::Create | Disposition::Overwrite) {
                 continue;
             }
@@ -1667,6 +1838,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // half-applied set should fail in, and the order the plan was read in.
         let mut cs = self.change();
         for op in &plan.ops {
+            // A row found only under a different case is moved to the manifest's
+            // own spelling first — the rename-in-place that keeps this write (or,
+            // for `CaseOnly`, this rename alone) and the `exact` pass that spared
+            // the same on-disk file above in agreement about which path it now
+            // lives at. Staged ahead of the write below, and a set applies its
+            // ops in order, so a rename immediately followed by a write to its
+            // own destination is exactly the sequencing `ChangeSet` promises.
+            if let Some(from) = &op.rename_from {
+                cs.rename(from, &op.path);
+            }
             match op.disposition {
                 Disposition::Create | Disposition::Overwrite => {
                     let hash = op.hash.as_deref().ok_or_else(|| {
@@ -1698,7 +1879,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Disposition::Remove => {
                     cs.remove(&op.path);
                 }
-                Disposition::Unchanged | Disposition::NoBytes => {}
+                // `CaseOnly` already got everything it needs from the rename
+                // staged above — the bytes were already right, only the name
+                // wasn't. `Unchanged` and `NoBytes` write nothing at all.
+                Disposition::CaseOnly | Disposition::Unchanged | Disposition::NoBytes => {}
             }
         }
         self.commit(cs).await
@@ -5078,5 +5262,176 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    // ── Case-fold identity: the probe and the `exact` removal set agreeing ────
+
+    /// Whether `dir` sits on a filesystem that folds ASCII case for path
+    /// lookups — probed empirically (this suite runs on APFS in development
+    /// and ext4 in CI, and the two disagree) rather than assumed from
+    /// `cfg(target_os)`, mirroring the production probe this exercises
+    /// ([`Workspace::filesystem_case_folds`]). Every test below that depends on
+    /// case-folding actually happening skips its case-insensitive-only
+    /// assertions when this is `false`, so the suite stays green on Linux CI.
+    fn case_insensitive_fs(dir: &Path) -> bool {
+        let probe = dir.join(".case-probe.tmp");
+        std::fs::write(&probe, b"x").unwrap();
+        let collides = dir.join(".CASE-PROBE.tmp").exists();
+        let _ = std::fs::remove_file(&probe);
+        collides
+    }
+
+    /// The literal on-disk spelling of `rel`'s final component, read straight
+    /// from its parent directory's listing — the same thing a restore's own
+    /// [`Workspace::on_disk_identity`] reads, so a test can assert *which*
+    /// casing survived rather than merely that *a* casing did.
+    fn literal_name(dir: &Path, rel: &str) -> String {
+        let rel = Path::new(rel);
+        let entries = std::fs::read_dir(dir.join(rel.parent().unwrap())).unwrap();
+        let want = rel.file_name().unwrap().to_string_lossy();
+        entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .find(|name| name.eq_ignore_ascii_case(&want))
+            .unwrap_or_else(|| panic!("no entry named {want} (any case) in {}", rel.display()))
+    }
+
+    #[test]
+    fn an_exact_restore_spares_and_recases_a_row_that_only_differs_from_disk_by_case() {
+        let dir = seed("restore-case-exact");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("the first capture must write an event");
+        };
+        if !case_insensitive_fs(&dir) {
+            return;
+        }
+
+        // A sync client — or a user in Finder — renamed the file to a
+        // different case after the capture. The manifest still spells it
+        // `notes/a.md`. Restoring that old event with `--exact` is the exact
+        // shape of the data-loss bug: the disposition probe used to find this
+        // row `Unchanged` through the filesystem's own folding, while the
+        // removal pass compared paths as literal strings and queued the very
+        // same file for `Remove` — so the run deleted it and neither spelling
+        // survived.
+        std::fs::rename(dir.join("notes/a.md"), dir.join("notes/A.md")).unwrap();
+
+        let mut w = ws(&dir);
+        let plan = restore(&mut w, &id, &Scope::Whole, true, false).unwrap();
+
+        assert_eq!(
+            plan.removals().collect::<Vec<_>>(),
+            Vec::<&Path>::new(),
+            "a case-only rename must never be planned for removal under --exact"
+        );
+        assert_eq!(
+            dispositions(&plan, Disposition::CaseOnly),
+            vec![Path::new("notes/a.md")],
+            "the bytes already matched; only the on-disk name's case did not"
+        );
+        assert_eq!(
+            literal_name(&dir, "notes/a.md"),
+            "a.md",
+            "restore renames the file to the manifest's own spelling"
+        );
+        assert_eq!(
+            read(&dir, "notes/a.md"),
+            "---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
+        );
+    }
+
+    #[test]
+    fn an_additive_restore_recases_the_old_spelling_instead_of_silently_doing_nothing() {
+        let dir = seed("restore-case-additive");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("the first capture must write an event");
+        };
+        if !case_insensitive_fs(&dir) {
+            return;
+        }
+        std::fs::rename(dir.join("notes/a.md"), dir.join("notes/A.md")).unwrap();
+
+        // The other edge the same bug left behind: without `--exact`, the old
+        // probe found this row `Unchanged` and wrote nothing at all, so the
+        // manifest's own spelling never came back — a restore that silently
+        // no-ops on a row it was actually asked to restore.
+        let mut w = ws(&dir);
+        let plan = restore(&mut w, &id, &Scope::Whole, false, false).unwrap();
+
+        assert!(
+            !plan.is_noop(),
+            "a case-only rename is a real change the plan must report, not silence"
+        );
+        assert_eq!(
+            dispositions(&plan, Disposition::CaseOnly),
+            vec![Path::new("notes/a.md")]
+        );
+        assert_eq!(literal_name(&dir, "notes/a.md"), "a.md");
+    }
+
+    #[test]
+    fn an_overwrite_recases_too_when_the_on_disk_content_also_changed() {
+        let dir = seed("restore-case-overwrite");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("the first capture must write an event");
+        };
+        if !case_insensitive_fs(&dir) {
+            return;
+        }
+        std::fs::rename(dir.join("notes/a.md"), dir.join("notes/A.md")).unwrap();
+        write(&dir, "notes/A.md", "clobbered by a sync conflict");
+
+        let mut w = ws(&dir);
+        let plan = restore(&mut w, &id, &Scope::Whole, false, false).unwrap();
+
+        assert_eq!(
+            dispositions(&plan, Disposition::Overwrite),
+            vec![Path::new("notes/a.md")]
+        );
+        assert_eq!(
+            literal_name(&dir, "notes/a.md"),
+            "a.md",
+            "an overwrite must fix the casing too, not just the content"
+        );
+        assert_eq!(
+            read(&dir, "notes/a.md"),
+            "---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
+        );
+    }
+
+    #[test]
+    fn a_foreign_event_naming_two_paths_that_differ_only_by_case_is_refused_exactly_where_the_filesystem_would_self_clobber()
+     {
+        // A manifest naming both spellings is a state only a case-sensitive
+        // filesystem can capture — a normal capture here could never observe
+        // both paths reachable at once. Simulated directly on the event rather
+        // than on disk, since this filesystem could not produce it either.
+        let dir = seed("restore-case-foreign");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("the first capture must write an event");
+        };
+        let w = ws(&dir);
+        let mut event = block_on(w.history_event(Path::new("index.md"), &id))
+            .unwrap()
+            .unwrap();
+        event.files.push(entry("notes/A.md", b"a different alpha"));
+
+        let result =
+            block_on(w.history_restore_plan(Path::new("index.md"), &event, &Scope::Whole, false));
+        if case_insensitive_fs(&dir) {
+            assert!(
+                result.is_err(),
+                "a case-colliding manifest must be refused on a filesystem that \
+                 folds case — writing the second row would silently clobber the first"
+            );
+        } else {
+            // The whole point: this fix must change nothing on a filesystem
+            // that does not fold case, where the two paths are simply two
+            // ordinary, unrelated files.
+            assert!(
+                result.is_ok(),
+                "must not refuse on a filesystem that does not fold case: {result:?}"
+            );
+        }
     }
 }

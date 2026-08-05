@@ -2105,6 +2105,10 @@ fn narrate_plan(plan: &prov::RestorePlan, forgotten: &std::collections::BTreeSet
         let (verb, note) = match op.disposition {
             prov::Disposition::Create => ("create   ", ""),
             prov::Disposition::Overwrite => ("overwrite", ""),
+            prov::Disposition::CaseOnly => (
+                "recase   ",
+                "  (bytes already matched; only the on-disk name's case did not)",
+            ),
             prov::Disposition::Unchanged => ("unchanged", "  (already matches the capture)"),
             // Absent by decision reads differently from absent by accident, and
             // the row is where a reader looks first.
@@ -2127,7 +2131,10 @@ fn report_restored(plan: &prov::RestorePlan) {
     for op in &plan.ops {
         if matches!(
             op.disposition,
-            prov::Disposition::Create | prov::Disposition::Overwrite | prov::Disposition::Remove
+            prov::Disposition::Create
+                | prov::Disposition::Overwrite
+                | prov::Disposition::CaseOnly
+                | prov::Disposition::Remove
         ) {
             println!("{}", op.path.display());
         }
@@ -2194,9 +2201,10 @@ fn cmd_history_restore(
     );
     let no_bytes = plan.count(prov::Disposition::NoBytes);
     let removals = plan.count(prov::Disposition::Remove);
+    let recased = plan.count(prov::Disposition::CaseOnly);
     eprintln!(
-        "{}: {created} to create, {overwritten} to overwrite, {} unchanged, \
-         {no_bytes} without bytes, {removals} to remove",
+        "{}: {created} to create, {overwritten} to overwrite, {recased} to recase, \
+         {} unchanged, {no_bytes} without bytes, {removals} to remove",
         plan.event,
         plan.count(prov::Disposition::Unchanged),
     );
