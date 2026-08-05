@@ -1,0 +1,269 @@
+//! `separate` and `combine` — the two halves of a document's embedding shape.
+//!
+//! A combined document is one file (prose under a frontmatter block); a
+//! separated one is two (a whole-file metadata node pointing at a body file
+//! through `content`). Both verbs move the *structural* document from one path
+//! to the other, so both retarget every inbound link and carry the registered
+//! id across — the same maintenance [`rename`](super::rename) does, for a move
+//! the caller never spells as one.
+
+use std::path::{Path, PathBuf};
+
+use fig::Segment;
+
+use crate::document::MetaCarrier;
+use crate::edit::MetaEditor;
+use crate::error::{Error, Result};
+use crate::fs::Storage;
+use crate::identity::IdentityPolicy;
+use crate::index::IndexStore;
+use crate::link;
+use crate::meta::Value;
+use crate::workspace::Workspace;
+
+use super::maintain::content_target;
+
+impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Split the combined document at `path` into two linked plain-text files: a
+    /// whole-file **metadata** document (in the document's own frontmatter
+    /// format) that becomes the structural node, and a **body** file holding its
+    /// prose, joined by a `content` attribute on the metadata file. Every inbound
+    /// link to the document is retargeted to the new metadata file, and a
+    /// registered ID follows it. Returns the metadata file's path. The inverse of
+    /// [`combine`](Workspace::combine).
+    pub async fn separate(&mut self, path: &Path) -> Result<PathBuf> {
+        let path = link::normalize(path);
+        if !self.fs().try_exists(&self.root().join(&path)).await? {
+            return Err(Error::NotFound(path.to_path_buf()));
+        }
+        let (_, doc) = self.load(&path).await?;
+        let Some(MetaCarrier::Fenced(kind)) = doc.carrier else {
+            return Err(Error::Structure(format!(
+                "{} is not a combined document (nothing to separate)",
+                path.display()
+            )));
+        };
+        if doc.content_attr().is_some() {
+            return Err(Error::Structure(format!(
+                "{} is already separated",
+                path.display()
+            )));
+        }
+        let Some(mapping) = doc.meta.as_mapping() else {
+            return Err(Error::Structure(format!(
+                "{} has no metadata to separate",
+                path.display()
+            )));
+        };
+        let format = kind.inner_format();
+        let meta_path = path.with_extension(crate::document::whole_file_extension(format));
+        if meta_path == path {
+            return Err(Error::Structure(format!(
+                "{} already has a metadata-file extension",
+                path.display()
+            )));
+        }
+        if self.fs().try_exists(&self.root().join(&meta_path)).await? {
+            return Err(Error::AlreadyExists(meta_path.to_path_buf()));
+        }
+        // `meta_path` is only an extension swap of `path` — derived, not freshly
+        // minted, so it is not provably free of a registration nobody has a file
+        // for (the on-disk check above cannot see one). Same guard as `rename`.
+        let moving_id = self.index().id_for_path(&path);
+        if let Some(id) = &moving_id
+            && let Some(conflict) = self.move_conflict(id, &meta_path)
+        {
+            return Err(conflict.into());
+        }
+        let body_ref = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| Error::Structure(format!("{} has no filename", path.display())))?
+            .to_string();
+
+        // The metadata file = the document's mapping + a `content` pointer at the
+        // body file (a sibling, so just its name).
+        let mut map = mapping.clone();
+        map.insert("content".into(), Value::String(body_ref));
+        let meta_text = crate::meta::serialize_mapping(&map, format)?;
+        let body_text = doc.body.clone();
+
+        let mut cs = self.change();
+        // Inbound links now point at the metadata file (the structural node).
+        let inbound = self.collect_inbound_rewrites(&path, &meta_path).await?;
+
+        cs.write(&meta_path, meta_text);
+        cs.write(&path, body_text);
+        for (source, text) in inbound {
+            cs.write(source, text);
+        }
+        if let Some(id) = moving_id {
+            self.index_mut().set_path(&id, &meta_path);
+        }
+        self.commit(cs).await?;
+        Ok(meta_path)
+    }
+
+    /// Fold the separated document whose metadata file is `path` back into one
+    /// combined file: the body file regains its metadata as frontmatter (in the
+    /// metadata file's format), the metadata file is removed, and inbound links
+    /// are retargeted to the combined file. Returns the combined file's path. The
+    /// inverse of [`separate`](Workspace::separate).
+    pub async fn combine(&mut self, path: &Path) -> Result<PathBuf> {
+        let path = link::normalize(path);
+        let (_, doc) = self.load(&path).await?;
+        let Some(content) = content_target(&doc, &path) else {
+            return Err(Error::Structure(format!(
+                "{} is not a separated document (no `content` attribute)",
+                path.display()
+            )));
+        };
+        let Some(MetaCarrier::WholeFile(format)) = doc.carrier else {
+            return Err(Error::Structure(format!(
+                "{} is not a whole-file metadata document",
+                path.display()
+            )));
+        };
+        let Some(mapping) = doc.meta.as_mapping() else {
+            return Err(Error::Structure(format!(
+                "{} has no metadata",
+                path.display()
+            )));
+        };
+        if !self.fs().try_exists(&self.root().join(&content)).await? {
+            return Err(Error::Structure(format!(
+                "{}'s content file {} is missing",
+                path.display(),
+                content.display()
+            )));
+        }
+        // Unlike `meta_path` in `separate`, `content` already has a file behind
+        // it — but that is no proof the *registry* agrees it is free: a stray
+        // frontmatter (tolerated below) can carry its own `id`, distinct from
+        // `path`'s. Same guard as `rename`/`separate`, before the merge is built.
+        let moving_id = self.index().id_for_path(&path);
+        if let Some(id) = &moving_id
+            && let Some(conflict) = self.move_conflict(id, &content)
+        {
+            return Err(conflict.into());
+        }
+        let (body_raw, body_doc) = self.load(&content).await?;
+        // Normally the body file is pure prose; tolerate a stray frontmatter.
+        let body = match body_doc.carrier {
+            Some(_) => body_doc.body,
+            None => body_raw,
+        };
+
+        // Rebuild the combined document: a fresh frontmatter block (the metadata
+        // format) carrying every key except `content`, then the body.
+        let carrier = crate::document::frontmatter_carrier(format);
+        let mut editor = MetaEditor::open_or_init(&body, Some(carrier))?;
+        for (key, value) in mapping {
+            if key.as_str() == "content" {
+                continue;
+            }
+            editor.set_value(&[Segment::Key(key)], fig::Value::from(value))?;
+        }
+        let combined = editor.render()?;
+
+        let mut cs = self.change();
+        // Inbound links point back at the (now combined) content file.
+        let inbound = self.collect_inbound_rewrites(&path, &content).await?;
+
+        cs.write(&content, combined);
+        cs.remove(&path);
+        for (source, text) in inbound {
+            cs.write(source, text);
+        }
+        if let Some(id) = moving_id {
+            self.index_mut().set_path(&id, &content);
+        }
+        self.commit(cs).await?;
+        Ok(content)
+    }
+}
+
+#[cfg(all(test, feature = "yaml"))]
+mod tests {
+    use super::super::support::*;
+    use super::*;
+
+    #[test]
+    fn separate_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {
+        // `separate`'s metadata-file path is only an extension swap of the
+        // combined document's own path — derived, not freshly minted, and no
+        // more provably free of a live foreign registration than `rename`'s
+        // destination is.
+        let dir = tempdir("separate-path-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- doc.md\n---\n",
+        );
+        write(
+            &dir,
+            "doc.md",
+            "---\ntitle: Doc\npart_of: index.md\n---\nbody prose\n",
+        );
+
+        let mut w = id_ws(&dir);
+        let a = crate::identity::Id("aaaaaaa".into());
+        let b = crate::identity::Id("bbbbbbb".into());
+        w.index_mut().register(&a, Path::new("doc.md"));
+        // The metadata file `separate` would create is already bound to a
+        // different id, though nothing has ever put a file there.
+        w.index_mut().register(&b, Path::new("doc.yaml"));
+
+        let err = block_on(w.separate(Path::new("doc.md"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("doc.yaml"), "{err}");
+
+        assert!(dir.join("doc.md").exists());
+        assert!(!dir.join("doc.yaml").exists());
+        assert_eq!(w.index().resolve(&a), Some(PathBuf::from("doc.md")));
+        assert_eq!(w.index().resolve(&b), Some(PathBuf::from("doc.yaml")));
+    }
+
+    #[test]
+    fn combine_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {
+        // Unlike `separate`'s destination, `combine`'s (the body file) already
+        // has a file behind it — but that is no proof the *registry* agrees it
+        // is free: a stray frontmatter can carry its own `id`, distinct from the
+        // node's. Guarded the same way, before the merge is built.
+        let dir = tempdir("combine-path-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- doc.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "doc.yaml",
+            "title: Doc\npart_of: index.md\ncontent: doc.md\n",
+        );
+        write(&dir, "doc.md", "the prose\n");
+
+        let mut w = id_ws(&dir);
+        let a = crate::identity::Id("aaaaaaa".into());
+        let b = crate::identity::Id("bbbbbbb".into());
+        w.index_mut().register(&a, Path::new("doc.yaml"));
+        // The body file already carries a registration of its own, under a
+        // different id than the node being folded into it.
+        w.index_mut().register(&b, Path::new("doc.md"));
+
+        let err = block_on(w.combine(Path::new("doc.yaml"))).unwrap_err();
+        assert!(
+            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("doc.md"), "{err}");
+
+        assert!(dir.join("doc.yaml").exists());
+        assert_eq!(read(&dir, "doc.md"), "the prose\n", "unmerged, untouched");
+        assert_eq!(w.index().resolve(&a), Some(PathBuf::from("doc.yaml")));
+        assert_eq!(w.index().resolve(&b), Some(PathBuf::from("doc.md")));
+    }
+}

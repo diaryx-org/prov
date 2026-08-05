@@ -2574,6 +2574,33 @@ mod tests {
     }
 
     #[test]
+    fn check_diagnoses_a_broken_markdown_body_link() {
+        // A markdown body link to a missing file is a broken-link finding — the
+        // diagnosis half of body-link ownership. A wikilink to nowhere was
+        // already caught above; this is parity for markdown/djot links.
+        let dir = tempdir("md-body-check");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n---\n",
+        );
+        write(
+            &dir,
+            "a.md",
+            "---\npart_of: index.md\n---\nSee [gone](nope.md).\n",
+        );
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(f,
+                Finding::BrokenLink { doc, site: LinkSite::Body(_), target }
+                    if doc == &PathBuf::from("a.md") && target == "nope.md")),
+            "expected a broken markdown body link, got {findings:?}"
+        );
+    }
+
+    #[test]
     fn check_resolves_a_unique_alias_and_flags_an_ambiguous_one() {
         let dir = tempdir("alias-check");
         // Body aliases: `[[Alpha]]` is unique (clean), `[[Dup]]` is claimed by
