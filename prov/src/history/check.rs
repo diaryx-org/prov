@@ -293,3 +293,176 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "yaml"))]
+mod tests {
+    use super::super::model::Captured;
+    use super::super::support::*;
+    use super::*;
+    use crate::exec::block_on;
+
+    #[test]
+    fn lost_bytes_are_reported_once_per_hash_however_many_events_named_them() {
+        let dir = seed("blob-missing");
+        capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+        // A second capture that changes one file: everything else keeps the blob
+        // the first capture parked, so one blob is now named by two manifests.
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n",
+        );
+        capture(&dir, "2026-07-31T10:00:00.000000Z", None);
+
+        let payload = crate::fixity::digest(b"JPEGBYTES");
+        std::fs::remove_file(dir.join(blob_path(Path::new("history/index.md"), &payload).unwrap()))
+            .unwrap();
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::HistoryBlobMissing {
+                store: PathBuf::from("history/index.md"),
+                hash: payload.clone(),
+                paths: vec![PathBuf::from("notes/photo.jpg")],
+            }],
+            "one lost blob is one thing to put back, not one report per event"
+        );
+        // Both causes have to be readable in the text — a store that syncs is in
+        // this state routinely, and a finding that cries corruption at a
+        // self-resolving state is one people learn to ignore.
+        let text = findings[0].to_string();
+        assert!(
+            text.contains("has not arrived yet") && text.contains("gone"),
+            "{text}"
+        );
+        assert!(text.contains("notes/photo.jpg"), "{text}");
+
+        // Deleting the blob left nothing behind, so there is no orphan to pair
+        // with it: the two findings answer opposite questions.
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryBlobOrphaned { .. }))
+        );
+    }
+
+    #[test]
+    fn a_manifest_row_prov_could_never_have_parked_reports_rather_than_failing() {
+        // A foreign event has to stay legible: `check` reads what arrived from
+        // another device, and a digest in a scheme this build does not know is a
+        // report, not a parse error that takes the whole run down.
+        let dir = seed("blob-foreign");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:00:00.000000Z", None)
+        else {
+            panic!("the first capture must write an event");
+        };
+        let event = event_path(Path::new("history/index.md"), &id, "md").unwrap();
+        let text = read(&dir, event.to_str().unwrap());
+        write(
+            &dir,
+            event.to_str().unwrap(),
+            &text.replace(
+                &crate::fixity::digest(b"JPEGBYTES"),
+                "blake3:beefbeefbeefbeef",
+            ),
+        );
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        let missing: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::HistoryBlobMissing { .. }))
+            .collect();
+        assert_eq!(missing.len(), 1, "{findings:?}");
+        assert!(
+            missing[0].to_string().contains("blake3:"),
+            "{:?}",
+            missing[0]
+        );
+        // …and the blob it no longer names is now unreferenced, which is the
+        // other half of the same sweep.
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryBlobOrphaned { .. })),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn bytes_no_manifest_claims_are_reported_as_orphaned() {
+        let dir = seed("blob-orphan");
+        capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+        assert!(
+            block_on(ws(&dir).check(Path::new("index.md")))
+                .unwrap()
+                .is_empty(),
+            "a fresh capture claims every blob it parked"
+        );
+
+        // Cruft of the two shapes a transport actually leaves: a conflict copy
+        // beside a real blob, and a stray at the top of the store. Neither could
+        // ever match a hash, which is the point — this is not a digest check.
+        write(&dir, "history/blobs/ab/sync-conflict-20260731", "junk");
+        write(&dir, "history/blobs/stray.txt", "junk");
+        // A hidden file is transport bookkeeping, not cruft prov should name.
+        write(&dir, "history/blobs/.DS_Store", "junk");
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::HistoryBlobOrphaned {
+                store: PathBuf::from("history/index.md"),
+                blobs: vec![
+                    PathBuf::from("history/blobs/ab/sync-conflict-20260731"),
+                    PathBuf::from("history/blobs/stray.txt"),
+                ],
+            }],
+            "one sweep, one finding, sorted — and the dotfile left alone"
+        );
+        assert!(
+            findings[0].to_string().contains("history-prune"),
+            "the report names the verb that collects them: {}",
+            findings[0]
+        );
+    }
+
+    #[test]
+    fn check_reports_an_unreadable_event_and_never_recommends_pruning_its_blobs() {
+        // The promise docs/history-format.md §7 makes and the codebase did not
+        // keep: an event document that fails to parse is a plain `Unreadable`.
+        // And the other half of the bug: while it is unreadable, its blobs must
+        // not be reported `HistoryBlobOrphaned` — that finding's own message
+        // points straight at `history-prune`, so a false orphan here is a
+        // diagnostic recommending the destructive verb the two tests above
+        // refuse to run.
+        let dir = seed("check-torn");
+        let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
+        let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
+        tear(&dir, torn.to_str().unwrap());
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, Finding::Unreadable { doc, .. } if doc == &torn)),
+            "missing the promised finding for {}: {findings:?}",
+            torn.display()
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryBlobOrphaned { .. })),
+            "a torn event's blobs must not be reported as orphans: {findings:?}"
+        );
+
+        // Reading `check` must not be what destroys the bytes: the blob only
+        // this (now unreadable) event named is still exactly where it was.
+        assert!(
+            dir.join(blob_of(
+                b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
+            ))
+            .exists()
+        );
+    }
+}

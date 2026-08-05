@@ -70,6 +70,11 @@
 //!   verb, each an `impl Workspace` block.
 //! - `store` — the plumbing those verbs share: staging an index write, the
 //!   root's `history` pointer, walking shards.
+//!
+//! Tests sit in each file's own `mod tests`, as elsewhere in the crate. The
+//! fixtures they share — a seeded workspace, a capture, a torn event — are in
+//! `support`, which no sibling could own without every other one reaching
+//! across for it.
 
 mod capture;
 mod check;
@@ -114,5 +119,5 @@ pub const TRIGGER_MANUAL: &str = "manual";
 /// deliberately does not.
 pub const FORGOTTEN_STEM: &str = "forgotten";
 
-#[cfg(all(test, feature = "yaml"))]
-mod tests;
+#[cfg(test)]
+mod support;

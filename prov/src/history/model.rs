@@ -393,3 +393,29 @@ pub enum Subject {
     /// separate lineage; that is the nature of a path key, not a defect here.
     Path(PathBuf),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::TRIGGER_MANUAL;
+    use super::super::support::entry;
+    use super::*;
+
+    #[test]
+    fn diff_counts_changed_and_removed_against_the_previous_manifest() {
+        let previous = Event {
+            id: "p".into(),
+            path: PathBuf::new(),
+            created: "2026-07-30T00:00:00Z".into(),
+            trigger: TRIGGER_MANUAL.into(),
+            label: None,
+            parent: None,
+            files: vec![entry("a.md", b"a"), entry("gone.md", b"g")],
+        };
+        let current = Event {
+            files: vec![entry("a.md", b"CHANGED"), entry("new.md", b"n")],
+            ..previous.clone()
+        };
+        // `a.md` changed, `new.md` is new → 2; `gone.md` is removed → 1.
+        assert_eq!(current.diff(&previous), (2, 1));
+    }
+}

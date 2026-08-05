@@ -323,3 +323,573 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(collides?)
     }
 }
+
+#[cfg(all(test, feature = "yaml"))]
+mod tests {
+    use super::super::support::*;
+    use super::*;
+    use crate::exec::block_on;
+    use crate::validate::Finding;
+
+    #[test]
+    fn a_capture_bootstraps_the_store_and_captures_attachment_payloads() {
+        let dir = seed("capture-basic");
+        let Captured::Written { id, files, .. } =
+            capture(&dir, "2026-07-31T09:15:22Z", Some("pre-sync"))
+        else {
+            panic!("the first capture must write an event");
+        };
+
+        // The root now points at the store, so it is reachable — the whole
+        // anti-`.obsidian/` move.
+        assert!(
+            read(&dir, "index.md").contains("history:"),
+            "the root must declare the store: {}",
+            read(&dir, "index.md")
+        );
+        // The id resolves to its path with no index consulted.
+        let event = event_path(Path::new("history/index.md"), &id, "md").unwrap();
+        assert!(dir.join(&event).exists(), "{} missing", event.display());
+
+        // The capture set is the reachable file set: root, note, sidecar, and —
+        // the one that is easy to get wrong — the attachment *payload*, which is
+        // reached through the sidecar's `content` pointer rather than a relation.
+        let manifest = read(&dir, event.to_str().unwrap());
+        for expected in [
+            "index.md",
+            "notes/a.md",
+            "notes/photo.jpg",
+            "notes/photo.jpg.yaml",
+        ] {
+            assert!(
+                manifest.contains(expected),
+                "{expected} should be captured:\n{manifest}"
+            );
+        }
+        assert_eq!(files, 4);
+
+        // Every captured file's bytes are parked, addressed by content, with no
+        // colon anywhere in the path.
+        let payload_hash = crate::fixity::digest(b"JPEGBYTES");
+        let blob = blob_path(Path::new("history/index.md"), &payload_hash).unwrap();
+        assert_eq!(read(&dir, blob.to_str().unwrap()), "JPEGBYTES");
+    }
+
+    #[test]
+    fn capture_sorts_the_manifest_byte_wise_not_by_path_components() {
+        // `notes.md` beside `notes/x.md` — a file and a same-stem directory as
+        // siblings — plus the identical collision one directory deeper, so a
+        // depth-limited fix would still fail this. `docs/history-format.md`
+        // §3.1 requires byte-wise ascending order on the joined path string;
+        // `BTreeSet<PathBuf>`/`Path::cmp` order component-wise and get exactly
+        // this shape backwards (see `path_sort_key`).
+        let dir = tempdir("capture-manifest-order");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- notes.md\n- notes/x.md\n- deep/notes.md\n\
+             - deep/notes/x.md\n---\nroot\n",
+        );
+        write(
+            &dir,
+            "notes.md",
+            "---\ntitle: Notes\npart_of: 'index.md'\n---\nnotes\n",
+        );
+        write(
+            &dir,
+            "notes/x.md",
+            "---\ntitle: X\npart_of: '../index.md'\n---\nx\n",
+        );
+        write(
+            &dir,
+            "deep/notes.md",
+            "---\ntitle: Deep notes\npart_of: '../index.md'\n---\ndeep notes\n",
+        );
+        write(
+            &dir,
+            "deep/notes/x.md",
+            "---\ntitle: Deep X\npart_of: '../../index.md'\n---\ndeep x\n",
+        );
+
+        let Captured::Written { id, files, .. } = capture(&dir, "2026-07-31T09:15:22Z", None)
+        else {
+            panic!("the first capture must write an event");
+        };
+        assert_eq!(files, 5, "the root plus the four collision files");
+
+        // Read the `path:` rows back off the document itself, in the order
+        // they were written — the manifest is what two implementations have
+        // to agree on, not `Event.files`' in-memory order.
+        let event_rel = event_path(Path::new("history/index.md"), &id, "md").unwrap();
+        let manifest_text = read(&dir, event_rel.to_str().unwrap());
+        let order: Vec<&str> = manifest_text
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("- path: "))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "deep/notes.md",
+                "deep/notes/x.md",
+                "index.md",
+                "notes.md",
+                "notes/x.md",
+            ],
+            "byte-wise ascending — `.` (0x2E) sorts before `/` (0x2F):\n{manifest_text}"
+        );
+
+        // And the id: read the event back and independently recompute the
+        // digest suffix from its own recorded fields via `canonical_bytes`,
+        // the same function `mint_id` used to mint it — proof the id names
+        // exactly the manifest that landed on disk, in the order it landed.
+        let event = block_on(ws(&dir).history_event(Path::new("index.md"), &id))
+            .unwrap()
+            .expect("the just-written event must read back");
+        let digest = crate::fixity::digest(&canonical_bytes(
+            &event.created,
+            &event.trigger,
+            event.label.as_deref(),
+            event.parent.as_deref(),
+            &event.files,
+        ));
+        assert_eq!(
+            &id[id.len() - 8..],
+            &digest["sha256:".len().."sha256:".len() + 8]
+        );
+    }
+
+    #[test]
+    fn the_store_is_never_captured_into_itself() {
+        // The recursion the whole design turns on: capturing the store inside the
+        // store would mean no capture could ever be empty, and an exact restore
+        // would delete the recovery points themselves.
+        let dir = seed("capture-recursion");
+        capture(&dir, "2026-07-31T09:15:22Z", None);
+        let set = block_on(ws(&dir).history_capture_set(Path::new("index.md"))).unwrap();
+        assert!(
+            set.iter().all(|p| !p.starts_with("history")),
+            "the store must be invisible to the mechanism: {set:?}"
+        );
+        // And that is exactly what makes the no-op capture reachable.
+        let second = capture(&dir, "2026-07-31T10:00:00Z", None);
+        assert!(
+            matches!(second, Captured::Unchanged { .. }),
+            "an unchanged workspace must write nothing, got {second:?}"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_workspace_writes_no_second_event() {
+        let dir = seed("capture-empty");
+        let first = capture(&dir, "2026-07-31T09:15:22Z", None);
+        let Captured::Written { id, .. } = first else {
+            panic!("expected a first event")
+        };
+        // A different clock and a different label — still the same *state*, so
+        // still nothing to record. Otherwise a git hook fills the log.
+        let again = capture(&dir, "2026-07-31T11:00:00Z", Some("nightly"));
+        assert_eq!(again, Captured::Unchanged { id: id.clone() });
+        assert_eq!(event_ids(&dir), vec![id.clone()]);
+
+        // Change one byte and it captures again.
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nalpha edited\n",
+        );
+        let third = capture(&dir, "2026-07-31T12:00:00Z", None);
+        let Captured::Written {
+            diff: Some((changed, removed)),
+            blobs,
+            ..
+        } = third
+        else {
+            panic!("a changed workspace must capture")
+        };
+        assert_eq!((changed, removed), (1, 0));
+        // Only the changed file's bytes are new — the rest deduplicate for free.
+        assert_eq!(blobs, 1);
+        assert_eq!(event_ids(&dir).len(), 2);
+    }
+
+    #[test]
+    fn the_first_event_records_the_root_that_already_declares_the_store() {
+        // The bootstrap capture edits the root (it gains the `history` pointer),
+        // so the manifest must hash the *post-edit* bytes. Otherwise event #1
+        // describes a root predating its own store, and restoring it exactly
+        // would strand the store unreachable — the one thing a restore must never
+        // do. It is also what lets the very next capture be a no-op.
+        let dir = seed("capture-pointer");
+        let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
+            panic!("expected an event")
+        };
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        let root_row = events[0]
+            .files
+            .iter()
+            .find(|f| f.path == Path::new("index.md"))
+            .expect("the root is in the capture set");
+        let on_disk = crate::fixity::digest(read(&dir, "index.md").as_bytes());
+        assert_eq!(
+            root_row.hash, on_disk,
+            "event {id} must record the root as the capture left it"
+        );
+        // And the parked blob is those same bytes, so a restore is byte-exact.
+        let blob = blob_path(Path::new("history/index.md"), &root_row.hash).unwrap();
+        assert_eq!(read(&dir, blob.to_str().unwrap()), read(&dir, "index.md"));
+    }
+
+    #[test]
+    fn same_second_captures_chain_in_the_order_they_happened() {
+        // The bug microsecond precision exists to close: with `created` pinned to
+        // the second, two captures in one second tied, the sort fell through to
+        // the id — whose *middle* is the label slug — and every later event
+        // recorded the alphabetically-last label as its `parent`, so
+        // `history-list` reported forks that never happened.
+        let dir = seed("ordering");
+        let stamps = [
+            ("2026-07-31T09:15:10.000000Z", "zulu"),
+            ("2026-07-31T09:15:10.200000Z", "alpha"),
+            ("2026-07-31T09:15:10.900000Z", "mike"),
+        ];
+        for (i, (now, label)) in stamps.iter().enumerate() {
+            // Each capture must change something, or the second one writes nothing.
+            write(
+                &dir,
+                "notes/a.md",
+                &format!("---\ntitle: A\npart_of: '../index.md'\n---\nrevision {i}\n"),
+            );
+            capture(&dir, now, Some(label));
+        }
+
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.label.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("zulu"), Some("alpha"), Some("mike")],
+            "capture order, not alphabetical order by label"
+        );
+        // A chain, not a fan: each event's parent is the one actually before it,
+        // which is what makes a real fork mean something in `history-list`.
+        assert_eq!(events[0].parent, None);
+        assert_eq!(events[1].parent.as_deref(), Some(events[0].id.as_str()));
+        assert_eq!(events[2].parent.as_deref(), Some(events[1].id.as_str()));
+    }
+
+    #[test]
+    fn an_event_written_before_sub_second_precision_keeps_its_place() {
+        // The mixed store, end to end: an event carrying a second-granularity
+        // `created` (every event written before this precision existed) against
+        // ones that carry a fraction. Compared raw, the old event would sort last
+        // in its second and the newest-event lookup would pick it — so a later
+        // capture would record a *superseded* event as its parent.
+        let dir = seed("ordering-mixed");
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nfirst\n",
+        );
+        capture(&dir, "2026-07-31T09:15:10Z", Some("legacy"));
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nsecond\n",
+        );
+        capture(&dir, "2026-07-31T09:15:10.500000Z", Some("current"));
+
+        let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.label.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("legacy"), Some("current")]
+        );
+        assert_eq!(events[1].parent.as_deref(), Some(events[0].id.as_str()));
+    }
+
+    #[test]
+    fn a_transport_conflict_copy_is_not_mistaken_for_an_event() {
+        // Litter beside the store must not become a phantom event — an index
+        // rebuilt to *include* a conflict copy would enshrine the damage.
+        assert!(is_event_id("2026-07-31-0915-pre-sync-4f2a9c1e"));
+        assert!(is_event_id("2026-07-31-0915-4f2a9c1e"));
+        assert!(!is_event_id(
+            "2026-07-31-0915-one-1d1beacc.sync-conflict-20260731-091600"
+        ));
+        assert!(!is_event_id("index.sync-conflict-20260731-091600"));
+        assert!(!is_event_id("index"));
+        assert!(!is_event_id("notes"));
+    }
+
+    #[test]
+    fn a_capture_leaves_check_clean() {
+        let dir = seed("capture-check");
+        capture(&dir, "2026-07-31T09:15:22Z", Some("pre-sync"));
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        assert!(
+            findings.is_empty(),
+            "a capture must leave the workspace valid: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_new_month_grows_the_shard_tree_without_rewriting_old_shards() {
+        let dir = seed("capture-shard");
+        capture(&dir, "2026-07-31T09:15:22Z", None);
+        let july = read(&dir, "history/events/2026/07/index.md");
+
+        write(&dir, "notes/b.md", "---\ntitle: B\n---\nbeta\n");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- notes/a.md\n- notes/b.md\n- notes/photo.jpg.yaml\n\
+             history: history/index.md\n---\nroot\n",
+        );
+        write(
+            &dir,
+            "notes/b.md",
+            "---\ntitle: B\npart_of: '../index.md'\n---\nbeta\n",
+        );
+        capture(&dir, "2026-08-01T09:00:00Z", None);
+
+        // The new month is its own shard, linked from the year index; July's
+        // shard index is untouched — the mutable surface is "this month", not
+        // "forever".
+        assert!(dir.join("history/events/2026/08/index.md").exists());
+        assert_eq!(read(&dir, "history/events/2026/07/index.md"), july);
+        assert!(read(&dir, "history/events/2026/index.md").contains("08/index.md"));
+        assert!(
+            block_on(ws(&dir).check(Path::new("index.md")))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn binned_bytes_are_not_newly_retained_by_a_routine_capture() {
+        // The exclusion is narrow and worth pinning: a capture must not park
+        // bytes the user has consigned to the bin. (It emphatically does *not*
+        // make a purge final for content captured while it was live — that is
+        // documented, not tested here, because it is a non-guarantee.)
+        let dir = seed("capture-bin");
+        write(
+            &dir,
+            "recyclebin/index.yaml",
+            "title: Recycle Bin\ndeleted: []\n",
+        );
+        write(&dir, "recyclebin/items/notes/old.md", "binned bytes\n");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- notes/a.md\n- notes/photo.jpg.yaml\n\
+             recycle_bin: recyclebin/index.yaml\n---\nroot\n",
+        );
+        let set = block_on(ws(&dir).history_capture_set(Path::new("index.md"))).unwrap();
+        assert!(
+            set.iter().all(|p| !p.starts_with("recyclebin/items")),
+            "binned bytes must not be captured: {set:?}"
+        );
+        // The bin *index* is captured, though — that is what makes a restore put
+        // a live document back as live.
+        assert!(
+            set.contains(&PathBuf::from("recyclebin/index.yaml")),
+            "the bin index is ordinary structural state: {set:?}"
+        );
+    }
+
+    // The feature's entire claim is surviving an external sync transport, so the
+    // tests below simulate one: two workspace copies, concurrent captures, and a
+    // directory merge that unions added files, drops in a `.sync-conflict-…` file,
+    // and clobbers a shard index.
+
+    /// Copy every file under `from` into `to`, adding what is missing and leaving
+    /// what is already there — the union-of-added-files merge that git, Dropbox,
+    /// Syncthing and iCloud all perform without conflict.
+    fn merge_into(from: &Path, to: &Path) {
+        fn walk(dir: &Path, base: &Path, to: &Path) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let rel = path.strip_prefix(base).unwrap().to_path_buf();
+                if path.is_dir() {
+                    walk(&path, base, to);
+                } else if !to.join(&rel).exists() {
+                    let dest = to.join(&rel);
+                    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                    std::fs::copy(&path, &dest).unwrap();
+                }
+            }
+        }
+        walk(from, from, to);
+    }
+
+    #[test]
+    fn concurrent_captures_on_two_devices_merge_without_conflict() {
+        // Two devices, same starting state, each captures locally. Because a
+        // capture only *adds* files, the transport's union merge produces both
+        // events side by side — the whole point of the append-only design.
+        let one = seed("transport-one");
+        let two = tempdir("transport-two");
+        merge_into(&one, &two);
+
+        // Device one edits and captures.
+        write(
+            &one,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nfrom device one\n",
+        );
+        let Captured::Written { id: id_one, .. } =
+            capture(&one, "2026-07-31T09:15:22Z", Some("one"))
+        else {
+            panic!("device one must capture")
+        };
+        // Device two edits differently and captures — same minute, no coordination.
+        write(
+            &two,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nfrom device two\n",
+        );
+        let Captured::Written { id: id_two, .. } =
+            capture(&two, "2026-07-31T09:15:22Z", Some("two"))
+        else {
+            panic!("device two must capture")
+        };
+        assert_ne!(id_one, id_two, "different content must mint different ids");
+
+        // The transport reconciles: every added file lands in device one's copy.
+        merge_into(&two, &one);
+
+        // Both events survive, and both devices' pre-images are present.
+        let ids = event_ids(&one);
+        assert!(
+            ids.contains(&id_one) && ids.contains(&id_two),
+            "a merge must not lose either device's event: {ids:?}"
+        );
+        for bytes in [b"from device one".as_slice(), b"from device two".as_slice()] {
+            let hash = crate::fixity::digest(
+                format!(
+                    "---\ntitle: A\npart_of: '../index.md'\n---\n{}\n",
+                    String::from_utf8_lossy(bytes)
+                )
+                .as_bytes(),
+            );
+            let blob = blob_path(Path::new("history/index.md"), &hash).unwrap();
+            assert!(
+                one.join(&blob).exists(),
+                "both devices' pre-images must survive the merge: {}",
+                blob.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_merged_shard_index_is_reported_stale_and_rebuilt_from_its_directory() {
+        // The one mutable file in the store is the shard index, so it is the one
+        // a transport can mangle. That must be a finding with a mechanical fix,
+        // never data loss — which is exactly what "the index is a cache" buys.
+        let one = seed("transport-index");
+        let two = tempdir("transport-index-two");
+        merge_into(&one, &two);
+
+        write(
+            &one,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\none\n",
+        );
+        capture(&one, "2026-07-31T09:15:22Z", Some("one"));
+        write(
+            &two,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\ntwo\n",
+        );
+        capture(&two, "2026-07-31T09:16:00Z", Some("two"));
+
+        // Merge device two's *event* across but let the transport clobber the
+        // shard index with device two's copy — which knows nothing of device
+        // one's event. This is the realistic damage: last-writer-wins on the
+        // only file both devices rewrote.
+        merge_into(&two, &one);
+        std::fs::copy(
+            two.join("history/events/2026/07/index.md"),
+            one.join("history/events/2026/07/index.md"),
+        )
+        .unwrap();
+        // …and drop in the conflict copy such a transport leaves behind.
+        write(
+            &one,
+            "history/events/2026/07/index.sync-conflict-20260731-091600.md",
+            "---\ntitle: July 2026\n---\nconflicted copy\n",
+        );
+
+        // Both events are still listed: `history-list` reads the directories, so
+        // a mangled index cannot hide an event that is sitting right there.
+        assert_eq!(
+            event_ids(&one).len(),
+            2,
+            "the events are the authority, not the index"
+        );
+
+        // `check` names it, and the fix rebuilds that one shard.
+        let findings = block_on(ws(&one).check(Path::new("index.md"))).unwrap();
+        let stale: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::HistoryIndexStale { .. }))
+            .collect();
+        assert_eq!(stale.len(), 1, "expected one stale shard: {findings:?}");
+
+        let mut w = ws(&one);
+        let fix = block_on(w.suggest_fix(stale[0])).unwrap().expect("a fix");
+        block_on(w.apply_fix(&fix)).unwrap();
+
+        let after = block_on(ws(&one).check(Path::new("index.md"))).unwrap();
+        assert!(
+            !after
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryIndexStale { .. })),
+            "the rebuild should have settled the index: {after:?}"
+        );
+        let rebuilt = read(&one, "history/events/2026/07/index.md");
+        for id in event_ids(&one) {
+            assert!(
+                rebuilt.contains(&id),
+                "the rebuilt index must list every event in its directory: {rebuilt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_capture_after_a_merge_records_the_merged_state() {
+        // The end-to-end claim: after a transport has done its worst, a capture
+        // still runs and still records a consistent cut.
+        let one = seed("transport-after");
+        let two = tempdir("transport-after-two");
+        merge_into(&one, &two);
+        capture(&one, "2026-07-31T09:00:00Z", None);
+        capture(&two, "2026-07-31T09:00:00Z", None);
+        merge_into(&two, &one);
+
+        write(
+            &one,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\npost-merge\n",
+        );
+        let outcome = capture(&one, "2026-07-31T10:00:00Z", Some("post-merge"));
+        let Captured::Written { id, .. } = outcome else {
+            panic!("a post-merge capture must write: {outcome:?}")
+        };
+        // Its parent is the newest event that existed locally — display metadata,
+        // but it should still be recorded.
+        let events = block_on(ws(&one).history_list(Path::new("index.md"))).unwrap();
+        let latest = events.iter().find(|e| e.id == id).unwrap();
+        assert!(latest.parent.is_some(), "a parent should be recorded");
+        assert!(
+            latest
+                .files
+                .iter()
+                .any(|f| f.path == Path::new("notes/a.md")),
+            "the merged state must be in the manifest"
+        );
+    }
+}

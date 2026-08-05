@@ -75,3 +75,79 @@ pub(super) fn case_fold_collision<'a>(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::support::entry;
+    use super::*;
+
+    #[test]
+    fn manifest_order_is_byte_wise_on_the_joined_string_not_path_component_order() {
+        // The bug, stated as directly as possible: `.` (0x2E) sorts before `/`
+        // (0x2F) in the joined string, so `notes.md` belongs before
+        // `notes/x.md`. `Path::cmp` disagrees — it compares the bare `notes`
+        // component (a prefix of `notes.md`) against the whole `notes.md`
+        // component and calls `notes` smaller, putting `notes/x.md` first.
+        let notes_file = Path::new("notes.md");
+        let notes_dir_file = Path::new("notes/x.md");
+        assert!(
+            notes_dir_file < notes_file,
+            "Path::cmp really does get this backwards"
+        );
+        assert!(
+            path_sort_key(notes_file) < path_sort_key(notes_dir_file),
+            "the manifest's own key must get it the other way round"
+        );
+
+        // The same collision one directory deeper, to be sure the key is not
+        // secretly depth-limited.
+        let mut paths = [
+            Path::new("deep/notes/x.md"),
+            Path::new("deep/notes.md"),
+            Path::new("index.md"),
+            Path::new("notes/x.md"),
+            Path::new("notes.md"),
+        ];
+        paths.sort_by_key(|p| path_sort_key(p));
+        assert_eq!(
+            paths,
+            [
+                Path::new("deep/notes.md"),
+                Path::new("deep/notes/x.md"),
+                Path::new("index.md"),
+                Path::new("notes.md"),
+                Path::new("notes/x.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_equality_for_the_unchanged_check_ignores_row_order() {
+        // §6's "computed manifest is identical" is same-state, not
+        // same-serialization: a manifest a pre-fix writer left in `Path`
+        // component order must still compare equal to the correctly-ordered
+        // one this fix computes for the same state, or a habitual `history-
+        // capture` against an old store would start filling the log with
+        // duplicates the moment it hit a collision like `notes.md` /
+        // `notes/x.md`.
+        let sorted = vec![entry("notes.md", b"n"), entry("notes/x.md", b"x")];
+        let mut component_order = sorted.clone();
+        component_order.reverse();
+        assert_ne!(
+            sorted, component_order,
+            "the derived Vec equality this replaces really is row-order-sensitive"
+        );
+        assert_eq!(manifest_of(&sorted), manifest_of(&component_order));
+    }
+
+    #[test]
+    fn the_capture_set_exclusion_is_by_directory_prefix() {
+        let store = Path::new("history");
+        assert!(under(Path::new("history"), store));
+        assert!(under(Path::new("history/index.md"), store));
+        assert!(under(Path::new("history/events/2026/07/x.md"), store));
+        // A sibling that merely shares a prefix is not inside it.
+        assert!(!under(Path::new("historybook.md"), store));
+        assert!(!under(Path::new("notes/a.md"), store));
+    }
+}

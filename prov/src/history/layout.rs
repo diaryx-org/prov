@@ -97,3 +97,38 @@ pub(super) fn is_event_id(stem: &str) -> bool {
         && digest.len() == 8
         && digest.bytes().all(|b| b.is_ascii_hexdigit())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_event_id_is_reversible_to_its_shard_path() {
+        let id = "2026-07-31-0915-pre-sync-4f2a9c1e";
+        assert_eq!(shard_of(id).unwrap(), Path::new("2026").join("07"));
+        assert_eq!(
+            event_path(Path::new("history/index.md"), id, "md").unwrap(),
+            Path::new("history/events/2026/07/2026-07-31-0915-pre-sync-4f2a9c1e.md")
+        );
+        // The point of repeating the date in the id: it resolves with every
+        // index file destroyed.
+        assert!(shard_of("not-an-event-id").is_err());
+    }
+
+    #[test]
+    fn a_blob_path_is_bare_hex_never_the_scheme_prefix() {
+        let hash = crate::fixity::digest(b"hello");
+        let path = blob_path(Path::new("history/index.md"), &hash).unwrap();
+        let spelled = path.to_string_lossy();
+        assert!(
+            !spelled.contains(':'),
+            "a colon in a blob filename is hostile to Windows and to sync clients: {spelled}"
+        );
+        let hex = hash.strip_prefix("sha256:").unwrap();
+        assert_eq!(
+            path,
+            Path::new("history/blobs").join(&hex[..2]).join(&hex[2..])
+        );
+        assert!(blob_path(Path::new("history/index.md"), "blake3:beef").is_err());
+    }
+}

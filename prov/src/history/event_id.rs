@@ -195,3 +195,131 @@ pub(super) fn display_entry(id: &str) -> String {
         None => display_stamp(id),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::TRIGGER_MANUAL;
+    use super::super::layout::shard_of;
+    use super::super::support::entry;
+    use super::*;
+
+    #[test]
+    fn the_id_stamp_reads_the_timestamp_and_survives_a_round_trip() {
+        assert_eq!(id_stamp("2026-07-31T09:15:22Z").unwrap(), "2026-07-31-0915");
+        assert!(id_stamp("yesterday").is_err());
+        assert_eq!(
+            display_stamp("2026-07-31-0915-pre-sync-4f2a9c1e"),
+            "2026-07-31 09:15"
+        );
+        // Two captures in the same minute must not read identically in an index,
+        // so the entry carries the label slug the id already encodes.
+        assert_eq!(
+            display_entry("2026-07-31-0915-pre-sync-4f2a9c1e"),
+            "2026-07-31 09:15 (pre-sync)"
+        );
+        assert_eq!(
+            label_slug("2026-07-31-0915-pre-sync-4f2a9c1e"),
+            Some("pre-sync".into())
+        );
+        assert_eq!(label_slug("2026-07-31-0915-4f2a9c1e"), None);
+        assert_eq!(
+            display_entry("2026-07-31-0915-4f2a9c1e"),
+            "2026-07-31 09:15"
+        );
+    }
+
+    #[test]
+    fn the_canonical_form_ignores_the_serialization_format() {
+        // Two devices, same state, same timestamp — the id must converge, which
+        // is what makes a collision benign rather than a conflict.
+        let files = vec![entry("a.md", b"a"), entry("b.md", b"b")];
+        let one = mint_id("2026-07-31T09:15:22Z", TRIGGER_MANUAL, None, None, &files).unwrap();
+        let two = mint_id("2026-07-31T09:15:22Z", TRIGGER_MANUAL, None, None, &files).unwrap();
+        assert_eq!(one, two);
+
+        // A different capture set is a different event.
+        let changed = vec![entry("a.md", b"a"), entry("b.md", b"CHANGED")];
+        let three = mint_id("2026-07-31T09:15:22Z", TRIGGER_MANUAL, None, None, &changed).unwrap();
+        assert_ne!(one, three);
+        // …and so is a different parent, so two devices forking from different
+        // points do not collide.
+        let forked = mint_id(
+            "2026-07-31T09:15:22Z",
+            TRIGGER_MANUAL,
+            None,
+            Some("2026-07-30-1804-nightly-8c1d55aa"),
+            &files,
+        )
+        .unwrap();
+        assert_ne!(one, forked);
+    }
+
+    #[test]
+    fn a_label_is_slugged_into_the_id_and_omitted_when_absent() {
+        let files = vec![entry("a.md", b"a")];
+        let labeled = mint_id(
+            "2026-07-31T09:15:22Z",
+            TRIGGER_MANUAL,
+            Some("Pre Sync!"),
+            None,
+            &files,
+        )
+        .unwrap();
+        assert!(
+            labeled.starts_with("2026-07-31-0915-pre-sync-"),
+            "{labeled}"
+        );
+        let bare = mint_id("2026-07-31T09:15:22Z", TRIGGER_MANUAL, None, None, &files).unwrap();
+        assert!(bare.starts_with("2026-07-31-0915-"), "{bare}");
+        // Both still parse back to the same shard.
+        assert_eq!(shard_of(&labeled).unwrap(), shard_of(&bare).unwrap());
+    }
+
+    #[test]
+    fn timestamps_of_two_precisions_still_order_against_each_other() {
+        // The migration hazard, stated as an assertion. A store keeps every
+        // precision it was ever written at, because events are immutable and sync
+        // interleaves devices — so the comparison, not the clock, is what has to
+        // make them one order.
+        let coarse = "2026-07-31T09:15:10Z";
+        let fine = "2026-07-31T09:15:10.500000Z";
+        assert!(
+            coarse > fine,
+            "the raw strings really are backwards — `Z` sorts after `.`"
+        );
+        assert!(
+            comparable(coarse) < comparable(fine),
+            "normalized, 09:15:10.000000 precedes 09:15:10.500000"
+        );
+
+        // Padding is to a fixed width, from either side, so a stamp written by
+        // some other tool at millisecond or nanosecond precision still lands in
+        // the right place.
+        assert_eq!(
+            comparable("2026-07-31T09:15:10Z"),
+            "2026-07-31T09:15:10.000000Z"
+        );
+        assert_eq!(
+            comparable("2026-07-31T09:15:10.5Z"),
+            "2026-07-31T09:15:10.500000Z"
+        );
+        assert_eq!(
+            comparable("2026-07-31T09:15:10.123456789Z"),
+            "2026-07-31T09:15:10.123456Z"
+        );
+        // Already canonical: borrowed, not rebuilt.
+        assert!(matches!(
+            comparable("2026-07-31T09:15:10.123456Z"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // Not a `Z` stamp: left exactly as found rather than quietly mangled.
+        assert_eq!(
+            comparable("2026-07-31T09:15:10+01:00"),
+            "2026-07-31T09:15:10+01:00"
+        );
+
+        // And the id is unaffected: it reads the calendar head only, so the
+        // fraction changes nothing about where an event lives or what it is called.
+        assert_eq!(id_stamp(coarse).unwrap(), id_stamp(fine).unwrap());
+    }
+}
