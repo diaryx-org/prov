@@ -131,14 +131,19 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// Whether `path` — a file prov *can* read — has been deliberately shadowed:
     /// claimed as an opaque payload by an attachment sidecar beside it. The
     /// promise `attach --opaque` makes, enforced: prov links, moves and fixity-
-    /// checks the file but never reads it *as a document*, so its title stays out
-    /// of the title index and any `id` it shows stays out of the registry.
+    /// checks the file (through its sidecar's own `content_hash`) but never
+    /// reads *it* as a document, so its title stays out of the title index, any
+    /// `id` it shows stays out of the registry, any `fields` value it carries is
+    /// never checked against a vocabulary, and any `content_hash` it shows is
+    /// never treated as its own.
     ///
     /// `listing` is the set of workspace-relative files the calling scan already
     /// enumerated (its directory read), so a shadow check costs a set lookup
     /// rather than a stat per metadata extension — this runs per file in the flat
-    /// title and id scans. A sidecar outside the listing therefore does not
-    /// shadow, which is the same bound the scans themselves observe.
+    /// title and id scans, and per reachable path in the vocabulary and fixity
+    /// passes (`validate::Workspace::reachable_documents`). A sidecar outside
+    /// the listing therefore does not shadow, which is the same bound the scans
+    /// themselves observe.
     pub(crate) async fn is_shadowed_payload(
         &self,
         path: &Path,
@@ -654,6 +659,97 @@ mod tests {
             block_on(ws(&dir).scan_ids()).unwrap(),
             vec![],
             "an example id is not a claim on the registry"
+        );
+    }
+
+    /// A specimen carrying two hazards of its own: a `fields` value no
+    /// vocabulary recognizes, and a `content_hash` that does not match its own
+    /// bytes. Both read as live frontmatter to an ordinary document — which is
+    /// exactly why a *shadowed* one must never let either surface: they are the
+    /// exhibit's claims, not this workspace's.
+    const HAZARDOUS_SPECIMEN: &[u8] = b"---\ntitle: A Captured Export\naudience: someone-else\n\
+        content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000\n\
+        ---\n# Example\n";
+
+    #[test]
+    fn attach_opaque_shadows_a_payloads_own_vocabulary_and_fixity_findings() {
+        let dir = tempdir("opaque-hazards");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\n\
+              prov:\n  fields:\n    audience:\n      values: closed\n      vocabulary: vocab/audiences.yaml\n\
+              ---\n",
+        );
+        write(
+            &dir,
+            "vocab/audiences.yaml",
+            b"title: Audiences\npart_of: /index.md\nvocabulary:\n  field: audience\n  values: closed\n\
+              terms:\n  public: {}\n  friends: {}\n",
+        );
+        write(&dir, "examples/sample.md", HAZARDOUS_SPECIMEN);
+
+        let mut w = ws(&dir);
+        block_on(w.attach_opaque(Path::new("examples/sample.md"), Path::new("index.md"))).unwrap();
+
+        // Neither hazard is surfaced: the exhibit's `audience` never meets the
+        // vocabulary, and its `content_hash` is never checked against its own
+        // bytes — both belong to the specimen, not this workspace.
+        let findings = block_on(w.check("index.md")).unwrap();
+        assert_eq!(findings, vec![], "{findings:?}");
+
+        // With no finding raised, nothing `suggest_fix` could offer would ever
+        // touch the payload — its bytes stay exactly as attached.
+        assert_eq!(
+            std::fs::read(dir.join("examples/sample.md")).unwrap(),
+            HAZARDOUS_SPECIMEN,
+            "no fix may have rewritten the exhibit"
+        );
+    }
+
+    #[test]
+    fn the_same_hazards_adopted_readably_are_still_caught() {
+        // Control: the non-opaque contract. `adopt` (not `attach --opaque`)
+        // links the very same file as an ordinary readable document, and its
+        // frontmatter hazards are then real claims `check` must catch — proof
+        // the opaque test above is suppressing genuine findings, not vacuous
+        // ones which would pass no matter what the code did.
+        let dir = tempdir("opaque-hazards-control");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\n\
+              prov:\n  fields:\n    audience:\n      values: closed\n      vocabulary: vocab/audiences.yaml\n\
+              ---\n",
+        );
+        write(
+            &dir,
+            "vocab/audiences.yaml",
+            b"title: Audiences\npart_of: /index.md\nvocabulary:\n  field: audience\n  values: closed\n\
+              terms:\n  public: {}\n  friends: {}\n",
+        );
+        write(&dir, "examples/sample.md", HAZARDOUS_SPECIMEN);
+
+        let mut w = ws(&dir);
+        block_on(w.adopt(Path::new("examples/sample.md"), Path::new("index.md"))).unwrap();
+
+        let findings = block_on(w.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::UnknownTerm { doc, field, value, .. }
+                    if doc == Path::new("examples/sample.md")
+                        && field == "audience"
+                        && value == "someone-else"
+            )),
+            "{findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::FixityMismatch { doc, .. } if doc == Path::new("examples/sample.md")
+            )),
+            "{findings:?}"
         );
     }
 

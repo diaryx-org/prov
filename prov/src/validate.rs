@@ -948,6 +948,44 @@ pub(crate) fn reachable_set(
 }
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// [`reachable_set`], minus any **shadowed attachment payload**
+    /// (`attach --opaque`) — the population a pass may parse *as a document*.
+    ///
+    /// A shadowed payload is still reachable (it must not be reported as an
+    /// orphan, and it is still fixity-checked *through its sidecar*), but its
+    /// bytes are an exhibit prov promised never to interpret. That is the same
+    /// bound [`is_shadowed_payload`](Workspace::is_shadowed_payload) already
+    /// holds the flat title and id scans to; this is its reachability-walk
+    /// counterpart, for [`vocabulary_findings`](Self::vocabulary_findings) and
+    /// [`fixity_findings`](Self::fixity_findings) — the two passes that load
+    /// every reachable path and read its frontmatter.
+    ///
+    /// The listing `is_shadowed_payload` needs is built the same way
+    /// [`orphans`](Self::orphans) builds one: the direct children of every
+    /// directory the reachable set occupies, so a shadow check costs a set
+    /// lookup per candidate extension rather than a stat.
+    async fn reachable_documents(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<BTreeSet<PathBuf>> {
+        let reachable = reachable_set(start, census, content_bodies);
+        let reached_dirs = Self::reached_dirs(&reachable);
+        let listing: BTreeSet<PathBuf> = self
+            .direct_child_files(&reached_dirs)
+            .await?
+            .into_iter()
+            .collect();
+        let mut documents = BTreeSet::new();
+        for path in reachable {
+            if !self.is_shadowed_payload(&path, &listing).await {
+                documents.insert(path);
+            }
+        }
+        Ok(documents)
+    }
+
     /// Every file the workspace reaches from `start` that actually exists on
     /// disk — [`reachable_set`] over a fresh walk, filtered to real files.
     ///
@@ -1324,8 +1362,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Ok(Vec::new());
         }
 
-        // The reachable document set (mirrors `fixity_findings`).
-        let reachable = reachable_set(start, census, content_bodies);
+        // The reachable document set (mirrors `fixity_findings`), minus any
+        // shadowed attachment payload — its `fields` values are an exhibit's,
+        // not this workspace's, and `attach --opaque` promises never to read
+        // them (see `reachable_documents`).
+        let reachable = self.reachable_documents(start, census, content_bodies).await?;
 
         let mut findings = Vec::new();
         for path in reachable {
@@ -1428,13 +1469,21 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// The bytes a document's hash covers depend on its shape: a document that
     /// points `content` at a sibling (an attachment payload, or a separated prose
     /// body) hashes *that file*; a combined document hashes its own body.
+    ///
+    /// A **shadowed** payload (`attach --opaque`) is excluded from the loop below
+    /// via [`reachable_documents`](Self::reachable_documents) — it is never
+    /// parsed for a `content_hash` of its *own*, because that field, if present,
+    /// belongs to the exhibit, not this workspace. Its actual fixity is still
+    /// checked: the sidecar beside it is an ordinary (unshadowed) document whose
+    /// own `content_hash` covers the payload's bytes via `content_attr`, so that
+    /// check runs the normal way, through the sidecar.
     async fn fixity_findings(
         &self,
         start: &Path,
         census: &[CensusEntry],
         content_bodies: &[PathBuf],
     ) -> Result<Vec<Finding>> {
-        let reachable = reachable_set(start, census, content_bodies);
+        let reachable = self.reachable_documents(start, census, content_bodies).await?;
 
         let mut findings = Vec::new();
         for path in reachable {
