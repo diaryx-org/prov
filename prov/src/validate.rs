@@ -1608,7 +1608,71 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ) -> Result<bool> {
         let path = link::normalize(path.as_ref());
         let (original, doc) = self.load(&path).await?;
+        let Some(text) = self.stamped(&path, &original, &doc, updated).await? else {
+            return Ok(false);
+        };
+        let mut cs = self.change();
+        cs.write(&path, text);
+        self.commit(cs).await?;
+        Ok(true)
+    }
 
+    /// Write `text` to the document at `path`, stamping what the write itself
+    /// implies — the counterpart to
+    /// [`record_content_update`](Self::record_content_update) for a caller who
+    /// *has* the new text rather than one reconciling text already on disk.
+    ///
+    /// Same two stamps, decided the same way and documented there: `content_hash`
+    /// where the workspace records fixity for this document's kind and the bytes
+    /// have drifted, and the `updated` frontmatter field when a caller supplies
+    /// one. The difference is only when they are applied. Stamping text on its way
+    /// to the disk costs one journaled write; stamping it afterwards costs the
+    /// first write, a read back, and a second write of the same document —
+    /// three atomic-write protocols where one will do, and, on a synced
+    /// filesystem, two uploads of one document per save.
+    ///
+    /// It is sound to stamp first because neither stamp can invalidate the other
+    /// or itself: both live in the frontmatter, and the hash covers the body (or a
+    /// `content` sibling), so amending the frontmatter cannot change what the hash
+    /// is *of*. The hash the caller's text arrived carrying is what drift is
+    /// measured against, exactly as if the text had been read back.
+    pub async fn save_document(
+        &mut self,
+        path: impl AsRef<Path>,
+        text: &str,
+        updated: Option<(&str, &str)>,
+    ) -> Result<()> {
+        let path = link::normalize(path.as_ref());
+        // The same clamp `load` applies on the way in, owed here too: `path` may
+        // have come from a document's own metadata, and this call reaches the
+        // filesystem without `load` in front of it to refuse an escape.
+        if link::escapes_root(&path) {
+            return Err(crate::error::Error::Escape(path));
+        }
+        let doc = crate::document::Document::parse(&path, text)?;
+        let stamped = self.stamped(&path, text, &doc, updated).await?;
+        let mut cs = self.change();
+        // No stamp applying is not "nothing to do" here, the way it is for
+        // `record_content_update`: the caller's text is the point, stamped or not.
+        cs.write(&path, stamped.unwrap_or_else(|| text.to_string()));
+        self.commit(cs).await
+    }
+
+    /// Apply to `text` the frontmatter stamps a content change implies, given the
+    /// `doc` that text parses to. `None` when neither applies and `text` already
+    /// says what it should.
+    ///
+    /// The shared middle of [`save_document`](Self::save_document) and
+    /// [`record_content_update`](Self::record_content_update). Both make the same
+    /// two decisions over the same text; all that differs is whether that text is
+    /// on its way to the disk or already there.
+    async fn stamped(
+        &self,
+        path: &Path,
+        text: &str,
+        doc: &crate::document::Document,
+        updated: Option<(&str, &str)>,
+    ) -> Result<Option<String>> {
         // Fixity: does this document's kind get hashed, and has it drifted?
         let covered = if doc.is_attachment() {
             self.fixity().covers_payloads()
@@ -1631,8 +1695,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         };
 
         // Apply both frontmatter edits (if any) to the one text, write once.
-        let mut text = original;
-        let mut wrote = false;
+        let mut text = text.to_string();
+        let mut stamped = false;
         if let Some(hash) = new_hash {
             text = crate::edit::set_in_text(
                 &text,
@@ -1640,7 +1704,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 "content_hash",
                 fig::Value::Str(hash),
             )?;
-            wrote = true;
+            stamped = true;
         }
         if let Some((field, at)) = updated
             && !field.is_empty()
@@ -1651,15 +1715,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 field,
                 fig::Value::Str(at.to_string()),
             )?;
-            wrote = true;
+            stamped = true;
         }
-        if !wrote {
-            return Ok(false);
-        }
-        let mut cs = self.change();
-        cs.write(&path, text);
-        self.commit(cs).await?;
-        Ok(true)
+        Ok(stamped.then_some(text))
     }
 
     /// Reconcile the content checksum for the document at `path` — [
@@ -3327,6 +3385,118 @@ mod tests {
                 .unwrap()
                 .contains("updated: 2099-01-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn save_document_lands_the_new_text_and_both_stamps_in_one_write() {
+        // The stamp-first path has to reach the same place the read-back path
+        // does: new body on disk, `updated` set, `content_hash` covering the body
+        // that was actually saved — and `check` agreeing the hash is true, which
+        // is the assertion that would fail if the hash were taken of the wrong
+        // bytes (the old body, or the text before its frontmatter was stamped).
+        use crate::config::Fixity;
+        let dir = tempdir("save-document");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
+        );
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .fixity(Fixity::Full)
+            .build();
+
+        let edited = "---\ntitle: Note\npart_of: index.md\n---\na different body\n";
+        block_on(w.save_document("note.md", edited, Some(("updated", "2026-08-06T09:00:00Z"))))
+            .unwrap();
+
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        assert!(text.contains("a different body"), "{text}");
+        assert!(text.contains("updated: 2026-08-06T09:00:00Z"), "{text}");
+        assert!(text.contains("content_hash: sha256:"), "{text}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn save_document_agrees_byte_for_byte_with_writing_then_recording() {
+        // The change is meant to be a saving, not a difference: the same edit
+        // through the old two-step route must produce the same file. Anything
+        // else would be a silent format or ordering change in every document a
+        // client saves.
+        use crate::config::Fixity;
+        let one_step = tempdir("save-equivalence-new");
+        let two_step = tempdir("save-equivalence-old");
+        let edited = "---\ntitle: Note\npart_of: index.md\n---\nrewritten\n";
+        let stamp = Some(("updated", "2026-08-06T09:00:00Z"));
+
+        for dir in [&one_step, &two_step] {
+            write(
+                dir,
+                "index.md",
+                "---\ntitle: Home\ncontents:\n- note.md\n---\n",
+            );
+            write(
+                dir,
+                "note.md",
+                "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
+            );
+        }
+
+        let mut w = Workspace::builder(StdFs)
+            .root(&one_step)
+            .fixity(Fixity::Full)
+            .build();
+        block_on(w.save_document("note.md", edited, stamp)).unwrap();
+
+        let mut old = Workspace::builder(StdFs)
+            .root(&two_step)
+            .fixity(Fixity::Full)
+            .build();
+        std::fs::write(two_step.join("note.md"), edited).unwrap();
+        assert!(block_on(old.record_content_update("note.md", stamp)).unwrap());
+
+        assert_eq!(
+            std::fs::read_to_string(one_step.join("note.md")).unwrap(),
+            std::fs::read_to_string(two_step.join("note.md")).unwrap(),
+        );
+    }
+
+    #[test]
+    fn save_document_writes_the_text_even_when_no_stamp_applies() {
+        // With fixity off and no `updated` field there is nothing to stamp — which
+        // makes `record_content_update` a no-op, but must not make a *save* one.
+        // The text is the point; the stamps are bookkeeping around it.
+        use crate::config::Fixity;
+        let dir = tempdir("save-document-unstamped");
+        write(&dir, "index.md", "---\ntitle: Home\n---\nold\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .fixity(Fixity::Off)
+            .build();
+
+        block_on(w.save_document("index.md", "---\ntitle: Home\n---\nnew\n", None)).unwrap();
+
+        let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        assert!(text.contains("new"), "{text}");
+        assert!(!text.contains("content_hash"), "{text}");
+    }
+
+    #[test]
+    fn save_document_refuses_a_path_that_escapes_the_root() {
+        let dir = tempdir("save-document-escape");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        let mut w = Workspace::builder(StdFs).root(&dir).build();
+
+        let err = block_on(w.save_document("../escape.md", "---\ntitle: X\n---\n", None))
+            .expect_err("an escaping path must be refused");
+
+        assert!(matches!(err, crate::error::Error::Escape(_)), "{err:?}");
+        assert!(!dir.parent().unwrap().join("escape.md").exists());
     }
 
     #[test]
