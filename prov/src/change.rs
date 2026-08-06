@@ -267,6 +267,13 @@ impl ChangeSet {
     ///   consistent workspace — fully before it on a caught error, fully after it
     ///   on a crash.
     ///
+    /// A set of **one** op skips the journal entirely: a single op is already
+    /// indivisible on a backend claiming `atomic_replace`, so there is no
+    /// multi-file window for a journal to close, and a crash leaves the op either
+    /// wholly done or wholly not — the same two states a recovered set lands on.
+    /// It is the ordinary shape of a save, and it costs one file operation rather
+    /// than four.
+    ///
     /// The rare exception is a rollback that *itself* fails ([`Error::Torn`]):
     /// prov could not restore the pre-change state, so — rather than leave an
     /// unknown one — it keeps the journal, and recovery will later roll the set
@@ -315,6 +322,35 @@ impl ChangeSet {
         if fs.try_exists(&journal).await? {
             return Err(Error::StaleJournal(journal));
         }
+        // A set of one needs no journal. The journal exists to make *several*
+        // file operations land as one unit; a lone op is already indivisible on a
+        // backend claiming `atomic_replace` — a `write_atomic` is all-or-nothing
+        // by construction, and a lone `rename` or `unlink` is atomic by the
+        // filesystem's own guarantee. Journaling it would write, flush, and then
+        // delete a second file in order to restate a promise the op already
+        // carries, roughly tripling what the commonest mutation there is — saving
+        // one document — costs in writes and flushes alike.
+        //
+        // What this gives up is *liveness*, not safety. With a journal, a crash
+        // mid-apply is rolled forward to the applied state by the next
+        // [`crate::journal::recover`]; without one, a crash simply means the op
+        // did not happen. For a set of one those are the only two states there
+        // are — no caller can observe a half-applied set of one — so all that
+        // changes is which side of the atomic instant a crash lands on, never
+        // whether it lands on one at all.
+        //
+        // The stale-journal refusal above still applies: this path writes no
+        // journal, but it must not slip a write past an *earlier* interrupted
+        // change that recovery has yet to roll forward, or recovery would later
+        // overwrite what was just written.
+        if self.ops.len() == 1 && fs.capabilities().atomic_replace {
+            // No undo to record, either. Nothing preceded this op that could need
+            // unwinding, and every failure mode leaves the target untouched — so
+            // the reflexive read of the very file about to be overwritten, whose
+            // only purpose is to hold the old bytes for a rollback that cannot
+            // happen here, goes with it.
+            return exec(fs, root, &self.ops[0], None).await;
+        }
         // The commit point: durably record the whole intent before touching a
         // single document. `write_atomic` flushes it, so a crash finds the
         // journal whole or not at all — never half-written.
@@ -323,7 +359,7 @@ impl ChangeSet {
 
         let mut undo: Vec<Undo> = Vec::new();
         for op in &self.ops {
-            let Err(cause) = exec(fs, root, op, &mut undo).await else {
+            let Err(cause) = exec(fs, root, op, Some(&mut undo)).await else {
                 continue;
             };
             return Err(match unwind(fs, undo).await {
@@ -375,22 +411,35 @@ enum Undo {
     Rename { from: PathBuf, to: PathBuf },
 }
 
-async fn exec<FS: Storage>(fs: &FS, root: &Path, op: &FileOp, undo: &mut Vec<Undo>) -> Result<()> {
+/// Apply one op, optionally recording how to reverse it.
+///
+/// `undo` is `None` only for a set of one, which has no rollback to feed: see
+/// the fast path in [`ChangeSet::apply`]. Recording is not merely unused there,
+/// it is worth skipping — for a write it costs a full read of the file about to
+/// be replaced.
+async fn exec<FS: Storage>(
+    fs: &FS,
+    root: &Path,
+    op: &FileOp,
+    undo: Option<&mut Vec<Undo>>,
+) -> Result<()> {
     match op {
         FileOp::Write { path, bytes } => {
             let full = root.join(path);
             // Record the undo *before* writing: a write that fails partway
             // (a full disk) leaves a truncated file, and restoring the old
             // bytes over it is exactly the repair.
-            match fs.read(&full).await {
-                Ok(old) => undo.push(Undo::Restore {
-                    path: full.clone(),
-                    bytes: old,
-                }),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    undo.push(Undo::Delete { path: full.clone() });
+            if let Some(undo) = undo {
+                match fs.read(&full).await {
+                    Ok(old) => undo.push(Undo::Restore {
+                        path: full.clone(),
+                        bytes: old,
+                    }),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        undo.push(Undo::Delete { path: full.clone() });
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) => return Err(e.into()),
             }
             ensure_parent(fs, &full).await?;
             // Land the document through the atomic-replace protocol, so even a
@@ -405,19 +454,28 @@ async fn exec<FS: Storage>(fs: &FS, root: &Path, op: &FileOp, undo: &mut Vec<Und
             let (from_full, to_full) = (root.join(from), root.join(to));
             ensure_parent(fs, &to_full).await?;
             fs.rename(&from_full, &to_full).await?;
-            undo.push(Undo::Rename {
-                from: to_full,
-                to: from_full,
-            });
+            if let Some(undo) = undo {
+                undo.push(Undo::Rename {
+                    from: to_full,
+                    to: from_full,
+                });
+            }
         }
         FileOp::Remove { path } => {
             let full = root.join(path);
-            let old = fs.read(&full).await?;
-            fs.remove_file(&full).await?;
-            undo.push(Undo::Restore {
-                path: full,
-                bytes: old,
-            });
+            match undo {
+                // The removed bytes are the undo, so they have to be read out
+                // before the file goes.
+                Some(undo) => {
+                    let old = fs.read(&full).await?;
+                    fs.remove_file(&full).await?;
+                    undo.push(Undo::Restore {
+                        path: full,
+                        bytes: old,
+                    });
+                }
+                None => fs.remove_file(&full).await?,
+            }
         }
         // A `Write` whose bytes were left at the source. The read happens here, at
         // execution time, rather than when the op was staged — that is the whole
@@ -425,15 +483,17 @@ async fn exec<FS: Storage>(fs: &FS, root: &Path, op: &FileOp, undo: &mut Vec<Und
         FileOp::CopyFrom { path, source } => {
             let (full, source_full) = (root.join(path), root.join(source));
             let bytes = fs.read(&source_full).await?;
-            match fs.read(&full).await {
-                Ok(old) => undo.push(Undo::Restore {
-                    path: full.clone(),
-                    bytes: old,
-                }),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    undo.push(Undo::Delete { path: full.clone() });
+            if let Some(undo) = undo {
+                match fs.read(&full).await {
+                    Ok(old) => undo.push(Undo::Restore {
+                        path: full.clone(),
+                        bytes: old,
+                    }),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        undo.push(Undo::Delete { path: full.clone() });
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) => return Err(e.into()),
             }
             ensure_parent(fs, &full).await?;
             fs.write_atomic(&full, &bytes).await?;
@@ -756,6 +816,80 @@ mod tests {
         // And it is removed at the very end — nothing survives a clean apply.
         assert_eq!(events.last(), Some(&FsEvent::Remove(journal.clone())));
         assert!(!journal.exists());
+    }
+
+    #[test]
+    fn a_set_of_one_lands_without_a_journal_at_all() {
+        // The counterpart to the test above, and the reason it stages two ops: a
+        // lone op is already indivisible, so the journal that makes *several* land
+        // together has nothing left to guarantee and is skipped. The assertion is
+        // the exact event list, because what is being claimed is an absence —
+        // "contains no journal write" would still pass if the set quietly grew a
+        // second file operation somewhere else.
+        let root = tmp("journal-single");
+        std::fs::write(root.join("doc.md"), "old").unwrap();
+        let fs = RecordingFs::local();
+        let mut cs = ChangeSet::new();
+        cs.write("doc.md", "new");
+        block_on(cs.apply(&fs, &root)).unwrap();
+
+        let (target, temp) = (root.join("doc.md"), root.join(".doc.md.prov-tmp"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(
+            fs.events(),
+            vec![
+                FsEvent::Write(temp.clone()),
+                FsEvent::Sync(temp.clone(), crate::fs::Durability::Ordered),
+                FsEvent::Rename(temp, target),
+                FsEvent::Sync(root.clone(), crate::fs::Durability::Durable),
+            ],
+            "a set of one must cost exactly one atomic write and nothing else"
+        );
+        assert!(!root.join(JOURNAL_NAME).exists());
+    }
+
+    #[test]
+    fn a_set_of_one_still_refuses_to_run_over_a_stale_journal() {
+        // Skipping the journal must not also skip the *check* for one. An earlier
+        // change crashed mid-apply and recovery has yet to roll it forward; a save
+        // that slipped past would be silently overwritten when it finally does.
+        let root = tmp("journal-single-stale");
+        std::fs::write(root.join("doc.md"), "old").unwrap();
+        std::fs::write(root.join(JOURNAL_NAME), "a previous change's intent").unwrap();
+
+        let mut cs = ChangeSet::new();
+        cs.write("doc.md", "new");
+        let err = block_on(cs.apply(&StdFs, &root)).unwrap_err();
+
+        assert!(matches!(err, Error::StaleJournal(_)), "got {err:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("doc.md")).unwrap(),
+            "old",
+            "the refused write must not have happened"
+        );
+    }
+
+    #[test]
+    fn a_set_of_one_does_not_read_the_file_it_is_about_to_replace() {
+        // The undo bookkeeping is what made a save read its own target back, and a
+        // set of one has no rollback to feed it to. Proven the only way an absent
+        // read can be: a target that cannot be read at all still writes fine.
+        let root = tmp("journal-single-unreadable");
+        let target = root.join("doc.md");
+        std::fs::write(&target, "old").unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o200); // write-only: any read of it fails
+        }
+        std::fs::set_permissions(&target, perms).unwrap();
+
+        let mut cs = ChangeSet::new();
+        cs.write("doc.md", "new");
+        block_on(cs.apply(&StdFs, &root)).expect("a write-only target is still replaceable");
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
     }
 
     #[test]
