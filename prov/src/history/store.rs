@@ -71,7 +71,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// into its own manifest, and so the pointer still lands in the same
     /// [`ChangeSet`](crate::change::ChangeSet) as the event — a store written without the pointer would be
     /// unreachable, and invisible to `check`.
-    pub(super) async fn history_pointer_text(
+    pub(crate) async fn history_pointer_text(
         &self,
         root_doc: &Path,
         store_index: &Path,
@@ -168,11 +168,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// [`Fix::RebuildHistoryIndex`]: crate::Fix::RebuildHistoryIndex
     pub async fn history_index_text(&self, index: &Path) -> Result<String> {
         let index = link::normalize(index);
-        let ext = index
-            .extension()
-            .and_then(|e| e.to_str())
-            .ok_or_else(|| Error::Structure(format!("{} has no extension", index.display())))?;
-        let embed = self.history_embed()?;
+        // The index's own extension, not the root's: this repair is reached
+        // without the root document on purpose (a workspace whose *store index*
+        // was mangled is exactly when you want to rebuild without depending on
+        // it), so the file being repaired is the only thing that can say what
+        // grammar the store is authored in.
+        let style = Authoring {
+            ext: index
+                .extension()
+                .and_then(|e| e.to_str())
+                .ok_or_else(|| Error::Structure(format!("{} has no extension", index.display())))?
+                .to_string(),
+            content: crate::ContentFormat::from_extension(&index)
+                .unwrap_or(crate::ContentFormat::Markdown),
+            embed: self.history_embed()?,
+        };
+        let ext = style.ext.as_str();
         let dir = index.parent().unwrap_or(Path::new(""));
 
         // Locate the store's `events/` directory by name, walking up from the
@@ -194,8 +205,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     &year,
                     &month,
                     &self.shard_event_ids(dir, ext).await?,
-                    ext,
-                    embed,
+                    &style,
                 )
             }
             // `<store>/events/<year>/index.<ext>`
@@ -204,14 +214,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                render_year_index(&year, &self.event_months(dir, ext).await?, ext, embed)
+                render_year_index(&year, &self.event_months(dir, ext).await?, &style)
             }
             // `<store>/index.<ext>` — the store index itself.
             _ => render_store_index(
                 &self.event_years(&dir.join(EVENTS_DIR), ext).await?,
-                ext,
                 self.history_forgotten_link(&index).await?.as_deref(),
-                embed,
+                &style,
             ),
         }
     }

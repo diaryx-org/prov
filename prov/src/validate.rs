@@ -437,6 +437,30 @@ pub enum Finding {
     /// by construction (see [`Fix`]) — `history-prune` is where bytes are deleted,
     /// deliberately and on request.
     HistoryBlobOrphaned { store: PathBuf, blobs: Vec<PathBuf> },
+    /// A history store is on disk at the conventional path, the workspace's
+    /// `history` axis is on, and the **root document does not point at it**.
+    /// `root` is the root, `store` the store index nothing declares.
+    ///
+    /// The store is reached one way only, through that pointer — so a transport
+    /// that mangles a single line of the root takes the whole safety net out of
+    /// prov's view. Every other finding in this family assumes the store was
+    /// found; this is the one that fires when it was not, and without it the
+    /// failure is **completely silent**: `history-list` prints nothing, the walk
+    /// never descends into `history/`, so not even an orphan is reported, and the
+    /// first sign of trouble is a restore that cannot find the event you need.
+    ///
+    /// Conditioned on the axis on purpose. A workspace with `history: off` and a
+    /// leftover `history/` directory has not lost anything — it declared it wants
+    /// no store, and a finding there would be prov nagging about a directory the
+    /// user is entitled to leave lying around. Declaring `manual` is the statement
+    /// that makes a missing pointer a defect rather than a preference.
+    ///
+    /// Autofixable, and one of the few repairs that is unambiguous: the pointer's
+    /// target is not a guess (only the conventional path is ever probed —
+    /// [`StoreLocation`](crate::history::StoreLocation)), the edit is
+    /// metadata-only, and the alternative is a workspace that keeps capturing into
+    /// a store it cannot read back.
+    HistoryStoreUnlinked { root: PathBuf, store: PathBuf },
     /// The generated `about.md` does not match what prov would produce from the
     /// current configuration — or the `about` pointer names a file that is not
     /// there. `path` is the page, `expected` what prov would write, and
@@ -704,6 +728,15 @@ impl fmt::Display for Finding {
                     stray.join(", ")
                 )
             }
+            Finding::HistoryStoreUnlinked { root, store } => {
+                write!(
+                    f,
+                    "{}: a history store at {} is not declared here — it is invisible \
+                     to prov until it is (`prov check --fix` re-declares it)",
+                    root.display(),
+                    store.display()
+                )
+            }
             // The expected content is deliberately not printed: it is the whole
             // page, and the repair is one command away.
             // Covers both shapes of "missing": a pointer naming a page that is
@@ -845,6 +878,11 @@ pub enum Fix {
     /// — the immutable event documents are the authority — so the rebuild is a
     /// pure function of that one directory's listing, and touches no other shard.
     RebuildHistoryIndex { index: PathBuf },
+    /// Repair a [`Finding::HistoryStoreUnlinked`] by declaring the `history`
+    /// pointer in `root` again, at the store that is already there. Metadata-only,
+    /// and the target is the one the finding found rather than anything this fix
+    /// decides — it re-declares a store, it never adopts one.
+    LinkHistoryStore { root: PathBuf, store: PathBuf },
     /// Rewrite the generated page whole. Carries the content rather than
     /// recomputing it: the finding already generated it to detect the drift, and
     /// carrying it keeps `apply_fix` free of any dependency on configuration —
@@ -902,6 +940,14 @@ impl fmt::Display for Fix {
                     f,
                     "rebuild {} from the events in its directory",
                     index.display()
+                )
+            }
+            Fix::LinkHistoryStore { root, store } => {
+                write!(
+                    f,
+                    "declare the history store at {} in {}",
+                    store.display(),
+                    root.display()
                 )
             }
             Fix::RegenerateAbout { path, .. } => {
@@ -1104,6 +1150,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // so there is no competing claim to weigh.
             Finding::HistoryIndexStale { index, .. } => Ok(Some(Fix::RebuildHistoryIndex {
                 index: index.clone(),
+            })),
+            // Re-declare the store the root has stopped pointing at. Unambiguous
+            // because the finding never guessed: it fires only for a store at the
+            // conventional path, so the pointer goes back to the one place prov
+            // would have put it.
+            Finding::HistoryStoreUnlinked { root, store } => Ok(Some(Fix::LinkHistoryStore {
+                root: root.clone(),
+                store: store.clone(),
             })),
             // Rewrite the derived page. Unambiguous for the same reason as the
             // index rebuild: configuration is the authority and the page only
@@ -2098,6 +2152,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Fix::RebuildHistoryIndex { index } => {
                 let text = self.history_index_text(index).await?;
                 cs.write(index, text);
+            }
+            // One frontmatter key, set the way a bootstrap capture would have set
+            // it — the same `history_pointer_text` path, so a re-declared pointer
+            // is spelled identically to an originally-declared one.
+            Fix::LinkHistoryStore { root, store } => {
+                let text = self.history_pointer_text(root, store).await?;
+                cs.write(root, text);
             }
             // Wholesale, like the index rebuild and for the same reason: the page
             // is derived, so the repaired file is byte-identical to one a fresh

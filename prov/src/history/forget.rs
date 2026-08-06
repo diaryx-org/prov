@@ -59,8 +59,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// Empty when there is no store, or nothing has been forgotten.
     pub async fn history_forgotten(&self, root_doc: &Path) -> Result<BTreeSet<String>> {
-        let (store_index, exists) = self.history_store_index(root_doc).await?;
-        if !exists {
+        let (store_index, found) = self.history_store_index(root_doc).await?;
+        if !found.exists() {
             return Ok(BTreeSet::new());
         }
         let (path, present) = self.history_forgotten_path(&store_index).await?;
@@ -125,12 +125,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         force: bool,
     ) -> Result<Forgotten> {
         let root_doc = link::normalize(root_doc);
-        let (store_index, exists) = self.history_store_index(&root_doc).await?;
-        if !exists {
+        let (store_index, found) = self.history_store_index(&root_doc).await?;
+        if !found.exists() {
             return Ok(Forgotten::default());
         }
-        let ext = self.history_ext(&root_doc);
-        let embed = self.history_embed()?;
+        let style = self.history_authoring(&root_doc)?;
+        let ext = style.ext.as_str();
 
         // The next capture would park them again, so this would be theatre. Named
         // rather than merely refused: the user has to know *which* document, and
@@ -233,7 +233,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.stage_index_text(
             &mut cs,
             &store_index,
-            render_store_index(&years, ext, Some(&forgotten_path), embed)?,
+            render_store_index(&years, Some(&forgotten_path), &style)?,
         )
         .await?;
         self.commit(cs).await?;

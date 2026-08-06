@@ -43,9 +43,59 @@ with frontmatter and a prose body, not whole-file metadata stores. The
 prov re-lays-out in place, and an event is an immutable document with something
 to say for itself.
 
+### How the store's documents are authored
+
+The store is authored the way the rest of the workspace is — all three axes
+together, from the workspace's own configuration:
+
+| Axis | Source |
+|---|---|
+| extension | the root document's content format (`md`, `dj`, `html`) |
+| prose body | that same grammar — Markdown source, transcoded |
+| frontmatter carrier | the workspace's `embed_style` + `default_embed_format` |
+
+All three or none: a store that took its extension from the workspace and its
+body from a hardcoded default is a `.html` file holding a literal `# History`,
+which prov reads back and no other tool does. An HTML workspace's store is HTML,
+with the metadata in the same `<script>` island the workspace's other documents
+use.
+
+One consequence for a third-party reader, stated plainly: **the manifest is
+written in whatever metadata language this workspace uses** — YAML, JSON, TOML
+or fig — and carried in whatever fence that workspace embeds with. There is no
+single answer to "what parses an event document"; there is a per-workspace
+answer, and the store index says which one. It names the carrier and the
+language in its own prose, so a reader who opened `history/` and nothing else
+does not have to recognize a fence to find the manifest. That paragraph also
+spells out the blob layout (§5) and that a blob *is* the file, so recovery by
+hand needs no other document.
+
 Only the store index's *path* is discovered from the root pointer. Every other
 path in the store is derived: the shard directories from an event id (§4), the
 blob path from a hash (§5).
+
+### Finding the store when the root has stopped declaring it
+
+The pointer is the store's only declared location, and it is one line in one
+mutable file — exactly the kind of thing a transport mangles. So discovery has a
+second step, and only one:
+
+1. The root's `history` pointer.
+2. Failing that, **`history/index.<ext>` if it is on disk** — the conventional
+   path, and nothing else. A store the root declared somewhere unusual and then
+   stopped declaring is not recoverable by guessing, and a filesystem sweep for
+   anything store-shaped is how a backup copy gets adopted as the live one.
+
+A store found the second way is read normally — recovery must never be gated
+behind repairing the thing that broke — and `check` reports the missing pointer
+as `HistoryStoreUnlinked` (§7). A capture re-declares it, adopting the store
+rather than bootstrapping a second one beside it.
+
+Without that step the failure is silent in every direction at once: descent into
+the store is through the pointer, so an undeclared store is a subtree the walk
+never enters, which means not even an orphan is reported about it. `history-list`
+would print nothing while the events sat on disk — a state a shell and `cp` can
+still recover from, and prov could not.
 
 ### Reachability
 
@@ -68,7 +118,7 @@ same way it already ignores `recyclebin/items/`.
 ## 2. The capture set
 
 The capture set is **the reachable file set, minus prov's two byte-parking
-stores**:
+stores and its one derived page**:
 
 - Start from the reachable set `check` computes from the root: the root
   document, every path a census link resolves to (any relation, a body
@@ -84,9 +134,22 @@ stores**:
   beside the recycle-bin index, wherever the root's `recycle_bin` pointer puts
   it). Already unreached; excluded even so, so that bytes the user consigned to
   the bin are not *newly* retained by a routine capture.
+- **Exclude the generated `about.<ext>`** (wherever the root's `about` pointer
+  puts it). It is *derived* — a pure function of the configuration, which this
+  same manifest captures — so parking its bytes stores nothing that cannot be
+  reproduced, and a new blob would be parked on every config change for no
+  recovery value. Restoring an event restores the config that determines the
+  page, and `check` reports the page stale until `prov about` rewrites it from
+  that config: the same repair by a shorter route. It also removes an ordering
+  hazard, since the first capture *bootstraps* the store, which changes what the
+  page says about this workspace — a captured page would be one the capture
+  itself invalidated.
 
 Everything else structural stays in: the registry document, the config
 document, and the recycle bin's *index*.
+
+A reader validating a manifest against a live tree should expect exactly these
+three absences, and no others.
 
 Capturing the index but not the items keeps the common case correct — a
 document live at capture time comes back live, and the bin index reverts to a
@@ -306,9 +369,18 @@ ordering owes a fork.
 
 ## 7. Validation
 
-`check` validates the store like any other reachable member, through four
+`check` validates the store like any other reachable member, through five
 findings.
 
+- **`HistoryStoreUnlinked`** — a store is at the conventional path (§1), the
+  `history` axis is on, and the **root does not point at it**. Reported first,
+  because everything below is about the store's contents and this says prov
+  cannot see the store from the root at all. Autofixes by re-declaring the
+  pointer: metadata-only, and unambiguous because the finding only ever fires
+  for the one path prov would itself have used. Conditioned on the axis on
+  purpose — a workspace with `history: off` and a leftover `history/` directory
+  has lost nothing, and a finding there would be prov objecting to a directory
+  the user is entitled to leave alone.
 - **`HistoryIndexStale`** — a shard directory holds an event (or a sub-index)
   its index document does not link, or links one that is gone. This is the
   *expected* outcome of a transport mangling a derived cache. It autofixes by

@@ -102,7 +102,7 @@ pub use fig_schema::FieldType;
 pub use fs::{Capabilities, DirEntry, FileType, InMemoryFs, Metadata, StdFs, Storage};
 pub use history::{
     Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Presence, Pruned, RestoreOp,
-    RestorePlan, Retention, Scope, Subject, Version,
+    RestorePlan, Retention, Scope, StoreLocation, Subject, Version,
 };
 pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use index::{Collision, FileIndex, InMemoryIndex, IndexStore, NoIndex};

@@ -88,7 +88,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{About, Fixity, IdStorage, WorkspaceConfig};
-use crate::content::ContentFormat;
+use crate::content::{ContentFormat, transcode};
 use crate::document::{EmbedStyle, MetaCarrier, embed_carrier};
 use crate::error::{Error, Result};
 use crate::identity::Registration;
@@ -1072,27 +1072,6 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     crate::edit::reformat_block(&format!("\n{body}"), &mapping, kind)
 }
 
-/// Transcode the Markdown body into the workspace's content format.
-///
-/// Markdown is returned untouched — twig's serializer is idempotent here, but
-/// round-tripping would buy nothing and risks reflowing prose this module
-/// deliberately wrapped.
-fn transcode(body: &str, format: ContentFormat) -> Result<String> {
-    if format == ContentFormat::Markdown {
-        return Ok(body.to_string());
-    }
-    let mut doc = twig::Document::parse_str(body, twig::Format::Markdown)
-        .map_err(|e| Error::Content(format!("twig parse: {e}")))?;
-    let out = doc
-        .serialize(match format {
-            ContentFormat::Markdown => twig::Format::Markdown,
-            ContentFormat::Djot => twig::Format::Djot,
-            ContentFormat::Html => twig::Format::Html,
-        })
-        .map_err(|e| Error::Content(format!("twig serialize: {e}")))?;
-    String::from_utf8(out).map_err(|e| Error::Content(format!("twig produced non-UTF-8: {e}")))
-}
-
 // ─── prose helpers ───────────────────────────────────────────────────────────
 
 /// A paragraph, wrapped to [`WRAP`] columns, ending in exactly one newline.
@@ -1101,7 +1080,7 @@ fn transcode(body: &str, format: ContentFormat) -> Result<String> {
 /// Wrapping after interpolation rather than by hand is what keeps the output
 /// stable: a workspace whose relation is named `x` and one whose relation is
 /// named `superseded_by` both get tidy paragraphs.
-fn para(text: &str) -> String {
+pub(crate) fn para(text: &str) -> String {
     wrap(&collapse(text), WRAP)
 }
 
@@ -1209,7 +1188,7 @@ fn escape_cell(value: &str) -> String {
 // ─── config → prose ──────────────────────────────────────────────────────────
 
 /// The human name of a metadata format, as the page should say it.
-fn format_name(format: fig::Format) -> String {
+pub(crate) fn format_name(format: fig::Format) -> String {
     match format {
         fig::Format::Yaml => "YAML".into(),
         fig::Format::Toml => "TOML".into(),

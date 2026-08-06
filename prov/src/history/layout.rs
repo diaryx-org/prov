@@ -4,6 +4,41 @@ use crate::error::{Error, Result};
 
 use super::{BLOBS_DIR, EVENTS_DIR, HISTORY_DIR};
 
+/// How the store was located — the difference between "the root says where it
+/// is", "it is sitting at the conventional path and the root has stopped saying
+/// so", and "there is no store".
+///
+/// The middle case is the one this distinction exists for. Discovery is through
+/// the root's `history` pointer, so a transport that mangles one line of the root
+/// document takes the entire safety net out of prov's view: `history-list` goes
+/// blank, `check` says nothing, and the store is sitting right there. Recovery
+/// must never be gated behind repairing the thing that broke, so the read verbs
+/// take [`Conventional`](StoreLocation::Conventional) as a found store — and
+/// `check` reports the missing pointer
+/// ([`Finding::HistoryStoreUnlinked`](crate::validate::Finding::HistoryStoreUnlinked)) so it is
+/// re-declared rather than silently depended upon.
+///
+/// **Only the conventional path is probed**, never a search. A store the root
+/// declared somewhere unusual and then stopped declaring is not recoverable by
+/// guessing, and a filesystem sweep for anything shaped like a store is how a
+/// backup copy gets adopted as the live one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreLocation {
+    /// The root's `history` pointer names it. The ordinary case.
+    Declared,
+    /// Nothing declares it, but a store index is on disk at [`HISTORY_DIR`].
+    Conventional,
+    /// There is no store: nothing declared, nothing at the conventional path.
+    Absent,
+}
+
+impl StoreLocation {
+    /// Whether a store is actually there to read.
+    pub fn exists(self) -> bool {
+        !matches!(self, StoreLocation::Absent)
+    }
+}
+
 /// The shard directory an event id belongs in, relative to the store's `events/`
 /// directory: `<YYYY>/<MM>`, parsed straight out of the id's own leading
 /// `YYYY-MM-`.

@@ -88,6 +88,31 @@ fn parse(body: &str, format: ContentFormat) -> crate::error::Result<twig::Docume
         .map_err(|e| crate::error::Error::Content(format!("twig parse: {e}")))
 }
 
+/// Transcode Markdown source into `format`.
+///
+/// The one move behind every page prov *authors* rather than reads. Generated
+/// prose — [`crate::about`]'s page, the history store's index and event bodies —
+/// is written as Markdown in the Rust source, where it is legible to whoever
+/// maintains it, and converted here to whatever grammar the workspace actually
+/// uses. Without this, an HTML workspace ends up holding `.html` files whose
+/// bodies are literal `# Heading` Markdown: prov reads them back fine, and every
+/// other tool in the world does not.
+///
+/// Markdown is returned untouched — twig's serializer is idempotent here, but
+/// round-tripping would buy nothing and risks reflowing prose the caller
+/// deliberately wrapped.
+pub fn transcode(body: &str, format: ContentFormat) -> crate::error::Result<String> {
+    if format == ContentFormat::Markdown {
+        return Ok(body.to_string());
+    }
+    let mut doc = parse(body, ContentFormat::Markdown)?;
+    let out = doc
+        .serialize(format.twig_format())
+        .map_err(|e| crate::error::Error::Content(format!("twig serialize: {e}")))?;
+    String::from_utf8(out)
+        .map_err(|e| crate::error::Error::Content(format!("twig produced non-UTF-8: {e}")))
+}
+
 /// Parse `body` as `format` and render it to HTML, via `twig`'s FFI.
 pub fn render_html(body: &str, format: ContentFormat) -> crate::error::Result<String> {
     let mut doc = parse(body, format)?;

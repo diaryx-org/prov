@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::content::{ContentFormat, transcode};
 use crate::error::Result;
 use crate::identity::Id;
 use crate::link;
@@ -10,7 +11,29 @@ use super::event_id::*;
 use super::layout::*;
 use super::model::*;
 use super::paths::*;
-use super::{EVENTS_DIR, FORGOTTEN_STEM, TRIGGER_MANUAL};
+use super::{BLOBS_DIR, EVENTS_DIR, FORGOTTEN_STEM, TRIGGER_MANUAL};
+
+/// How the store's documents are authored: the extension they carry, the grammar
+/// their prose is written in, and the carrier their frontmatter rides in.
+///
+/// One value rather than three parameters, because they are one decision and
+/// separating them is how a `.html` store came to hold Markdown bodies.
+/// Resolved by [`history_authoring`](crate::Workspace::history_authoring).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Authoring {
+    /// The file extension every document in the store gets.
+    ///
+    /// Owned rather than `&'static str` because the index-rebuild repair reads it
+    /// off the file it is repairing (it runs without the root document), and a
+    /// hand-made store spelled `.markdown` must keep being scanned as
+    /// `.markdown` — canonicalizing it there would rebuild the index from an
+    /// empty listing and delete every entry in it.
+    pub ext: String,
+    /// The body grammar their prose is transcoded into.
+    pub content: ContentFormat,
+    /// The frontmatter carrier their metadata rides in.
+    pub embed: fig::EmbedType,
+}
 
 /// Parse an event document's frontmatter into an [`Event`], or `None` when it is
 /// not one (no `files` manifest, or no `created`).
@@ -63,6 +86,10 @@ pub(super) fn parse_event(path: &Path, id: &str, meta: &Value) -> Option<Event> 
 /// Render one index document: a title, an optional `part_of` up-link, a
 /// `contents` list, and a prose body explaining what the reader is looking at.
 ///
+/// The body is authored as Markdown here and transcoded into the workspace's own
+/// grammar, so an HTML workspace gets HTML rather than a `.html` file holding a
+/// literal `# History`.
+///
 /// Links inside the store are authored as **plain relative paths**, deliberately
 /// bypassing the workspace's reference style. An id-addressing style would
 /// register every event in the registry, which would make each capture rewrite
@@ -73,7 +100,7 @@ pub(super) fn render_index(
     up: Option<(&str, &str)>,
     entries: &[(String, String)],
     prose: &str,
-    embed: fig::EmbedType,
+    style: &Authoring,
 ) -> Result<String> {
     let mut map = Mapping::new();
     map.insert("title".into(), Value::String(title.to_string()));
@@ -92,27 +119,98 @@ pub(super) fn render_index(
                 .collect(),
         ),
     );
-    crate::edit::reformat_block(&format!("# {title}\n\n{prose}\n"), &map, embed)
+    let body = transcode(&format!("# {title}\n\n{prose}\n"), style.content)?;
+    crate::edit::reformat_block(&body, &map, style.embed)
+}
+
+/// How a document in this store opens, in one clause a reader can act on —
+/// naming the fence *and* the language inside it.
+///
+/// The store index is where someone who opened `history/` uninvited starts, and
+/// "the manifest is in the frontmatter" is only useful to a reader who already
+/// knows which of six carriers this workspace writes. Specialized rather than
+/// enumerated, the same move [`crate::about`] makes for the workspace at large:
+/// state the one branch that applies here.
+fn carrier_opening(embed: fig::EmbedType) -> String {
+    use fig::EmbedType as E;
+    let name = crate::about::format_name(embed.inner_format());
+    match embed {
+        E::FrontmatterYaml => format!("between the `---` lines at the top, written in {name}"),
+        E::FrontmatterJson => format!("between the `;;;` lines at the top, written in {name}"),
+        E::PlusToml => format!("between the `+++` lines at the top, written in {name}"),
+        E::MdFrontmatterJson | E::MdFrontmatterToml | E::MdFrontmatterFig => {
+            format!("between the `---` lines at the top, written in {name}")
+        }
+        E::FencedYaml | E::FencedJson | E::FencedToml | E::FrontmatterFig => {
+            format!("in the fenced code block at the top, written in {name}")
+        }
+        E::EndmatterYaml => format!("in the `endmatter` block at the *end*, written in {name}"),
+        E::HtmlScriptYaml | E::HtmlScriptJson | E::HtmlScriptToml | E::HtmlScriptFig => {
+            format!("inside the `<script>` tag at the top, written in {name}")
+        }
+        E::HtmlCodeYaml | E::HtmlCodeJson | E::HtmlCodeToml | E::HtmlCodeFig => format!(
+            "inside the `<pre><code>` block at the top, written in {name} \
+             (with `<` and `&` HTML-encoded)"
+        ),
+    }
 }
 
 /// The prose body of the store index — the "opened `history/` uninvited" case.
 /// Legibility is the point of the layout, not a garnish.
-pub(super) const STORE_PROSE: &str = "\
-This directory is `prov`'s **history store**: a safety net for damage an
-external sync transport can do to the workspace's structure.
-
-Each capture writes one immutable document under `events/<year>/<month>/`,
-recording the complete set of files that existed at that moment — every path
-with its content hash, and its id when it has one. The bytes themselves live
-under `blobs/`, named by content hash and shared between captures, so identical
-content is stored once.
-
-Nothing here is ever rewritten except these index files, which are a cache: the
-event documents are the authority, and any index can be rebuilt by listing the
-directory beneath it (`prov check` reports and repairs a stale one).
-
-Capture a new event with `prov history-capture`; list what is here with
-`prov history-list`.";
+///
+/// Two things it must do that a static string cannot. It **names the carrier**
+/// this workspace actually writes, so a reader knows where the manifest is
+/// without having to recognize a fence. And it spells out **recovery by hand**:
+/// the blob layout, and the fact that a blob *is* the file. That paragraph is
+/// what makes the store readable without prov rather than merely
+/// well-documented somewhere else — the reader who most needs it is the one
+/// whose workspace is broken, and telling them to run a verb is telling them to
+/// trust the thing that just failed them.
+/// Wrapped after interpolation, through [`crate::about`]'s helper: the carrier
+/// clause varies in length by a factor of three across the archetypes, so a
+/// hand-wrapped paragraph would be tidy for YAML and ragged for an HTML island.
+pub(super) fn store_prose(style: &Authoring) -> String {
+    let paragraphs = [
+        crate::about::para(
+            "This directory is `prov`'s **history store**: a safety net for damage \
+             an external sync transport can do to the workspace's structure.",
+        ),
+        crate::about::para(&format!(
+            "Each capture writes one immutable document under \
+             `{EVENTS_DIR}/<year>/<month>/`, recording the complete set of files \
+             that existed at that moment. That record is its `files` list, {} — one \
+             entry per file, giving the path, its SHA-256 content hash, and its id \
+             when it has one.",
+            carrier_opening(style.embed),
+        )),
+        crate::about::para(&format!(
+            "The bytes themselves live under `{BLOBS_DIR}/`, named by content hash \
+             and shared between captures, so identical content is stored once. A \
+             hash of `sha256:abcdef…` is the file `{BLOBS_DIR}/ab/cdef…` — first \
+             two hex characters for the directory, the remaining sixty-two for the \
+             filename, and never the `sha256:` prefix itself.",
+        )),
+        crate::about::para(
+            "**Recovering a file without prov.** A blob is the file: the exact \
+             bytes, uncompressed and unencoded. Find the path in an event's `files` \
+             list, take its hash, and copy that blob back over the file. \
+             `sha256sum` (or `shasum -a 256`) on a blob prints the name it is \
+             stored under, so anything here can be checked against its own \
+             filename with no other tool.",
+        ),
+        crate::about::para(
+            "Nothing here is ever rewritten except these index files, which are a \
+             cache: the event documents are the authority, and any index can be \
+             rebuilt by listing the directory beneath it (`prov check` reports and \
+             repairs a stale one).",
+        ),
+        crate::about::para(
+            "Capture a new event with `prov history-capture`; list what is here \
+             with `prov history-list`.",
+        ),
+    ];
+    paragraphs.join("\n")
+}
 
 /// The month-shard title an event's `part_of` label uses: `July 2026`.
 pub(super) fn shard_title(id: &str) -> String {
@@ -159,10 +257,10 @@ pub(super) fn index_entries(index: &Path, meta: &Value) -> Vec<PathBuf> {
 /// record of what was destroyed would be reported as an orphan.
 pub(super) fn render_store_index(
     years: &BTreeSet<String>,
-    ext: &str,
     forgotten: Option<&Path>,
-    embed: fig::EmbedType,
+    style: &Authoring,
 ) -> Result<String> {
+    let ext = style.ext.as_str();
     let mut entries: Vec<(String, String)> = years
         .iter()
         .map(|year| (year.clone(), format!("{EVENTS_DIR}/{year}/index.{ext}")))
@@ -172,7 +270,7 @@ pub(super) fn render_store_index(
     {
         entries.push(("Forgotten".into(), name.to_string()));
     }
-    render_index("History", None, &entries, STORE_PROSE, embed)
+    render_index("History", None, &entries, &store_prose(style), style)
 }
 
 /// The hashes a tombstone document records.
@@ -246,9 +344,9 @@ pub(super) fn subject_matches(subject: &Subject, file: &FileEntry) -> bool {
 pub(super) fn render_year_index(
     year: &str,
     months: &BTreeSet<String>,
-    ext: &str,
-    embed: fig::EmbedType,
+    style: &Authoring,
 ) -> Result<String> {
+    let ext = style.ext.as_str();
     let entries: Vec<(String, String)> = months
         .iter()
         .map(|month| {
@@ -263,7 +361,7 @@ pub(super) fn render_year_index(
         Some(("History", &format!("../../index.{ext}"))),
         &entries,
         &format!("Captures taken during {year}, one directory per month."),
-        embed,
+        style,
     )
 }
 
@@ -271,9 +369,9 @@ pub(super) fn render_month_index(
     year: &str,
     month: &str,
     ids: &BTreeSet<String>,
-    ext: &str,
-    embed: fig::EmbedType,
+    style: &Authoring,
 ) -> Result<String> {
+    let ext = style.ext.as_str();
     let entries: Vec<(String, String)> = ids
         .iter()
         .map(|id| (display_entry(id), format!("{id}.{ext}")))
@@ -287,6 +385,89 @@ pub(super) fn render_month_index(
             "Every capture taken in {title}. Each entry is one immutable event \
              document recording the complete file set at that moment."
         ),
-        embed,
+        style,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn style(content: ContentFormat, embed: fig::EmbedType) -> Authoring {
+        Authoring {
+            ext: content.extension().to_string(),
+            content,
+            embed,
+        }
+    }
+
+    /// The store index is where a reader who opened `history/` uninvited starts,
+    /// and "the manifest is in the frontmatter" is useless to someone who does not
+    /// already know which of six carriers this workspace writes. So the prose names
+    /// the fence *and* the language, resolved rather than enumerated.
+    #[test]
+    fn the_store_prose_names_the_carrier_the_reader_is_actually_looking_at() {
+        // The prose is wrapped *after* the carrier clause is interpolated (that is
+        // the point — the clause varies threefold in length), so a phrase can land
+        // across a line break. Assert against the collapsed text.
+        let flowed = |embed, content| {
+            store_prose(&style(content, embed))
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        let yaml = flowed(fig::EmbedType::FrontmatterYaml, ContentFormat::Markdown);
+        assert!(
+            yaml.contains("between the `---` lines at the top, written in YAML"),
+            "{yaml}"
+        );
+
+        let island = flowed(fig::EmbedType::HtmlScriptJson, ContentFormat::Html);
+        assert!(
+            island.contains("inside the `<script>` tag at the top, written in JSON"),
+            "{island}"
+        );
+
+        let fig_block = flowed(fig::EmbedType::FrontmatterFig, ContentFormat::Markdown);
+        assert!(
+            fig_block.contains("in the fenced code block at the top, written in fig"),
+            "{fig_block}"
+        );
+
+        // And every variant teaches recovery by hand: the shard split, and that a
+        // blob *is* the file. The reader who most needs this is the one whose
+        // workspace is broken, so it cannot be "run a verb".
+        for prose in [&yaml, &island, &fig_block] {
+            assert!(prose.contains("blobs/ab/cdef"), "{prose}");
+            assert!(prose.contains("A blob is the file"), "{prose}");
+            assert!(prose.contains("sha256sum"), "{prose}");
+        }
+    }
+
+    /// A `.html` store must be HTML, not a `.html` file with a Markdown body in
+    /// it. prov reads the latter back fine, which is exactly why nothing caught it.
+    #[test]
+    fn an_html_store_index_is_html_all_the_way_down() {
+        let years = BTreeSet::from(["2026".to_string()]);
+        let html = render_store_index(
+            &years,
+            None,
+            &style(ContentFormat::Html, fig::EmbedType::HtmlScriptJson),
+        )
+        .unwrap();
+
+        assert!(
+            html.starts_with("<script type=\"application/json\">"),
+            "{html}"
+        );
+        assert!(html.contains("<h1>History</h1>"), "{html}");
+        assert!(html.contains("<p>"), "{html}");
+        assert!(
+            !html.contains("\n# History"),
+            "a Markdown heading leaked into an HTML document: {html}"
+        );
+        // The link into the year shard survives transcoding as a real anchor.
+        assert!(html.contains("events/2026/index.html"), "{html}");
+    }
 }

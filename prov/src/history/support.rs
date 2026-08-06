@@ -37,6 +37,39 @@ pub(super) fn ws(dir: &Path) -> Workspace<StdFs, Minter, FileIndex> {
         .root(dir)
         .identity(Minter::lazy(42))
         .index(FileIndex::new(fig::Format::Yaml))
+        // The axis the store's own verbs never consult, and `check` does: with it
+        // off, a store the root has stopped declaring is not a finding. Every
+        // fixture here has a store on purpose, so `manual` is the honest default.
+        .history(crate::config::History::Manual)
+        .build()
+}
+
+/// [`ws`] with the `history` axis off — for the one distinction that turns on it:
+/// a leftover store nobody declared is only a defect in a workspace that says it
+/// wants one.
+pub(super) fn ws_history_off(dir: &Path) -> Workspace<StdFs, Minter, FileIndex> {
+    Workspace::builder(StdFs)
+        .root(dir)
+        .identity(Minter::lazy(42))
+        .index(FileIndex::new(fig::Format::Yaml))
+        .build()
+}
+
+/// [`ws`] with a declared metadata embedding. The store's *content* grammar comes
+/// from the root document's own extension, so a caller wanting an HTML store
+/// writes an `index.html` root rather than passing a format here.
+pub(super) fn ws_authoring(
+    dir: &Path,
+    style: crate::document::EmbedStyle,
+    format: fig::Format,
+) -> Workspace<StdFs, Minter, FileIndex> {
+    Workspace::builder(StdFs)
+        .root(dir)
+        .identity(Minter::lazy(42))
+        .index(FileIndex::new(format))
+        .history(crate::config::History::Manual)
+        .default_embed_format(format)
+        .embed_style(style)
         .build()
 }
 

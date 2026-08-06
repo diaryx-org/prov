@@ -89,7 +89,7 @@ mod read;
 mod restore;
 mod store;
 
-pub use layout::{blob_path, event_path, shard_of, store_dir};
+pub use layout::{StoreLocation, blob_path, event_path, shard_of, store_dir};
 pub use model::{
     Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Presence, Pruned, RestoreOp,
     RestorePlan, Retention, Scope, Subject, Version,

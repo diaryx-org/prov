@@ -375,7 +375,15 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
         // `id_links` fallback entirely — the CLI never sets that legacy axis.
         .reference_style(ctx.config.reference_style())
         .default_embed_format(ctx.config.default_embed_format)
+        // The store's own documents are authored through this pair, so a fig or
+        // HTML workspace's history reads like the rest of it rather than falling
+        // back to a `;;;` fence the workspace never uses.
+        .embed_style(ctx.config.embed_style)
         .fixity(ctx.config.fixity)
+        // Not a capture gate (that stays in `cmd_history_capture`) — it is what
+        // lets `check` tell "no store yet" from "the root stopped pointing at the
+        // store that is sitting right there".
+        .history(ctx.config.history)
         // Honor the declared identity-storage mode: under `both` (the config
         // default) every document prov authors carries its own `id`, and `check`
         // reports any that does not.

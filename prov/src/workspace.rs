@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use crate::change::ChangeSet;
-use crate::config::{Fixity, IdStorage};
+use crate::config::{Fixity, History, IdStorage};
 use crate::content::ContentFormat;
+use crate::document::EmbedStyle;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
@@ -49,7 +50,9 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     id_links: bool,
     reference_style: Option<ReferenceStyle>,
     default_embed_format: fig::Format,
+    embed_style: EmbedStyle,
     fixity: Fixity,
+    history: History,
     id_storage: IdStorage,
     /// Documents that earned an id this operation and, under a stamping mode,
     /// still need it written into their own frontmatter. Drained by
@@ -80,7 +83,9 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             id_links: false,
             reference_style: None,
             default_embed_format: fig::Format::Yaml,
+            embed_style: EmbedStyle::Delimited,
             fixity: Fixity::Payloads,
+            history: History::Off,
             id_storage: IdStorage::Registry,
         }
     }
@@ -140,6 +145,27 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// recorded regardless.
     pub fn fixity(&self) -> Fixity {
         self.fixity
+    }
+
+    /// Whether this workspace keeps a history store, and on what trigger.
+    ///
+    /// Gating *capture* is the CLI's job, but the axis has to reach the library
+    /// for the opposite reason: a workspace that declares `manual` has said it
+    /// wants a safety net, so `check` can tell "no store yet" from "a store is
+    /// sitting there and the root has stopped pointing at it"
+    /// ([`Finding::HistoryStoreUnlinked`](crate::validate::Finding::HistoryStoreUnlinked)).
+    /// With the axis off there is nothing to be missing, and the pass stays
+    /// silent.
+    pub fn history(&self) -> History {
+        self.history
+    }
+
+    /// How this workspace embeds metadata — the family (`delimited`,
+    /// `code-block`, `html-script`, …) that, with
+    /// [`default_embed_format`](Self::default_embed_format), resolves to the
+    /// concrete carrier a document prov authors gets.
+    pub fn embed_style(&self) -> EmbedStyle {
+        self.embed_style
     }
 
     /// Where this workspace persists document ids (DESIGN §5). Consulted by the
@@ -1323,7 +1349,9 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     id_links: bool,
     reference_style: Option<ReferenceStyle>,
     default_embed_format: fig::Format,
+    embed_style: EmbedStyle,
     fixity: Fixity,
+    history: History,
     id_storage: IdStorage,
 }
 
@@ -1358,6 +1386,22 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// Set how far content checksums are recorded (attachments only by default).
     pub fn fixity(mut self, fixity: Fixity) -> Self {
         self.fixity = fixity;
+        self
+    }
+
+    /// Set whether this workspace keeps a history store. Off by default; see
+    /// [`Workspace::history`] for what the library does with it (it does not gate
+    /// capture — that is the caller's call).
+    pub fn history(mut self, history: History) -> Self {
+        self.history = history;
+        self
+    }
+
+    /// Set the metadata embedding family — the `(style, format)` half that
+    /// resolves to a concrete carrier. Defaults to
+    /// [`EmbedStyle::Delimited`], matching the config default.
+    pub fn embed_style(mut self, embed_style: EmbedStyle) -> Self {
+        self.embed_style = embed_style;
         self
     }
 
@@ -1398,7 +1442,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             id_links: self.id_links,
             reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
+            embed_style: self.embed_style,
             fixity: self.fixity,
+            history: self.history,
             id_storage: self.id_storage,
         }
     }
@@ -1415,7 +1461,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             id_links: self.id_links,
             reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
+            embed_style: self.embed_style,
             fixity: self.fixity,
+            history: self.history,
             id_storage: self.id_storage,
         }
     }
@@ -1432,7 +1480,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             id_links: self.id_links,
             reference_style: self.reference_style,
             default_embed_format: self.default_embed_format,
+            embed_style: self.embed_style,
             fixity: self.fixity,
+            history: self.history,
             id_storage: self.id_storage,
             pending_stamps: Vec::new(),
         }

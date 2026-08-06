@@ -24,22 +24,41 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// scanned for orphans nor validated — so history validates them here, from
     /// the directories themselves, which is also what makes the check immune to
     /// the very staleness it is looking for.
+    ///
+    /// The pass also reports a store the root has stopped declaring
+    /// ([`Finding::HistoryStoreUnlinked`]) — the one failure that is otherwise
+    /// completely silent, since an undiscovered store is a subtree the walk never
+    /// enters and so never reports anything about, orphans included.
     pub async fn history_findings(&self, root_doc: &Path) -> Result<Vec<Finding>> {
-        let (store_index, exists) = self.history_store_index(root_doc).await?;
-        if !exists {
+        let (store_index, found) = self.history_store_index(root_doc).await?;
+        if !found.exists() {
             return Ok(Vec::new());
         }
-        let ext = self.history_ext(root_doc);
-        let embed = self.history_embed()?;
+        let style = self.history_authoring(root_doc)?;
+        let ext = style.ext.as_str();
         let events_root = store_dir(&store_index).join(EVENTS_DIR);
         let mut findings = Vec::new();
+
+        // Reported first: everything below is about the store's *contents*, and a
+        // reader who is about to be told their indexes are stale needs to know
+        // prov cannot see the store from the root at all.
+        //
+        // Gated on the axis, not on the store's existence: with `history: off` a
+        // leftover directory is not a loss, and saying so would be prov objecting
+        // to a directory the user is entitled to leave alone.
+        if found == StoreLocation::Conventional && self.history().captures() {
+            findings.push(Finding::HistoryStoreUnlinked {
+                root: root_doc.to_path_buf(),
+                store: store_index.clone(),
+            });
+        }
 
         let years = self.event_years(&events_root, ext).await?;
         let forgotten = self.history_forgotten_link(&store_index).await?;
         self.compare_index(
             &mut findings,
             &store_index,
-            &render_store_index(&years, ext, forgotten.as_deref(), embed)?,
+            &render_store_index(&years, forgotten.as_deref(), &style)?,
         )
         .await?;
 
@@ -48,7 +67,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             self.compare_index(
                 &mut findings,
                 &events_root.join(year).join(format!("index.{ext}")),
-                &render_year_index(year, &months, ext, embed)?,
+                &render_year_index(year, &months, &style)?,
             )
             .await?;
             for month in &months {
@@ -57,7 +76,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 self.compare_index(
                     &mut findings,
                     &shard.join(format!("index.{ext}")),
-                    &render_month_index(year, month, &ids, ext, embed)?,
+                    &render_month_index(year, month, &ids, &style)?,
                 )
                 .await?;
             }
@@ -463,6 +482,90 @@ mod tests {
                 b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"
             ))
             .exists()
+        );
+    }
+
+    /// Strip the root's `history` line and everything else about the store goes
+    /// quiet: descent into it is through that pointer, so the walk never enters
+    /// the subtree and reports nothing about it — not even an orphan. This is the
+    /// finding that exists because the silence is total.
+    fn unlink_the_store(dir: &Path) {
+        let root = read(dir, "index.md");
+        write(
+            dir,
+            "index.md",
+            &root
+                .lines()
+                .filter(|l| !l.starts_with("history:"))
+                .map(|l| format!("{l}\n"))
+                .collect::<String>(),
+        );
+    }
+
+    #[test]
+    fn a_store_the_root_stopped_declaring_is_reported_and_relinked() {
+        let dir = seed("check-unlinked");
+        capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+        unlink_the_store(&dir);
+
+        let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+        let unlinked = Finding::HistoryStoreUnlinked {
+            root: PathBuf::from("index.md"),
+            store: PathBuf::from("history/index.md"),
+        };
+        assert!(
+            findings.contains(&unlinked),
+            "a store nothing declares must not be silent: {findings:?}"
+        );
+        // Reported *first*: everything else about the store is about its contents,
+        // and a reader has to know prov cannot see it from the root at all.
+        assert_eq!(
+            findings.iter().position(|f| f == &unlinked),
+            Some(0),
+            "{findings:?}"
+        );
+        let text = unlinked.to_string();
+        assert!(
+            text.contains("history/index.md") && text.contains("index.md"),
+            "{text}"
+        );
+
+        // Metadata-only, and the pointer comes back spelled the way a bootstrap
+        // capture would have spelled it.
+        let fix = block_on(ws(&dir).suggest_fix(&unlinked)).unwrap().unwrap();
+        assert_eq!(
+            fix,
+            crate::Fix::LinkHistoryStore {
+                root: PathBuf::from("index.md"),
+                store: PathBuf::from("history/index.md"),
+            }
+        );
+        block_on(ws(&dir).apply_fix(&fix)).unwrap();
+        assert!(read(&dir, "index.md").contains("history: history/index.md"));
+        assert!(
+            !block_on(ws(&dir).check(Path::new("index.md")))
+                .unwrap()
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryStoreUnlinked { .. })),
+            "the fix has to actually retire the finding"
+        );
+    }
+
+    /// With the axis off, a leftover `history/` is not a loss — the workspace said
+    /// it wants no store, and a finding would be prov objecting to a directory the
+    /// user is entitled to leave lying around. Declaring `manual` is what makes a
+    /// missing pointer a defect rather than a preference.
+    #[test]
+    fn an_undeclared_store_is_not_a_finding_when_history_is_off() {
+        let dir = seed("check-unlinked-off");
+        capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+        unlink_the_store(&dir);
+
+        assert!(
+            !block_on(ws_history_off(&dir).check(Path::new("index.md")))
+                .unwrap()
+                .iter()
+                .any(|f| matches!(f, Finding::HistoryStoreUnlinked { .. }))
         );
     }
 }

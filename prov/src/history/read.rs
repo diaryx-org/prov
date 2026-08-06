@@ -15,20 +15,38 @@ use super::paths::*;
 use super::{EVENTS_DIR, HISTORY_DIR};
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
-    /// The extension the store's documents are authored with — the root
-    /// document's own content format, falling back to Markdown when the root is a
-    /// whole-file metadata document (which has no prose body to inherit).
-    pub(super) fn history_ext(&self, root_doc: &Path) -> &'static str {
-        crate::ContentFormat::from_extension(root_doc)
-            .unwrap_or(crate::ContentFormat::Markdown)
-            .extension()
+    /// The content format the store's documents are authored in — the root
+    /// document's own, falling back to Markdown when the root is a whole-file
+    /// metadata document (which has no prose body to inherit).
+    pub(super) fn history_content(&self, root_doc: &Path) -> crate::ContentFormat {
+        crate::ContentFormat::from_extension(root_doc).unwrap_or(crate::ContentFormat::Markdown)
     }
 
-    /// The fenced-frontmatter archetype the store's documents are authored in —
-    /// the workspace's own metadata format, so a fig workspace's history reads
-    /// like the rest of it.
+    /// The extension the store's documents are authored with.
+    pub(super) fn history_ext(&self, root_doc: &Path) -> &'static str {
+        self.history_content(root_doc).extension()
+    }
+
+    /// The fenced-frontmatter archetype the store's documents are authored in.
+    ///
+    /// Resolved from the workspace's **declared embedding** — the `(embed_style,
+    /// default_embed_format)` pair every other document prov authors goes
+    /// through — so a fig workspace's history reads like the rest of it, and an
+    /// HTML workspace's history is an HTML data island rather than a `;;;` fence
+    /// sitting in a `.html` file that no browser will render.
+    ///
+    /// Two styles have no fenced archetype and fall back to the format's plain
+    /// frontmatter carrier: `separate` (a whole-file sidecar, which an event
+    /// document cannot be — it has a prose body, and the manifest is the point of
+    /// it), and any `(style, format)` pair fig has no fence for. The fallback is
+    /// what keeps the store authored in *some* legible carrier rather than
+    /// failing the capture over a presentational choice.
     pub(super) fn history_embed(&self) -> Result<fig::EmbedType> {
-        match crate::document::frontmatter_carrier(self.default_embed_format()) {
+        let format = self.default_embed_format();
+        let carrier = crate::document::embed_carrier(self.embed_style(), format)
+            .filter(|c| matches!(c, MetaCarrier::Fenced(_)))
+            .unwrap_or_else(|| crate::document::frontmatter_carrier(format));
+        match carrier {
             MetaCarrier::Fenced(embed) => Ok(embed),
             // `frontmatter_carrier` only ever returns a fenced archetype.
             _ => Err(Error::Structure(
@@ -37,23 +55,55 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
     }
 
-    /// The store index document: the one the root's `history` pointer names, or —
-    /// when the root declares none yet — where the first capture will put it.
-    /// The `bool` is whether the store already exists.
-    pub(super) async fn history_store_index(&self, root_doc: &Path) -> Result<(PathBuf, bool)> {
-        Ok(match self.history_path(root_doc).await? {
-            Some(path) => (path, true),
-            None => (
-                PathBuf::from(HISTORY_DIR).join(format!("index.{}", self.history_ext(root_doc))),
-                false,
-            ),
+    /// How the store's documents are authored, resolved once: the extension they
+    /// get, the grammar their prose is written in, and the carrier their
+    /// frontmatter rides in.
+    ///
+    /// Carried together because they are one decision. Resolving them separately
+    /// is how the store came to write `.html` files holding Markdown bodies: the
+    /// extension followed the workspace and the body did not.
+    pub(super) fn history_authoring(&self, root_doc: &Path) -> Result<Authoring> {
+        Ok(Authoring {
+            ext: self.history_ext(root_doc).to_string(),
+            content: self.history_content(root_doc),
+            embed: self.history_embed()?,
         })
     }
 
-    /// The **capture set**: the live graph, minus prov's two byte-parking stores.
+    /// The store index document, and how it was found.
+    ///
+    /// The root's `history` pointer first. Failing that, the **conventional
+    /// path** is probed on disk — a store whose pointer a transport mangled out of
+    /// the root is still a store, and the alternative is that prov goes blind to
+    /// an intact safety net while a shell and `cp` can still recover from it.
+    /// Failing both, the path the first capture will bootstrap into, reported
+    /// [`Absent`](StoreLocation::Absent).
+    pub(super) async fn history_store_index(
+        &self,
+        root_doc: &Path,
+    ) -> Result<(PathBuf, StoreLocation)> {
+        if let Some(path) = self.history_path(root_doc).await? {
+            return Ok((path, StoreLocation::Declared));
+        }
+        let conventional =
+            PathBuf::from(HISTORY_DIR).join(format!("index.{}", self.history_ext(root_doc)));
+        let found = match self
+            .fs()
+            .try_exists(&self.root().join(&conventional))
+            .await?
+        {
+            true => StoreLocation::Conventional,
+            false => StoreLocation::Absent,
+        };
+        Ok((conventional, found))
+    }
+
+    /// The **capture set**: the live graph, minus prov's two byte-parking stores
+    /// and its one derived page.
     ///
     /// [`reachable_files`](crate::Workspace::reachable_files) — §8's bounded walk, the
-    /// same population `check` validates — with two exclusions, each load-bearing:
+    /// same population `check` validates — with **three** exclusions, each
+    /// load-bearing:
     ///
     /// - **`history/` itself.** It is reachable off the root, so a naive "capture
     ///   everything reachable" would capture the store inside the store: no
@@ -64,7 +114,6 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// - **`recyclebin/items/`.** Already unreached, and excluded even so, on
     ///   purpose: bytes the user has consigned to the bin should not be *newly*
     ///   retained by a routine capture.
-    ///
     /// - **The generated `about.md`.** It is *derived* — a pure function of the
     ///   configuration, which this same manifest captures — so parking its bytes
     ///   stores nothing that cannot be reproduced, and a new blob would be parked
@@ -115,8 +164,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// be able to hide an event that is sitting right there. A document that does
     /// not parse, or that carries no manifest, is skipped rather than fatal.
     pub async fn history_list(&self, root_doc: &Path) -> Result<Vec<Event>> {
-        let (store_index, exists) = self.history_store_index(root_doc).await?;
-        if !exists {
+        let (store_index, found) = self.history_store_index(root_doc).await?;
+        if !found.exists() {
             return Ok(Vec::new());
         }
         let (events, _) = self
@@ -203,8 +252,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// store yet). An error when `id` is not an event id at all, or when the
     /// document is sitting there but is not an event.
     pub async fn history_event(&self, root_doc: &Path, id: &str) -> Result<Option<Event>> {
-        let (store_index, exists) = self.history_store_index(root_doc).await?;
-        if !exists {
+        let (store_index, found) = self.history_store_index(root_doc).await?;
+        if !found.exists() {
             return Ok(None);
         }
         let path = event_path(&store_index, id, self.history_ext(root_doc))?;
@@ -323,6 +372,71 @@ mod tests {
     use super::super::support::*;
     use super::*;
     use crate::exec::block_on;
+
+    /// A root that has stopped declaring its store must not take the store with
+    /// it. The pointer is one line in one mutable file — the single most likely
+    /// thing for a transport to mangle — and it is the *only* declared way in.
+    #[test]
+    fn a_store_at_the_conventional_path_is_read_with_no_pointer_declaring_it() {
+        let dir = seed("read-unlinked");
+        capture(&dir, "2026-07-31T09:15:22.000000Z", Some("pre-sync"));
+        let before = event_ids(&dir);
+        assert_eq!(before.len(), 1);
+
+        // Exactly the damage: the `history` line, gone, everything else intact.
+        let root = read(&dir, "index.md");
+        write(
+            &dir,
+            "index.md",
+            &root
+                .lines()
+                .filter(|l| !l.starts_with("history:"))
+                .map(|l| format!("{l}\n"))
+                .collect::<String>(),
+        );
+        assert!(!read(&dir, "index.md").contains("history:"));
+
+        // Read verbs carry on. Recovery is never gated behind repairing the thing
+        // that broke — least of all on the machine that just suffered the damage.
+        assert_eq!(
+            event_ids(&dir),
+            before,
+            "an undeclared store is still a store"
+        );
+        let (store, found) = block_on(ws(&dir).history_store_index(Path::new("index.md"))).unwrap();
+        assert_eq!(found, StoreLocation::Conventional);
+        assert_eq!(store, PathBuf::from("history/index.md"));
+        // And the event is restorable, which is the whole point of still finding it.
+        assert!(
+            block_on(ws(&dir).history_event(Path::new("index.md"), &before[0]))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// Only the conventional path, never a search: a store the root declared
+    /// somewhere unusual and then stopped declaring is not recoverable by
+    /// guessing, and sweeping the tree for anything store-shaped is how a backup
+    /// copy gets adopted as the live one.
+    #[test]
+    fn discovery_probes_the_conventional_path_and_nowhere_else() {
+        let dir = seed("read-unconventional");
+        capture(&dir, "2026-07-31T09:15:22.000000Z", None);
+        std::fs::rename(dir.join("history"), dir.join("archive")).unwrap();
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- notes/a.md\n- notes/photo.jpg.yaml\n---\nroot\n",
+        );
+
+        let (_, found) = block_on(ws(&dir).history_store_index(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            found,
+            StoreLocation::Absent,
+            "a store at an undeclared, unconventional path is not found by guessing"
+        );
+        assert!(event_ids(&dir).is_empty());
+    }
 
     #[test]
     fn an_event_resolves_by_id_with_every_index_destroyed() {

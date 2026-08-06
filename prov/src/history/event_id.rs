@@ -203,6 +203,90 @@ mod tests {
     use super::super::support::entry;
     use super::*;
 
+    /// The canonical form (§4.1) is a **published contract**: a third party can
+    /// mint a conforming event id, which is a stronger property than being able
+    /// to read one, and it is the reason two devices converge on a filename
+    /// rather than conflicting.
+    ///
+    /// Every other test here goes through [`canonical_bytes`], so all of them
+    /// would keep passing if the spec and the implementation drifted apart. This
+    /// one spells the bytes out **by hand**, exactly as §4.1 words them —
+    /// tab-separated fields, `\n`-terminated lines, the empty `id` field for an
+    /// unregistered file, the `label` line carrying raw text and not the slug —
+    /// and hashes that. It is the only test in the crate that fails when the
+    /// document changes and the code does not, or the reverse.
+    ///
+    /// If it fails, do not "fix" it by regenerating the expected value: either
+    /// the code has drifted from the format documents, or the format has changed
+    /// and every event ever written under the old rule now has an id nothing can
+    /// re-derive.
+    #[test]
+    fn the_canonical_form_matches_the_spec_spelled_out_by_hand() {
+        let files = vec![
+            FileEntry {
+                path: "notes/foo.md".into(),
+                id: Some(crate::identity::Id("b7k2m".into())),
+                hash: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                    .into(),
+            },
+            FileEntry {
+                path: "notes/photo.jpg".into(),
+                id: None,
+                hash: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+                    .into(),
+            },
+        ];
+
+        // §4.1, transcribed. Note the `\t\t` on the second file line: an
+        // unregistered file's id is the *empty string*, so the line keeps the
+        // same four-field shape either way.
+        let by_hand = concat!(
+            "created\t2026-07-31T09:15:22.481903Z\n",
+            "trigger\tmanual\n",
+            "label\tpre-sync\n",
+            "parent\t2026-07-30-1804-nightly-8c1d55aa\n",
+            "file\tnotes/foo.md\tb7k2m\tsha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\n",
+            "file\tnotes/photo.jpg\t\tsha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae\n",
+        );
+
+        assert_eq!(
+            String::from_utf8(canonical_bytes(
+                "2026-07-31T09:15:22.481903Z",
+                TRIGGER_MANUAL,
+                Some("pre-sync"),
+                Some("2026-07-30-1804-nightly-8c1d55aa"),
+                &files,
+            ))
+            .unwrap(),
+            by_hand,
+            "the canonical form drifted from docs/history-format.md §4.1"
+        );
+
+        // And the id those bytes produce, pinned. `shasum -a 256` on the same
+        // bytes prints the same digest — the check a third party can run without
+        // this crate:
+        //
+        //   printf 'created\t…\n…' | shasum -a 256 | cut -c1-8
+        let digest = crate::fixity::digest(by_hand.as_bytes());
+        assert_eq!(
+            &digest["sha256:".len().."sha256:".len() + 8],
+            "21ae2ca1",
+            "the id digest changed — every event on disk keeps its old id"
+        );
+        assert_eq!(
+            mint_id(
+                "2026-07-31T09:15:22.481903Z",
+                TRIGGER_MANUAL,
+                Some("pre-sync"),
+                Some("2026-07-30-1804-nightly-8c1d55aa"),
+                &files,
+            )
+            .unwrap(),
+            "2026-07-31-0915-pre-sync-21ae2ca1",
+            "the id's shape is `<date>-<HHMM>[-<slug>]-<8 hex>` (§4)"
+        );
+    }
+
     #[test]
     fn the_id_stamp_reads_the_timestamp_and_survives_a_round_trip() {
         assert_eq!(id_stamp("2026-07-31T09:15:22Z").unwrap(), "2026-07-31-0915");

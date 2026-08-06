@@ -43,8 +43,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         retention: &Retention,
     ) -> Result<Pruned> {
         let root_doc = link::normalize(root_doc);
-        let (store_index, exists) = self.history_store_index(&root_doc).await?;
-        if !exists {
+        let (store_index, found) = self.history_store_index(&root_doc).await?;
+        if !found.exists() {
             return Ok(Pruned::default());
         }
         let (events, unreadable) = self
@@ -132,12 +132,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// needless merge surface.
     pub async fn history_prune(&mut self, root_doc: &Path, plan: &Pruned) -> Result<()> {
         let root_doc = link::normalize(root_doc);
-        let (store_index, exists) = self.history_store_index(&root_doc).await?;
-        if !exists || plan.is_empty() {
+        let (store_index, found) = self.history_store_index(&root_doc).await?;
+        if !found.exists() || plan.is_empty() {
             return Ok(());
         }
-        let ext = self.history_ext(&root_doc);
-        let embed = self.history_embed()?;
+        let style = self.history_authoring(&root_doc)?;
+        let ext = style.ext.as_str();
         let dropped: BTreeSet<&str> = plan.events.iter().map(String::as_str).collect();
         let events_root = store_dir(&store_index).join(EVENTS_DIR);
 
@@ -170,7 +170,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 self.stage_index_text(
                     &mut cs,
                     &index,
-                    render_month_index(&year, &month, &ids, ext, embed)?,
+                    render_month_index(&year, &month, &ids, &style)?,
                 )
                 .await?;
             }
@@ -183,7 +183,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             self.stage_index_text(
                 &mut cs,
                 &index,
-                render_year_index(&year, &surviving_months, ext, embed)?,
+                render_year_index(&year, &surviving_months, &style)?,
             )
             .await?;
         }
@@ -195,7 +195,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.stage_index_text(
             &mut cs,
             &store_index,
-            render_store_index(&surviving_years, ext, forgotten.as_deref(), embed)?,
+            render_store_index(&surviving_years, forgotten.as_deref(), &style)?,
         )
         .await?;
         self.commit(cs).await?;

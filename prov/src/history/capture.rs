@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::change::ChangeSet;
+use crate::content::transcode;
 use crate::error::Result;
 use crate::fs::Storage;
 use crate::index::IndexStore;
@@ -50,9 +51,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         label: Option<&str>,
     ) -> Result<Captured> {
         let root_doc = link::normalize(root_doc);
-        let ext = self.history_ext(&root_doc);
-        let embed = self.history_embed()?;
-        let (store_index, store_exists) = self.history_store_index(&root_doc).await?;
+        let style = self.history_authoring(&root_doc)?;
+        let ext = style.ext.as_str();
+        let (store_index, found) = self.history_store_index(&root_doc).await?;
         let label = label.map(str::trim).filter(|l| !l.is_empty());
 
         // Bootstrapping the store *edits the root* (it gains the `history`
@@ -60,9 +61,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // post-edit bytes. Otherwise the very first event would record a root
         // predating its own store — and restoring it exactly would strand the
         // store unreachable, which is the one thing a restore must never do.
-        let root_pointer = match store_exists {
-            true => None,
-            false => Some(self.history_pointer_text(&root_doc, &store_index).await?),
+        //
+        // A store found at the conventional path but *not* declared gets the same
+        // edit, which adopts it rather than bootstrapping a second one over the
+        // top: the pointer is what a lost root line took away, and capturing is
+        // exactly when to put it back.
+        let root_pointer = match found {
+            StoreLocation::Declared => None,
+            _ => Some(self.history_pointer_text(&root_doc, &store_index).await?),
         };
 
         // The manifest: one row per captured file, in manifest order — the
@@ -192,11 +198,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
             .describe()
         );
-        let event_text = crate::edit::reformat_block(&body, &map, embed)?;
+        let event_text =
+            crate::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
 
         let mut cs = self.change();
         cs.write(&event_rel, event_text);
-        self.stage_history_indexes(&mut cs, &store_index, &id, ext, embed)
+        self.stage_history_indexes(&mut cs, &store_index, &id, &style)
             .await?;
         if let Some(text) = root_pointer {
             cs.write(&root_doc, text);
@@ -225,9 +232,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         cs: &mut ChangeSet,
         store_index: &Path,
         id: &str,
-        ext: &str,
-        embed: fig::EmbedType,
+        style: &Authoring,
     ) -> Result<()> {
+        let ext = style.ext.as_str();
         let shard = shard_of(id)?;
         let (year, month) = shard_parts(&shard)?;
         let events_root = store_dir(store_index).join(EVENTS_DIR);
@@ -237,14 +244,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         ids.insert(id.to_string());
         cs.write(
             shard_dir.join(format!("index.{ext}")),
-            render_month_index(&year, &month, &ids, ext, embed)?,
+            render_month_index(&year, &month, &ids, style)?,
         );
 
         let mut months = self.event_months(&events_root.join(&year), ext).await?;
         months.insert(month.clone());
         cs.write(
             events_root.join(&year).join(format!("index.{ext}")),
-            render_year_index(&year, &months, ext, embed)?,
+            render_year_index(&year, &months, style)?,
         );
 
         let mut years = self.event_years(&events_root, ext).await?;
@@ -252,7 +259,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let forgotten = self.history_forgotten_link(store_index).await?;
         cs.write(
             store_index,
-            render_store_index(&years, ext, forgotten.as_deref(), embed)?,
+            render_store_index(&years, forgotten.as_deref(), style)?,
         );
         Ok(())
     }
@@ -330,6 +337,157 @@ mod tests {
     use super::*;
     use crate::exec::block_on;
     use crate::validate::Finding;
+
+    /// The event document's **bytes**, pinned whole.
+    ///
+    /// Event documents are immutable, so the format is a compatibility contract
+    /// that cannot be retrofitted — and every other test in this module reads a
+    /// capture back through prov's own parser, which means all of them would keep
+    /// passing if the writer and `docs/history-format.md` drifted apart together.
+    /// This is the one that reads the file as a *stranger* does: as text, compared
+    /// against what §3 says it should say.
+    ///
+    /// What it holds still, all from §3: the key order (`part_of`, `created`,
+    /// `trigger`, `label`, `parent`, `files`), six fractional digits on `created`
+    /// never trimmed (§3.2), rows sorted byte-wise by path (§3.1), `id` omitted
+    /// entirely rather than left empty when a document has none, `hash` spelled
+    /// `sha256:<64 hex>`, and **no `id` field on the event itself** (§3 — minting
+    /// one would make every capture rewrite the registry).
+    ///
+    /// If it fails, the question is which side is wrong. A deliberate format
+    /// change means updating §3 *and* accepting that stores in the field hold
+    /// documents written the old way.
+    #[test]
+    fn the_event_document_matches_the_format_spec_byte_for_byte() {
+        let dir = tempdir("capture-golden");
+        // One registered document and one unregistered payload, so the manifest
+        // exercises both row shapes; ids are minted from a seeded `Minter`, so
+        // `b0` below is deterministic rather than incidental.
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- notes/a.md\n---\nroot\n",
+        );
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n",
+        );
+
+        let Captured::Written { id, .. } =
+            capture(&dir, "2026-07-31T09:15:22.481903Z", Some("pre-sync"))
+        else {
+            panic!("the first capture must write an event");
+        };
+        let text = read(&dir, &format!("history/events/2026/07/{id}.md"));
+
+        // The root gained its `history` pointer in this same capture, and the
+        // manifest hashes the *post-edit* bytes — so these two digests are what a
+        // reader recomputing them off disk will get.
+        let root_hash = crate::fixity::digest(read(&dir, "index.md").as_bytes());
+        let note_hash = crate::fixity::digest(read(&dir, "notes/a.md").as_bytes());
+
+        let expected = format!(
+            "---\n\
+             part_of: '[July 2026](index.md)'\n\
+             created: 2026-07-31T09:15:22.481903Z\n\
+             trigger: manual\n\
+             label: pre-sync\n\
+             files:\n\
+             - path: index.md\n  \
+             hash: {root_hash}\n\
+             - path: notes/a.md\n  \
+             hash: {note_hash}\n\
+             ---\n\
+             # History — 2026-07-31 09:15 (pre-sync)\n\
+             \n\
+             Captured 2 file(s). This is the first event in the store.\n\
+             \n\
+             Roll the workspace back to this point with:\n\
+             \n    \
+             prov history-restore {id}\n"
+        );
+        assert_eq!(
+            text, expected,
+            "the event document drifted from docs/history-format.md §3"
+        );
+
+        // No `parent` line: this is the first event, and §3 omits an absent
+        // optional field rather than writing it empty. Same rule as `label`.
+        assert!(
+            !text.contains("parent:"),
+            "a first event has no parent to name"
+        );
+        // And the event carries no id of its own (§3), which is what keeps a
+        // capture from having to write `registry.md`.
+        assert!(
+            !text.contains("\nid:"),
+            "event documents carry no `id` field"
+        );
+    }
+
+    /// A capture in an HTML workspace has to write HTML — all three axes, not the
+    /// extension alone. The bug this pins was silent precisely because prov's own
+    /// parsers are lenient: a `.html` file holding `;;;`-delimited JSON and a
+    /// literal `# History` round-tripped through capture, `check` and `history-list`
+    /// without complaint, and only a browser (or any other tool) could tell.
+    #[test]
+    fn the_store_is_authored_in_the_workspaces_own_grammar_not_just_its_extension() {
+        let dir = tempdir("capture-html");
+        write(
+            &dir,
+            "index.html",
+            "<script type=\"application/json\">\n{\"title\": \"Home\"}\n</script>\n\n<h1>Home</h1>\n",
+        );
+        let mut w = ws_authoring(
+            &dir,
+            crate::document::EmbedStyle::HtmlScript,
+            fig::Format::Json,
+        );
+        let Captured::Written { id, .. } = block_on(w.history_capture(
+            Path::new("index.html"),
+            "2026-07-31T09:15:22.000000Z",
+            None,
+        ))
+        .unwrap() else {
+            panic!("the first capture must write an event");
+        };
+
+        for rel in [
+            "history/index.html".to_string(),
+            "history/events/2026/index.html".to_string(),
+            "history/events/2026/07/index.html".to_string(),
+            format!("history/events/2026/07/{id}.html"),
+        ] {
+            let text = read(&dir, &rel);
+            assert!(
+                text.starts_with("<script type=\"application/json\">"),
+                "{rel} does not carry the workspace's own embedding: {text}"
+            );
+            assert!(
+                !text.contains(";;;"),
+                "{rel} fell back to a fence this workspace never uses: {text}"
+            );
+            assert!(
+                text.contains("<h1>"),
+                "{rel} has no HTML heading — the body is still Markdown: {text}"
+            );
+            assert!(
+                !text.contains("\n# "),
+                "{rel} holds a literal Markdown heading: {text}"
+            );
+        }
+
+        // Still readable *by prov*, which the broken version also was — so this is
+        // the weaker half of the assertion, kept because a legibility fix that
+        // broke the round trip would be a worse bug than the one it fixed.
+        assert_eq!(
+            block_on(w.history_list(Path::new("index.html")))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn a_capture_bootstraps_the_store_and_captures_attachment_payloads() {
