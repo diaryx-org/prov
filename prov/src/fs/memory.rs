@@ -735,9 +735,11 @@ mod tests {
             caps.atomic_replace,
             "a single locked write is already atomic"
         );
-        assert!(
-            !caps.durable_sync,
-            "nothing here survives the process exiting"
+        assert_eq!(
+            caps.sync_guarantee,
+            super::super::SyncGuarantee::None,
+            "nothing here survives the process exiting, so there is not even an \
+             ordering worth promising against a crash"
         );
         assert!(
             !caps.native_transactions,

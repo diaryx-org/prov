@@ -99,7 +99,10 @@ pub use exec::block_on;
 pub use fig::ExtKind;
 pub use fig::Format;
 pub use fig_schema::FieldType;
-pub use fs::{Capabilities, DirEntry, FileType, InMemoryFs, Metadata, StdFs, Storage};
+pub use fs::{
+    Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, StdFs, Storage,
+    SyncGuarantee,
+};
 pub use history::{
     Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Presence, Pruned, RestoreOp,
     RestorePlan, Retention, Scope, StoreLocation, Subject, Version,

@@ -106,20 +106,34 @@ pub trait Storage {
         Capabilities::NONE
     }
 
-    /// Flush `path` — and the directory entry that names it — through to durable
-    /// storage, so once this returns the most recent write to `path` survives a
-    /// power loss. After a [`rename`](Storage::rename), syncing the destination
-    /// also makes the rename itself durable, because the parent directory is
-    /// flushed with it.
+    /// Flush `path` — and nothing else — to the strength `need` asks for.
+    ///
+    /// `path` names *one* object, and only that object is flushed. To make a
+    /// directory entry durable (the naming half of a create or a rename), sync
+    /// the directory itself: on a POSIX filesystem a directory is a thing that
+    /// can be opened and fsynced, and prov's own
+    /// [`write_atomic`](Storage::write_atomic) does exactly that after its
+    /// rename. Folding the parent into every call instead would flush twice as
+    /// much as any single step needs, and would leave the caller unable to say
+    /// which of the two it actually meant.
+    ///
+    /// `need` is the *weakest* guarantee that is still correct at the call site,
+    /// not a wish. [`Durability::Ordered`] asks only that everything written to
+    /// `path` before this call land before anything written after it — enough to
+    /// stop a rename overtaking the bytes it publishes, and on some platforms far
+    /// cheaper than the real thing. [`Durability::Durable`] asks that the bytes
+    /// survive power loss. A backend may always answer with something stronger
+    /// than it was asked for; it may never answer with something weaker.
     ///
     /// The default is a no-op, which is the *correct* behavior for any backend
-    /// whose [`capabilities`](Storage::capabilities) report `durable_sync:
-    /// false`: it cannot make the promise, so it must not pretend to. A backend
-    /// that can flush must both override this and report `durable_sync: true` —
-    /// the two always travel together.
-    fn sync(&self, path: &Path) -> impl Future<Output = io::Result<()>> {
+    /// whose [`capabilities`](Storage::capabilities) report
+    /// [`SyncGuarantee::None`]: it cannot make the promise, so it must not
+    /// pretend to. A backend that can flush must both override this and report
+    /// the strongest request it genuinely honors — the two always travel
+    /// together, and [`SyncGuarantee::satisfies`] is how a caller asks.
+    fn sync(&self, path: &Path, need: Durability) -> impl Future<Output = io::Result<()>> {
         async move {
-            let _ = path;
+            let _ = (path, need);
             Ok(())
         }
     }
@@ -129,16 +143,30 @@ pub trait Storage {
     /// of old and new bytes, and once this returns the new contents outlive a
     /// power loss.
     ///
-    /// The default composes the primitives into the standard protocol — write a
-    /// temporary sibling, [`sync`](Storage::sync) it so its bytes are on disk,
-    /// [`rename`](Storage::rename) it over the target (*this* is the atomic
-    /// instant), then `sync` the target so the rename is durable — whenever
-    /// [`capabilities`](Storage::capabilities) report `atomic_replace`. A backend
-    /// that cannot rename atomically falls back to a plain durable write, which
-    /// is *not* crash-atomic; a caller that needs the guarantee consults
-    /// `capabilities` and leans on the journal instead of pretending this call
-    /// gave it. A backend with a better native path — a transactional store —
-    /// overrides this method wholesale.
+    /// The default composes the primitives into the standard protocol, whenever
+    /// [`capabilities`](Storage::capabilities) report `atomic_replace`:
+    ///
+    /// 1. write the bytes to a temporary sibling;
+    /// 2. [`sync`](Storage::sync) that sibling [`Ordered`](Durability::Ordered),
+    ///    so the rename cannot be reordered ahead of the bytes it publishes;
+    /// 3. [`rename`](Storage::rename) it over the target — *this* is the atomic
+    ///    instant;
+    /// 4. `sync` the target's **parent directory** [`Durable`](Durability::Durable),
+    ///    which is what carries the rename itself through a power cut.
+    ///
+    /// Two flushes, and each one is load-bearing. Neither of the two this
+    /// protocol conspicuously does *not* do would buy anything. The bytes are
+    /// never flushed under their final name, because a rename does not move an
+    /// inode: the file the target now names is the very one step 2 flushed, and
+    /// nothing has been written to it since. The sibling's own directory entry is
+    /// never flushed either, because nobody is owed a temporary that survives a
+    /// crash — only the directory state *after* the rename is worth a barrier.
+    ///
+    /// A backend that cannot rename atomically falls back to a plain durable
+    /// write, which is *not* crash-atomic; a caller that needs the guarantee
+    /// consults `capabilities` and leans on the journal instead of pretending
+    /// this call gave it. A backend with a better native path — a transactional
+    /// store — overrides this method wholesale.
     ///
     /// The temporary is removed on any failure, so a torn attempt leaves the
     /// target exactly as it was and no litter behind. It is a dotted sibling in
@@ -151,8 +179,15 @@ pub trait Storage {
                 // No atomic rename to lean on: the honest best effort is a plain
                 // durable write. Not crash-atomic — and the caller was told so by
                 // `capabilities`, so this is a documented degrade, not a lie.
+                // Both the bytes and, if this call created the file, the entry
+                // naming them have to be flushed; there is no rename here to fold
+                // the second into.
                 self.write(path, contents).await?;
-                return self.sync(path).await;
+                self.sync(path, Durability::Durable).await?;
+                return match parent_dir(path) {
+                    Some(dir) => self.sync(dir, Durability::Durable).await,
+                    None => Ok(()),
+                };
             }
             let tmp = temp_sibling(path);
             // Any failure past this point must not leave the staging file behind,
@@ -160,12 +195,20 @@ pub trait Storage {
             // happens on `tmp` and only the rename names `path`.
             let staged = async {
                 self.write(&tmp, contents).await?;
-                self.sync(&tmp).await?;
+                self.sync(&tmp, Durability::Ordered).await?;
                 self.rename(&tmp, path).await
             }
             .await;
             match staged {
-                Ok(()) => self.sync(path).await,
+                // The bytes are already flushed and the rename has happened, so
+                // the directory entry is the last thing standing between this
+                // write and a power cut.
+                Ok(()) => match parent_dir(path) {
+                    Some(dir) => self.sync(dir, Durability::Durable).await,
+                    // A bare relative filename, whose directory is the process's
+                    // current one — not a path prov holds, nor one it owns.
+                    None => Ok(()),
+                },
                 Err(e) => {
                     // Best-effort cleanup: if even this fails the target is still
                     // untouched, so the atomicity promise holds regardless — the
@@ -234,8 +277,8 @@ impl<S: Storage + ?Sized> Storage for &S {
         (**self).capabilities()
     }
 
-    async fn sync(&self, path: &Path) -> io::Result<()> {
-        (**self).sync(path).await
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        (**self).sync(path, need).await
     }
 
     async fn write_atomic(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -297,8 +340,8 @@ impl<S: Storage + ?Sized> Storage for Arc<S> {
         (**self).capabilities()
     }
 
-    async fn sync(&self, path: &Path) -> io::Result<()> {
-        (**self).sync(path).await
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        (**self).sync(path, need).await
     }
 
     async fn write_atomic(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -326,11 +369,12 @@ pub struct Capabilities {
     /// instead be atomic by nature.
     pub atomic_replace: bool,
 
-    /// The backend can flush a write through to durable storage, so that once
-    /// [`Storage::sync`] returns the bytes survive a power cut: `fsync` on
-    /// `std::fs`, `FileSystemSyncAccessHandle.flush()` on OPFS, the implicit
-    /// durability of a committed IndexedDB transaction.
-    pub durable_sync: bool,
+    /// How strong the backend's [`Storage::sync`] is: whether it can flush at
+    /// all, and if so whether a flush merely orders writes or carries them
+    /// through a power cut. `fsync` on `std::fs`, `FileSystemSyncAccessHandle
+    /// .flush()` on OPFS, the implicit durability of a committed IndexedDB
+    /// transaction.
+    pub sync_guarantee: SyncGuarantee,
 
     /// The backend commits changes to *many* objects as one indivisible unit, so
     /// prov's own write-ahead journal would be redundant and it should defer
@@ -346,7 +390,7 @@ impl Capabilities {
     /// defensive branch unless a backend has explicitly earned a lighter one.
     pub const NONE: Self = Self {
         atomic_replace: false,
-        durable_sync: false,
+        sync_guarantee: SyncGuarantee::None,
         native_transactions: false,
     };
 
@@ -355,7 +399,7 @@ impl Capabilities {
     /// What [`StdFs`] reports on every platform prov targets.
     pub const LOCAL_FS: Self = Self {
         atomic_replace: true,
-        durable_sync: true,
+        sync_guarantee: SyncGuarantee::Durable,
         native_transactions: false,
     };
 
@@ -363,18 +407,69 @@ impl Capabilities {
     /// the backend's single lock for its whole duration, so one write already
     /// swaps old bytes for new as one indivisible step — no separate
     /// temp-then-rename dance is needed for `atomic_replace` to be true. But
-    /// nothing here is backed by anything other than process memory, so
-    /// `durable_sync` is false: there is nothing to flush, and the entire
-    /// store evaporates the instant the process exits. `native_transactions`
+    /// nothing here is backed by anything other than process memory, so its
+    /// `sync_guarantee` is [`SyncGuarantee::None`]: there is nothing to flush,
+    /// and the entire store evaporates the instant the process exits — it cannot
+    /// even promise ordering against a crash it will not survive.
+    /// `native_transactions`
     /// is false too — the lock makes each *single* call atomic, not a batch of
     /// several calls committed together, so a multi-file change set still
     /// needs prov's own journal over this backend exactly as it would over a
     /// real filesystem.
     pub const IN_MEMORY: Self = Self {
         atomic_replace: true,
-        durable_sync: false,
+        sync_guarantee: SyncGuarantee::None,
         native_transactions: false,
     };
+}
+
+/// What a caller needs from one [`Storage::sync`] call — the *weakest* guarantee
+/// that is still correct at that point, so that a backend able to serve it
+/// cheaply is free to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Durability {
+    /// Everything written to the path before this call must land before anything
+    /// written after it. It says nothing about *when*: a crash may still lose
+    /// the lot, only never a suffix without its prefix. This is all
+    /// [`Storage::write_atomic`] needs from its staging flush — the rename must
+    /// not be seen before the bytes it publishes — and on Apple platforms it is
+    /// the difference between a barrier and draining the drive's write cache.
+    Ordered,
+    /// Once the call returns, the bytes survive power loss.
+    Durable,
+}
+
+/// How strong a backend's [`Storage::sync`] actually is — the standing answer to
+/// a [`Durability`] request, declared once in [`Capabilities`] rather than
+/// discovered per call.
+///
+/// Deliberately three-valued rather than the "can this backend flush?" boolean
+/// it replaces, because that question has a common and useful middle answer it
+/// could not express: a backend that orders writes against each other without
+/// paying for a device-wide cache drain. Offered only `true` and `false`, such a
+/// backend has to either overstate — claiming a durability it does not deliver —
+/// or understate, claiming it cannot flush at all when ordering is precisely
+/// what [`Storage::write_atomic`] asks it for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SyncGuarantee {
+    /// `sync` does nothing: an in-memory store, or a port with no flush
+    /// primitive under it to call.
+    None,
+    /// `sync` orders writes against each other, but does not promise any of them
+    /// outlives a power cut.
+    Ordered,
+    /// `sync` flushes through to durable storage.
+    Durable,
+}
+
+impl SyncGuarantee {
+    /// Whether a backend making this guarantee can honor `need`.
+    pub const fn satisfies(self, need: Durability) -> bool {
+        match need {
+            Durability::Ordered => !matches!(self, SyncGuarantee::None),
+            Durability::Durable => matches!(self, SyncGuarantee::Durable),
+        }
+    }
 }
 
 /// The temporary sibling [`Storage::write_atomic`]'s default protocol stages a
@@ -382,6 +477,15 @@ impl Capabilities {
 /// target's own directory: dotted and suffixed so it reads as plainly prov's
 /// and will not collide with a real document, and a *sibling* so the rename that
 /// follows never crosses a filesystem boundary.
+/// The directory holding `path`, when there is one to name. `Path::parent`
+/// answers `Some("")` for a bare relative filename like `index.md` — the
+/// process's current directory, which prov neither holds a path to nor owns —
+/// and that empty path is not something a backend can open, so it is folded in
+/// with "no parent" here rather than at each call site.
+fn parent_dir(path: &Path) -> Option<&Path> {
+    path.parent().filter(|p| !p.as_os_str().is_empty())
+}
+
 fn temp_sibling(path: &Path) -> PathBuf {
     let name = path
         .file_name()
@@ -542,38 +646,40 @@ impl Storage for StdFs {
         Capabilities::LOCAL_FS
     }
 
-    async fn sync(&self, path: &Path) -> io::Result<()> {
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        // `fsync` is the only flush in the standard library, and it is the strong
+        // one — so both requests are answered with it. Answering `Ordered` more
+        // cheaply means a platform-specific primitive (`F_BARRIERFSYNC` on Apple,
+        // `sync_file_range` on Linux) and the `libc` dependency that comes with
+        // it; a port that wants the cheaper answer can wrap this one and say so
+        // in its own `capabilities`, which is exactly what `SyncGuarantee` is for.
+        let _ = need;
         sync_path(path)
     }
 }
 
-/// Flush `path`'s data and the directory entry naming it, so a preceding write or
-/// rename is durable. The two-step fsync (file, then parent directory) is what
-/// makes [`Storage::write_atomic`]'s rename survive a power cut, and it is also
-/// the one place a real OS difference lives, so it is quarantined behind the port
-/// here rather than leaking up into the engine.
+/// Flush exactly `path` — file or directory — so a preceding write or rename to
+/// it is durable. The one place a real OS difference lives, quarantined behind
+/// the port here rather than leaking up into the engine.
 fn sync_path(path: &Path) -> io::Result<()> {
-    // Flush the file itself. A fresh read handle is enough: fsync acts on the
-    // inode, not the descriptor, so it flushes writes made through any handle.
-    // A path that does not exist (a fallback write that failed before creating
-    // it) has nothing to flush and is not an error.
+    // A fresh read handle is enough: fsync acts on the inode, not the descriptor,
+    // so it flushes writes made through any handle. A path that does not exist (a
+    // fallback write that failed before creating it) has nothing to flush and is
+    // not an error.
+    //
+    // Opening a *directory* for reading and fsyncing it — how
+    // [`Storage::write_atomic`] makes its rename durable — is a POSIX facility.
+    // Windows has no equivalent (`MoveFileEx`'s durability is a separate story),
+    // and rejects the open outright, so there the directory step is skipped
+    // rather than faked.
+    #[cfg(not(unix))]
+    if path.is_dir() {
+        return Ok(());
+    }
     match std::fs::File::open(path) {
         Ok(file) => file.sync_all()?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
-    }
-    // Flush the parent directory so a *create* or *rename* — a change to the
-    // directory, not the file — is itself durable. This is a POSIX facility:
-    // a directory can be opened and fsynced. On Windows a directory handle
-    // cannot be fsynced this way (and `MoveFileEx`'s durability is a separate
-    // story), so the step is compiled out there rather than faked.
-    #[cfg(unix)]
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        match std::fs::File::open(parent) {
-            Ok(dir) => dir.sync_all()?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
     }
     Ok(())
 }
@@ -675,8 +781,8 @@ impl Storage for FailAtWrite {
     fn capabilities(&self) -> Capabilities {
         Capabilities::LOCAL_FS
     }
-    async fn sync(&self, path: &Path) -> io::Result<()> {
-        StdFs.sync(path).await
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        StdFs.sync(path, need).await
     }
 }
 
@@ -685,8 +791,8 @@ impl Storage for FailAtWrite {
 /// guarantee a unit test cannot check by actually crashing. It reports whatever
 /// [`Capabilities`] it is built with, and never overrides
 /// [`write_atomic`](Storage::write_atomic), so a test observes the default
-/// protocol's own internal ordering (write temp → sync temp → rename → sync
-/// target) rather than a substitute.
+/// protocol's own internal ordering (write temp → sync temp → rename → sync the
+/// target's directory) rather than a substitute.
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct RecordingFs {
@@ -701,7 +807,10 @@ pub(crate) struct RecordingFs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FsEvent {
     Write(PathBuf),
-    Sync(PathBuf),
+    /// Carries the strength asked for, not just the path: which of the protocol's
+    /// two flushes merely orders and which is meant to outlive a power cut is
+    /// itself part of the protocol under test.
+    Sync(PathBuf, Durability),
     Rename(PathBuf, PathBuf),
     Remove(PathBuf),
 }
@@ -773,11 +882,11 @@ impl Storage for RecordingFs {
     fn capabilities(&self) -> Capabilities {
         self.caps
     }
-    async fn sync(&self, path: &Path) -> io::Result<()> {
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
         self.log
             .borrow_mut()
-            .push(FsEvent::Sync(path.to_path_buf()));
-        StdFs.sync(path).await
+            .push(FsEvent::Sync(path.to_path_buf(), need));
+        StdFs.sync(path, need).await
     }
 }
 
@@ -821,8 +930,8 @@ impl Storage for FailingRename {
     fn capabilities(&self) -> Capabilities {
         Capabilities::LOCAL_FS
     }
-    async fn sync(&self, path: &Path) -> io::Result<()> {
-        StdFs.sync(path).await
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        StdFs.sync(path, need).await
     }
 }
 
@@ -892,8 +1001,21 @@ mod tests {
         // not native transactions — the journal's job, not the filesystem's.
         assert_eq!(StdFs.capabilities(), Capabilities::LOCAL_FS);
         assert!(StdFs.capabilities().atomic_replace);
-        assert!(StdFs.capabilities().durable_sync);
+        assert_eq!(StdFs.capabilities().sync_guarantee, SyncGuarantee::Durable);
         assert!(!StdFs.capabilities().native_transactions);
+    }
+
+    #[test]
+    fn a_guarantee_answers_only_the_requests_it_can_keep() {
+        // The whole point of the three-valued guarantee: the middle one can serve
+        // `write_atomic`'s staging flush without being able to serve its final
+        // one, which a boolean had no way to say.
+        assert!(!SyncGuarantee::None.satisfies(Durability::Ordered));
+        assert!(!SyncGuarantee::None.satisfies(Durability::Durable));
+        assert!(SyncGuarantee::Ordered.satisfies(Durability::Ordered));
+        assert!(!SyncGuarantee::Ordered.satisfies(Durability::Durable));
+        assert!(SyncGuarantee::Durable.satisfies(Durability::Ordered));
+        assert!(SyncGuarantee::Durable.satisfies(Durability::Durable));
     }
 
     #[test]
@@ -909,7 +1031,7 @@ mod tests {
             Capabilities::NONE,
             Capabilities {
                 atomic_replace: false,
-                durable_sync: false,
+                sync_guarantee: SyncGuarantee::None,
                 native_transactions: false
             }
         );
@@ -923,8 +1045,15 @@ mod tests {
         // checks the *protocol* that makes a crash survivable instead: the new
         // bytes are written and flushed to a *temporary* file, and only then
         // renamed over the target — so a crash at any instant leaves the target
-        // wholly old or wholly new, never spliced — and the target is flushed
-        // last, which is what makes the rename itself durable.
+        // wholly old or wholly new, never spliced — and the *directory* is
+        // flushed last, which is what makes the rename itself durable.
+        //
+        // The two flushes and their two strengths are the assertion. A staging
+        // flush weaker than `Ordered` would let the rename be seen before the
+        // bytes it publishes; a third flush, of the target under its final name,
+        // would flush an inode nothing has written to since — the waste this
+        // protocol was tightened to drop, and the reason the exact event list is
+        // pinned rather than merely searched for the steps it ought to contain.
         let root = tmp("protocol");
         std::fs::write(root.join("doc.md"), "old").unwrap();
         let fs = RecordingFs::local();
@@ -939,9 +1068,9 @@ mod tests {
             fs.events(),
             vec![
                 FsEvent::Write(temp.clone()),
-                FsEvent::Sync(temp.clone()),
+                FsEvent::Sync(temp.clone(), Durability::Ordered),
                 FsEvent::Rename(temp.clone(), target.clone()),
-                FsEvent::Sync(target.clone()),
+                FsEvent::Sync(root.clone(), Durability::Durable),
             ],
             "the atomic-replace protocol ran out of order"
         );
@@ -999,7 +1128,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
         assert_eq!(
             fs.events(),
-            vec![FsEvent::Write(target.clone()), FsEvent::Sync(target)],
+            vec![
+                FsEvent::Write(target.clone()),
+                FsEvent::Sync(target, Durability::Durable),
+                // No rename to fold it into, so the entry naming a *newly created*
+                // file needs a flush of its own — the one case where the caller,
+                // not `sync`, has to ask for the directory.
+                FsEvent::Sync(root.clone(), Durability::Durable),
+            ],
             "the fallback must write the target directly, with no staging rename"
         );
         assert!(!root.join(".doc.md.prov-tmp").exists());
@@ -1012,6 +1148,15 @@ mod tests {
         // A fallback write that failed before creating the file leaves nothing to
         // flush; asking to sync it is a no-op, not a failure.
         let root = tmp("sync-missing");
-        block_on(StdFs.sync(&root.join("never-created.md"))).unwrap();
+        block_on(StdFs.sync(&root.join("never-created.md"), Durability::Durable)).unwrap();
+    }
+
+    #[test]
+    fn sync_flushes_a_directory_as_readily_as_a_file() {
+        // `write_atomic` makes its rename durable by syncing the directory, so a
+        // directory has to be something `sync` accepts rather than something it
+        // reaches only via a file's parent.
+        let root = tmp("sync-dir");
+        block_on(StdFs.sync(&root, Durability::Durable)).unwrap();
     }
 }

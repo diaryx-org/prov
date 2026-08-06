@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use prov::fs::{DirEntry, Metadata};
 use prov::{
-    Capabilities, ChangeSet, Discovery, Error, InMemoryFs, InMemoryIndex, Minter, RelationSet,
-    StdFs, Storage, Workspace, block_on,
+    Capabilities, ChangeSet, Discovery, Durability, Error, InMemoryFs, InMemoryIndex, Minter,
+    RelationSet, StdFs, Storage, Workspace, block_on,
 };
 
 fn tmp(name: &str) -> PathBuf {
@@ -274,8 +274,8 @@ impl Storage for DoubleFault {
     fn capabilities(&self) -> Capabilities {
         Capabilities::LOCAL_FS
     }
-    async fn sync(&self, path: &Path) -> io::Result<()> {
-        StdFs.sync(path).await
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        StdFs.sync(path, need).await
     }
 }
 
