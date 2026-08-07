@@ -473,7 +473,7 @@ fn rewrite_body_inbound(text: &str, body: &str, source: &Path, from: &Path, to: 
     let mut new_body = body.to_string();
     let mut changed = false;
     for bl in link::scan_body_links(source, body).into_iter().rev() {
-        if bl.id_target().is_some() || bl.link.is_external() {
+        if !bl.is_path_target() {
             continue;
         }
         if link::resolve(source, &bl.link.target).as_path() != from {

@@ -144,14 +144,50 @@ impl Link {
         self.target.contains("://") || self.target.starts_with("mailto:")
     }
 
+    /// What this link's `id:`-scheme target names — local, foreign, or
+    /// malformed. `None` when the target carries no id scheme at all (a path,
+    /// an alias, a URL).
+    pub fn id_ref(&self) -> Option<IdRef> {
+        strip_id_scheme(&self.target).map(parse_id_body)
+    }
+
     /// The stable ID this link names, when the target uses the `id:<id>`
     /// scheme (or the legacy `colophon:<id>` spelling) — the
     /// location-independent alternative to a relative path. Such targets
     /// resolve through the workspace's ID registry, never against the
     /// filesystem, and are deliberately *not* rewritten by moves: staying valid
     /// across moves is their entire point.
+    ///
+    /// **Local ids only.** A cross-workspace `id:<workspace>/<id>` yields
+    /// `None`, because the registry this would be resolved against is not the
+    /// one that issued the id — see [`id_ref`](Self::id_ref). Callers asking
+    /// "must a move leave this alone?" want [`is_path_target`](Self::is_path_target),
+    /// which covers every id form.
     pub fn id_target(&self) -> Option<crate::identity::Id> {
-        strip_id_scheme(&self.target).map(|id| crate::identity::Id(id.to_string()))
+        match self.id_ref() {
+            Some(IdRef::Local(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The workspace and id this link names, when it is a cross-workspace
+    /// reference (`id:<workspace>/<id>`).
+    pub fn foreign_target(&self) -> Option<(String, crate::identity::Id)> {
+        match self.id_ref() {
+            Some(IdRef::Foreign { workspace, id }) => Some((workspace, id)),
+            _ => None,
+        }
+    }
+
+    /// Whether this link's target is a **path** — the only kind that says where
+    /// its target lives, and so the only kind a move may rewrite.
+    ///
+    /// False for an external URL and for every `id:` reference alike (local,
+    /// foreign, and malformed): none of them encodes a location, so
+    /// re-relativizing one could only damage it. This is the predicate the
+    /// rename, re-relativize and restyle passes filter on.
+    pub fn is_path_target(&self) -> bool {
+        !self.is_external() && self.id_ref().is_none()
     }
 }
 
@@ -485,6 +521,68 @@ pub fn strip_id_scheme(target: &str) -> Option<&str> {
 /// Render an ID as a link target (`id:<id>`).
 pub fn id_target(id: &crate::identity::Id) -> String {
     format!("{ID_SCHEME}{id}")
+}
+
+/// The character separating the workspace qualifier from the id in a
+/// cross-workspace reference (`id:<workspace>/<id>`).
+pub const WORKSPACE_SEPARATOR: char = '/';
+
+/// Render a cross-workspace reference as a link target (`id:<workspace>/<id>`).
+pub fn foreign_id_target(workspace: &str, id: &crate::identity::Id) -> String {
+    format!("{ID_SCHEME}{workspace}{WORKSPACE_SEPARATOR}{id}")
+}
+
+/// What an `id:`-scheme target names.
+///
+/// The scheme carries three distinguishable things, and keeping them apart is
+/// the whole point: a reference prov can resolve, one it deliberately cannot,
+/// and one that is broken. See `docs/reference-styles.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdRef {
+    /// `id:<id>` — a document in *this* workspace, resolved through the registry.
+    Local(crate::identity::Id),
+    /// `id:<workspace>/<id>` — a document in the workspace named `workspace`.
+    ///
+    /// prov resolves this only when `workspace` is the reading workspace's own
+    /// [`workspace_id`](crate::WorkspaceConfig::workspace_id), in which case it
+    /// *is* local and is treated as such. Any other name is somewhere prov
+    /// cannot see: the library holds no map from a workspace name to a location
+    /// (that is a fact about a device, not about an archive), so the reference is
+    /// carried, never rewritten, and never reported broken.
+    Foreign {
+        /// The workspace qualifier, exactly as written.
+        workspace: String,
+        /// The id, exactly as written. **Not** check-verified: the foreign
+        /// workspace owns its id space and need not be a prov workspace at all
+        /// (a diaryx ARK blade is a different length and alphabet), so applying
+        /// prov's check character here would reject valid references.
+        id: crate::identity::Id,
+    },
+    /// The `id:` scheme with a body that is no reference at all — an empty half
+    /// (`id:`, `id:/x`, `id:ws/`) or more than one separator (`id:a/b/c`).
+    ///
+    /// Deliberately its own case rather than falling through to a path: the
+    /// author wrote `id:`, so silently resolving the text as a filename would
+    /// turn a typo into a dangling path and hide what actually went wrong.
+    Malformed,
+}
+
+/// Parse the body of an `id:`-scheme target (the text after the scheme).
+fn parse_id_body(body: &str) -> IdRef {
+    let Some((workspace, id)) = body.split_once(WORKSPACE_SEPARATOR) else {
+        return if body.is_empty() {
+            IdRef::Malformed
+        } else {
+            IdRef::Local(crate::identity::Id(body.to_string()))
+        };
+    };
+    if workspace.is_empty() || id.is_empty() || id.contains(WORKSPACE_SEPARATOR) {
+        return IdRef::Malformed;
+    }
+    IdRef::Foreign {
+        workspace: workspace.to_string(),
+        id: crate::identity::Id(id.to_string()),
+    }
 }
 
 /// The syntactic wrapper a reference is written in — the first of the two style
@@ -871,6 +969,12 @@ impl BodyLink {
     pub fn id_target(&self) -> Option<crate::identity::Id> {
         self.link.id_target()
     }
+
+    /// Whether this link's target is a path — [`Link::is_path_target`] on the
+    /// inner link. The predicate the body-rewrite passes filter on.
+    pub fn is_path_target(&self) -> bool {
+        self.link.is_path_target()
+    }
 }
 
 /// Scan `body` for **every** link a move or a check must account for — Obsidian
@@ -1140,6 +1244,93 @@ mod tests {
         assert!(Link::parse("https://example.com/x").is_external());
         assert!(Link::parse("[me](mailto:a@b.c)").is_external());
         assert!(!Link::parse("docs/design.md").is_external());
+    }
+
+    #[test]
+    fn id_refs_split_into_local_foreign_and_malformed() {
+        use crate::identity::Id;
+        let r = |t: &str| Link::parse(t).id_ref();
+        assert_eq!(r("id:ajp7eq"), Some(IdRef::Local(Id("ajp7eq".into()))));
+        assert_eq!(
+            r("id:notes/ajp7eq"),
+            Some(IdRef::Foreign {
+                workspace: "notes".into(),
+                id: Id("ajp7eq".into()),
+            })
+        );
+        // The legacy scheme carries a qualifier just as well — an old workspace
+        // gains cross-workspace references without a rewrite.
+        assert_eq!(
+            r("colophon:notes/ajp7eq"),
+            Some(IdRef::Foreign {
+                workspace: "notes".into(),
+                id: Id("ajp7eq".into()),
+            })
+        );
+        // Every way the scheme can be present but the reference absent.
+        for bad in ["id:", "id:/x", "id:ws/", "id:a/b/c"] {
+            assert_eq!(r(bad), Some(IdRef::Malformed), "{bad}");
+        }
+        // No scheme at all is not an id ref — it is a path or an alias.
+        assert_eq!(r("docs/design.md"), None);
+        assert_eq!(r("https://example.com/x"), None);
+    }
+
+    #[test]
+    fn a_foreign_id_is_not_a_local_id() {
+        // The distinction that keeps a foreign reference from being looked up in
+        // the wrong registry: `id_target` is *local ids only*.
+        let foreign = Link::parse("id:notes/ajp7eq");
+        assert_eq!(foreign.id_target(), None);
+        assert_eq!(
+            foreign.foreign_target(),
+            Some(("notes".into(), crate::identity::Id("ajp7eq".into())))
+        );
+        let local = Link::parse("id:ajp7eq");
+        assert_eq!(
+            local.id_target(),
+            Some(crate::identity::Id("ajp7eq".into()))
+        );
+        assert_eq!(local.foreign_target(), None);
+    }
+
+    #[test]
+    fn only_paths_are_path_targets() {
+        // The predicate every rewrite pass filters on. A move may rewrite the
+        // first group and must leave the second alone — including the malformed
+        // id, which is a broken reference, not a filename to re-relativize.
+        for path in ["docs/design.md", "/a.md", "../b.md", "My Note"] {
+            assert!(Link::parse(path).is_path_target(), "{path}");
+        }
+        for stable in [
+            "id:ajp7eq",
+            "id:notes/ajp7eq",
+            "colophon:notes/ajp7eq",
+            "id:a/b/c",
+            "https://example.com/x",
+            "mailto:a@b.c",
+        ] {
+            assert!(!Link::parse(stable).is_path_target(), "{stable}");
+        }
+    }
+
+    #[test]
+    fn foreign_targets_round_trip_through_rendering() {
+        let target = foreign_id_target("notes", &crate::identity::Id("ajp7eq".into()));
+        assert_eq!(target, "id:notes/ajp7eq");
+        assert_eq!(
+            Link::parse(&target).foreign_target(),
+            Some(("notes".into(), crate::identity::Id("ajp7eq".into())))
+        );
+        // Through a labeled wikilink too, since that is how diaryx would author
+        // one — the wrapper is orthogonal to the addressing.
+        let wl = Link::parse("[[id:notes/ajp7eq|My Note]]");
+        assert_eq!(wl.label.as_deref(), Some("My Note"));
+        assert_eq!(
+            wl.foreign_target(),
+            Some(("notes".into(), crate::identity::Id("ajp7eq".into())))
+        );
+        assert_eq!(wl.render(), "[[id:notes/ajp7eq|My Note]]");
     }
 
     #[test]

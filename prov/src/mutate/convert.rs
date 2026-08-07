@@ -295,10 +295,7 @@ fn restyle_frontmatter_links(
     let mut editor = MetaEditor::open(text, carrier)?;
     let restyle = |raw: &str| -> Option<String> {
         let link = Link::parse(raw);
-        if link.is_external()
-            || link.id_target().is_some()
-            || crate::title::is_alias_shaped(&link.target)
-        {
+        if !link.is_path_target() || crate::title::is_alias_shaped(&link.target) {
             return None;
         }
         let resolved = link::resolve(file, &link.target);
@@ -354,10 +351,7 @@ fn restyle_body_links(
     let mut cursor = 0;
     let mut rewrote = false;
     for bl in link::scan_body_links(file, body) {
-        if bl.id_target().is_some()
-            || bl.link.is_external()
-            || crate::title::is_alias_shaped(&bl.link.target)
-        {
+        if !bl.is_path_target() || crate::title::is_alias_shaped(&bl.link.target) {
             continue;
         }
         let resolved = link::resolve(file, &bl.link.target);

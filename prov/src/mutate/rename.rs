@@ -230,7 +230,7 @@ fn rerelativize(
         };
         let rewrite = |raw: &str| -> Option<String> {
             let target = Link::parse(raw);
-            if target.is_external() || target.id_target().is_some() {
+            if !target.is_path_target() {
                 return None;
             }
             let resolved = link::resolve(from, &target.target);
@@ -287,7 +287,7 @@ fn rerelativize_body_links(text: &str, body: &str, from: &Path, to: &Path) -> St
         // ID-form (stable by construction) and external targets stay put; the
         // text between `cursor` and this span — including any such skipped
         // link — is copied verbatim by the next span's push (or the tail).
-        if bl.id_target().is_some() || bl.link.is_external() {
+        if !bl.is_path_target() {
             continue;
         }
         let resolved = link::resolve(from, &bl.link.target);
@@ -417,6 +417,49 @@ mod tests {
             read(&dir, "index.md").contains("sub/mid.md"),
             "parent retargeted"
         );
+    }
+
+    #[test]
+    fn rename_leaves_cross_workspace_references_exactly_as_written() {
+        // A move re-relativizes what says where it lives. A cross-workspace
+        // reference does not: the qualifier names a workspace, not a directory,
+        // so re-relativizing one would turn a valid reference into a path into
+        // nowhere. Both carriers — frontmatter relation and body prose — and
+        // both wrappers.
+        let dir = tempdir("foreign-survives-rename");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- mid.md\n---\n",
+        );
+        write(
+            &dir,
+            "mid.md",
+            "---\npart_of: index.md\nlinks:\n- id:notes/ajp7eq\n- '[Their Note](id:diaryx/xk4m2p)'\n---\n\
+             See [[id:notes/ajp7eq|Their Note]] and [that](id:diaryx/xk4m2p), plus [the leaf](leaf.md).\n",
+        );
+        write(&dir, "leaf.md", "---\ntitle: Leaf\n---\n");
+
+        block_on(ws(&dir).rename(Path::new("mid.md"), Path::new("sub/mid.md"))).unwrap();
+
+        let mid = read(&dir, "sub/mid.md");
+        // Byte-identical, in every position it appeared.
+        assert!(mid.contains("- id:notes/ajp7eq"), "frontmatter bare: {mid}");
+        assert!(
+            mid.contains("[Their Note](id:diaryx/xk4m2p)"),
+            "frontmatter labeled: {mid}"
+        );
+        assert!(
+            mid.contains("[[id:notes/ajp7eq|Their Note]]"),
+            "body wikilink: {mid}"
+        );
+        assert!(
+            mid.contains("[that](id:diaryx/xk4m2p)"),
+            "body markdown: {mid}"
+        );
+        // The ordinary path link beside them still moved, so the pass ran at all
+        // — without this the test would pass on a rename that did nothing.
+        assert!(mid.contains("[the leaf](../leaf.md)"), "control: {mid}");
     }
 
     #[test]
