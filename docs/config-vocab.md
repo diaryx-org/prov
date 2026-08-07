@@ -114,6 +114,7 @@ prov:
       type: date              # a type alone is a complete declaration
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
+  workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous)
 
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
   identity: lazy              # none (a.k.a. off) | lazy | eager
@@ -126,8 +127,8 @@ prov:
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
-`id_storage: both`, `updated: ""`, `identity: lazy`, `fixity: attachments`,
-`recycle_bin: true`, `history: off`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
+`id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
+`fixity: attachments`, `recycle_bin: true`, `history: off`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content). The `spanning`, relation-definition

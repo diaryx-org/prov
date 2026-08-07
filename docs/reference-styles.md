@@ -104,6 +104,91 @@ Resolution outcomes (`Workspace::resolve_link_with`, threaded through `tree` and
 Only *alias-shaped* targets (a bare name — no path separator, no extension) are
 looked up; paths and `id:` targets are never diverted.
 
+## Across workspaces
+
+A reference can name a document in *another* workspace by qualifying the id with
+that workspace's name:
+
+```
+id:notes/97jx77t                       # bare
+[Recipe Index](id:notes/97jx77t)       # markdown
+[[id:notes/97jx77t|Recipe Index]]      # wikilink, labeled
+```
+
+The qualifier is the target workspace's own `workspace_id` — the one piece of
+this that is genuinely a fact about an archive, so the one piece that lives in
+its config (`docs/config-vocab.md`). A workspace with no name is **anonymous**:
+it can hold foreign references, but no reference can be recognized as pointing
+back at it. The name may not be empty or contain `/`, `:` or whitespace, because
+it has to survive being written in the position above; a value that cannot is
+reported (`MalformedWorkspaceId`) and ignored rather than half-honored.
+
+### What prov does, and where it stops
+
+prov owns the **grammar**; it does not own **resolution**. A qualified reference
+resolves to `Target::Foreign` / `Resolution::Foreign` and stops there:
+
+- **Never rewritten.** A move re-relativizes only path targets
+  (`Link::is_path_target`), and a qualifier names a workspace, not a directory.
+  Re-relativizing one could only damage it.
+- **Never reported broken.** `check` has no evidence about a workspace it cannot
+  see. A finding raised on no evidence is a false positive on *every* such
+  reference, which every host would then have to filter back out — and a `check`
+  that must be filtered is one nobody reads.
+- **Never check-verified.** The foreign workspace owns its id space and need not
+  be a prov workspace at all: a diaryx ARK blade is a different length and
+  alphabet, so applying prov's check character would reject valid references.
+  (A *local* id still is verified — see the self-qualification rule below.)
+- **A leaf in the tree.** A spanning link to another workspace renders as
+  `NodeKind::Foreign` rather than being followed or dropped: the structure
+  really does leave the building, and a reader deserves to see it.
+
+There is deliberately **no peer table in `prov.yaml`**. Where some other
+workspace can be found is a property of a device, not of an archive — `notes =
+../notes` is true on exactly one machine, and worse than being wrong elsewhere it
+would be wrong *silently*, since a peer resolving to the wrong directory resolves
+to real documents. This is the same reasoning that keeps the fixity cache's
+location out of the config (DESIGN §5). A name is a fact about an archive; a
+location is a fact about a disk.
+
+Resolution therefore belongs to the host. `prov-cli` keeps a device-local peer
+map (`prov peer add <name> <dir>`, resolved `--peers` > `PROV_PEERS` >
+`XDG_CONFIG_HOME/prov/peers` > the platform default), and `prov peer resolve
+id:notes/97jx77t` follows one by opening that workspace and reading *its*
+registry. diaryx resolves the same reference through its published ARK
+permalinks instead. Neither map is prov's business, and nothing depends on
+either: a foreign reference is carried whether or not it resolves.
+
+### Self-qualification — the rule with teeth
+
+A reference qualified with the reading workspace's **own** name is not foreign.
+It is local, and resolves through the registry exactly as the unqualified
+spelling would:
+
+```yaml
+# read inside the workspace whose workspace_id is `notes`
+links: [id:notes/97jx77t]   # ≡ id:97jx77t — resolved, verified, and dangling loudly if absent
+# read anywhere else
+links: [id:notes/97jx77t]   # foreign — carried, silent
+```
+
+This is what makes a qualified reference survive being *copied into* the
+workspace it names, instead of going inert at the boundary. It is also the
+invariant that justifies the feature living in prov at all: a workspace must
+recognize its own name, and only prov is in a position to enforce that.
+
+An anonymous workspace has nothing to compare against, so it treats every
+qualifier as foreign — it must not guess that `id:notes/…` means itself.
+
+### What is not covered
+
+Registration stays a **publish-time** contract, as in diaryx's ROADMAP: prov
+never reaches into another workspace to register an id on its behalf. So a
+reference to an *unpublished* foreign document can dangle, and nothing here will
+notice. That is a real limit, stated rather than hidden — closing it would
+require workspace A to reach workspace B, which is exactly the reaching this
+design refuses.
+
 ## Implementation status
 
 - ✅ `ReferenceStyle` renderer + parsing (`link.rs`); the config-facing
@@ -128,5 +213,12 @@ looked up; paths and `id:` targets are never diverted.
   / `split` — the up≠down diaryx shape). The choices write the `references`
   defaults and, for `split`, the `relations` block. `id`/`split` are gated on
   `--identity` ≠ none.
+- ✅ **Cross-workspace references** (§ "Across workspaces"): the `workspace_id`
+  config axis + `is_valid_workspace_id` (`config.rs`); `IdRef`
+  (`Local`/`Foreign`/`Malformed`) and `Link::is_path_target` (`link.rs`);
+  `Target::Foreign` / `Resolution::Foreign` / `NodeKind::Foreign`, with
+  self-qualification resolving locally in both resolvers; the five rewrite sites
+  in `mutate` filtering on `is_path_target`; and the CLI's device-local peer map
+  (`prov peer list|add|remove|resolve`, `peer.rs`).
 - ⏳ **Staged:** `StaleLabel` finding + label refresh in `validate.rs`.
   Body-prose reference restyle during the `mutate` port.
