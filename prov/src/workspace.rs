@@ -591,6 +591,40 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         }
     }
 
+    /// The directories a **byte-parking store** keeps its contents under — the
+    /// history store's interior and the recycle bin's `items/`.
+    ///
+    /// These are prov's own machinery, not the workspace's documents, and the
+    /// distinction is the one this returns: a store's *index* is a document like
+    /// any other (the root points at it, `check` validates it, a reader can open
+    /// it and learn what the store holds), while everything beneath it is
+    /// bookkeeping the workspace should be blind to.
+    ///
+    /// The line matters most for **names**. A shard index is titled
+    /// `"{Month} {Year}"` and a binned document keeps the title it had, so a
+    /// workspace that indexes these subtrees will resolve `[[January 2026]]` to a
+    /// history shard, and `[[Some Note]]` to a copy of a note the author deleted
+    /// — silently, since neither is anywhere the reader can see. Worse than a
+    /// dead link, which at least reads as broken.
+    ///
+    /// Naming the directories rather than filtering paths afterwards is what
+    /// keeps the *cost* out too: a scan that never descends does not read a
+    /// thousand event documents in order to discard them.
+    pub(crate) async fn parked_dirs(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
+        let mut dirs = Vec::new();
+        if let Some(index) = self.history_path(root_doc).await? {
+            // The store's interior, not the store: the index document itself
+            // stays reachable, so the `history` pointer is not a broken link and
+            // the orphan sweep goes on ignoring what it never reached.
+            dirs.push(crate::history::store_dir(&index).join(crate::history::EVENTS_DIR));
+            dirs.push(crate::history::store_dir(&index).join(crate::history::BLOBS_DIR));
+        }
+        if let Some(index) = self.recycle_bin_path(root_doc).await? {
+            dirs.push(crate::history::store_dir(&index).join("items"));
+        }
+        Ok(dirs)
+    }
+
     /// The generated `about.md` this root declares via the about-pointer
     /// relation (§6, the same reachability move as the registry; spec §4's
     /// *generated prose* kind). `None` when the vocabulary has no about relation
@@ -692,7 +726,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// chicken-and-egg between "walk the tree" and "resolve the walk's links."
     pub async fn title_index(&self) -> Result<TitleIndex> {
         let mut index = TitleIndex::new();
-        self.scan_titles(PathBuf::new(), &mut index).await?;
+        self.scan_titles(PathBuf::new(), &[], &mut index).await?;
         Ok(index)
     }
 
@@ -712,7 +746,14 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     pub async fn title_index_scoped(&self, start: &Path) -> Result<TitleIndex> {
         let (dirs, needs_full) = self.title_scope(start).await?;
         if needs_full {
-            return self.title_index().await;
+            // The unbounded fallback still owes the same exclusion: falling back
+            // is about not being able to *bound* the scan, not about suddenly
+            // being willing to name prov's bookkeeping.
+            let mut index = TitleIndex::new();
+            let parked = self.parked_dirs(start).await?;
+            self.scan_titles(PathBuf::new(), &parked, &mut index)
+                .await?;
+            return Ok(index);
         }
         let mut index = TitleIndex::new();
         let files = self.direct_child_files(&dirs).await?;
@@ -744,6 +785,11 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     async fn title_scope(&self, start: &Path) -> Result<(BTreeSet<PathBuf>, bool)> {
         let spanning = self.relations().spanning_relation().map(str::to_owned);
         let dir_of = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
+        // Where prov parks bytes. Reached like anything else — the root points at
+        // each store's index — but the interiors are bookkeeping, and a name found
+        // in one is not a place a reader can go. See [`parked_dirs`](Self::parked_dirs).
+        let parked = self.parked_dirs(start).await?;
+        let is_parked = |dir: &Path| parked.iter().any(|p| dir.starts_with(p));
         let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
         let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
         let mut queue = vec![link::normalize(start)];
@@ -752,7 +798,11 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             if !visited.insert(path.clone()) {
                 continue;
             }
-            dirs.insert(dir_of(&path));
+            let dir = dir_of(&path);
+            if is_parked(&dir) {
+                continue;
+            }
+            dirs.insert(dir);
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
@@ -768,7 +818,11 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     continue;
                 }
                 if let Target::Path(target) = self.resolve_link(&path, &link) {
-                    dirs.insert(dir_of(&target));
+                    let dir = dir_of(&target);
+                    if is_parked(&dir) {
+                        continue;
+                    }
+                    dirs.insert(dir);
                     if is_spanning {
                         queue.push(target);
                     }
@@ -780,7 +834,10 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     continue;
                 }
                 if let Target::Path(target) = self.resolve_link(&path, &link) {
-                    dirs.insert(dir_of(&target));
+                    let dir = dir_of(&target);
+                    if !is_parked(&dir) {
+                        dirs.insert(dir);
+                    }
                 }
             }
         }
@@ -951,16 +1008,25 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         })
     }
 
-    /// Recursively index the documents under the workspace-relative `rel_dir`.
-    /// Unreadable directories and files are skipped (a title index is a
-    /// best-effort cache, not a validation pass); hidden entries (`.`-prefixed)
-    /// are ignored.
+    /// Recursively index the documents under the workspace-relative `rel_dir`,
+    /// never descending into a directory under `parked`. Unreadable directories
+    /// and files are skipped (a title index is a best-effort cache, not a
+    /// validation pass); hidden entries (`.`-prefixed) are ignored.
+    ///
+    /// `parked` is [`parked_dirs`](Self::parked_dirs) — prov's byte-parking
+    /// stores. Excluded by *not descending* rather than by filtering afterwards,
+    /// so a workspace with a thousand history events does not read a thousand
+    /// event documents in order to throw their titles away.
     fn scan_titles<'a>(
         &'a self,
         rel_dir: PathBuf,
+        parked: &'a [PathBuf],
         index: &'a mut TitleIndex,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            if parked.iter().any(|p| rel_dir.starts_with(p)) {
+                return Ok(());
+            }
             let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
                 return Ok(());
             };
@@ -982,7 +1048,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     rel_dir.join(&name)
                 };
                 if entry.file_type().is_dir() {
-                    self.scan_titles(rel, index).await?;
+                    self.scan_titles(rel, parked, index).await?;
                 } else if entry.file_type().is_file()
                     && is_document_path(&rel)
                     // A shadowed payload is bytes prov agreed not to read: its

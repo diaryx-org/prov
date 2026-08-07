@@ -157,6 +157,136 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(files)
     }
 
+    /// What the store holds, without reading the history in it — the cheap
+    /// answer to "is a capture due?".
+    ///
+    /// [`history_list`](Self::history_list) is the wrong way to ask that. It
+    /// parses every event document, and each holds one row per file in the
+    /// workspace, so a host asking on every open pays O(events × files) forever.
+    /// This walks the shard tree — one listing per month that has events — and
+    /// reads **one** document.
+    ///
+    /// ## Why one document is both necessary and enough
+    ///
+    /// An id carries its own timestamp, but only to the minute
+    /// (`<YYYY>-<MM>-<DD>-<HHMM>-<8 hex>`, [`mint_id`]), where `created` is
+    /// written to [`FRACTION_DIGITS`] places. So filenames alone cannot order two
+    /// events captured in the same minute, and the 8-hex suffix is a content
+    /// digest — sorting by it would be arbitrary, and would disagree with
+    /// `history_list` exactly when two captures land close together, which is the
+    /// case a cadence check meets on a busy day.
+    ///
+    /// What filenames *can* do is narrow. Truncation to the minute is monotonic,
+    /// so the greatest `created` in the store is certainly inside the greatest
+    /// stamp present: reading that bucket — nearly always one file — and ordering
+    /// it the way [`history_events_in`](Self::history_events_in) does settles it
+    /// exactly. A bucket whose documents were all torn in transit yields nothing
+    /// to order, so the search falls to the next stamp down rather than reporting
+    /// no history at all; `events` still counts the torn slots, because the file
+    /// is evidence a capture happened even when its contents are not.
+    ///
+    /// [`mint_id`]: super::event_id::mint_id
+    /// [`FRACTION_DIGITS`]: super::event_id::FRACTION_DIGITS
+    pub async fn history_summary(&self, root_doc: &Path) -> Result<Summary> {
+        let (store_index, found) = self.history_store_index(root_doc).await?;
+        if !found.exists() {
+            return Ok(Summary::default());
+        }
+        let ext = self.history_ext(root_doc);
+        let events_root = store_dir(&store_index).join(EVENTS_DIR);
+
+        // One listing per shard. Ids are grouped by their minute stamp so the
+        // newest bucket is in hand without a second pass, and a store with no
+        // stamped ids at all (nothing but torn files) still reports its slots.
+        let mut buckets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut slots = 0usize;
+        for year in self.subdirs(&events_root).await? {
+            for month in self.subdirs(&events_root.join(&year)).await? {
+                let shard = events_root.join(&year).join(&month);
+                for id in self.shard_event_ids(&shard, ext).await? {
+                    slots += 1;
+                    if let Some(stamp) = id_stamp_of(&id) {
+                        buckets.entry(stamp).or_default().insert(id);
+                    }
+                }
+            }
+        }
+
+        // Newest stamp first, stopping at the first bucket that yields a readable
+        // event. `history_events_in`'s own ordering, so the answer is the one
+        // `history_list().last()` would have given.
+        let mut latest = None;
+        for (_, ids) in buckets.iter().rev() {
+            let mut readable: Vec<Event> = Vec::new();
+            for id in ids {
+                let path = event_path(&store_index, id, ext)?;
+                let Ok((_, doc)) = self.load(&path).await else {
+                    continue;
+                };
+                if let Some(event) = parse_event(&path, id, &doc.meta) {
+                    readable.push(event);
+                }
+            }
+            readable.sort_by(|a, b| {
+                comparable(&a.created)
+                    .cmp(&comparable(&b.created))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            if let Some(event) = readable.pop() {
+                latest = Some(Latest {
+                    id: event.id,
+                    created: event.created,
+                });
+                break;
+            }
+        }
+
+        Ok(Summary {
+            store_exists: true,
+            events: slots,
+            latest,
+        })
+    }
+
+    /// What the store occupies on disk, in bytes — every event document, every
+    /// blob, every index.
+    ///
+    /// Separate from [`history_summary`](Self::history_summary), and expensive in
+    /// the way that one is not: a [`DirEntry`](crate::fs::DirEntry) carries no
+    /// length, so this is one `metadata` call per file in the store. Over a
+    /// file-provider backend that is a per-file round trip, so it belongs behind
+    /// a screen a person opened on purpose — not on a path that runs at every
+    /// vault open.
+    ///
+    /// A file that vanishes mid-walk (a prune racing this, a transport moving
+    /// bytes) contributes nothing rather than failing the total: the answer is a
+    /// size to show someone, not an accounting record.
+    pub async fn history_store_bytes(&self, root_doc: &Path) -> Result<u64> {
+        let (store_index, found) = self.history_store_index(root_doc).await?;
+        if !found.exists() {
+            return Ok(0);
+        }
+        let mut total = 0u64;
+        let mut stack = vec![store_dir(&store_index)];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = self.fs().read_dir(&self.root().join(&dir)).await else {
+                continue;
+            };
+            for entry in entries {
+                let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let path = dir.join(name);
+                if entry.file_type().is_dir() {
+                    stack.push(path);
+                } else if let Ok(meta) = self.fs().metadata(&self.root().join(&path)).await {
+                    total += meta.len();
+                }
+            }
+        }
+        Ok(total)
+    }
+
     /// Every event in the store, oldest first (by `created`, then id).
     ///
     /// Read by **scanning the shard directories**, not by following the index
@@ -372,6 +502,130 @@ mod tests {
     use super::super::support::*;
     use super::*;
     use crate::exec::block_on;
+
+    /// The summary's whole contract: the same answer `history_list` gives, for
+    /// the price of a listing. A store with no events at all is the boundary
+    /// case a cadence check meets first, on the vault where history was just
+    /// switched on.
+    #[test]
+    fn a_summary_names_the_event_history_list_would_have_named() {
+        let dir = seed("summary-agrees");
+
+        // Before any capture: no store, and nothing to be newest.
+        let empty = block_on(ws(&dir).history_summary(Path::new("index.md"))).unwrap();
+        assert_eq!(empty, Summary::default());
+        assert!(!empty.store_exists);
+
+        capture_edited(&dir, "2026-07-29T09:15:22.000000Z", "one", "alpha");
+        capture_edited(&dir, "2026-08-02T11:04:07.000000Z", "two", "beta");
+        let newest = capture_edited(&dir, "2026-08-02T11:59:00.000000Z", "three", "gamma");
+
+        let summary = block_on(ws(&dir).history_summary(Path::new("index.md"))).unwrap();
+        let listed = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+        let latest = summary
+            .latest
+            .expect("a store with three events has a newest");
+
+        assert!(summary.store_exists);
+        assert_eq!(summary.events, 3);
+        assert_eq!(latest.id, newest);
+        assert_eq!(latest.id, listed.last().unwrap().id);
+        assert_eq!(latest.created, listed.last().unwrap().created);
+        // The shard tree grew a second month, and the probe crossed it.
+        assert_eq!(listed.len(), 3);
+    }
+
+    /// The case a filename cannot settle, and the reason the probe reads a
+    /// document at all: two captures inside one minute stamp identically, so the
+    /// answer is in their `created` — at two different precisions, which is
+    /// ordinary in a store that outlives a version of prov.
+    ///
+    /// Note what a raw string comparison does to this pair: `.` sorts before `Z`,
+    /// so `…22.000001Z` compares *less* than `…22Z` and the older event wins.
+    /// Only [`comparable`]'s normalization gets it right, which is exactly why
+    /// this probe defers to it rather than sorting stems.
+    #[test]
+    fn a_summary_settles_a_minute_two_captures_share() {
+        let dir = seed("summary-same-minute");
+        let older = capture_edited(&dir, "2026-07-31T09:15:22Z", "second-precision", "alpha");
+        let newer = capture_edited(&dir, "2026-07-31T09:15:22.000001Z", "microseconds", "beta");
+
+        assert_eq!(
+            id_stamp_of(&older),
+            id_stamp_of(&newer),
+            "the fixture is pointless unless both ids stamp the same minute"
+        );
+        assert!(
+            "2026-07-31T09:15:22.000001Z" < "2026-07-31T09:15:22Z",
+            "and pointless unless a raw comparison would get it backwards"
+        );
+
+        let latest = block_on(ws(&dir).history_summary(Path::new("index.md")))
+            .unwrap()
+            .latest
+            .expect("two events have a newest");
+        let listed = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+
+        assert_eq!(latest.id, newer);
+        assert_eq!(latest.id, listed.last().unwrap().id);
+    }
+
+    /// A torn newest event must not blank the answer. The slot still counts — a
+    /// file that cannot be parsed is still evidence a capture happened — but the
+    /// search falls to the newest event that *can* be read, because a cadence
+    /// check that reports "no history" would capture again immediately and pile a
+    /// second event on top of the damage.
+    #[test]
+    fn a_summary_counts_a_torn_slot_and_looks_past_it_for_the_newest() {
+        let dir = seed("summary-torn");
+        let readable = capture_edited(&dir, "2026-07-31T09:15:22.000000Z", "intact", "alpha");
+        let torn = capture_edited(&dir, "2026-08-01T10:00:00.000000Z", "torn", "beta");
+        tear(&dir, &format!("history/events/2026/08/{torn}.md"));
+
+        let summary = block_on(ws(&dir).history_summary(Path::new("index.md"))).unwrap();
+        let latest = summary.latest.expect("the intact event is still there");
+
+        assert_eq!(
+            summary.events, 2,
+            "the torn file is a slot: something captured, even if its bytes are now unreadable"
+        );
+        assert_eq!(latest.id, readable);
+        assert_eq!(
+            latest.id,
+            block_on(ws(&dir).history_list(Path::new("index.md")))
+                .unwrap()
+                .last()
+                .unwrap()
+                .id,
+            "`history_list` skips the torn document too, so the two still agree"
+        );
+    }
+
+    /// Size is the number a settings screen shows, and it is deliberately not in
+    /// the summary — one `metadata` call per file is the per-file cost the
+    /// summary exists to avoid.
+    #[test]
+    fn store_bytes_totals_the_store_and_answers_zero_when_there_is_none() {
+        let dir = seed("summary-bytes");
+        assert_eq!(
+            block_on(ws(&dir).history_store_bytes(Path::new("index.md"))).unwrap(),
+            0,
+            "no store is zero bytes, not an error"
+        );
+
+        capture_edited(&dir, "2026-07-31T09:15:22.000000Z", "one", "alpha");
+        let first = block_on(ws(&dir).history_store_bytes(Path::new("index.md"))).unwrap();
+        assert!(first > 0);
+
+        // A second capture parks the changed document's new bytes and writes
+        // another event, so the store grows — while the untouched files go on
+        // sharing the blobs they already parked.
+        capture_edited(&dir, "2026-08-01T10:00:00.000000Z", "two", "beta");
+        assert!(
+            block_on(ws(&dir).history_store_bytes(Path::new("index.md"))).unwrap() > first,
+            "a second event and its blobs are more bytes than one"
+        );
+    }
 
     /// A root that has stopped declaring its store must not take the store with
     /// it. The pointer is one line in one mutable file — the single most likely

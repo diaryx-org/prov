@@ -376,6 +376,50 @@ pub struct Version {
     pub state: Presence,
 }
 
+/// The newest event in a store, named without reading the rest of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Latest {
+    /// The event's id.
+    pub id: String,
+    /// Its `created` timestamp, verbatim as the document spells it — so a caller
+    /// comparing it against another event compares like with like, whatever
+    /// precision each was written at.
+    pub created: String,
+}
+
+/// What a store holds, answered from directory listings rather than from its
+/// contents — the shape of the store, not the history in it.
+///
+/// The question this exists for is "is a capture due?", which a host asks on
+/// every open and which [`history_list`](crate::Workspace::history_list) is the
+/// wrong way to answer: that parses **every** event document, and each holds one
+/// row per file in the workspace, so asking routinely costs O(events × files).
+/// This walks the shard tree and reads at most one document — see
+/// [`history_summary`](crate::Workspace::history_summary) for which one, and why
+/// one is enough.
+///
+/// Deliberately *not* carrying the store's size on disk. A [`DirEntry`] names no
+/// length, so totalling bytes means one `metadata` call per blob — precisely the
+/// per-file cost over a file-provider backend that this type exists to avoid.
+/// [`history_store_bytes`](crate::Workspace::history_store_bytes) answers that
+/// separately, and says in its own name that it is the expensive one.
+///
+/// [`DirEntry`]: crate::fs::DirEntry
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Summary {
+    /// Whether a store was found at all — declared by the root, or sitting at
+    /// the conventional path with no pointer to it.
+    pub store_exists: bool,
+    /// How many event-shaped files the shard tree holds, **including any that no
+    /// longer parse**. A count of event *slots*, matching the way
+    /// `history_events_in` counts a document a transport tore in transit: the
+    /// file is still evidence that a capture happened, even when nothing in it
+    /// can be trusted.
+    pub events: usize,
+    /// The newest event, or `None` when the store holds none that can be read.
+    pub latest: Option<Latest>,
+}
+
 /// What a lineage query follows a document *by*.
 ///
 /// The two are not equals. An id survives a rename, so following one yields the

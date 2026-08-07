@@ -106,8 +106,8 @@ pub use fs::{
     SyncGuarantee,
 };
 pub use history::{
-    Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Presence, Pruned, RestoreOp,
-    RestorePlan, Retention, Scope, StoreLocation, Subject, Version,
+    Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Latest, Presence, Pruned,
+    RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, Version,
 };
 pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use index::{Collision, FileIndex, InMemoryIndex, IndexStore, NoIndex};

@@ -133,9 +133,45 @@ pub(super) fn is_event_id(stem: &str) -> bool {
         && digest.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The minute an event id stamps, as `YYYY-MM-DD-HHMM`.
+///
+/// The whole of what a filename can say about *when* — `created` is written to
+/// [`FRACTION_DIGITS`](super::event_id::FRACTION_DIGITS) places, and the id's
+/// trailing digest is content-derived rather than ordered. So this narrows a
+/// search for the newest event; it does not settle one. See
+/// [`history_summary`](crate::Workspace::history_summary).
+pub(super) fn id_stamp_of(stem: &str) -> Option<String> {
+    if !is_event_id(stem) {
+        return None;
+    }
+    // `is_event_id` has already established four leading fields and a digest.
+    let parts: Vec<&str> = stem.split('-').collect();
+    Some(parts[..4].join("-"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamp_is_the_minute_and_nothing_after_it() {
+        assert_eq!(
+            id_stamp_of("2026-07-31-0915-pre-sync-4f2a9c1e").as_deref(),
+            Some("2026-07-31-0915")
+        );
+        // A labelled and an unlabelled capture in the same minute share a stamp —
+        // which is the point: the bucket is what gets read, not the winner.
+        assert_eq!(
+            id_stamp_of("2026-07-31-0915-4f2a9c1e"),
+            id_stamp_of("2026-07-31-0915-pre-sync-9b3e0d77")
+        );
+        assert_eq!(id_stamp_of("not-an-event-id"), None);
+        // A transport's conflict copy is not an event, so it stamps nothing.
+        assert_eq!(
+            id_stamp_of("2026-07-31-0915-4f2a9c1e.sync-conflict-091600"),
+            None
+        );
+    }
 
     #[test]
     fn an_event_id_is_reversible_to_its_shard_path() {
