@@ -37,6 +37,17 @@ pub enum NodeKind {
     /// A nominal (alias) target whose name several documents claim — a
     /// containment link that cannot be resolved to one child.
     AmbiguousAlias(String),
+    /// An `id:<workspace>/<id>` target naming a document in another workspace.
+    ///
+    /// A leaf, always: the tree is *this* workspace's spanning walk, and prov
+    /// has no map from a workspace name to a location to follow (see
+    /// [`Target::Foreign`](crate::workspace::Target::Foreign)). Shown rather
+    /// than dropped, because the link is really declared and a reader deserves
+    /// to see the structure leave the building.
+    Foreign {
+        workspace: String,
+        id: crate::identity::Id,
+    },
 }
 
 /// Options controlling how [`Workspace::tree_with`] materializes a spanning
@@ -228,6 +239,16 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                             title: None,
                             label: child.label,
                             kind: NodeKind::AmbiguousAlias(name),
+                            children: Vec::new(),
+                        });
+                        continue;
+                    }
+                    Target::Foreign { workspace, id } => {
+                        children.push(Node {
+                            path: PathBuf::from(child.target.clone()),
+                            title: None,
+                            label: child.label,
+                            kind: NodeKind::Foreign { workspace, id },
                             children: Vec::new(),
                         });
                         continue;

@@ -57,6 +57,11 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     fixity: Fixity,
     history: History,
     id_storage: IdStorage,
+    /// What this workspace calls itself — the qualifier a cross-workspace
+    /// reference names it by. Empty means anonymous, so no `id:<ws>/<id>`
+    /// reference can ever be recognized as pointing back here. See
+    /// [`WorkspaceConfig::workspace_id`](crate::config::WorkspaceConfig::workspace_id).
+    workspace_id: String,
     /// Documents that earned an id this operation and, under a stamping mode,
     /// still need it written into their own frontmatter. Drained by
     /// [`commit`](Workspace::commit) into the operation's change set, so a
@@ -106,6 +111,7 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
             fixity: self.fixity,
             history: self.history,
             id_storage: self.id_storage,
+            workspace_id: self.workspace_id.clone(),
             pending_stamps: self.pending_stamps.clone(),
             memo: Mutex::default(),
             fixity_cache: Mutex::new(lock(&self.fixity_cache).clone()),
@@ -138,6 +144,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             fixity: Fixity::Payloads,
             history: History::Off,
             id_storage: IdStorage::Registry,
+            workspace_id: String::new(),
             fixity_cache: None,
         }
     }
@@ -341,6 +348,17 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         self.id_storage
     }
 
+    /// What this workspace calls itself — the qualifier a cross-workspace
+    /// reference names it by, or `""` when the workspace is anonymous.
+    ///
+    /// Its one operational use is recognizing a reference that names *this*
+    /// workspace: `id:notes/abc` read inside the workspace called `notes` is a
+    /// local reference that resolves through the registry, which is what lets a
+    /// document keep working after being copied here from somewhere else.
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
     /// The workspace-default reference style — the fallback for any relation
     /// without its own `style` override. An explicit `reference_style` builder
     /// value wins; otherwise it is derived from the legacy `link_style`/`id_links`
@@ -422,6 +440,29 @@ pub enum Target {
     /// A URL or mail address — never resolved against the workspace and never
     /// rewritten by moves.
     External,
+    /// An `id:<workspace>/<id>` reference naming a document in *another*
+    /// workspace — carried, never rewritten, and never reported broken.
+    ///
+    /// prov stops here on purpose. Resolving this would require a map from a
+    /// workspace name to a location, and that map is a property of the device
+    /// doing the reading, not of the archive being read: the same reference
+    /// resolves to a directory on one machine, a URL on another, and nothing at
+    /// all on a third. So the library reports *what was named* and leaves
+    /// *where it lives* to the host — `prov-cli` keeps a device-local peer map,
+    /// diaryx resolves through its published ARK permalinks.
+    ///
+    /// A reference qualified with this workspace's own
+    /// [`workspace_id`](Workspace::workspace_id) is **not** foreign: it is
+    /// resolved locally through the registry, so a document carrying one keeps
+    /// working when it is copied into the workspace it names.
+    Foreign {
+        /// The workspace qualifier, exactly as written.
+        workspace: String,
+        /// The id within that workspace, exactly as written — never
+        /// check-verified here (that workspace owns its id space, and may not
+        /// be a prov workspace at all).
+        id: crate::identity::Id,
+    },
 }
 
 impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
@@ -518,7 +559,27 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         if link.is_external() {
             return Target::External;
         }
-        if let Some(id) = link.id_target() {
+        // A reference qualified with this workspace's own name *is* local — the
+        // registry that issued the id is the one in hand. That equivalence is
+        // what makes a qualified reference survive being copied into the
+        // workspace it names, instead of going inert at the boundary.
+        let id = match link.id_ref() {
+            Some(crate::link::IdRef::Local(id)) => Some(id),
+            Some(crate::link::IdRef::Foreign { workspace, id }) => {
+                if !self.workspace_id.is_empty() && workspace == self.workspace_id {
+                    Some(id)
+                } else {
+                    return Target::Foreign { workspace, id };
+                }
+            }
+            // Malformed: the author wrote `id:`, so this is a broken id
+            // reference, not a filename that happens to contain a colon.
+            Some(crate::link::IdRef::Malformed) => {
+                return Target::UnresolvedId(crate::identity::Id(link.target.clone()));
+            }
+            None => None,
+        };
+        if let Some(id) = id {
             return match self.index.resolve(&id) {
                 Some(path) => Target::Path(link::normalize(path)),
                 None => Target::UnresolvedId(id),
@@ -1588,6 +1649,7 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     fixity: Fixity,
     history: History,
     id_storage: IdStorage,
+    workspace_id: String,
     fixity_cache: Option<FixityCache>,
 }
 
@@ -1662,6 +1724,15 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Set what this workspace calls itself — the qualifier a cross-workspace
+    /// reference (`id:<name>/<id>`) names it by. Empty (the default) leaves the
+    /// workspace anonymous: it can hold foreign references, but a reference
+    /// written *to* it can never be recognized here as local.
+    pub fn workspace_id(mut self, name: impl Into<String>) -> Self {
+        self.workspace_id = name.into();
+        self
+    }
+
     /// Set the workspace-default reference style — the fallback for relations
     /// without their own override. Supersedes the `link_style`/`id_links`
     /// convenience inputs when set.
@@ -1693,6 +1764,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             fixity: self.fixity,
             history: self.history,
             id_storage: self.id_storage,
+            workspace_id: self.workspace_id,
             fixity_cache: self.fixity_cache,
         }
     }
@@ -1713,6 +1785,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             fixity: self.fixity,
             history: self.history,
             id_storage: self.id_storage,
+            workspace_id: self.workspace_id,
             fixity_cache: self.fixity_cache,
         }
     }
@@ -1733,6 +1806,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             fixity: self.fixity,
             history: self.history,
             id_storage: self.id_storage,
+            workspace_id: self.workspace_id,
             pending_stamps: Vec::new(),
             memo: Mutex::default(),
             fixity_cache: Mutex::new(self.fixity_cache),
@@ -1777,5 +1851,72 @@ mod tests {
             .build();
         assert!(ws.identity().registration().on_link);
         assert!(ws.index().is_empty());
+    }
+
+    /// A workspace named `notes` whose registry resolves `ajp7eq`.
+    fn named_ws(name: &str) -> Workspace<DummyFs, Minter, InMemoryIndex> {
+        let mut index = InMemoryIndex::new();
+        index.register(&crate::identity::Id("ajp7eq".into()), Path::new("note.md"));
+        Workspace::builder(DummyFs)
+            .root("vault")
+            .identity(Minter::lazy(1))
+            .index(index)
+            .workspace_id(name)
+            .build()
+    }
+
+    #[test]
+    fn a_reference_to_another_workspace_resolves_to_foreign() {
+        let ws = named_ws("notes");
+        let link = Link::parse("id:diaryx/xk4m2p");
+        assert_eq!(
+            ws.resolve_link(Path::new("a.md"), &link),
+            Target::Foreign {
+                workspace: "diaryx".into(),
+                id: crate::identity::Id("xk4m2p".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_reference_qualified_with_our_own_name_is_local() {
+        // The invariant with teeth: a document written elsewhere as
+        // `id:notes/ajp7eq` keeps working once it is copied *into* `notes`,
+        // instead of going inert at the boundary.
+        let ws = named_ws("notes");
+        assert_eq!(
+            ws.resolve_link(Path::new("a.md"), &Link::parse("id:notes/ajp7eq")),
+            Target::Path(PathBuf::from("note.md"))
+        );
+        // And it agrees with the unqualified spelling of the same reference.
+        assert_eq!(
+            ws.resolve_link(Path::new("a.md"), &Link::parse("id:ajp7eq")),
+            ws.resolve_link(Path::new("a.md"), &Link::parse("id:notes/ajp7eq"))
+        );
+    }
+
+    #[test]
+    fn an_anonymous_workspace_treats_every_qualifier_as_foreign() {
+        // With no name of its own, a workspace has nothing to compare against —
+        // so it must not guess that `id:notes/…` means itself.
+        let ws = named_ws("");
+        assert_eq!(
+            ws.resolve_link(Path::new("a.md"), &Link::parse("id:notes/ajp7eq")),
+            Target::Foreign {
+                workspace: "notes".into(),
+                id: crate::identity::Id("ajp7eq".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_malformed_id_reference_is_not_reread_as_a_path() {
+        // `id:a/b/c` is a broken id reference, not a filename. Resolving it as a
+        // path would turn a typo into a plausible-looking dead path link.
+        let ws = named_ws("notes");
+        assert!(matches!(
+            ws.resolve_link(Path::new("a.md"), &Link::parse("id:a/b/c")),
+            Target::UnresolvedId(_)
+        ));
     }
 }
