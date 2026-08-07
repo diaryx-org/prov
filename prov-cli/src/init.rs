@@ -491,8 +491,10 @@ pub(crate) fn cmd_init(
     };
     std::fs::create_dir_all(&dir)?;
     // Canonicalize (now that the directory exists) for a stable absolute name —
-    // both for the default title and the confirmation line.
-    let dir = dir.canonicalize()?;
+    // both for the default title and the confirmation line. Unsupported on some
+    // platforms (e.g. WASI preview1, which has no realpath syscall); fall back to
+    // the given path rather than fail the whole command over a cosmetic detail.
+    let dir = dir.canonicalize().unwrap_or(dir);
 
     // Prompt only on a real terminal and only when `--yes` wasn't passed.
     let interactive = !yes && std::io::stdin().is_terminal();
