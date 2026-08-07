@@ -819,14 +819,18 @@ pub fn exclude_code_spans(links: Vec<Wikilink>, code_spans: &[Range<usize>]) -> 
 }
 
 /// Scan `body` for wikilinks the way `census`/`check`/the rename machinery
-/// actually should — never [`parse_wikilinks`] directly. When prov was
-/// built with the `content` feature and `path`'s extension names a format
-/// `twig` understands, every code span (fenced/inline code, raw escapes) is
-/// treated as opaque *before* the lexical `[[`…`]]` scan ever sees it: each
-/// prose run between code spans is scanned on its own and the results
-/// stitched back into `body`-relative spans. Without that feature, or for an
-/// unrecognized extension, this is exactly [`parse_wikilinks`] over the whole
-/// body — the same behavior as before code-awareness existed.
+/// actually should — never [`parse_wikilinks`] directly. When `path`'s
+/// extension names a format `twig` understands, every code span (fenced/inline
+/// code, raw escapes) is treated as opaque *before* the lexical `[[`…`]]` scan
+/// ever sees it: each prose run between code spans is scanned on its own and the
+/// results stitched back into `body`-relative spans. For an unrecognized
+/// extension — or if the parse fails — this is exactly [`parse_wikilinks`] over
+/// the whole body, the same behavior as before code-awareness existed.
+///
+/// The span is **lexical either way**: twig has no wikilink concept, so it
+/// supplies the mask and nothing more. A caller about to *rewrite* what a span
+/// covers wants [`parsed_link_spans`] instead, which reports only spans twig
+/// itself identified as links.
 ///
 /// Scanning prose runs *separately*, rather than scanning the whole body and
 /// filtering the results (what [`exclude_code_spans`] alone can do), matters:
@@ -902,7 +906,7 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
             span: wl.span,
         })
         .collect();
-    for span in markdown_link_spans(path, body) {
+    for span in parsed_link_spans(path, body) {
         let link = Link::parse(&body[span.clone()]);
         // Keep only inline `[label](target)` links (a labeled markdown parse):
         // reference/autolink spans parse to a bare or external target and are
@@ -925,7 +929,18 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
 /// The spans of markdown/djot inline links in `body`, via `twig` — empty when
 /// `path`'s extension names no grammar `twig` understands or the parse fails
 /// (the same degrade-to-lexical rule as [`code_spans_for`]).
-fn markdown_link_spans(path: &Path, body: &str) -> Vec<Range<usize>> {
+///
+/// **The "twig says it is a link" predicate.** These spans come from twig's own
+/// `link` nodes, so a span here is a link an actual parser recognized, and each
+/// holds exactly one link. That is a materially stronger claim than
+/// [`scan_wikilinks`] can make about a `[[…]]`: twig has no wikilink concept, so
+/// it only supplies the *code mask* there and the span itself is still lexical.
+/// The gap matters wherever a repair is going to *write* — a lexical span may sit
+/// in prose that merely looks like a link, and DESIGN §8's whole objection to
+/// editing body prose is that `[[float('inf')] * width]` must never be
+/// "repaired". So `validate`'s body-link remedies are offered for a span in this
+/// set and no other.
+pub(crate) fn parsed_link_spans(path: &Path, body: &str) -> Vec<Range<usize>> {
     let Some(format) = crate::content::ContentFormat::from_extension(path) else {
         return Vec::new();
     };

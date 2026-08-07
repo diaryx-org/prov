@@ -17,6 +17,7 @@
 //!   because the registry is what keeps *those* resolving.
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use fig::Segment;
@@ -31,6 +32,72 @@ use crate::link::{self, Link};
 use crate::meta::Value;
 use crate::validate::Resolution;
 use crate::workspace::{Target, Workspace};
+
+/// Walking the spanning relation needs the relation set and the resolver, and
+/// neither of those is an identity concern — so these three sit outside the
+/// `IdentityPolicy` bound the mutation verbs carry. `validate`'s remedy
+/// suggestions read the tree without any power to mint, and that is a property
+/// worth keeping in the type: a pass that only *offers* repairs must not be able
+/// to register an id as a side effect of being asked.
+impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// The spanning relation's name and its inverse — mutations need both.
+    pub(crate) fn spanning_pair(&self) -> Result<(String, String)> {
+        let spanning = self
+            .relations()
+            .spanning_relation()
+            .ok_or_else(|| Error::Structure("no spanning relation configured".into()))?;
+        let inverse = self
+            .relations()
+            .relations()
+            .iter()
+            .find(|r| r.name == spanning)
+            .and_then(|r| r.inverse.clone())
+            .ok_or_else(|| {
+                Error::Structure(format!("spanning relation `{spanning}` has no inverse"))
+            })?;
+        Ok((spanning.to_string(), inverse))
+    }
+
+    /// The single resolved target of `field` in `doc`, if it resolves to an
+    /// on-workspace path (by relative path or through the registry).
+    /// (`doc_path` anchors a relative target.)
+    pub(crate) fn single_target(
+        &self,
+        doc: &Document,
+        field: &str,
+        doc_path: &Path,
+    ) -> Option<PathBuf> {
+        let raw = doc
+            .meta
+            .get(field)
+            .map(Value::link_strings)?
+            .into_iter()
+            .next()?;
+        match self.resolve_link(doc_path, &Link::parse(&raw)) {
+            Target::Path(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Walk `part_of` (the spanning inverse) up from `from` to the spanning
+    /// root — the document nothing contains — so a census can cover `from`'s
+    /// whole workspace. A cycle or an unreadable ancestor stops the walk at the
+    /// last good document, which still roots a scan over `from`'s neighborhood.
+    pub(crate) async fn spanning_root(&self, from: &Path, inverse: &str) -> Result<PathBuf> {
+        let mut current = from.to_path_buf();
+        let mut seen = BTreeSet::new();
+        while seen.insert(current.clone()) {
+            let Ok((_, doc)) = self.load(&current).await else {
+                break;
+            };
+            match self.single_target(&doc, inverse, &current) {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        Ok(current)
+    }
+}
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Every document reachable from `root` down the spanning relation, `root`
@@ -90,48 +157,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(writes)
     }
 
-    /// The spanning relation's name and its inverse — mutations need both.
-    pub(crate) fn spanning_pair(&self) -> Result<(String, String)> {
-        let spanning = self
-            .relations()
-            .spanning_relation()
-            .ok_or_else(|| Error::Structure("no spanning relation configured".into()))?;
-        let inverse = self
-            .relations()
-            .relations()
-            .iter()
-            .find(|r| r.name == spanning)
-            .and_then(|r| r.inverse.clone())
-            .ok_or_else(|| {
-                Error::Structure(format!("spanning relation `{spanning}` has no inverse"))
-            })?;
-        Ok((spanning.to_string(), inverse))
-    }
-
-    /// The single resolved target of `field` in `doc`, if it resolves to an
-    /// on-workspace path (by relative path or through the registry).
-    /// (`doc_path` anchors a relative target.)
-    pub(super) fn single_target(
-        &self,
-        doc: &Document,
-        field: &str,
-        doc_path: &Path,
-    ) -> Option<PathBuf> {
-        let raw = doc
-            .meta
-            .get(field)
-            .map(Value::link_strings)?
-            .into_iter()
-            .next()?;
-        match self.resolve_link(doc_path, &Link::parse(&raw)) {
-            Target::Path(p) => Some(p),
-            _ => None,
-        }
-    }
-
     /// The index of the entry in `doc`'s `field` sequence whose target
     /// resolves to `wanted` — by relative path or through the registry.
-    pub(super) fn entry_index(
+    pub(crate) fn entry_index(
         &self,
         doc: &Document,
         field: &str,
@@ -193,25 +221,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(Some(editor.render()?))
     }
 
-    /// Walk `part_of` (the spanning inverse) up from `from` to the spanning
-    /// root — the document nothing contains — so a census can cover `from`'s
-    /// whole workspace. A cycle or an unreadable ancestor stops the walk at the
-    /// last good document, which still roots a scan over `from`'s neighborhood.
-    pub(super) async fn spanning_root(&self, from: &Path, inverse: &str) -> Result<PathBuf> {
-        let mut current = from.to_path_buf();
-        let mut seen = BTreeSet::new();
-        while seen.insert(current.clone()) {
-            let Ok((_, doc)) = self.load(&current).await else {
-                break;
-            };
-            match self.single_target(&doc, inverse, &current) {
-                Some(parent) => current = parent,
-                None => break,
-            }
-        }
-        Ok(current)
-    }
-
     /// Retarget every path-form reference to `from` in the document at `source`
     /// so it reaches `to`: body wikilinks first (their spans index the current
     /// body), then each frontmatter relation entry (re-parsing between edits).
@@ -241,6 +250,159 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         Ok((text != original).then_some(text))
     }
+}
+
+/// The **fig index** of the entry in `doc`'s `field` whose target is written
+/// exactly as `written` — the address a repair needs when the target resolves to
+/// nothing, so [`entry_index`](Workspace::entry_index) (which matches on the
+/// *resolved* path) cannot find it. A broken link, a dangling id, a malformed id
+/// and an ambiguous alias are all in that position.
+///
+/// `written` is the bare target with any `[label](…)` / `[[…|…]]` wrapper
+/// stripped — what [`CensusEntry::target_text`](crate::CensusEntry) and every
+/// link [`Finding`](crate::Finding) carry, so a caller hands the finding's own
+/// field straight through.
+///
+/// Two properties worth stating, because both bite:
+///
+/// - **The index is into the raw sequence**, not into [`Value::link_strings`],
+///   which *filters* non-string items: `[a, 3, b]` yields `["a", "b"]`, so a
+///   position taken from it addresses `3` when passed to
+///   [`MetaEditor::remove_item`]. Enumerating the sequence itself is what keeps a
+///   removal honest. (The three existing `entry_index` + `remove_item` sites
+///   carry that skew; harmless while relation sequences hold only strings, and
+///   left alone here rather than fixed in passing.)
+/// - **A written target is not unique** — two entries in one relation may name
+///   the same target. The first is returned, so a repair fixes one per run and a
+///   second run finds the next.
+///
+/// `None` when the field is absent or nothing in it is written that way. A scalar
+/// field that matches reports index 0; the caller tells scalar from sequence by
+/// re-reading the value's shape, as [`retarget_entry`](Workspace::retarget_entry)
+/// does.
+pub(crate) fn written_entry_index(doc: &Document, field: &str, written: &str) -> Option<usize> {
+    let matches = |raw: &str| Link::parse(raw).target == written;
+    match doc.meta.get(field)? {
+        Value::Sequence(items) => items
+            .iter()
+            .position(|item| item.as_str().is_some_and(matches)),
+        other => other.as_str().is_some_and(matches).then_some(0),
+    }
+}
+
+/// The fig address of that entry — key alone for a scalar field, key + index for
+/// a sequence. The shape distinction [`MetaEditor`] needs, in one place so the
+/// removal and the retarget cannot disagree about it.
+fn entry_address<'a>(doc: &Document, field: &'a str, index: usize) -> Vec<Segment<'a>> {
+    match doc.meta.get(field).and_then(Value::as_sequence) {
+        Some(_) => vec![Segment::Key(field), Segment::Index(index)],
+        None => vec![Segment::Key(field)],
+    }
+}
+
+/// Drop the entry of `field` in `doc` written as `written`, comment- and
+/// format-preservingly. Returns the updated text, or `None` when no entry is
+/// written that way or the document carries no metadata block.
+///
+/// A scalar field loses the key itself; a sequence loses just the one item. That
+/// asymmetry is the point — a `part_of:` whose only value was the offending link
+/// has no meaningful empty form, while a `contents:` keeps its other children.
+pub(crate) fn remove_written_entry(
+    text: &str,
+    doc: &Document,
+    field: &str,
+    written: &str,
+) -> Result<Option<String>> {
+    let (Some(index), Some(carrier)) = (written_entry_index(doc, field, written), doc.carrier)
+    else {
+        return Ok(None);
+    };
+    let address = entry_address(doc, field, index);
+    let mut editor = MetaEditor::open(text, carrier)?;
+    if address.len() == 1 {
+        editor.delete(&address)?;
+    } else {
+        editor.remove_item(&[Segment::Key(field)], index)?;
+    }
+    Ok(Some(editor.render()?))
+}
+
+/// Overwrite the entry of `field` in `doc` written as `written` with `replacement`,
+/// verbatim. The shared mechanic behind both a retarget (whose replacement is a
+/// rendered link) and a plain value correction (whose replacement is the value
+/// itself, no link syntax involved).
+pub(crate) fn replace_written_entry(
+    text: &str,
+    doc: &Document,
+    field: &str,
+    written: &str,
+    replacement: &str,
+) -> Result<Option<String>> {
+    let (Some(index), Some(carrier)) = (written_entry_index(doc, field, written), doc.carrier)
+    else {
+        return Ok(None);
+    };
+    let mut editor = MetaEditor::open(text, carrier)?;
+    editor.replace_value(
+        &entry_address(doc, field, index),
+        fig::Value::Str(replacement.to_string()),
+    )?;
+    Ok(Some(editor.render()?))
+}
+
+/// Repoint the entry of `field` in `doc` written as `written` at `new_target`
+/// (a bare target, already spelled in the workspace's own style), keeping the
+/// entry's label and wrapper so a `[Jul](jul.md)` stays labeled and a `[[jul]]`
+/// stays a wikilink.
+///
+/// The sibling of [`retarget_entry`](Workspace::retarget_entry) for targets that
+/// do not resolve — that one finds its entry by walking to a real path, which is
+/// exactly what a broken or dangling link cannot offer.
+pub(crate) fn retarget_written_entry(
+    text: &str,
+    doc: &Document,
+    field: &str,
+    written: &str,
+    new_target: &str,
+) -> Result<Option<String>> {
+    let index = written_entry_index(doc, field, written);
+    let raw = match (index, doc.meta.get(field)) {
+        (Some(i), Some(Value::Sequence(items))) => items.get(i).and_then(Value::as_str),
+        (Some(_), Some(other)) => other.as_str(),
+        _ => None,
+    };
+    let Some(raw) = raw else { return Ok(None) };
+    let rendered = Link::parse(raw)
+        .with_target(new_target.to_string())
+        .render();
+    replace_written_entry(text, doc, field, written, &rendered)
+}
+
+/// Replace the body text at `span` with `replacement`, refusing unless what is
+/// there right now is exactly `expected`.
+///
+/// The guard is the whole point. A body span is an offset into bytes that were
+/// read when `check` ran, and a repair may be applied minutes and several other
+/// repairs later; splicing an offset that has since shifted would corrupt prose
+/// silently and irreversibly, which is a far worse failure than declining. So the
+/// span is treated as a *hint* and the text at it as the real address: if they
+/// disagree, the document moved and the caller is told so.
+pub(crate) fn splice_body_span(
+    text: &str,
+    body: &str,
+    span: &Range<usize>,
+    expected: &str,
+    replacement: &str,
+) -> Result<String> {
+    if span.end > body.len() || body.get(span.clone()) != Some(expected) {
+        return Err(Error::Structure(format!(
+            "the document changed since it was checked — expected {expected:?} in the body, \
+             found something else; re-run `check` and repair from a fresh reading"
+        )));
+    }
+    let mut new_body = body.to_string();
+    new_body.replace_range(span.clone(), replacement);
+    Ok(splice_body(text, body, &new_body))
 }
 
 /// Where a separated node's body file sits beside a node placed at `node_to`,
@@ -287,7 +449,7 @@ pub(super) fn content_target(doc: &Document, doc_path: &Path) -> Option<PathBuf>
 /// frontmatter, a prefix under endmatter, or the whole text when there is no
 /// metadata block), so those cases are matched directly; the general
 /// single-replacement is the fallback.
-pub(super) fn splice_body(text: &str, old_body: &str, new_body: &str) -> String {
+pub(crate) fn splice_body(text: &str, old_body: &str, new_body: &str) -> String {
     if let Some(head) = text.strip_suffix(old_body) {
         format!("{head}{new_body}")
     } else if let Some(tail) = text.strip_prefix(old_body) {

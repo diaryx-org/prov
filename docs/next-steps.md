@@ -32,25 +32,59 @@ them. Not curated design (that's `DESIGN.md`); this is a scratch backlog.
 
 ## Autofix (DESIGN §8 — the sleeper feature)
 
-Principle established: **autofix edits metadata only, never body prose** — a
-`[[…]]` that is really code (`[[inf] * n for _ in range(m)]]`) must never be
-"repaired", and structure-aware body editing is a later layer. So body-link
-findings are diagnosis-only; frontmatter findings are fixable.
+Principle **restated**: a repair edits structure — frontmatter, or a span *twig's
+own parser* reported as a link — and never ordinary prose; and it never deletes a
+file. The old formulation ("metadata only, never body prose") was a proxy for the
+real objection, which is that a `[[…]]` may be code (`[[inf] * n for _ in
+range(m)]]`) and a lexical scan cannot tell. `link::parsed_link_spans` can, so
+`[label](target)` in prose is now repairable while `[[…]]` stays diagnosis-only —
+twig has no wikilink concept, so a wikilink span is lexical either way.
 
-- ✅ **Missing inverse** — `suggest_fix` / `apply_fix` + interactive
-  `prov check --fix`. Adds the back-link, style-matched (absolute vs
-  relative) to how the parent referenced the child; declines when the child
-  already claims a different parent (contested).
-- **Contested containment** (`… already contained elsewhere`, or a MissingInverse
-  whose child claims another parent). The interesting interactive case: present
-  the conflict and let the human pick — (a) make this the real parent [set the
-  child's `part_of` here + drop the other's spanning entry], (b) demote this
-  container's link from spanning → an overlay relation, (c) remove it. Needs a
-  richer `Fix` (RemoveEntry / RetargetEntry) and a multi-choice prompt.
-- **Broken frontmatter link** — offer removal, or a fuzzy relink when a
-  similarly-named file exists. (Body broken links stay diagnosis-only.)
-- **Non-interactive `--fix`** (apply all safe) for scripting once the safe set is
-  trusted; today `--fix` is interactive (EOF → skip).
+- ✅ **Remedies replace the one-answer signature.** `suggest_fix`'s
+  `&Finding -> Option<Fix>` could hold one repair, so a finding with two
+  defensible ones got none — and the split that created tracked how settled each
+  repair was, not any property of findings. `remedies() -> Vec<Remedy>` is the
+  general surface; `suggest_fix` survives as a view over it (the first
+  non-destructive remedy). Each remedy carries a `RemedyKind` slug and a
+  `Warrant`: `Derived` (a pure function of an authority — safe unattended),
+  `Judgment` (rivals exist), `Destructive` (removes something authored).
+- ✅ **Contested containment**, both ends of it — `DuplicateContainment` and a
+  `MissingInverse` whose child claims another parent — now offer (a) make this the
+  real parent (delegating to `reparent`, which repoints the child *and* drops the
+  rival's entry in one change set) and (b) drop this container's entry. Option
+  (c), demoting a spanning link to an overlay relation, is still unbuilt.
+- ✅ **Broken frontmatter link** — a retarget per directory-local near-match, plus
+  removal. Body links too, under the twig rule above.
+- ✅ **`Orphan` is a remedy like any other**, offering every container above it
+  nearest-first, which retires the CLI's hardcoded "adopt under the root" — that
+  literal existed only because a `-> Option<Fix>` had nowhere to ask.
+- ✅ **Non-interactive `--fix mechanical`** applies every `Derived` remedy and
+  prompts for nothing. Bare `--fix` is still interactive (EOF → skip).
+- ✅ Also gained remedies: `CaseMismatch` (`Derived` — the on-disk name is in the
+  finding), `MalformedId`/`DanglingId`, `AmbiguousAlias` (one per candidate),
+  `IdMismatch` (both sides — "trust the document" was already implemented as
+  `Fix::RegisterId` and simply unreachable), `UnknownTerm`/`TermNearMiss`
+  (respell, or widen the vocabulary — never over a *retired* term, which would
+  un-retire it and destroy its id and gloss), and `ConfigIssue`.
+
+Still open here:
+
+- **`RestoreFromHistory` for `FixityMismatch`.** Its doc comment says restoring
+  from backup is the arm prov cannot decide, and `history_restore` can actually
+  perform it — needs a single-path `history_restore_plan` and an event picker.
+  Until then `FixityMismatch` offers only the re-stamp, marked `Judgment`.
+- **`DemoteEntry`** — spanning → overlay, contested containment's third answer.
+- **`MalformedStore`** — migrating a markdown store to a whole-file carrier
+  creates a file and rewrites a pointer, so it is a mutation verb, not a fix.
+- **The `link_strings` index skew.** `Value::link_strings` filters non-string
+  sequence items, so a position taken from it is not the fig index —
+  `[a, 3, b]` yields `["a", "b"]`, and `remove_item(key, 1)` would delete `3`.
+  `entry_index` + `remove_item` carry that skew at three sites
+  (`delete`/`reparent`/`recycle`); harmless while relation sequences hold only
+  strings. The new `written_entry_index` enumerates the raw sequence instead.
+- **A persisted fix policy.** "All of this kind" lasts one run. A `fix:` block in
+  the workspace config mapping finding kind → remedy kind would make a choice
+  durable, in the same self-describing way every other knob works.
 
 ## Body parsing (`twig`)
 

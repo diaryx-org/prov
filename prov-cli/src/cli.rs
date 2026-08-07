@@ -262,11 +262,14 @@ pub(crate) enum Command {
         /// The document to check from (default: the workspace root).
         #[arg(value_name = "TARGET")]
         root: Option<String>,
-        /// Interactively repair fixable findings (currently: missing inverse
-        /// links). Metadata edits only — body-link findings are left for a
-        /// structure-aware pass, so code that looks like a link is never touched.
-        #[arg(long)]
-        fix: bool,
+        /// Repair findings. Bare `--fix` (or `--fix ask`) walks them and offers
+        /// each finding's repairs to choose from; `--fix mechanical` applies only
+        /// the repairs that are pure functions of an authority — no prompts, for
+        /// scripts. Structure edits only: prose is rewritten solely where the
+        /// parser itself reported a link, so code that looks like one is never
+        /// touched, and no fix ever deletes a file.
+        #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "ask")]
+        fix: Option<FixModeArg>,
     },
     /// Create a document as a child of a parent, linking both directions. The
     /// positional is the new document's **title** — prov derives a readable
@@ -1035,6 +1038,22 @@ impl IdStorageArg {
     pub(crate) fn label(self) -> &'static str {
         IdStorage::from(self).as_config_str()
     }
+}
+
+/// How `check --fix` decides what to repair.
+///
+/// The split is [`prov::Warrant`]: a repair that restates an authority
+/// (regenerate the derived page, rebuild the derived index, spell a link the way
+/// the file on disk is actually named) chooses nothing and can run unattended,
+/// while one that picks among rival readings must be picked *by someone*.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum FixModeArg {
+    /// Walk the findings and offer each one's repairs. The default.
+    Ask,
+    /// Apply only the repairs nothing is being chosen in, and prompt for
+    /// nothing — the scriptable mode. Leaves everything else outstanding, and
+    /// says so.
+    Mechanical,
 }
 
 /// How far content-checksum (fixity) coverage extends — the `fixity` config key

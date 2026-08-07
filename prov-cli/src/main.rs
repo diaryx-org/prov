@@ -20,6 +20,7 @@
 //! `unset`) operate on the pure layers and need no workspace; workspace commands
 //! (`tree`, `check`, `new`, `mv`, `rm`, …) discover a root first.
 
+use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -1141,7 +1142,7 @@ fn edit_file(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn cmd_check(root: Option<&Path>, fix: bool) -> CmdResult {
+fn cmd_check(root: Option<&Path>, fix: Option<FixModeArg>) -> CmdResult {
     // `check` reports config issues in full (Finding::ConfigIssue), so skip the
     // one-line find_root warning that would just duplicate them.
     let mut ctx = find_root_quiet()?;
@@ -1172,8 +1173,8 @@ fn cmd_check(root: Option<&Path>, fix: bool) -> CmdResult {
         }
     }
     let findings = findings;
-    if fix {
-        return cmd_check_fix(&mut ctx, &mut ws, &root, &findings);
+    if let Some(mode) = fix {
+        return cmd_check_fix(&mut ctx, &mut ws, &root, &findings, mode);
     }
     for finding in &findings {
         println!("{finding}");
@@ -1187,71 +1188,135 @@ fn cmd_check(root: Option<&Path>, fix: bool) -> CmdResult {
     }
 }
 
-/// Interactive repair: walk the findings, and for each one that has a safe,
-/// metadata-only fix, show it and ask before applying. Findings with no fix are
-/// printed as needing attention. `suggest_fix` is consulted lazily, so a fix
-/// applied to one document correctly declines a now-stale finding later.
+/// Repair the findings: walk them, and for each one offer everything
+/// [`remedies`](prov::Workspace::remedies) can do about it.
+///
+/// A finding rarely has *one* repair, which is why this is a numbered menu and
+/// not a yes/no. A broken link may be pointed at a near-match or dropped; a
+/// contested containment may be settled either way; an orphan may be adopted
+/// under any container above it. Prov ranks them but does not choose.
+///
+/// `remedies` is consulted lazily, one finding at a time, so a repair applied
+/// early correctly changes — or empties — the offers a later finding makes.
+///
+/// Every line here is narration and goes to **stderr**; stdout stays reserved
+/// for the machine value, which for this command is the findings a repair
+/// *introduced*.
 fn cmd_check_fix(
     ctx: &mut Ctx,
     ws: &mut Workspace<StdFs, Minter, FileIndex>,
     root: &Path,
     findings: &[prov::Finding],
+    mode: FixModeArg,
 ) -> CmdResult {
     let mut applied = 0usize;
     let mut needs_attention = 0usize;
-    let mut apply_all = false;
+    // Choices the user asked to repeat, by remedy kind. Only ever consulted when
+    // the finding at hand offers exactly one remedy of that kind — otherwise
+    // "all of this kind" would silently pick between candidates it never saw.
+    let mut repeat: BTreeSet<prov::RemedyKind> = BTreeSet::new();
     for finding in findings {
-        // An orphan has no metadata-only `Fix` (nothing in the document is
-        // wrong); repairing it means *adopting* it under a parent. Offer the
-        // workspace root as that parent — the same flat adoption `init --adopt`
-        // performs — since a batch fix can't ask which subtree it belongs to.
-        if let prov::Finding::Orphan { doc } = finding {
-            println!("⚑  {finding}");
-            println!("   → adopt {} under {}", doc.display(), root.display());
-            let apply = apply_all
-                || match prompt("   adopt? [y]es / [n]o / [a]ll / [q]uit: ")?.as_str() {
-                    "a" | "all" => {
-                        apply_all = true;
-                        true
-                    }
-                    "y" | "yes" => true,
-                    "q" | "quit" => {
-                        println!("stopped; {applied} fix(es) applied");
-                        break;
-                    }
-                    _ => false,
-                };
-            if apply {
-                block_on(ws.adopt(doc, root))?;
-                applied += 1;
-            } else {
-                needs_attention += 1;
+        let remedies = block_on(ws.remedies(finding))?;
+        if remedies.is_empty() {
+            eprintln!("•  {finding}");
+            needs_attention += 1;
+            continue;
+        }
+
+        // `mechanical` applies what restates an authority and nothing else. A
+        // finding whose repairs all involve a choice is left standing, and
+        // counted, so the exit code still reports it.
+        if mode == FixModeArg::Mechanical {
+            match remedies
+                .iter()
+                .find(|r| r.warrant == prov::Warrant::Derived)
+            {
+                Some(remedy) => {
+                    eprintln!("⚑  {finding}");
+                    eprintln!("   → {}", remedy.effect);
+                    block_on(ws.apply_fix(&remedy.fix))?;
+                    applied += 1;
+                }
+                None => {
+                    eprintln!("•  {finding}");
+                    needs_attention += 1;
+                }
             }
             continue;
         }
-        let Some(fix) = block_on(ws.suggest_fix(finding))? else {
-            println!("•  {finding}");
-            needs_attention += 1;
-            continue;
-        };
-        println!("⚑  {finding}");
-        println!("   → {fix}");
-        let apply = apply_all
-            || match prompt("   apply? [y]es / [n]o / [a]ll / [q]uit: ")?.as_str() {
-                "a" | "all" => {
-                    apply_all = true;
-                    true
-                }
-                "y" | "yes" => true,
-                "q" | "quit" => {
-                    println!("stopped; {applied} fix(es) applied");
-                    return Ok(ExitCode::SUCCESS);
-                }
-                _ => false,
-            };
-        if apply {
-            block_on(ws.apply_fix(&fix))?;
+
+        // A choice the user already made, repeatable only because it is
+        // unambiguous here: exactly one remedy of that kind, and never a
+        // destructive one.
+        let repeated = repeat.iter().find_map(|kind| {
+            let mut of_kind = remedies.iter().filter(|r| r.kind == *kind);
+            let only = of_kind.next()?;
+            (of_kind.next().is_none() && only.warrant != prov::Warrant::Destructive).then_some(only)
+        });
+        if let Some(remedy) = repeated {
+            eprintln!("⚑  {finding}");
+            eprintln!("   → {}", remedy.effect);
+            block_on(ws.apply_fix(&remedy.fix))?;
             applied += 1;
+            continue;
+        }
+
+        // One remedy is a yes/no question and reads better asked as one — which
+        // is also what every finding looked like before findings could offer more
+        // than one repair. Several is a menu.
+        eprintln!("⚑  {finding}");
+        let single = remedies.len() == 1;
+        if single {
+            eprintln!("   → {}  [{}]", remedies[0].effect, remedies[0].warrant);
+        } else {
+            for (n, remedy) in remedies.iter().enumerate() {
+                eprintln!("   {}) {} [{}]", n + 1, remedy.effect, remedy.warrant);
+            }
+        }
+        let answer = prompt(&if single {
+            "   apply? [y]es / [n]o / [a]ll of this kind / [q]uit: ".to_string()
+        } else {
+            format!(
+                "   [1-{}] / [s]kip / [a]ll of this kind / [q]uit: ",
+                remedies.len()
+            )
+        })?;
+        // A bare number picks; `a` picks the first and repeats that kind. `y` is
+        // accepted only where there is nothing to disambiguate — with a menu on
+        // screen, "yes" does not name an answer. EOF reads as an empty line, so a
+        // non-interactive `--fix` skips everything rather than guessing;
+        // `--fix mechanical` is the scriptable door.
+        let chosen = match answer.as_str() {
+            "y" | "yes" if single => Some(&remedies[0]),
+            "q" | "quit" => {
+                eprintln!("stopped; {applied} fix(es) applied");
+                break;
+            }
+            "" | "s" | "skip" | "n" | "no" => None,
+            "a" | "all" => {
+                let first = &remedies[0];
+                if first.warrant == prov::Warrant::Destructive {
+                    // Never batch a removal, however emphatically it was asked
+                    // for: the whole reason a link is reported rather than
+                    // rewritten is that it records intent.
+                    eprintln!("   (won't repeat a destructive repair — choose it one at a time)");
+                    None
+                } else {
+                    repeat.insert(first.kind);
+                    Some(first)
+                }
+            }
+            other => match other.parse::<usize>() {
+                Ok(n) if (1..=remedies.len()).contains(&n) => Some(&remedies[n - 1]),
+                _ => None,
+            },
+        };
+        match chosen {
+            Some(remedy) => {
+                block_on(ws.apply_fix(&remedy.fix))?;
+                applied += 1;
+            }
+            None => needs_attention += 1,
         }
     }
     // A fix may have registered an ID (an adopted `id`, or an id-link back-link):

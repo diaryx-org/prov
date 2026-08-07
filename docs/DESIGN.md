@@ -351,6 +351,27 @@ warnings and an autofixer. It returns findings; it does not panic. It also hosts
 the reconcile pass from §4 (an unregistered `[[prov:id]]` reference is just
 another finding with an autofix: register it, or flag it if it cannot resolve).
 
+**A finding usually has more than one repair, and prov does not pick.** `check`
+answers "what is wrong"; what *should be done* is frequently a judgment — which
+of two containers is a document's real parent, which near-match a broken link
+meant, whether a mistyped tag is drift to correct or a term to admit. So a
+finding yields a list of `Remedy`s rather than a single `Fix`, each tagged with a
+`Warrant`: `Derived` when the repair is a pure function of an authority
+(regenerate the derived page from config, rebuild the derived index from its
+directory, spell a link the way the file on disk actually is) and therefore
+choosing nothing; `Judgment` when rivals exist; `Destructive` when it removes
+something authored. Only `Derived` repairs may run unattended — that is what
+`check --fix mechanical` is — and the *arity* of a finding's remedy list is a
+consequence of this, never the criterion.
+
+**What a repair may touch.** Frontmatter, and body spans twig's parser itself
+reported as links. Not ordinary prose: the objection is that `[[…]]` may be code
+(`[[None] * width]`) and a lexical scan cannot tell, which is why a wikilink —
+whose span is lexical even with twig masking code — stays diagnosis-only while an
+inline `[label](target)` does not. And never bytes: a repair may drop a link, but
+destroying a file is what a verb asked for by name (`rm`, `history-prune`,
+`empty-bin`) is for.
+
 **Discovery is reachability-bounded.** The orphan check does not scan the whole
 subtree — it inspects only the directories a linked document already occupies,
 and never recursively. A subdirectory nothing links into (a vendored tree, a

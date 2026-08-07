@@ -66,7 +66,7 @@ mod convert;
 mod create;
 mod delete;
 mod duplicate;
-mod maintain;
+pub(crate) mod maintain;
 mod recycle;
 mod rename;
 mod reparent;

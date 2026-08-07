@@ -122,7 +122,10 @@ prov:
 `check` then verifies every value of that field over the reachable document set
 (§8): a **closed** field emits `UnknownTerm` for any value not a known term; an
 **open** field emits `TermNearMiss` only when an unknown value closely resembles
-a known one (casing/spelling drift). Diagnosis only — no autofix.
+a known one (casing/spelling drift). Both offer a repair to choose from rather
+than one to apply: respell the value, or widen the vocabulary to admit it. A
+*retired* term is never offered the second — writing a bare `term:` over it would
+un-retire it and destroy the `id` and `means` it carries.
 
 ### The vocabulary file
 

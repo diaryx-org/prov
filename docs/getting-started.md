@@ -345,9 +345,15 @@ ok: no findings
 ```
 
 Break the inverse on purpose to see a finding — and `--fix`, which walks the
-*fixable* findings interactively and applies safe, metadata-only repairs (today:
-the missing inverse, and adopting an orphan). It never edits body prose, so code
-that merely looks like a link is never "repaired":
+findings and offers what can be done about each one. Most findings have more than
+one defensible repair (a broken link can be pointed at a near-match *or* dropped;
+an orphan can be adopted under any container above it), so `--fix` numbers them
+and lets you choose; where there is only one, it just asks. Add `--fix mechanical`
+to apply, without prompting, only the repairs that restate an authority rather
+than choose between readings — the mode for scripts.
+
+Repairs never delete a file, and they rewrite prose only where the parser itself
+reported a link, so code that merely looks like one is never "repaired":
 
 <!-- exec allow-fail -->
 ```sh
@@ -357,9 +363,15 @@ index.md: child rust-lang.md does not declare part_of back to it
 1 finding(s)
 $ printf 'y\n' | prov check --fix
 ⚑  index.md: child rust-lang.md does not declare part_of back to it
-   → declare part_of → index.md in rust-lang.md
-   apply? [y]es / [n]o / [a]ll / [q]uit: applied 1 fix(es): 1 finding(s) resolved, 0 introduced, 0 still outstanding
+   → declare part_of back to index.md  [derived]
+   apply? [y]es / [n]o / [a]ll of this kind / [q]uit: applied 1 fix(es): 1 finding(s) resolved, 0 introduced, 0 still outstanding
 ```
+
+The `[derived]` tag is why this one could have run under `--fix mechanical` too:
+the child claims no other parent, so the back-link is the only reading of what
+the parent already declares — nothing is being chosen. A repair tagged
+`[judgment]` picks between rival answers and `[destructive]` removes something
+you wrote, and neither ever runs unprompted.
 
 A fix is a real mutation of the graph, so `--fix` re-runs `check` afterwards and
 reports the difference in three buckets: what the fixes **resolved**, what they
