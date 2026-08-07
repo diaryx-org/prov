@@ -543,6 +543,40 @@ pub struct WorkspaceConfig {
     /// human-friendly date is a *different*, user-owned field prov never
     /// touches (see DESIGN §2, "does prov read it back?").
     pub updated: String,
+    /// What this workspace calls **itself** — the qualifier a cross-workspace
+    /// reference (`id:<workspace>/<id>`) names it by. Empty (the default) means
+    /// the workspace is anonymous: it can still *hold* foreign references, but
+    /// no reference can be recognized as pointing back at it.
+    ///
+    /// This is the one piece of cross-workspace linking that is genuinely a fact
+    /// about the archive, so it is the one piece that lives in its config. Where
+    /// some *other* workspace can be found is a property of a device, not of
+    /// this workspace, and deliberately has no config key — see
+    /// [`Target::Foreign`](crate::workspace::Target::Foreign).
+    ///
+    /// Must be [well-formed](is_valid_workspace_id): a malformed value is
+    /// reported by [`diagnose`] and ignored rather than half-honored.
+    pub workspace_id: String,
+}
+
+/// Whether `name` is a usable workspace self-name.
+///
+/// The constraint comes entirely from where the name is *written*: it is the
+/// qualifier in an `id:<workspace>/<id>` target, so it may not contain the `/`
+/// that separates it from the id, the `:` that ends the scheme, or whitespace
+/// (a target is a single scalar; a space would make it two). Anything else is
+/// the user's business — this is a name for humans to choose, not an opaque
+/// handle prov mints.
+///
+/// Deliberately *not* checked: uniqueness across workspaces. Nothing here can
+/// see another workspace, so a collision is undetectable from inside; it is the
+/// resolving host's problem, and the host is the only thing that has the
+/// evidence to notice.
+pub fn is_valid_workspace_id(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c == '/' || c == ':' || c.is_whitespace())
 }
 
 impl Default for WorkspaceConfig {
@@ -569,6 +603,7 @@ impl Default for WorkspaceConfig {
             history: History::Off,
             about: About::Structure,
             updated: String::new(),
+            workspace_id: String::new(),
         }
     }
 }
@@ -725,6 +760,16 @@ impl WorkspaceConfig {
         // The spanning relation (self-description, §3): a top-level field name.
         if let Some(v) = meta.get("spanning").and_then(Value::as_str) {
             self.spanning = Some(v.to_string());
+        }
+        // What the workspace calls itself. A malformed name is ignored here and
+        // reported by `diagnose` — honoring half of it would mean a reference
+        // that round-trips through a name prov cannot actually write.
+        if let Some(v) = meta
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .filter(|v| is_valid_workspace_id(v))
+        {
+            self.workspace_id = v.to_string();
         }
         // Per-relation entries carry two orthogonal halves in one block:
         // *style* overrides (`notation`/`path_style`/`target`/`label`) and
@@ -1005,6 +1050,10 @@ impl WorkspaceConfig {
             "about".into(),
             Value::String(self.about.as_config_str().into()),
         );
+        map.insert(
+            "workspace_id".into(),
+            Value::String(self.workspace_id.clone()),
+        );
         map
     }
 }
@@ -1045,6 +1094,18 @@ pub enum ConfigIssueKind {
     /// tree the spanning relation requires (DESIGN §3). `key` is `spanning`;
     /// `inverse` is the offending child→parent relation.
     SpanningNotSingleParent { inverse: String },
+    /// `workspace_id` holds a name that cannot be written as the qualifier of an
+    /// `id:<workspace>/<id>` reference — it contains `/`, `:` or whitespace, or
+    /// is not a string at all. `apply` ignored it, so the workspace stayed
+    /// anonymous.
+    ///
+    /// An **empty** value is not this: it is the explicit spelling of anonymous,
+    /// the way an empty `updated` spells that feature off.
+    ///
+    /// Unlike [`InvalidValue`](Self::InvalidValue) there is no list of accepted
+    /// spellings to offer: the name is the user's to choose and only its *shape*
+    /// is constrained.
+    MalformedWorkspaceId { value: String },
 }
 
 /// Top-level config keys (block names + scalar axes + the `spec` marker).
@@ -1058,6 +1119,7 @@ const TOP_KEYS: &[&str] = &[
     "fields",
     "id_storage",
     "updated",
+    "workspace_id",
     "identity",
     "fixity",
     "recycle_bin",
@@ -1157,6 +1219,29 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                 );
             }
             "updated" => {} // free-form field name
+            // A name the user chose, constrained only in shape — it has to
+            // survive being written as the qualifier of an `id:<ws>/<id>`
+            // target. A non-string is malformed for the same reason.
+            //
+            // The empty string is *not*: it is the explicit spelling of the
+            // default (anonymous), exactly as an empty `updated` spells the
+            // stamping feature off. `to_mapping` writes it that way, so
+            // flagging it would make prov's own serialized default fail its own
+            // diagnosis.
+            "workspace_id" => {
+                let ok = match value.as_str() {
+                    Some(s) => s.is_empty() || is_valid_workspace_id(s),
+                    None => false,
+                };
+                if !ok {
+                    issues.push(ConfigIssue {
+                        key: key.clone(),
+                        kind: ConfigIssueKind::MalformedWorkspaceId {
+                            value: value_summary(value),
+                        },
+                    });
+                }
+            }
             "spanning" => {
                 // A relation name — must be a string; its coherence with the
                 // relations block is a cross-relation check below.
@@ -1707,6 +1792,9 @@ mod tests {
             // silently re-defaulted on the way back.
             about: About::Off,
             updated: "modified".to_string(),
+            // Non-default (the default is anonymous), so the round trip proves
+            // the name survives rather than being silently dropped.
+            workspace_id: "notes".to_string(),
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);
@@ -1816,6 +1904,43 @@ mod tests {
                 suggestion: "recycle_bin".into()
             }
         );
+    }
+
+    #[test]
+    fn workspace_id_applies_when_well_formed_and_is_ignored_when_not() {
+        let mut cfg = WorkspaceConfig::default();
+        assert_eq!(cfg.workspace_id, "", "anonymous by default");
+
+        cfg.apply(&config_doc(&[("workspace_id", "notes")]));
+        assert_eq!(cfg.workspace_id, "notes");
+
+        // A malformed value never half-lands: the previous name stands rather
+        // than being replaced by something prov cannot write into a reference.
+        for bad in ["with/slash", "with:colon", "with space", ""] {
+            cfg.apply(&config_doc(&[("workspace_id", bad)]));
+            assert_eq!(cfg.workspace_id, "notes", "rejected {bad:?}");
+        }
+    }
+
+    #[test]
+    fn diagnose_flags_a_malformed_workspace_id_but_not_an_empty_one() {
+        for bad in ["with/slash", "with:colon", "with space"] {
+            let issues = diagnose(&config_doc(&[("workspace_id", bad)]));
+            assert_eq!(
+                issues.first().map(|i| &i.kind),
+                Some(&ConfigIssueKind::MalformedWorkspaceId {
+                    value: bad.to_string()
+                }),
+                "{bad:?}"
+            );
+        }
+        // Empty is the explicit spelling of anonymous — the same shape as an
+        // empty `updated` — so it is clean, and `to_mapping` may write it.
+        assert!(
+            diagnose(&config_doc(&[("workspace_id", "")])).is_empty(),
+            "an empty name is anonymity, not an error"
+        );
+        assert!(diagnose(&config_doc(&[("workspace_id", "notes")])).is_empty());
     }
 
     #[test]

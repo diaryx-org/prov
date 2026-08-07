@@ -94,6 +94,17 @@ pub enum Resolution {
     },
     /// A URL / mail address — off-workspace, never resolved or rewritten.
     External,
+    /// An `id:<workspace>/<id>` target naming a document in another workspace.
+    ///
+    /// A clean resolution, not a finding: prov holds no map from a workspace
+    /// name to a location (see
+    /// [`Target::Foreign`](crate::workspace::Target::Foreign)), so it has no
+    /// evidence either way about whether the target exists. Reporting a link it
+    /// cannot check as broken would be a false positive every host would then
+    /// have to suppress — and a `check` that must be filtered is one nobody
+    /// reads. The id is deliberately **not** check-verified: the foreign
+    /// workspace owns its id space and need not be a prov workspace.
+    Foreign { workspace: String, id: Id },
 }
 
 impl Resolution {
@@ -157,7 +168,15 @@ impl CensusEntry {
                 name: name.clone(),
                 candidates: candidates.clone(),
             }),
-            Resolution::Path(_) | Resolution::Id { .. } | Resolution::External => None,
+            // `Foreign` sits with the resolutions that produce nothing, not
+            // with the ones that produce a finding: prov has no evidence about
+            // a workspace it cannot see, and a link reported broken on no
+            // evidence is a false positive the host would have to filter back
+            // out (see `Resolution::Foreign`).
+            Resolution::Path(_)
+            | Resolution::Id { .. }
+            | Resolution::External
+            | Resolution::Foreign { .. } => None,
         }
     }
 }
@@ -637,6 +656,11 @@ impl fmt::Display for Finding {
                 crate::config::ConfigIssueKind::SpanningNotSingleParent { inverse } => write!(
                     f,
                     "{}: spanning relation's inverse `{inverse}` is `cardinality: many` — a spanning tree needs a single parent (make `{inverse}` cardinality `one`)",
+                    doc.display(),
+                ),
+                crate::config::ConfigIssueKind::MalformedWorkspaceId { value } => write!(
+                    f,
+                    "{}: config `workspace_id` is `{value}` — a workspace name cannot be empty or contain `/`, `:` or whitespace (ignored; the workspace stays anonymous)",
                     doc.display(),
                 ),
             },
@@ -2012,6 +2036,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // cardinality — a decision about what the workspace *is*, not a
                 // key to rewrite.
                 crate::config::ConfigIssueKind::SpanningNotSingleParent { .. } => Ok(Vec::new()),
+                // Only the author knows what this workspace should be called,
+                // and picking a name for them would put it in every reference
+                // that ever points here. Diagnosis only.
+                crate::config::ConfigIssueKind::MalformedWorkspaceId { .. } => Ok(Vec::new()),
             },
             _ => Ok(Vec::new()),
         }
@@ -2996,8 +3024,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Resolve one forward link (declared in the document at `source`) into a
     /// [`Resolution`]. A path target is checked against the on-disk name; an
     /// `id:<id>` target resolves through the registry and stays an id-form
-    /// resolution; a nominal (`[[My File]]`) target resolves through `titles` —
-    /// `Unique` to the on-disk path, `Ambiguous` to
+    /// resolution; an `id:<workspace>/<id>` target naming another workspace
+    /// stops at [`Resolution::Foreign`]; a nominal (`[[My File]]`) target
+    /// resolves through `titles` — `Unique` to the on-disk path, `Ambiguous` to
     /// [`Resolution::AmbiguousAlias`], `Unknown` falling through to a path (so a
     /// nominal link to nothing reports as `Broken`, like any dead link).
     async fn resolve_forward(
@@ -3009,7 +3038,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if link.is_external() {
             return Resolution::External;
         }
-        if let Some(id) = link.id_target() {
+        // Mirrors `Workspace::resolve_link_with`: a reference qualified with
+        // this workspace's own name is local, any other qualifier is foreign,
+        // and a malformed `id:` body is a broken id rather than a filename that
+        // happens to contain a colon.
+        let local_id = match link.id_ref() {
+            Some(crate::link::IdRef::Local(id)) => Some(id),
+            Some(crate::link::IdRef::Foreign { workspace, id }) => {
+                if self.workspace_id().is_empty() || workspace != self.workspace_id() {
+                    return Resolution::Foreign { workspace, id };
+                }
+                Some(id)
+            }
+            Some(crate::link::IdRef::Malformed) => return Resolution::MalformedId,
+            None => None,
+        };
+        if let Some(id) = local_id {
             if !identity::verify(id.as_str()) {
                 return Resolution::MalformedId;
             }
@@ -3722,6 +3766,73 @@ mod tests {
                 Finding::MissingInverse { child, .. } if child == &PathBuf::from("b.md")
             )),
             "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_cross_workspace_reference_is_carried_not_reported() {
+        // The claim the whole design rests on: `check` has no evidence about a
+        // workspace it cannot see, so it says nothing. A finding here would be a
+        // false positive on every reference, which every host would then have to
+        // filter back out.
+        let dir = tempdir("foreign-check");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nlinks:\n- id:notes/ajp7eq\n---\nAlso [[id:diaryx/xk4m2p]].\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let census = block_on(ws.census("index.md")).unwrap();
+        assert!(
+            census.iter().any(|e| matches!(
+                &e.resolution,
+                Resolution::Foreign { workspace, id }
+                    if workspace == "notes" && id.as_str() == "ajp7eq"
+            )),
+            "frontmatter reference resolved foreign: {census:?}"
+        );
+        assert!(
+            census.iter().any(|e| matches!(e.site, LinkSite::Body(_))
+                && matches!(&e.resolution, Resolution::Foreign { workspace, .. } if workspace == "diaryx")),
+            "body reference resolved foreign: {census:?}"
+        );
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings.iter().any(|f| matches!(
+                f,
+                Finding::BrokenLink { .. }
+                    | Finding::DanglingId { .. }
+                    | Finding::MalformedId { .. }
+            )),
+            "no link finding for a workspace check cannot see: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_self_qualified_reference_is_checked_like_a_local_one() {
+        // The other side of the invariant: once the workspace claims the name,
+        // a reference qualified with it stops being foreign — including when it
+        // dangles, which is now a real finding rather than a silent pass.
+        let dir = tempdir("self-qualified-check");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nworkspace_id: notes\nlinks:\n- id:notes/0vn4182\n---\n",
+        );
+        let ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .workspace_id("notes")
+            .build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::DanglingId { id, .. } if id.as_str() == "0vn4182"
+            )),
+            "the id is ours, and it resolves to nothing: {findings:?}"
         );
     }
 

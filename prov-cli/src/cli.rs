@@ -98,8 +98,45 @@ pub(crate) struct Cli {
     /// place, since bit-rot is precisely the change a timestamp cannot see.
     #[arg(long = "no-cache")]
     pub(crate) no_cache: bool,
+    /// Read this device's map of other workspaces from here instead of the
+    /// default location (`prov peer list` prints the file in use). Also settable
+    /// via `PROV_PEERS`, or `XDG_CONFIG_HOME`; the flag wins. The map says where
+    /// a workspace named by a cross-workspace reference (`id:<name>/<id>`)
+    /// lives; it is device-local by design, since the same archive is read from
+    /// different machines.
+    #[arg(long = "peers", value_name = "FILE")]
+    pub(crate) peers: Option<PathBuf>,
     #[command(subcommand)]
     pub(crate) command: Command,
+}
+
+/// What `prov peer` is being asked to do.
+#[derive(Subcommand)]
+pub(crate) enum PeerAction {
+    /// List the workspaces this device can resolve, and the file holding them.
+    List,
+    /// Record where a workspace lives on this device. NAME must be what that
+    /// workspace calls itself (its `workspace_id`) — that is the name every
+    /// reference to it will be written with.
+    Add {
+        /// The workspace's own name.
+        name: String,
+        /// Its root directory on this device.
+        dir: PathBuf,
+    },
+    /// Forget a workspace. Its references keep working exactly as well as they
+    /// did — which is to say they are still carried, just no longer followable.
+    Remove {
+        /// The workspace's own name.
+        name: String,
+    },
+    /// Resolve a cross-workspace reference (`id:<name>/<id>`) to a file on this
+    /// device, by looking the id up in that workspace's own registry.
+    Resolve {
+        /// The reference, with or without the `id:` scheme.
+        #[arg(value_name = "REFERENCE")]
+        reference: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -169,6 +206,11 @@ pub(crate) enum Command {
         /// on a content change (e.g. `updated`). Omitted → the feature is off.
         #[arg(long, value_name = "FIELD")]
         updated_field: Option<String>,
+        /// What this workspace calls itself, so another workspace can reference
+        /// it (`id:<NAME>/<id>`). Omitted → anonymous, which is fine until
+        /// something else needs to point here. No `/`, `:` or whitespace.
+        #[arg(long, value_name = "NAME")]
+        workspace_id: Option<String>,
         /// What to do with content documents already in the directory: `flat`
         /// links each one under the new root; `mirror` folds the folder tree into
         /// the containment tree (each directory becomes a node, synthesizing a
@@ -185,6 +227,22 @@ pub(crate) enum Command {
         /// Accept every default without prompting.
         #[arg(long, short = 'y')]
         yes: bool,
+    },
+    /// Where the *other* workspaces are — this device's map from a workspace
+    /// name to a directory.
+    ///
+    /// A workspace names itself in its own config (`workspace_id`), and a
+    /// reference across workspaces is written `id:<name>/<id>`. What that name
+    /// resolves to is a fact about *this machine*, not about the archive, so it
+    /// is kept here rather than in `prov.yaml` — the same reasoning that keeps
+    /// the fixity cache's location out of the workspace.
+    ///
+    /// Nothing depends on this map: a cross-workspace reference is carried, left
+    /// alone by moves, and never reported broken, whether or not a peer is
+    /// recorded. The map only makes such a reference *followable*.
+    Peer {
+        #[command(subcommand)]
+        action: PeerAction,
     },
     /// Summarize a document: its metadata, spanning children, and declared links.
     Show {

@@ -38,6 +38,7 @@ use prov::{
 mod backup;
 mod cache;
 mod cli;
+mod peer;
 mod zip;
 use cli::*;
 
@@ -59,7 +60,9 @@ fn main() -> ExitCode {
     // Resolved once, before any command runs, for the same reason `-C` is: it is
     // a property of the invocation, not of any one verb.
     cache::init(cli.cache_dir.clone(), cli.no_cache);
+    peer::init(cli.peers.clone());
     let result = match cli.command {
+        Command::Peer { action } => cmd_peer(action),
         Command::Show { file } => resolve_target(&file).and_then(|f| cmd_show(&f)),
         Command::Links { file, relation } => {
             resolve_target(&file).and_then(|f| cmd_links(&f, relation.as_deref()))
@@ -83,6 +86,7 @@ fn main() -> ExitCode {
             fixity,
             no_recycle_bin,
             updated_field,
+            workspace_id,
             adopt,
             attach,
             yes,
@@ -101,6 +105,7 @@ fn main() -> ExitCode {
             fixity,
             no_recycle_bin,
             updated_field,
+            workspace_id,
             adopt,
             attach,
             yes,
@@ -394,6 +399,10 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
         // default) every document prov authors carries its own `id`, and `check`
         // reports any that does not.
         .id_storage(ctx.config.id_storage)
+        // What this workspace calls itself — the one thing the library needs in
+        // order to tell a reference that points *back here* from one that points
+        // somewhere it cannot see.
+        .workspace_id(ctx.config.workspace_id.clone())
         .build())
 }
 
@@ -916,6 +925,9 @@ fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
         NodeKind::Unreadable(e) => format!(" (unreadable: {e})"),
         NodeKind::UnresolvedId(id) => format!(" (unresolved id: {id})"),
         NodeKind::AmbiguousAlias(name) => format!(" (ambiguous alias: [[{name}]])"),
+        NodeKind::Foreign { workspace, id } => {
+            format!(" (workspace {workspace}, id {id} — not followed)")
+        }
     };
     println!("{connector}{name}{marker}");
     let child_prefix = if is_root {
@@ -1029,6 +1041,18 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
                     Target::AmbiguousAlias(name) => (
                         format!("{}: {name} (ambiguous alias)", relation.name),
                         ExploreAction::Note("several documents share this title".into()),
+                    ),
+                    Target::Foreign { workspace, id } => (
+                        format!("{}: {id} (workspace {workspace})", relation.name),
+                        ExploreAction::Note(match peer::resolve(&workspace) {
+                            Some(root) => format!(
+                                "another workspace — `{}`, per this device's peer map",
+                                root.display()
+                            ),
+                            None => format!(
+                                "another workspace — no peer named `{workspace}` on this device (`prov peer add {workspace} <dir>`)"
+                            ),
+                        }),
                     ),
                 };
                 actions.push((label, String::new(), action));
@@ -1956,6 +1980,158 @@ fn cmd_history_capture(label: Option<&str>) -> CmdResult {
 /// Prints the file even when it does not exist yet, because "where would it go?"
 /// is as much the question as "what is in it?", and a path is what a user needs
 /// to add it to a backup exclusion list or to see that `--cache-dir` took.
+/// `prov peer` — inspect and edit this device's map of other workspaces.
+///
+/// Deliberately does **not** need a workspace root: the map is a property of the
+/// machine, and a user setting one up has often not `cd`'d anywhere in
+/// particular. `peer resolve` is the one action that opens a workspace, and the
+/// one it opens is the *peer*, never the current directory.
+fn cmd_peer(action: PeerAction) -> CmdResult {
+    match action {
+        PeerAction::List => {
+            let Some(file) = peer::path() else {
+                println!("(no peer map)");
+                eprintln!(
+                    "no peer-map location for this invocation — no config directory could be \
+                     determined.\n\
+                     \n  Set one with --peers <FILE> or PROV_PEERS. Cross-workspace references \
+                     work either way;\n  without a map they are carried but cannot be followed."
+                );
+                return Ok(ExitCode::SUCCESS);
+            };
+            let peers = peer::load();
+            // The entries to stdout and the commentary to stderr, so `prov peer
+            // list` pipes cleanly — the convention `cache` and `history-capture`
+            // already follow.
+            for (name, root) in &peers {
+                println!("{name}\t{}", root.display());
+            }
+            if peers.is_empty() {
+                eprintln!(
+                    "no peers recorded ({})\n\
+                     \n  Add one with `prov peer add <name> <dir>`, where <name> is what that\n  \
+                     workspace calls itself (`prov config workspace_id` there).",
+                    file.display()
+                );
+            } else {
+                eprintln!("{} peer(s) — {}", peers.len(), file.display());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PeerAction::Add { name, dir } => {
+            if !prov::is_valid_workspace_id(&name) {
+                return Err(format!(
+                    "`{name}` is not a valid workspace name — it cannot be empty or contain \
+                     `/`, `:` or whitespace"
+                )
+                .into());
+            }
+            // Absolute, so the map means the same thing from every directory the
+            // CLI is later run in. A peer map full of relative paths would
+            // resolve differently per invocation, which is exactly the failure
+            // mode that keeps it out of `prov.yaml` in the first place.
+            let dir = dir
+                .canonicalize()
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            // Discovering the peer's root is what turns "a directory" into "a
+            // workspace", and it is also the only chance to notice that the name
+            // being recorded is not the name that workspace answers to — which
+            // would silently resolve every reference to the wrong place.
+            match find_root_quiet_at(&dir) {
+                Ok(peer_ctx) => {
+                    let declared = &peer_ctx.config.workspace_id;
+                    if declared.is_empty() {
+                        eprintln!(
+                            "warning: the workspace at {} does not name itself — set \
+                             `workspace_id` there\n  (`prov -C {} config workspace_id {name}`), \
+                             or references written `id:{name}/<id>` will not be recognized as \
+                             local when read inside it",
+                            dir.display(),
+                            dir.display()
+                        );
+                    } else if declared != &name {
+                        eprintln!(
+                            "warning: the workspace at {} calls itself `{declared}`, not \
+                             `{name}` — references to it will be written `id:{declared}/<id>`, \
+                             which this entry will not resolve",
+                            dir.display()
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Recorded anyway: a peer that is not a workspace *yet* is a
+                    // reasonable thing to write down, and refusing would make the
+                    // order of setup steps load-bearing.
+                    eprintln!("warning: {}: {e}", dir.display());
+                }
+            }
+            let mut peers = peer::load();
+            let previous = peers.insert(name.clone(), dir.clone());
+            peer::store(&peers)?;
+            match previous {
+                Some(old) if old != dir => {
+                    eprintln!("{name} → {} (was {})", dir.display(), old.display())
+                }
+                _ => eprintln!("{name} → {}", dir.display()),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PeerAction::Remove { name } => {
+            let mut peers = peer::load();
+            if peers.remove(&name).is_none() {
+                eprintln!("no peer named `{name}`");
+                return Ok(ExitCode::FAILURE);
+            }
+            peer::store(&peers)?;
+            eprintln!("removed `{name}` — references to it are still carried, just not followable");
+            Ok(ExitCode::SUCCESS)
+        }
+        PeerAction::Resolve { reference } => cmd_peer_resolve(&reference),
+    }
+}
+
+/// `prov peer resolve` — turn `id:<workspace>/<id>` into a file on this device.
+///
+/// The whole cross-workspace design in one command: the library parsed the
+/// reference and stopped at "workspace `notes`, id `ajp7eq`"; everything past
+/// that point is this device's peer map plus the *peer's own* registry. Nothing
+/// here consults the current workspace at all.
+fn cmd_peer_resolve(reference: &str) -> CmdResult {
+    // Tolerate a bare `notes/ajp7eq` as well as the written `id:notes/ajp7eq`,
+    // since the former is what a person reads off a screen.
+    let written = if prov::link::strip_id_scheme(reference).is_some() {
+        reference.to_string()
+    } else {
+        format!("{}{reference}", prov::link::ID_SCHEME)
+    };
+    let Some((peer_name, id)) = link::Link::parse(&written).foreign_target() else {
+        return Err(format!(
+            "`{reference}` is not a cross-workspace reference — expected `<workspace>/<id>`"
+        )
+        .into());
+    };
+    let Some(root) = peer::resolve(&peer_name) else {
+        return Err(format!(
+            "no peer named `{peer_name}` on this device\n\
+             \n  Record one with `prov peer add {peer_name} <dir>`."
+        )
+        .into());
+    };
+    let peer_ctx = find_root_quiet_at(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let peer_ws = workspace(&peer_ctx)?;
+    let Some(path) = peer_ws.index().resolve(&id) else {
+        return Err(format!(
+            "`{id}` is not registered in the workspace at {}",
+            root.display()
+        )
+        .into());
+    };
+    // Absolute, because the answer is only useful outside the peer workspace —
+    // the caller is standing somewhere else by construction.
+    println!("{}", root.join(path).display());
+    Ok(ExitCode::SUCCESS)
+}
+
 fn cmd_cache(clear: bool) -> CmdResult {
     let ctx = find_root()?;
     let Some(file) = cache::path_for(&ctx.root_dir) else {
@@ -3108,6 +3284,11 @@ fn cmd_config(
                     prov::ConfigIssueKind::SpanningNotSingleParent { inverse } => {
                         eprintln!(
                             "prov: spanning relation's inverse `{inverse}` must be `cardinality: one` to form a single-parent tree"
+                        );
+                    }
+                    prov::ConfigIssueKind::MalformedWorkspaceId { value } => {
+                        eprintln!(
+                            "prov: `{value}` is not a valid workspace name — it cannot be empty or contain `/`, `:` or whitespace"
                         );
                     }
                 }

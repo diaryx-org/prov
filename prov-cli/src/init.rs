@@ -481,6 +481,7 @@ pub(crate) fn cmd_init(
     fixity: Option<FixityArg>,
     no_recycle_bin: bool,
     updated_field: Option<String>,
+    workspace_id: Option<String>,
     adopt: Option<AdoptArg>,
     attach: bool,
     yes: bool,
@@ -872,6 +873,11 @@ pub(crate) fn cmd_init(
         // the one artifact that makes the directory readable without prov.
         about: prov::About::Structure,
         updated: updated_field.clone(),
+        // Anonymous unless asked for, and not prompted: a name only earns its
+        // keep once some *other* workspace refers to this one, which is a thing
+        // that happens later, to a minority of workspaces. `prov config
+        // workspace_id <name>` is the moment it becomes true.
+        workspace_id: workspace_id.unwrap_or_default(),
     };
     reference.write_onto(&mut ws_config);
 
