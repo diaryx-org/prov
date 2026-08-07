@@ -444,6 +444,9 @@ fn fence_prose(
         E::HtmlCodeJson => html_code("json", sample_json),
         E::HtmlCodeToml => html_code("toml", sample_toml),
         E::HtmlCodeFig => html_code("figl", sample_fig),
+        // `EmbedType` is `#[non_exhaustive]`; see the matching comment in
+        // `document::embed_style_of` — a new variant needs a real case here too.
+        _ => unreachable!("unhandled fig::EmbedType variant — add a case in fence_prose"),
     }
 }
 

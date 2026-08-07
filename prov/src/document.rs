@@ -206,6 +206,12 @@ pub fn embed_style_of(kind: EmbedType) -> EmbedStyle {
         E::HtmlCodeYaml | E::HtmlCodeJson | E::HtmlCodeToml | E::HtmlCodeFig => {
             EmbedStyle::HtmlCode
         }
+        // `EmbedType` is `#[non_exhaustive]`: a fig version newer than this crate
+        // may detect an archetype prov doesn't know yet. Guessing a style here
+        // would risk silently misclassifying a real document mid-`convert`, so
+        // this needs an actual case added (here, `embed_carrier`, and the prose
+        // in `about.rs`/`history/docs.rs`) before such a document can be handled.
+        _ => unreachable!("unhandled fig::EmbedType variant — add a case in embed_style_of"),
     }
 }
 

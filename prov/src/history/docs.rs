@@ -152,6 +152,9 @@ fn carrier_opening(embed: fig::EmbedType) -> String {
             "inside the `<pre><code>` block at the top, written in {name} \
              (with `<` and `&` HTML-encoded)"
         ),
+        // `EmbedType` is `#[non_exhaustive]`; see the matching comment in
+        // `document::embed_style_of` — a new variant needs a real case here too.
+        _ => unreachable!("unhandled fig::EmbedType variant — add a case in carrier_opening"),
     }
 }
 
