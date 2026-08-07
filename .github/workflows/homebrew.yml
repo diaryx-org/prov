@@ -1,12 +1,16 @@
 name: Homebrew
 # Release the `prov` CLI to Homebrew. Same shape as fig's homebrew.yml, but
 # the binaries are built with cargo (prov is a Rust workspace; the CLI is
-# the `prov-cli` crate, whose binary is named `prov`). Three jobs:
+# the `prov-cli` crate, whose binary is named `prov`). Four jobs:
 # 1. build macOS binaries (arm64, x86_64) and
 # 2. Linux binaries (x86_64, aarch64), attach them to this repo's GitHub
 #    Release, then
 # 3. render the formula with the release's version + checksums and push it to
 #    the tap repo.
+# 4. build a wasm32-wasip1 binary and attach it to the same Release. Not part
+#    of the Homebrew formula (brew doesn't run wasm) — just a portable
+#    download for any WASI runtime (wasmtime, wasmer, ...), so it doesn't
+#    block or feed `bump-formula`.
 #
 # Per-arch prebuilt binaries (not a source `depends_on "rust"` formula): users
 # don't need a Rust toolchain, and installs are fast.
@@ -79,6 +83,27 @@ jobs:
         files: |
           prov-linux-x86_64.tar.gz
           prov-linux-aarch64.tar.gz
+  wasi-binary:
+    name: Build + attach WASI binary
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+      with: { targets: "wasm32-wasip1" }
+    - uses: mlugg/setup-zig@v2
+      with: { version: "0.16.0" }
+    - name: Build wasm32-wasip1
+      # No prebuilt fig-sys/twig-sys payload exists for this target, so both
+      # build fig/twig-doc's native library from source — hence Zig on PATH.
+      run: |
+        cargo build --release -p prov-cli --target wasm32-wasip1
+        cp target/wasm32-wasip1/release/prov.wasm prov-wasi.wasm
+    - name: Attach to the GitHub Release
+      uses: softprops/action-gh-release@v3
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: prov-wasi.wasm
   bump-formula:
     name: Bump tap formula
     runs-on: ubuntu-latest
