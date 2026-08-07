@@ -11,7 +11,7 @@ use crate::workspace::Workspace;
 // Re-exported so each verb's `mod tests` can pull the whole fixture surface —
 // helpers and the concrete workspace types they hand back — from one glob.
 pub(super) use crate::exec::block_on;
-pub(super) use crate::fs::StdFs;
+pub(super) use crate::fs::{CountingFs, StdFs};
 pub(super) use crate::identity::{Id, Minter};
 pub(super) use crate::index::FileIndex;
 
@@ -71,6 +71,18 @@ pub(super) fn ws_authoring(
         .default_embed_format(format)
         .embed_style(style)
         .build()
+}
+
+/// [`ws`] over a [`CountingFs`], returning the counter alongside.
+pub(super) fn ws_counting(dir: &Path) -> (Workspace<CountingFs, Minter, FileIndex>, CountingFs) {
+    let fs = CountingFs::default();
+    let ws = Workspace::builder(fs.clone())
+        .root(dir)
+        .identity(Minter::lazy(42))
+        .index(FileIndex::new(fig::Format::Yaml))
+        .history(crate::config::History::Manual)
+        .build();
+    (ws, fs)
 }
 
 /// A small workspace: a root, two notes, and an attachment (payload plus

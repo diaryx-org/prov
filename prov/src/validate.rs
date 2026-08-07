@@ -2118,7 +2118,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// that fails to resolve becomes a finding, joined with the structural
     /// findings (unreadable document, duplicate containment, missing inverse)
     /// the walk raises from traversal state.
+    /// Nine passes follow, most of them over the same documents: the walk loads
+    /// every reachable document to build the census, and the fixity, orphan,
+    /// vocabulary and label passes each go back for their own reasons. A
+    /// [`read_scope`](Self::read_scope) makes that composition cost one read per
+    /// document instead of one per pass — and ends here, so nothing survives
+    /// into whatever the caller does next.
     pub async fn check(&self, start: impl AsRef<Path>) -> Result<Vec<Finding>> {
+        let _scope = self.read_scope();
         let start = start.as_ref();
         let Walk {
             census,
@@ -3345,6 +3352,55 @@ mod tests {
         write(&dir, "a.md", "---\npart_of: index.md\n---\n");
         let ws = Workspace::builder(StdFs).root(&dir).build();
         assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    /// `check` is nine passes over one graph, and several of them want the same
+    /// documents. The read scope it opens is what makes that composition cost
+    /// one read per document instead of one per pass.
+    #[test]
+    fn check_reads_each_document_once() {
+        let dir = tempdir("memo");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(
+            &dir,
+            "a.md",
+            &format!(
+                "---\npart_of: index.md\ncontent_hash: {}\n---\nalpha\n",
+                crate::fixity::digest(b"alpha\n")
+            ),
+        );
+        let fs = crate::fs::CountingFs::default();
+        let ws = Workspace::builder(fs.clone()).root(&dir).build();
+
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+        // `a.md` is wanted by the walk (for the census) and again by the fixity
+        // pass (to hash its body) at the very least.
+        assert_eq!(
+            fs.doc_reads(&dir, "a.md"),
+            1,
+            "a document was read more than once inside one `check`"
+        );
+        assert_eq!(fs.doc_reads(&dir, "index.md"), 1);
+    }
+
+    /// The scope is bounded by the operation, so a second `check` re-reads
+    /// everything. That is the property that lets the memo have no invalidation
+    /// policy at all: it never outlives the operation that opened it.
+    #[test]
+    fn a_second_check_reads_the_documents_again() {
+        let dir = tempdir("memo-scope");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        let fs = crate::fs::CountingFs::default();
+        let ws = Workspace::builder(fs.clone()).root(&dir).build();
+
+        block_on(ws.check("index.md")).unwrap();
+        block_on(ws.check("index.md")).unwrap();
+        assert_eq!(
+            fs.doc_reads(&dir, "a.md"),
+            2,
+            "a memo outlived the operation that opened it"
+        );
     }
 
     #[test]

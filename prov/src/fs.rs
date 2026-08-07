@@ -800,6 +800,101 @@ pub(crate) struct RecordingFs {
     caps: Capabilities,
 }
 
+/// A real filesystem that counts what it was asked to read, per path.
+///
+/// The observable both the read memo and the fixity cache exist to move: a pass
+/// that does not read a file is the whole point, and "did not read it" is not
+/// visible in any result the pass returns. Delegates everything to [`StdFs`], so
+/// timestamps, atomic writes and durability all behave like the real thing.
+#[cfg(test)]
+#[derive(Clone, Default, Debug)]
+pub(crate) struct CountingFs {
+    /// `read` — raw bytes. What the capture manifest loop spends.
+    bytes: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>>,
+    /// `read_to_string` — documents. What the traversal passes spend.
+    docs: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>>,
+}
+
+#[cfg(test)]
+impl CountingFs {
+    /// How many times the file at workspace-relative `rel` had its bytes read.
+    pub(crate) fn byte_reads(&self, dir: &Path, rel: &str) -> usize {
+        count(&self.bytes, &dir.join(rel))
+    }
+
+    /// How many times the document at workspace-relative `rel` was read.
+    pub(crate) fn doc_reads(&self, dir: &Path, rel: &str) -> usize {
+        count(&self.docs, &dir.join(rel))
+    }
+
+    /// Total byte reads under `dir` — for asserting that a whole pass read
+    /// nothing at all.
+    pub(crate) fn total_byte_reads(&self) -> usize {
+        self.bytes.lock().unwrap().values().sum()
+    }
+
+    pub(crate) fn reset(&self) {
+        self.bytes.lock().unwrap().clear();
+        self.docs.lock().unwrap().clear();
+    }
+}
+
+#[cfg(test)]
+fn count(
+    counter: &std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>,
+    path: &Path,
+) -> usize {
+    counter.lock().unwrap().get(path).copied().unwrap_or(0)
+}
+
+#[cfg(test)]
+fn tally(counter: &std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>, path: &Path) {
+    *counter
+        .lock()
+        .unwrap()
+        .entry(path.to_path_buf())
+        .or_insert(0) += 1;
+}
+
+#[cfg(test)]
+impl Storage for CountingFs {
+    async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        tally(&self.bytes, path);
+        StdFs.read(path).await
+    }
+    async fn read_to_string(&self, path: &Path) -> io::Result<String> {
+        tally(&self.docs, path);
+        StdFs.read_to_string(path).await
+    }
+    async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        StdFs.read_dir(path).await
+    }
+    async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.write(path, contents).await
+    }
+    async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        StdFs.create_dir_all(path).await
+    }
+    async fn remove_file(&self, path: &Path) -> io::Result<()> {
+        StdFs.remove_file(path).await
+    }
+    async fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        StdFs.remove_dir_all(path).await
+    }
+    async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.rename(from, to).await
+    }
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        StdFs.metadata(path).await
+    }
+    fn capabilities(&self) -> Capabilities {
+        StdFs.capabilities()
+    }
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        StdFs.sync(path, need).await
+    }
+}
+
 /// One mutating operation [`RecordingFs`] observed, in order. Reads are not
 /// recorded — the protocol under test is about the sequence of *durability*
 /// steps, and a read changes nothing.

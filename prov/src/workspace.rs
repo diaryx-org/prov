@@ -23,23 +23,26 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Mutex;
 
-use crate::change::ChangeSet;
+use crate::change::{ChangeSet, FileOp};
 use crate::config::{Fixity, History, IdStorage};
 use crate::content::ContentFormat;
 use crate::document::EmbedStyle;
 use crate::error::{Error, Result};
+use crate::fixity::FixityCache;
 use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use crate::index::{Collision, IndexStore, NoIndex};
 use crate::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
+use crate::memo::{ReadMemo, ReadScope, lock};
 use crate::meta::Value;
 use crate::relation::RelationSet;
 use crate::title::{self, TitleIndex, TitleMatch};
 
 /// A composed workspace: a filesystem, a relation vocabulary, an identity
 /// policy, an index store, and the link style it authors in.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     fs: FS,
     root: PathBuf,
@@ -60,6 +63,54 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     /// document's id and the registry entry for it land in the same crash-atomic
     /// write — never one without the other.
     pending_stamps: Vec<(PathBuf, crate::identity::Id)>,
+    /// What the current operation has already read — empty unless a
+    /// [`read_scope`](Workspace::read_scope) is open. See [`crate::memo`].
+    ///
+    /// Interior mutability because the passes that benefit take `&self`:
+    /// `check` and its seven sub-passes are read-only operations, and making
+    /// them `&mut` to let them remember what they read would be the tail wagging
+    /// the dog.
+    memo: Mutex<ReadMemo>,
+    /// What this device remembers of the workspace's file digests. Absent until
+    /// a host supplies one — see [`crate::fixity::FixityCache`], which is also
+    /// where the rule about who may consult it is written down.
+    fixity_cache: Mutex<Option<FixityCache>>,
+}
+
+/// Hand-written rather than derived, because the two memories carry different
+/// answers to "what does a second handle on this workspace inherit?".
+///
+/// The **read memo** starts empty, with no scope open — a requirement, not a
+/// preference. A [`ReadScope`] guard points at the memo it opened, and a clone
+/// has no guard pointing at it; inheriting a nonzero depth would leave the copy
+/// permanently scoped, remembering reads with nothing left to close it.
+///
+/// The **fixity cache** is copied, because it is a memory of the disk and both
+/// handles are looking at the same disk. Two clones that both learn things do
+/// diverge, and whichever is persisted last is the one that keeps what it
+/// learned — which costs a re-hash and nothing else, since every entry is
+/// validated against the file's own stat before it is believed.
+impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
+    fn clone(&self) -> Self {
+        Self {
+            fs: self.fs.clone(),
+            root: self.root.clone(),
+            relations: self.relations.clone(),
+            identity: self.identity.clone(),
+            index: self.index.clone(),
+            link_style: self.link_style,
+            id_links: self.id_links,
+            reference_style: self.reference_style,
+            default_embed_format: self.default_embed_format,
+            embed_style: self.embed_style,
+            fixity: self.fixity,
+            history: self.history,
+            id_storage: self.id_storage,
+            pending_stamps: self.pending_stamps.clone(),
+            memo: Mutex::default(),
+            fixity_cache: Mutex::new(lock(&self.fixity_cache).clone()),
+        }
+    }
 }
 
 impl<FS> Workspace<FS, NoIdentity, NoIndex> {
@@ -87,6 +138,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             fixity: Fixity::Payloads,
             history: History::Off,
             id_storage: IdStorage::Registry,
+            fixity_cache: None,
         }
     }
 }
@@ -114,6 +166,119 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The configured relation vocabulary.
     pub fn relations(&self) -> &RelationSet {
         &self.relations
+    }
+
+    /// Open a **read scope**: for as long as the returned guard is held, a
+    /// document this workspace reads is read once, and every later read of it
+    /// this operation makes is answered from memory.
+    ///
+    /// This is for an operation composed of several passes over the same
+    /// documents — [`check`](Self::check) is the archetype, and opens one for
+    /// itself. Scopes nest, so an operation may open one and freely call
+    /// another that opens its own; only the outermost exit drops what was
+    /// remembered.
+    ///
+    /// Bounded by the operation on purpose. Anything prov writes forgets itself
+    /// ([`commit`](Self::commit) drops what its change set touched), and the
+    /// scope ends before control returns to a caller who might write behind
+    /// prov's back — which is why this needs no invalidation policy and has
+    /// none. See [`crate::memo`].
+    ///
+    /// ```no_run
+    /// # use prov::Workspace;
+    /// # async fn demo<FS: prov::Storage, Id, Ix: prov::IndexStore>(ws: &Workspace<FS, Id, Ix>)
+    /// #     -> prov::Result<()> {
+    /// let _scope = ws.read_scope();
+    /// let findings = ws.check("index.md").await?;
+    /// # let _ = findings;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use = "the scope ends the moment its guard is dropped"]
+    pub fn read_scope(&self) -> ReadScope<'_> {
+        lock(&self.memo).enter();
+        ReadScope(&self.memo)
+    }
+
+    /// Give this workspace a [`FixityCache`] to hash through, or `None` to take
+    /// the one it has away.
+    ///
+    /// prov never reads or writes the cache's file — it has no notion of a
+    /// location outside the workspace, and the cache belongs outside it. The
+    /// host decodes the bytes, hands the cache over, and takes it back with
+    /// [`take_fixity_cache`](Self::take_fixity_cache) to persist whatever was
+    /// learned.
+    pub fn set_fixity_cache(&mut self, cache: Option<FixityCache>) {
+        *lock(&self.fixity_cache) = cache;
+    }
+
+    /// Take back the [`FixityCache`], with everything this workspace learned
+    /// while it held it. Check [`FixityCache::is_dirty`] before writing it out:
+    /// a run that learned nothing should not rewrite the file to say so.
+    pub fn take_fixity_cache(&mut self) -> Option<FixityCache> {
+        lock(&self.fixity_cache).take()
+    }
+
+    /// What the current operation already read for `path`, if a
+    /// [`read_scope`](Self::read_scope) is open and it read it.
+    pub(crate) fn memo_hit(&self, path: &Path) -> Option<(String, crate::document::Document)> {
+        lock(&self.memo).get(path)
+    }
+
+    /// Remember what `path` read as, for the rest of the operation.
+    pub(crate) fn memo_remember(&self, path: &Path, text: &str, doc: &crate::document::Document) {
+        lock(&self.memo).remember(path, text, doc);
+    }
+
+    /// The remembered digest for the workspace-relative `path`, if the cache
+    /// still describes the file `meta` stat'ed.
+    pub(crate) fn fixity_cached(&self, path: &Path, meta: &crate::fs::Metadata) -> Option<String> {
+        lock(&self.fixity_cache)
+            .as_ref()?
+            .get(path, meta)
+            .map(str::to_string)
+    }
+
+    /// Remember that `path` hashed to `hash` at the stat `meta` describes.
+    /// Silently nothing when no cache is attached.
+    pub(crate) fn fixity_remember(&self, path: &Path, meta: &crate::fs::Metadata, hash: &str) {
+        if let Some(cache) = lock(&self.fixity_cache).as_mut() {
+            cache.put(path, meta, hash);
+        }
+    }
+
+    /// Forget everything `cs` is about to change, in both the operation's read
+    /// memo and the fixity cache.
+    ///
+    /// Called before the set lands rather than after, because forgetting is
+    /// never the wrong answer: a set that then fails and rolls back has cost one
+    /// re-read, where the other order would have left a memo describing bytes
+    /// that no longer exist.
+    ///
+    /// For the fixity cache this is tidiness, not the safety mechanism. An entry
+    /// is validated against the file's own stat, so *any* write — by prov, an
+    /// editor, or a sync daemon — retires it whether or not prov thought to say
+    /// so. The read memo has no such backstop, which is why it needs this.
+    fn forget_written(&self, cs: &ChangeSet) {
+        let mut memo = lock(&self.memo);
+        let mut cache = lock(&self.fixity_cache);
+        let mut forget = |path: &Path| {
+            memo.forget(path);
+            if let Some(cache) = cache.as_mut() {
+                cache.forget(path);
+            }
+        };
+        for op in cs.ops() {
+            match op {
+                FileOp::Write { path, .. }
+                | FileOp::Remove { path }
+                | FileOp::CopyFrom { path, .. } => forget(path),
+                FileOp::Rename { from, to } => {
+                    forget(from);
+                    forget(to);
+                }
+            }
+        }
     }
 
     /// The identity policy.
@@ -1055,6 +1220,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 return Err(e);
             }
         };
+        // Everything this set touches stops being something prov remembers —
+        // before it lands, so a set that fails halfway leaves nothing behind
+        // claiming to know what is on disk.
+        self.forget_written(&cs);
         match cs.apply(&self.fs, &self.root).await {
             Ok(()) => {
                 // Unconditional: the op succeeded, so its checkpoint is spent
@@ -1353,9 +1522,21 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     fixity: Fixity,
     history: History,
     id_storage: IdStorage,
+    fixity_cache: Option<FixityCache>,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
+    /// Hash through a [`FixityCache`], so an operation that would otherwise read
+    /// and hash every file in the workspace reads only the ones whose stat says
+    /// they changed.
+    ///
+    /// Off by default: the cache is device-local state prov cannot locate for
+    /// itself, so a workspace gets one only from a host that knows where it
+    /// lives. Equivalent to [`Workspace::set_fixity_cache`] after the fact.
+    pub fn fixity_cache(mut self, cache: FixityCache) -> Self {
+        self.fixity_cache = Some(cache);
+        self
+    }
     /// Set the workspace root.
     pub fn root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
@@ -1446,6 +1627,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             fixity: self.fixity,
             history: self.history,
             id_storage: self.id_storage,
+            fixity_cache: self.fixity_cache,
         }
     }
 
@@ -1465,6 +1647,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             fixity: self.fixity,
             history: self.history,
             id_storage: self.id_storage,
+            fixity_cache: self.fixity_cache,
         }
     }
 
@@ -1485,6 +1668,8 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             history: self.history,
             id_storage: self.id_storage,
             pending_stamps: Vec::new(),
+            memo: Mutex::default(),
+            fixity_cache: Mutex::new(self.fixity_cache),
         }
     }
 }

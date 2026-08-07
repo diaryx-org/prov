@@ -36,6 +36,7 @@ use prov::{
 };
 
 mod backup;
+mod cache;
 mod cli;
 mod zip;
 use cli::*;
@@ -55,6 +56,9 @@ fn main() -> ExitCode {
         eprintln!("prov: could not use root directory {}: {e}", dir.display());
         return ExitCode::FAILURE;
     }
+    // Resolved once, before any command runs, for the same reason `-C` is: it is
+    // a property of the invocation, not of any one verb.
+    cache::init(cli.cache_dir.clone(), cli.no_cache);
     let result = match cli.command {
         Command::Show { file } => resolve_target(&file).and_then(|f| cmd_show(&f)),
         Command::Links { file, relation } => {
@@ -185,6 +189,7 @@ fn main() -> ExitCode {
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
         Command::About { check, print } => cmd_about(check, print),
         Command::HistoryCapture { label } => cmd_history_capture(label.as_deref()),
+        Command::Cache { clear } => cmd_cache(clear),
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
         Command::HistoryLog { target } => cmd_history_log(&target),
@@ -1894,7 +1899,14 @@ fn cmd_history_capture(label: Option<&str>) -> CmdResult {
             .into());
     }
     let mut ws = workspace(&ctx)?;
+    // What this device remembers of the workspace's digests, so a capture reads
+    // and hashes the files whose stat changed rather than all of them. Absent
+    // under `--no-cache`, or when there is nowhere on this machine to keep one.
+    ws.set_fixity_cache(cache::load(&ctx.root_dir));
     let outcome = block_on(ws.history_capture(&ctx.root_doc, &now_rfc3339(), label))?;
+    // Before `persist`, so a failure writing the registry does not also throw
+    // away what the capture just learned.
+    cache::store(&ctx.root_dir, ws.take_fixity_cache());
     persist(&ctx, &mut ws)?;
 
     match outcome {
@@ -1935,6 +1947,52 @@ fn cmd_history_capture(label: Option<&str>) -> CmdResult {
              captured that state, not a clean one. Run `prov check` for details.",
             findings.len()
         );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Show — or delete — this device's fixity cache for the workspace.
+///
+/// Prints the file even when it does not exist yet, because "where would it go?"
+/// is as much the question as "what is in it?", and a path is what a user needs
+/// to add it to a backup exclusion list or to see that `--cache-dir` took.
+fn cmd_cache(clear: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let Some(file) = cache::path_for(&ctx.root_dir) else {
+        println!("(no cache)");
+        eprintln!(
+            "no fixity cache for this invocation — either --no-cache was given, or no cache \
+             directory could be determined.\n\
+             \n  Set one with --cache-dir <DIR> or PROV_CACHE_DIR. Captures work either way; \
+             without a cache\n  every capture reads and hashes every file in the workspace."
+        );
+        return Ok(ExitCode::SUCCESS);
+    };
+    // The path to stdout, so `prov cache` is scriptable — the same convention
+    // `history-capture` follows with its event id.
+    println!("{}", file.display());
+
+    if clear {
+        if cache::clear(&ctx.root_dir) {
+            eprintln!("removed — the next capture will read and hash every file");
+        } else {
+            eprintln!("nothing to remove");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    match cache::load(&ctx.root_dir) {
+        Some(cache) if !cache.is_empty() => {
+            let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+            eprintln!(
+                "{} file(s) remembered, {size} byte(s) on disk\n\
+                 \n  Disposable: delete it (or run `prov cache --clear`) and the next capture \
+                 rebuilds it.\n  Never consulted by `prov check`, which has to read the bytes \
+                 to do its job.",
+                cache.len()
+            );
+        }
+        _ => eprintln!("nothing remembered yet — the next `prov history-capture` will fill it in"),
     }
     Ok(ExitCode::SUCCESS)
 }

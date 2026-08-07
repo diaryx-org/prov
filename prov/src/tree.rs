@@ -116,8 +116,15 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         if link::escapes_root(path) {
             return Err(crate::error::Error::Escape(path.to_path_buf()));
         }
+        // Inside a `read_scope`, a document already read this operation is
+        // answered from memory — the escape check above still runs first, so a
+        // memo can never be the thing that lets a hostile path through.
+        if let Some(hit) = self.memo_hit(path) {
+            return Ok(hit);
+        }
         let text = self.fs().read_to_string(&self.root().join(path)).await?;
         let doc = Document::parse(path, &text)?;
+        self.memo_remember(path, &text, &doc);
         Ok((text, doc))
     }
 

@@ -64,6 +64,7 @@ pub mod index;
 pub mod intake;
 pub mod journal;
 pub mod link;
+pub mod memo;
 pub mod meta;
 pub mod mutate;
 pub mod relation;
@@ -99,6 +100,7 @@ pub use exec::block_on;
 pub use fig::ExtKind;
 pub use fig::Format;
 pub use fig_schema::FieldType;
+pub use fixity::FixityCache;
 pub use fs::{
     Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, StdFs, Storage,
     SyncGuarantee,
@@ -115,6 +117,7 @@ pub use link::{
     Addressing, BodyLink, Link, LinkStyle, Notation, PathStyle, ReferenceStyle, Wikilink, Wrapper,
     escapes_root, format_link, path_to_title,
 };
+pub use memo::ReadScope;
 pub use meta::{Mapping, Value};
 pub use mutate::Created;
 pub use relation::{Cardinality, Edge, Relation, RelationSet};

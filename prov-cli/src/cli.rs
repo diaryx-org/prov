@@ -82,6 +82,22 @@ pub(crate) struct Cli {
     /// vault without `cd`-ing into it. Relative path arguments resolve here too.
     #[arg(short = 'C', long = "root", value_name = "DIR")]
     pub(crate) root: Option<PathBuf>,
+    /// Keep this device's fixity cache here instead of the default location
+    /// (`prov cache` prints the file in use). Also settable via
+    /// `PROV_CACHE_DIR`, or `XDG_CACHE_HOME`; the flag wins. The cache lets
+    /// `history-capture` skip reading and hashing files whose timestamp and size
+    /// say they have not changed — it is disposable, lives outside the
+    /// workspace, and deleting it costs one slow capture.
+    #[arg(long = "cache-dir", value_name = "DIR")]
+    pub(crate) cache_dir: Option<PathBuf>,
+    /// Ignore the fixity cache: read and hash every file, and remember nothing.
+    /// For reproducing a capture from scratch, or for not writing to disk on a
+    /// machine you would rather leave no trace on.
+    ///
+    /// Not needed for integrity: `check` never consults the cache in the first
+    /// place, since bit-rot is precisely the change a timestamp cannot see.
+    #[arg(long = "no-cache")]
+    pub(crate) no_cache: bool,
     #[command(subcommand)]
     pub(crate) command: Command,
 }
@@ -600,6 +616,24 @@ pub(crate) enum Command {
         /// (`pre-sync`, `nightly`, `pre-migration`). Free-form.
         #[arg(long, value_name = "TEXT")]
         label: Option<String>,
+    },
+    /// Show this device's fixity cache for the workspace: where it lives and how
+    /// many files it remembers.
+    ///
+    /// The cache is what lets `history-capture` skip files whose timestamp and
+    /// size say they have not changed, instead of reading and hashing the whole
+    /// workspace every time. It is device-local, deliberately outside the
+    /// workspace (it is not part of what the archive says about itself), and
+    /// entirely disposable — losing it costs one slow capture and nothing else.
+    ///
+    /// It is never consulted by `check`. Bit-rot is a change to the bytes that
+    /// leaves the timestamp alone, so a cache keyed on timestamps would vouch
+    /// for exactly the file that rotted.
+    Cache {
+        /// Delete it. The next capture reads and hashes everything, and starts a
+        /// new one.
+        #[arg(long)]
+        clear: bool,
     },
     /// List the captures in the history store, newest first: id, timestamp,
     /// label, and how many files changed since each event's parent.

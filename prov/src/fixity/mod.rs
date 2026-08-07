@@ -22,6 +22,19 @@
 //! to audit). SHA-256 is a fully specified, deterministic function with published
 //! test vectors, so correctness is *checked*, not trusted — the tests below pin
 //! it to the NIST vectors and to what `sha256sum` produces.
+//!
+//! ## Not hashing what has not changed
+//!
+//! Hashing is cheap to describe and expensive to run, and a capture runs it over
+//! every file in the workspace. [`FixityCache`] is the device-local memory that
+//! lets a capture skip the files whose stat says they are untouched — and, just
+//! as importantly, the argument for which passes may consult it and which may
+//! never. See its module documentation; the short version is that the bit-rot
+//! check must not, because bit-rot is exactly the change a stat cannot see.
+
+mod cache;
+
+pub use cache::FixityCache;
 
 /// The SHA-256 round constants — the first 32 bits of the fractional parts of
 /// the cube roots of the first 64 primes (FIPS 180-4 §4.2.2).

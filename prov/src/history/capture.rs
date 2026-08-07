@@ -50,6 +50,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         now: &str,
         label: Option<&str>,
     ) -> Result<Captured> {
+        // The capture set comes from a full walk of the graph, and the manifest
+        // loop then visits every file that walk found. One scope over both means
+        // a document is read once rather than once per pass. Dropped explicitly
+        // where the writing half begins — which is both what the borrow checker
+        // needs and exactly the right boundary: nothing after that point reads a
+        // document, and everything after it changes one.
+        let scope = self.read_scope();
         let root_doc = link::normalize(root_doc);
         let style = self.history_authoring(&root_doc)?;
         let ext = style.ext.as_str();
@@ -85,22 +92,67 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut files = Vec::new();
         let mut parked = 0usize;
         for path in self.history_capture_set(&root_doc).await? {
-            let bytes = match &root_pointer {
-                Some(text) if path == root_doc => text.clone().into_bytes(),
-                _ => self.fs().read(&self.root().join(&path)).await?,
+            // The root's post-edit text is computed here, not on disk. It has no
+            // stat to validate a remembered digest against, so it is never
+            // served from the cache and never recorded into it.
+            let staged = match &root_pointer {
+                Some(text) if path == root_doc => Some(text.clone().into_bytes()),
+                _ => None,
             };
-            let hash = crate::fixity::digest(&bytes);
-            // Content-addressed, so a hash already on disk *is* the same bytes —
-            // nothing to rewrite, and two devices parking the same content
-            // converge instead of conflicting.
-            let blob = self.root().join(blob_path(&store_index, &hash)?);
-            if !self.fs().try_exists(&blob).await? {
-                if let Some(dir) = blob.parent() {
-                    self.fs().create_dir_all(dir).await?;
+            let full = self.root().join(&path);
+            // One stat, and on a hit it is the *only* thing this file costs: no
+            // read, and no pass over its bytes. A stat this pass has to be able
+            // to afford, since the alternative it replaces is reading the file.
+            let meta = match staged {
+                Some(_) => None,
+                None => self.fs().metadata(&full).await.ok(),
+            };
+            let remembered = match &meta {
+                Some(meta) => self.fixity_cached(&path, meta),
+                None => None,
+            };
+
+            let hash = match remembered {
+                // A remembered digest is trusted only when the blob it names is
+                // already parked. That is what keeps a stale entry survivable:
+                // the bytes at that address are on disk and were hashed from a
+                // real file when they got there, so the worst a wrong answer can
+                // do is record an event that misdescribes this instant — never
+                // park bytes under an address that is not their digest.
+                Some(hash)
+                    if self
+                        .fs()
+                        .try_exists(&self.root().join(blob_path(&store_index, &hash)?))
+                        .await? =>
+                {
+                    hash
                 }
-                self.fs().write_atomic(&blob, &bytes).await?;
-                parked += 1;
-            }
+                // Everything else reads the file — and hashes the bytes it read,
+                // so a digest prov writes down is always a digest of bytes prov
+                // has actually seen.
+                _ => {
+                    let bytes = match staged {
+                        Some(bytes) => bytes,
+                        None => self.fs().read(&full).await?,
+                    };
+                    let hash = crate::fixity::digest(&bytes);
+                    // Content-addressed, so a hash already on disk *is* the same
+                    // bytes — nothing to rewrite, and two devices parking the
+                    // same content converge instead of conflicting.
+                    let blob = self.root().join(blob_path(&store_index, &hash)?);
+                    if !self.fs().try_exists(&blob).await? {
+                        if let Some(dir) = blob.parent() {
+                            self.fs().create_dir_all(dir).await?;
+                        }
+                        self.fs().write_atomic(&blob, &bytes).await?;
+                        parked += 1;
+                    }
+                    if let Some(meta) = &meta {
+                        self.fixity_remember(&path, meta, &hash);
+                    }
+                    hash
+                }
+            };
             let id = self.index().id_for_path(&path);
             files.push(FileEntry { path, id, hash });
         }
@@ -201,6 +253,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let event_text =
             crate::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
 
+        drop(scope);
         let mut cs = self.change();
         cs.write(&event_rel, event_text);
         self.stage_history_indexes(&mut cs, &store_index, &id, &style)
@@ -1049,5 +1102,206 @@ mod tests {
                 .any(|f| f.path == Path::new("notes/a.md")),
             "the merged state must be in the manifest"
         );
+    }
+
+    // ---- the fixity cache ----
+    //
+    // The unit tests in `crate::fixity::cache` pin the validator; these pin the
+    // wiring — that a warm cache actually removes the reads, that it cannot hide
+    // a real edit, and that the one thing it is trusted for stays narrow.
+
+    /// Push a file's modification time forward, so a test's two writes are
+    /// distinguishable no matter how coarse the filesystem's own clock is.
+    fn touch(dir: &Path, rel: &str, secs_ahead: u64) {
+        let path = dir.join(rel);
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let now = std::fs::metadata(&path).unwrap().modified().unwrap();
+        file.set_modified(now + std::time::Duration::from_secs(secs_ahead))
+            .unwrap();
+    }
+
+    /// The payoff, stated as the thing a user actually feels: a capture over a
+    /// workspace where nothing changed reads nothing at all.
+    #[test]
+    fn a_warm_cache_captures_without_reading_a_single_file() {
+        let dir = seed("cache-warm");
+        let (mut ws, fs) = ws_counting(&dir);
+        ws.set_fixity_cache(Some(crate::FixityCache::new(&dir)));
+        let first =
+            block_on(ws.history_capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None))
+                .unwrap();
+        assert!(matches!(first, Captured::Written { .. }));
+        assert!(
+            fs.total_byte_reads() > 0,
+            "the first capture has to read everything — there is nothing to remember yet"
+        );
+        let cache = ws.take_fixity_cache().unwrap();
+        assert!(cache.is_dirty(), "the first capture learned nothing");
+
+        // A second capture, with what the first learned. One read remains, and it
+        // is the root: the bootstrap capture hashed the root's *computed*
+        // post-edit text, which has no stat to record an entry against, so this
+        // is the first capture in a position to remember it.
+        fs.reset();
+        ws.set_fixity_cache(Some(cache));
+        let second =
+            block_on(ws.history_capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None))
+                .unwrap();
+        assert_eq!(fs.byte_reads(&dir, "index.md"), 1);
+        assert_eq!(
+            fs.total_byte_reads(),
+            1,
+            "a capture with a warm cache read a file it had already hashed"
+        );
+        assert!(
+            matches!(second, Captured::Unchanged { .. }),
+            "the manifest built from the cache must equal the one built from the disk: {second:?}"
+        );
+
+        // The steady state: nothing changed, nothing left to learn, nothing read.
+        fs.reset();
+        let third =
+            block_on(ws.history_capture(Path::new("index.md"), "2026-01-03T00:00:00Z", None))
+                .unwrap();
+        assert_eq!(
+            fs.total_byte_reads(),
+            0,
+            "a capture over an unchanged workspace read a file"
+        );
+        assert!(matches!(third, Captured::Unchanged { .. }), "{third:?}");
+    }
+
+    /// The manifest a warm cache produces has to be the same manifest the disk
+    /// produces — byte for byte, row for row. If the two ever disagreed, a
+    /// capture would silently record a workspace that never existed.
+    #[test]
+    fn a_cached_manifest_is_the_manifest_the_disk_would_have_given() {
+        let cold = seed("cache-cold-manifest");
+        let warm = seed("cache-warm-manifest");
+        for dir in [&cold, &warm] {
+            block_on(ws(dir).history_capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None))
+                .unwrap();
+        }
+        // `warm` gets a cache populated by that first capture; `cold` never does.
+        let mut warm_ws = ws(&warm);
+        warm_ws.set_fixity_cache(Some(crate::FixityCache::new(&warm)));
+        block_on(warm_ws.history_capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None))
+            .unwrap();
+
+        for dir in [&cold, &warm] {
+            write(
+                dir,
+                "notes/a.md",
+                "---\ntitle: A\npart_of: '../index.md'\n---\nsecond\n",
+            );
+            touch(dir, "notes/a.md", 5);
+        }
+        block_on(ws(&cold).history_capture(Path::new("index.md"), "2026-01-03T00:00:00Z", None))
+            .unwrap();
+        block_on(warm_ws.history_capture(Path::new("index.md"), "2026-01-03T00:00:00Z", None))
+            .unwrap();
+
+        let manifest = |dir: &Path| {
+            let events = block_on(ws(dir).history_list(Path::new("index.md"))).unwrap();
+            events
+                .last()
+                .unwrap()
+                .files
+                .iter()
+                .map(|f| (f.path.clone(), f.hash.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            manifest(&cold),
+            manifest(&warm),
+            "a cached capture and an uncached one disagreed about the workspace"
+        );
+    }
+
+    /// A cache that could hide an edit would be worse than no cache. Both halves
+    /// of the validator are exercised: a file whose length changed, and one that
+    /// was rewritten at exactly the same length.
+    #[test]
+    fn an_edited_file_is_still_captured_with_a_warm_cache() {
+        let dir = seed("cache-edit");
+        let mut ws = ws(&dir);
+        ws.set_fixity_cache(Some(crate::FixityCache::new(&dir)));
+        block_on(ws.history_capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+
+        // Same length, different bytes — only the timestamp can catch this one.
+        let before = read(&dir, "notes/a.md");
+        let after = before.replace("alpha", "ALPHA");
+        assert_eq!(before.len(), after.len(), "the test's own premise");
+        write(&dir, "notes/a.md", &after);
+        touch(&dir, "notes/a.md", 5);
+
+        let outcome =
+            block_on(ws.history_capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None))
+                .unwrap();
+        let Captured::Written { .. } = outcome else {
+            panic!("a warm cache hid an edit: {outcome:?}")
+        };
+        let events =
+            block_on(crate::history::support::ws(&dir).history_list(Path::new("index.md")))
+                .unwrap();
+        let row = events
+            .last()
+            .unwrap()
+            .files
+            .iter()
+            .find(|f| f.path == Path::new("notes/a.md"))
+            .unwrap();
+        assert_eq!(
+            row.hash,
+            crate::fixity::digest(after.as_bytes()),
+            "the manifest recorded a digest of bytes that are no longer there"
+        );
+    }
+
+    /// The containment argument, made executable: a remembered digest is trusted
+    /// *only* when the blob it names is already parked. Take the blob away and
+    /// the capture must go back to the file, so the bytes it stores are always
+    /// bytes it has read.
+    #[test]
+    fn a_remembered_digest_is_ignored_when_its_blob_is_gone() {
+        let dir = seed("cache-blobless");
+        let (mut ws, fs) = ws_counting(&dir);
+        ws.set_fixity_cache(Some(crate::FixityCache::new(&dir)));
+        block_on(ws.history_capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+
+        // The blob for `notes/a.md` goes missing — the loss `check` reports as
+        // `HistoryBlobMissing`, and a state a warm cache must not paper over.
+        let body = read(&dir, "notes/a.md");
+        let blob = dir.join(blob_of(body.as_bytes()));
+        std::fs::remove_file(&blob).unwrap();
+
+        fs.reset();
+        block_on(ws.history_capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None)).unwrap();
+        assert_eq!(
+            fs.byte_reads(&dir, "notes/a.md"),
+            1,
+            "a digest was trusted for a blob that is not on disk"
+        );
+        assert!(blob.exists(), "the missing blob was not re-parked");
+    }
+
+    /// A cache written for another workspace is not a cache. This is the failure
+    /// that would be silent and wrong rather than loud and wrong, so it is worth
+    /// its own test even though `decode` is unit-tested.
+    #[test]
+    fn a_cache_from_another_workspace_is_refused() {
+        let one = seed("cache-foreign-one");
+        let two = seed("cache-foreign-two");
+        let mut first = ws(&one);
+        first.set_fixity_cache(Some(crate::FixityCache::new(&one)));
+        block_on(first.history_capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None))
+            .unwrap();
+        let bytes = first.take_fixity_cache().unwrap().encode();
+
+        assert!(
+            crate::FixityCache::decode(&bytes, &two).is_none(),
+            "one workspace's digests were offered to another"
+        );
+        assert!(crate::FixityCache::decode(&bytes, &one).is_some());
     }
 }
