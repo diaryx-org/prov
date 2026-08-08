@@ -288,4 +288,84 @@ mod tests {
         let check = Alphabet::noid_xdigit().check_char("012345");
         assert!(verify(&format!("012345{check}")));
     }
+
+    /// The check character's whole reason to exist, stated as a law.
+    ///
+    /// `verify_rejects_typos` above flips one character of one ID and confirms
+    /// the result is refused. That is a witness, and the claim a check character
+    /// actually makes is universal: **no single-character substitution of a
+    /// valid ID is ever itself valid.** A check digit that caught most typos and
+    /// missed some would still pass every example anyone thought to write, and
+    /// would silently let a mistyped `id:` reference resolve to nothing while
+    /// looking well-formed — the failure `MalformedId` exists to prevent.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The NOID extended-digit alphabet: the ten digits plus the nineteen
+        /// consonants that cannot combine into a word (no vowels, no `y`, no
+        /// `l`). Twenty-nine symbols, which is where the crate's own "29^6 ≈
+        /// 595M" comes from. Written out here so a substitution can be drawn
+        /// from it; `every_minted_character_is_in_the_alphabet` keeps the
+        /// transcription honest.
+        const XDIGIT: &str = "0123456789bcdfghjkmnpqrstvwxz";
+
+        fn minted() -> impl Strategy<Value = String> {
+            any::<u64>().prop_map(|seed| Minter::lazy(seed).mint(Path::new("x")).0)
+        }
+
+        proptest! {
+            #[test]
+            fn every_minted_id_verifies_and_is_the_declared_length(id in minted()) {
+                prop_assert_eq!(id.chars().count(), BLADE_LEN);
+                prop_assert!(verify(&id), "{id}");
+            }
+
+            #[test]
+            fn every_minted_character_is_in_the_alphabet(id in minted()) {
+                for c in id.chars() {
+                    prop_assert!(XDIGIT.contains(c), "`{c}` of `{id}` is not an xdigit");
+                }
+            }
+
+            /// The law. Substitute any one character of a valid ID — body or
+            /// check character — for any *other* alphabet character, and the
+            /// result must be refused. Every position, every replacement.
+            #[test]
+            fn no_single_character_slip_survives_verification(
+                id in minted(),
+                position in 0..BLADE_LEN,
+                replacement in 0..XDIGIT.chars().count(),
+            ) {
+                let alphabet: Vec<char> = XDIGIT.chars().collect();
+                let mut chars: Vec<char> = id.chars().collect();
+                let replacement = alphabet[replacement];
+                prop_assume!(chars[position] != replacement);
+                chars[position] = replacement;
+                let typo: String = chars.into_iter().collect();
+                prop_assert!(
+                    !verify(&typo),
+                    "`{typo}` is one character from `{id}` and still verified"
+                );
+            }
+
+            /// A transposition of two *adjacent, different* characters is the
+            /// other slip a check character is chosen to catch — the one a
+            /// simple sum cannot see, since addition does not care about order.
+            #[test]
+            fn no_adjacent_transposition_survives_verification(
+                id in minted(),
+                position in 0..BLADE_LEN - 1,
+            ) {
+                let mut chars: Vec<char> = id.chars().collect();
+                prop_assume!(chars[position] != chars[position + 1]);
+                chars.swap(position, position + 1);
+                let swapped: String = chars.into_iter().collect();
+                prop_assert!(
+                    !verify(&swapped),
+                    "`{swapped}` transposes two characters of `{id}` and still verified"
+                );
+            }
+        }
+    }
 }

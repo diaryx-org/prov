@@ -92,7 +92,7 @@ prov:
     embed: delimited          # delimited | code_block | html_script | html_code | separate
   references:
     notation: markdown        # markdown | wikilink | bare
-    path_style: root          # root | relative | canonical   (path targets only)
+    path_style: root          # root | relative   (path targets only)
     target: path              # path | id | alias
     label: false              # bool — id/alias references carry a |Title label
   spanning: contents          # the single-parent discovery spine (DESIGN §3)
@@ -173,20 +173,36 @@ string. That asymmetry is harmless, because a field's declaration is found by
 ### The two reference axes, orthogonalized
 
 Previously `link_format` fused *notation* (bracketed vs bare) with *path
-resolution* (root/relative/canonical), and `reference_wrapper` added `wikilink`
-as a separate key — so `link_format: plain_canonical` produced a **bare** link
-even though the wrapper said "markdown." The reshaped `references` block separates
-the two truly-orthogonal axes:
+resolution*, and `reference_wrapper` added `wikilink` as a separate key — so
+`link_format: plain_canonical` produced a **bare** link even though the wrapper
+said "markdown." The reshaped `references` block separates the two
+truly-orthogonal axes:
 
 | `notation` | `path_style` | rendered path reference |
 |---|---|---|
 | `markdown` | `root` | `[Title](/path/x.md)` |
 | `markdown` | `relative` | `[Title](../x.md)` |
-| `markdown` | `canonical` | `[Title](path/x.md)` |
 | `bare` | `root` | `/path/x.md` |
 | `bare` | `relative` | `../x.md` |
-| `bare` | `canonical` | `path/x.md` |
 | `wikilink` | *(any)* | `[[path/x.md]]` — `path_style` shapes the inner path text |
+
+### `canonical` is retired
+
+`path_style` once had a third value, `canonical`, which rendered a bare
+workspace-relative path (`path/x.md`). It did not survive contact with the
+resolver: a bare target is resolved **relative to the document it was found
+in**, so a canonical link named what it meant only from a document at the
+workspace root and silently pointed somewhere else from anywhere below. The
+ambiguity of a bare path is settled by committing to one meaning rather than by
+tagging it, so the spelling that claimed the other meaning is gone; a
+workspace-relative reference is `root`, written with the leading slash that says
+so.
+
+A workspace still configured with `canonical` keeps loading — `apply` falls back
+to `root`, which renders the same path with that slash and therefore resolves
+correctly from anywhere — and `check` reports the value
+(`ConfigIssueKind::InvalidValue`). To restyle the documents themselves:
+`prov convert <root> link_format markdown_root -r`.
 
 `target: id` renders `[[id:…]]` / `id:…` (registers the target); `target: alias`
 renders `[[Title]]` (nominal, `notation` forced to `wikilink`). `path_style`
@@ -309,9 +325,11 @@ about.md merge=ours
 The clean orthogonal *config surface* (`notation` × `path_style`) is mapped onto
 the existing internal `(Wrapper, LinkStyle)` at the config boundary
 (`config.rs`), rather than rewriting every `Wrapper`/`LinkStyle` use site.
-`LinkStyle` is extended to the full 2×3 cross-product
-(`{markdown,plain} × {root,relative,canonical}` — adding `MarkdownCanonical` and
-`PlainRoot`) so all six `notation`/`path_style` combinations are representable.
+`LinkStyle` is the full 2×2 cross-product
+(`{markdown,plain} × {root,relative}`) so every `notation`/`path_style`
+combination is representable — and, since `canonical` was retired, every one of
+them round-trips: a link prov writes in any style resolves back to the document
+it names, from wherever it was written (`link.rs`, `mod properties`).
 `Notation`/`PathStyle` are config-facing enums with `compose`/`decompose` helpers
 to and from `(Wrapper, LinkStyle)`. The fused-`LinkStyle` wart is thus confined
 below the config layer and invisible in the frontmatter contract.

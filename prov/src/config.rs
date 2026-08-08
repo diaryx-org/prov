@@ -60,7 +60,7 @@ pub const ROOT_CONFIG_KEY: &str = "prov";
 pub struct RelationStyleConfig {
     /// The notation override (`markdown` / `wikilink` / `bare`).
     pub notation: Option<Notation>,
-    /// The path-resolution override (`root` / `relative` / `canonical`).
+    /// The path-resolution override (`root` / `relative`).
     pub path_style: Option<PathStyle>,
     /// The addressing override (`path` / `id` / `alias`).
     pub target: Option<Addressing>,
@@ -475,7 +475,7 @@ pub struct WorkspaceConfig {
     /// Overridden per relation by [`Relation::style`](crate::relation::Relation::style).
     pub notation: Notation,
     /// The default **path resolution** for path targets (`root` / `relative` /
-    /// `canonical`). Ignored for id/alias targets.
+    /// Ignored for id/alias targets.
     pub path_style: PathStyle,
     /// The default reference **addressing** (`path` / `id` / `alias`).
     pub reference_target: Addressing,
@@ -1365,7 +1365,7 @@ fn diagnose_reference_block(issues: &mut Vec<ConfigIssue>, prefix: &str, value: 
                 &dotted,
                 v,
                 |s| PathStyle::from_config_str(s).is_some(),
-                &["root", "relative", "canonical"],
+                &["root", "relative"],
             ),
             "target" => enum_axis(
                 issues,
@@ -1420,7 +1420,7 @@ fn diagnose_relation_entry(issues: &mut Vec<ConfigIssue>, name: &str, value: &Va
                 &dotted,
                 v,
                 |s| PathStyle::from_config_str(s).is_some(),
-                &["root", "relative", "canonical"],
+                &["root", "relative"],
             ),
             "target" => enum_axis(
                 issues,
@@ -1715,7 +1715,7 @@ mod tests {
         let config = WorkspaceConfig {
             identity: Registration::EAGER,
             notation: Notation::Bare,
-            path_style: PathStyle::Canonical,
+            path_style: PathStyle::Relative,
             reference_target: Addressing::Id,
             reference_label: true,
             relation_styles: BTreeMap::from([
@@ -1850,18 +1850,55 @@ mod tests {
     }
 
     #[test]
-    fn reference_axes_orthogonalize_notation_and_resolution() {
-        // bare + canonical renders a plain workspace-relative path; wikilink wraps.
+    fn a_retired_canonical_path_style_is_reported_and_falls_back_to_root() {
+        // The migration contract for a workspace still configured with the
+        // retired value. Two things have to be true at once, and they pull in
+        // opposite directions: the workspace must keep *loading* (an archive
+        // that will not open because a setting was withdrawn is worse than the
+        // setting), and it must not quietly keep resolving links the way the
+        // broken style did.
+        //
+        // Falling back to `root` is what squares them. `canonical` emitted a
+        // bare workspace-relative path that `resolve` reads directory-relative,
+        // so it only ever resolved correctly from the workspace root; `root`
+        // emits the same path with the leading slash that makes that reading
+        // explicit, and resolves correctly from anywhere. `check` says so, and
+        // `prov convert <root> link_format markdown_root -r` rewrites the
+        // documents to match.
         let mut cfg = WorkspaceConfig::default();
         let mut refs = Mapping::new();
-        refs.insert("notation".into(), Value::String("bare".into()));
         refs.insert("path_style".into(), Value::String("canonical".into()));
         let mut top = Mapping::new();
         top.insert("references".into(), Value::Mapping(refs));
+        let meta = Value::Mapping(top);
+
+        cfg.apply(&meta);
+        assert_eq!(cfg.path_style, PathStyle::Root, "the resolvable spelling");
+
+        let issues = diagnose(&meta);
+        assert!(
+            issues.iter().any(|i| matches!(
+                &i.kind,
+                ConfigIssueKind::InvalidValue { value, expected }
+                    if value.contains("canonical") && expected == &["root", "relative"]
+            )),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn reference_axes_orthogonalize_notation_and_resolution() {
+        // bare + relative renders a plain directory-relative path; wikilink wraps.
+        let mut cfg = WorkspaceConfig::default();
+        let mut refs = Mapping::new();
+        refs.insert("notation".into(), Value::String("bare".into()));
+        refs.insert("path_style".into(), Value::String("relative".into()));
+        let mut top = Mapping::new();
+        top.insert("references".into(), Value::Mapping(refs));
         cfg.apply(&Value::Mapping(top));
-        assert_eq!(cfg.link_format(), LinkStyle::PlainCanonical);
+        assert_eq!(cfg.link_format(), LinkStyle::PlainRelative);
         assert_eq!(cfg.notation, Notation::Bare);
-        assert_eq!(cfg.path_style, PathStyle::Canonical);
+        assert_eq!(cfg.path_style, PathStyle::Relative);
     }
 
     #[test]

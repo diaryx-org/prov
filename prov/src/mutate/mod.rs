@@ -78,6 +78,11 @@ pub use create::Created;
 #[cfg(all(test, feature = "yaml"))]
 mod support;
 
+// Laws over the verbs *together* — the sequences no fixture would think to
+// write. Not any one verb's file, because it is not any one verb's claim.
+#[cfg(all(test, feature = "yaml"))]
+mod properties;
+
 // Three properties the ops rest on rather than implement — the id map they
 // maintain, the config document they read policy from, and the registration
 // hook they fire — exercised here, through the same fixtures, because

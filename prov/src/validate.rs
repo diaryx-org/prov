@@ -4103,10 +4103,10 @@ mod tests {
         let dir = tempdir("autofix");
         write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
         write(&dir, "a.md", "---\ntitle: A\n---\n"); // no part_of → MissingInverse
-        // Plain-canonical style keeps the assertion about the fix simple.
+        // Bare relative style keeps the assertion about the fix simple.
         let mut ws = Workspace::builder(StdFs)
             .root(&dir)
-            .link_style(LinkStyle::PlainCanonical)
+            .link_style(LinkStyle::PlainRelative)
             .build();
 
         let findings = block_on(ws.check("index.md")).unwrap();
@@ -4125,7 +4125,7 @@ mod tests {
         );
 
         block_on(ws.apply_fix(&fix)).unwrap();
-        // a.md now declares the back-link (plain-canonical), and it validates.
+        // a.md now declares the back-link (bare relative), and it validates.
         assert!(
             std::fs::read_to_string(dir.join("a.md"))
                 .unwrap()

@@ -444,6 +444,56 @@ pub(super) fn content_target(doc: &Document, doc_path: &Path) -> Option<PathBuf>
     Some(link::normalize(dir.join(raw)))
 }
 
+impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// The node in `root`'s spanning subtree whose `content` names `body`, if
+    /// any — the other half of [`content_target`], read backwards.
+    ///
+    /// A separated document is two files, and only one of them is the node: the
+    /// metadata half carries the id, the links and the title, while the prose
+    /// half is reached solely through its owner's `content` pointer. So a verb
+    /// handed the prose half has been handed something that looks like a
+    /// document and is not one, and the destructive verbs need to know that
+    /// before they act — deleting the body alone leaves its node pointing at
+    /// nothing, and the dangler census cannot see it, since that census walks
+    /// relation and body links and `content` is neither.
+    ///
+    /// **Deliberately directory-local**, and for a reason the tree cannot
+    /// supply: a body file is not in the spanning tree — it has no `part_of`, so
+    /// walking up from it lands back on itself, and there is no subtree to
+    /// search. What it does have is a *neighbourhood*: every body prov itself
+    /// authors sits beside its node, because `separate`, `attach` and
+    /// `duplicate` all place it with [`body_sibling`]. So one `read_dir` of the
+    /// body's own directory is where the answer is, the same bound
+    /// `validate`'s orphan pass draws for the same reason.
+    ///
+    /// The bound is a *false-negative* one, which is the safe direction here.
+    /// Ownership is confirmed by resolving the candidate's actual `content`
+    /// value, never inferred from a name, so this never refuses wrongly; a
+    /// hand-edited `content` pointing across directories simply is not found,
+    /// and the verb behaves as it did before. `check` still reports the
+    /// resulting broken `content` link either way.
+    ///
+    /// A neighbour that fails to load is skipped rather than fatal: the question
+    /// is "does something depend on these bytes", and an unreadable document is
+    /// a finding `check` already raises, not a reason to block a delete.
+    pub(super) async fn content_owner(&self, body: &Path) -> Result<Option<PathBuf>> {
+        let dir = body.parent().unwrap_or(Path::new("")).to_path_buf();
+        let neighbourhood = BTreeSet::from([dir]);
+        for node in self.direct_child_files(&neighbourhood).await? {
+            if node == body {
+                continue;
+            }
+            let Ok((_, doc)) = self.load(&node).await else {
+                continue;
+            };
+            if content_target(&doc, &node).as_deref() == Some(body) {
+                return Ok(Some(node));
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Replace the single verbatim occurrence of `old_body` in `text` with
 /// `new_body`. The body sits at one end of the document (a suffix under
 /// frontmatter, a prefix under endmatter, or the whole text when there is no

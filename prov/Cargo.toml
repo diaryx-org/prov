@@ -32,6 +32,19 @@ moid.workspace = true
 # link scanning are always available, not gated behind a feature.
 twig-doc.workspace = true
 
+[dev-dependencies]
+# Property-based testing. The crate's laws are already written down in prose —
+# `resolve ∘ format = id`, the id↔path bijection, "a check-clean workspace stays
+# check-clean under any verb" — and an example test can only witness one input
+# per law. proptest quantifies over the input space instead, and shrinks a
+# failure to the smallest case that still fails, which is the part that makes a
+# counterexample readable rather than merely real.
+#
+# Dev-only on purpose: it is the one place a dependency costs a downstream
+# consumer nothing, which is why it does not answer to the same
+# hand-roll-it-yourself rule as `fixity`'s SHA-256 or `backup`'s ZIP.
+proptest = "1"
+
 [features]
 # YAML is the conventional default (`---` frontmatter, `registry.yaml`). Turn it
 # off with `default-features = false` and select another format to slim the build.

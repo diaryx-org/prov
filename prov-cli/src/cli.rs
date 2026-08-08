@@ -525,7 +525,7 @@ pub(crate) enum Command {
     /// Two restyle the document's own outbound path links: `notation` (how a
     /// target is wrapped — `markdown` `[Title](target)` or `bare` `target`) and
     /// `path_style` (how the path itself is written — `root` / `relative` /
-    /// `canonical`) — only the spelling changes; each link's destination, label,
+    /// only the spelling changes; each link's destination, label,
     /// and wrapper are preserved, and id/external/alias targets are left untouched.
     /// The other two rewrite the metadata block: `metadata.format` re-emits the
     /// frontmatter in a different language (`yaml` / `json` / `toml` / `fig`),
@@ -1055,7 +1055,7 @@ pub(crate) enum LinkStyleArg {
     MarkdownRoot,
     MarkdownRelative,
     PlainRelative,
-    PlainCanonical,
+    PlainRoot,
 }
 
 impl From<LinkStyleArg> for LinkStyle {
@@ -1064,7 +1064,7 @@ impl From<LinkStyleArg> for LinkStyle {
             LinkStyleArg::MarkdownRoot => LinkStyle::MarkdownRoot,
             LinkStyleArg::MarkdownRelative => LinkStyle::MarkdownRelative,
             LinkStyleArg::PlainRelative => LinkStyle::PlainRelative,
-            LinkStyleArg::PlainCanonical => LinkStyle::PlainCanonical,
+            LinkStyleArg::PlainRoot => LinkStyle::PlainRoot,
         }
     }
 }

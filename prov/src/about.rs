@@ -1229,7 +1229,6 @@ fn path_example(style: PathStyle) -> &'static str {
     match style {
         PathStyle::Root => "/path/from/here.md",
         PathStyle::Relative => "../path/x.md",
-        PathStyle::Canonical => "path/x.md",
     }
 }
 
@@ -1247,11 +1246,6 @@ fn path_style_prose(style: PathStyle) -> &'static str {
             "A target is a path relative to the file you found it in, so `../` \
              climbs one directory from that file. Fold `.` and `..` yourself, and \
              do not follow symlinks."
-        }
-        PathStyle::Canonical => {
-            "A target is a path from **this directory**, the top of the workspace, \
-             written without a leading slash. Fold `.` and `..` yourself, and do \
-             not follow symlinks."
         }
     }
 }

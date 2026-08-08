@@ -2853,9 +2853,8 @@ fn cmd_convert(file: &Path, axis: &str, value: &str, recursive: bool) -> CmdResu
     // convert, so it is rejected here.
     match axis {
         "path_style" | "path-style" => {
-            let ps = PathStyle::from_config_str(value).ok_or_else(|| {
-                format!("unknown path_style `{value}` (expected root|relative|canonical)")
-            })?;
+            let ps = PathStyle::from_config_str(value)
+                .ok_or_else(|| format!("unknown path_style `{value}` (expected root|relative)"))?;
             let style = LinkStyle::from_axes(ctx.config.notation, ps);
             let changed = block_on(ws.convert_link_style(&ws_rel(&ctx, file)?, style, recursive))?;
             persist(&ctx, &mut ws)?;

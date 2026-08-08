@@ -14,7 +14,7 @@ A reference style is a **notation**, an **addressing** (`target`), an optional
 **label**, and — for path targets — a **path_style** (`docs/config-vocab.md`,
 `references:` block). Notation and path resolution are orthogonal: notation says
 *how the reference is delimited* (bracketed markdown, wikilink, or bare), path
-style says *how a path is resolved* (root / relative / canonical).
+style says *how a path is resolved* (root / relative).
 
 | notation | addressing | written form | durable (move/rename-safe)? | readable raw? |
 |---|---|---|---|---|
@@ -33,8 +33,12 @@ style says *how a path is resolved* (root / relative / canonical).
   title index. Readable, but not move/rename-safe, and it never registers. The
   weakest-but-prettiest option.
 - **`path`** is the classic diaryx form; `path_style` chooses the rendering
-  (`root` = `/a.md`, `relative` = `../a.md`, `canonical` = `a.md`), and `notation`
-  chooses whether it is bracketed (`markdown`) or bare (`bare`).
+  (`root` = `/a.md`, `relative` = `../a.md`), and `notation` chooses whether it is
+  bracketed (`markdown`) or bare (`bare`). There is deliberately no third,
+  slashless workspace-relative spelling: a bare target resolves against the
+  document it sits in, so `a.md` written in `notes/x.md` means `notes/a.md`, and a
+  style that rendered workspace-relative paths that way meant something different
+  from what it resolved to (`docs/config-vocab.md`, "`canonical` is retired").
 - The **label** on an `id` wikilink (`|Title`) is a *cached copy* of the target's
   title — cosmetic, refreshable. `check` can flag a stale one (`StaleLabel`,
   staged) and refresh it, turning "fallible cache" into "maintained cache."
@@ -193,8 +197,8 @@ design refuses.
 
 - ✅ `ReferenceStyle` renderer + parsing (`link.rs`); the config-facing
   `Notation` (`markdown`/`wikilink`/`bare`) and `PathStyle`
-  (`root`/`relative`/`canonical`) axes compose to the internal `Wrapper` +
-  extended `LinkStyle` (the 2×3 cross-product); `id:` scheme with legacy
+  (`root`/`relative`) axes compose to the internal `Wrapper` +
+  extended `LinkStyle` (the 2×2 cross-product); `id:` scheme with legacy
   `prov:` read.
 - ✅ Per-relation `style` on `Relation` (`relation.rs`).
 - ✅ Workspace default + config keys (`config.rs`), authoring seam

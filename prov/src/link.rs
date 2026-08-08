@@ -290,14 +290,10 @@ pub enum LinkStyle {
     MarkdownRoot,
     /// `[Title](../path/file.md)` — relative Markdown link.
     MarkdownRelative,
-    /// `[Title](path/file.md)` — canonical (workspace-relative) Markdown link.
-    MarkdownCanonical,
     /// `/path/file.md` — bare workspace-absolute path.
     PlainRoot,
     /// `../path/file.md` — bare relative path.
     PlainRelative,
-    /// `path/file.md` — bare workspace-relative (canonical) path.
-    PlainCanonical,
 }
 
 impl LinkStyle {
@@ -309,10 +305,8 @@ impl LinkStyle {
         match self {
             Self::MarkdownRoot => (Notation::Markdown, PathStyle::Root),
             Self::MarkdownRelative => (Notation::Markdown, PathStyle::Relative),
-            Self::MarkdownCanonical => (Notation::Markdown, PathStyle::Canonical),
             Self::PlainRoot => (Notation::Bare, PathStyle::Root),
             Self::PlainRelative => (Notation::Bare, PathStyle::Relative),
-            Self::PlainCanonical => (Notation::Bare, PathStyle::Canonical),
         }
     }
 
@@ -325,12 +319,8 @@ impl LinkStyle {
             (Notation::Markdown | Notation::Wikilink, PathStyle::Relative) => {
                 Self::MarkdownRelative
             }
-            (Notation::Markdown | Notation::Wikilink, PathStyle::Canonical) => {
-                Self::MarkdownCanonical
-            }
             (Notation::Bare, PathStyle::Root) => Self::PlainRoot,
             (Notation::Bare, PathStyle::Relative) => Self::PlainRelative,
-            (Notation::Bare, PathStyle::Canonical) => Self::PlainCanonical,
         }
     }
 }
@@ -394,6 +384,16 @@ impl Notation {
 /// The path-resolution a reference uses for a path target — the config-facing
 /// `references.path_style` axis, orthogonal to [`Notation`]. Applies to path
 /// targets only (id/alias ignore it).
+///
+/// Two resolutions, and deliberately not three. A `canonical` style once emitted
+/// a *workspace*-relative path with no leading slash (`path/file.md`), which
+/// [`resolve`] reads as *directory*-relative — so a canonical link resolved to
+/// what it named only from a document at the workspace root, and silently
+/// misresolved everywhere else. The ambiguity of a bare path is settled by
+/// committing to one meaning rather than by tagging it: **bare is
+/// directory-relative**, and a workspace-relative reference is spelled
+/// [`Root`](Self::Root), with the slash that says so. `prov convert <root>
+/// link_format markdown_root -r` restyles a workspace that used the old value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PathStyle {
     /// Workspace-absolute: `/path/file.md`.
@@ -401,8 +401,6 @@ pub enum PathStyle {
     Root,
     /// Relative to the referring document: `../file.md`.
     Relative,
-    /// Workspace-relative with no leading slash: `path/file.md`.
-    Canonical,
 }
 
 impl PathStyle {
@@ -411,7 +409,6 @@ impl PathStyle {
         match value {
             "root" => Some(Self::Root),
             "relative" => Some(Self::Relative),
-            "canonical" => Some(Self::Canonical),
             _ => None,
         }
     }
@@ -421,7 +418,6 @@ impl PathStyle {
         match self {
             Self::Root => "root",
             Self::Relative => "relative",
-            Self::Canonical => "canonical",
         }
     }
 }
@@ -439,10 +435,8 @@ pub fn format_link(style: LinkStyle, from: &Path, target: &Path, title: &str) ->
             let rel = relative(from.parent().unwrap_or(Path::new("")), target);
             format!("[{title}]({})", emit_target(&rel))
         }
-        LinkStyle::MarkdownCanonical => format!("[{title}]({})", emit_target(&canonical)),
         LinkStyle::PlainRoot => format!("/{canonical}"),
         LinkStyle::PlainRelative => relative(from.parent().unwrap_or(Path::new("")), target),
-        LinkStyle::PlainCanonical => canonical.into_owned(),
     }
 }
 
@@ -770,9 +764,6 @@ pub fn path_text(path_style: LinkStyle, from: &Path, to: &Path) -> String {
         LinkStyle::MarkdownRoot | LinkStyle::PlainRoot => format!("/{}", to.to_string_lossy()),
         LinkStyle::MarkdownRelative | LinkStyle::PlainRelative => {
             relative(from.parent().unwrap_or(Path::new("")), to)
-        }
-        LinkStyle::MarkdownCanonical | LinkStyle::PlainCanonical => {
-            to.to_string_lossy().into_owned()
         }
     }
 }
@@ -1479,19 +1470,19 @@ mod tests {
             "../Archive/MATH 213 files.md"
         );
         assert_eq!(
-            format_link(LinkStyle::PlainCanonical, from, target, "ignored"),
-            "School/Archive/MATH 213 files.md"
+            format_link(LinkStyle::PlainRoot, from, target, "ignored"),
+            "/School/Archive/MATH 213 files.md"
         );
     }
 
     #[test]
-    fn link_style_axes_round_trip_and_cover_all_six_combinations() {
+    fn link_style_axes_round_trip_and_cover_every_combination() {
         use Notation::*;
         use PathStyle::*;
         // Every notation×path_style combination has a fused LinkStyle, and axes()
         // is its inverse — so the orthogonal config surface is lossless.
         for notation in [Markdown, Bare] {
-            for path_style in [Root, Relative, Canonical] {
+            for path_style in [Root, Relative] {
                 let style = LinkStyle::from_axes(notation, path_style);
                 assert_eq!(style.axes(), (notation, path_style));
             }
@@ -1499,15 +1490,18 @@ mod tests {
         // Wikilink has no bare/bracketed split, so it maps through the Markdown
         // family and its path text follows the path style.
         assert_eq!(
-            LinkStyle::from_axes(Wikilink, Canonical),
-            LinkStyle::MarkdownCanonical
+            LinkStyle::from_axes(Wikilink, Relative),
+            LinkStyle::MarkdownRelative
         );
         assert_eq!(
             Notation::from_wrapper(Wrapper::Wikilink, LinkStyle::MarkdownRoot),
             Wikilink
         );
         assert_eq!(Notation::from_config_str("bare"), Some(Bare));
-        assert_eq!(PathStyle::from_config_str("canonical"), Some(Canonical));
+        assert_eq!(PathStyle::from_config_str("relative"), Some(Relative));
+        // Retired: a bare workspace-relative path is unspellable, because a bare
+        // path is directory-relative and the two cannot both be true.
+        assert_eq!(PathStyle::from_config_str("canonical"), None);
         assert_eq!(LinkStyle::default(), LinkStyle::MarkdownRoot);
         assert_eq!(
             path_to_title(Path::new("Folder/utility_index.md")),
@@ -1516,13 +1510,9 @@ mod tests {
     }
 
     #[test]
-    fn the_two_new_link_styles_render_bracketed_canonical_and_bare_root() {
+    fn the_bare_workspace_absolute_style_renders_a_leading_slash() {
         let from = Path::new("a/b.md");
         let to = Path::new("c/d.md");
-        assert_eq!(
-            format_link(LinkStyle::MarkdownCanonical, from, to, "D"),
-            "[D](c/d.md)"
-        );
         assert_eq!(format_link(LinkStyle::PlainRoot, from, to, "D"), "/c/d.md");
     }
 
@@ -1824,6 +1814,161 @@ mod tests {
             path_text(LinkStyle::MarkdownRelative, from, to),
             "../c/x.md"
         );
-        assert_eq!(path_text(LinkStyle::PlainCanonical, from, to), "a/c/x.md");
+        assert_eq!(path_text(LinkStyle::PlainRoot, from, to), "/a/c/x.md");
+    }
+
+    /// Laws, rather than examples.
+    ///
+    /// Every test above names one input and asserts the output prov produced
+    /// for it. That is the right shape for a decision (`slug("v1.0 Release")`
+    /// is `"v10-release"` because someone chose it), and the wrong shape for a
+    /// *law* — a claim quantified over every input, of which an example
+    /// witnesses exactly one. The round-trip below is a law: a link prov
+    /// authors must name the document prov meant, from wherever it was
+    /// written, in whichever style the workspace declared.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A workspace-relative document path — up to two directories deep,
+        /// short lowercase names. The alphabet is small on purpose: a
+        /// counterexample is only useful if you can read it, and `a/b.md`
+        /// makes the same point as `Xk9/qZ2.md` with none of the noise.
+        fn doc_path() -> impl Strategy<Value = PathBuf> {
+            (prop::collection::vec("[a-z]{1,3}", 0..3usize), "[a-z]{1,3}").prop_map(
+                |(dirs, stem)| {
+                    let mut path = PathBuf::new();
+                    for dir in dirs {
+                        path.push(dir);
+                    }
+                    path.push(format!("{stem}.md"));
+                    path
+                },
+            )
+        }
+
+        /// A path as a *human* might write one into frontmatter: real names
+        /// mixed with the `.` and `..` a relative reference is made of. Unlike
+        /// [`doc_path`] this may climb above the root (`../../x`), which is
+        /// legal to *write* and refused later by [`escapes_root`] — the
+        /// normalizer has to survive it either way.
+        fn messy_path() -> impl Strategy<Value = PathBuf> {
+            prop::collection::vec(
+                prop_oneof![Just(".".to_string()), Just("..".to_string()), "[a-z]{1,3}"],
+                1..5usize,
+            )
+            .prop_map(|parts| parts.iter().collect())
+        }
+
+        /// Every style there is.
+        ///
+        /// This list was once four of six. The two `Canonical` styles emitted a
+        /// bare *workspace*-relative path that [`resolve`] reads as
+        /// *directory*-relative, so they failed the law below — and they are
+        /// gone now rather than excused, which is why the strategy can name the
+        /// whole enum again. A style that cannot be read back is not a style.
+        fn round_tripping_style() -> impl Strategy<Value = LinkStyle> {
+            prop::sample::select(vec![
+                LinkStyle::MarkdownRoot,
+                LinkStyle::MarkdownRelative,
+                LinkStyle::PlainRoot,
+                LinkStyle::PlainRelative,
+            ])
+        }
+
+        proptest! {
+            /// `resolve ∘ format = id`: authoring a link to `to` from the
+            /// document at `from`, then reading it back the way every consumer
+            /// does (`Link::parse` for the scalar, `resolve` for the path),
+            /// must land on `to` again. The whole point of a style axis is
+            /// that it changes how a reference is *spelled* and not what it
+            /// *means* — so this holds for every style, which is a claim the
+            /// enum only earned once the canonical pair was retired.
+            #[test]
+            fn a_formatted_link_resolves_back_to_the_document_it_names(
+                from in doc_path(),
+                to in doc_path(),
+                style in round_tripping_style(),
+            ) {
+                let written = format_link(style, &from, &to, "Label");
+                let got = resolve(&from, &Link::parse(&written).target);
+                prop_assert_eq!(
+                    &got,
+                    &to,
+                    "{:?} wrote `{}` in `{}`",
+                    style,
+                    written,
+                    from.display()
+                );
+            }
+
+            /// The law a move rests on: **re-relativizing a link preserves its
+            /// referent.** `mutate::rename` rewrites every outbound path link
+            /// of a document it moves by resolving the old text against the old
+            /// location and re-rendering it against the new one
+            /// (`rename.rs:236`). That is only safe if the two resolve to the
+            /// same document — which is this, quantified over every pair of
+            /// locations a document could move between.
+            #[test]
+            fn re_relativizing_a_link_preserves_the_document_it_names(
+                from in doc_path(),
+                to in doc_path(),
+                referent in doc_path(),
+            ) {
+                let dir = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
+                // As authored in the document at its old location.
+                let written = relative(&dir(&from), &referent);
+                // What `rename` writes when the document lands at `to`.
+                let rewritten = relative(&dir(&to), &resolve(&from, &written));
+                prop_assert_eq!(
+                    resolve(&to, &rewritten),
+                    referent,
+                    "`{}` moving {} → {} became `{}`",
+                    written,
+                    from.display(),
+                    to.display(),
+                    rewritten
+                );
+            }
+
+            /// [`normalize`] is idempotent — folding `.`/`..` a second time
+            /// changes nothing. Load-bearing because resolved paths are
+            /// compared for equality all over the crate (`move_conflict`, the
+            /// registry's id↔path bijection, every `check` finding that says
+            /// two links name the same document); a normal form that still
+            /// moves under re-application would make those comparisons depend
+            /// on how many times a path had been through the resolver.
+            #[test]
+            fn normalizing_a_path_twice_is_normalizing_it_once(path in messy_path()) {
+                let once = normalize(&path);
+                prop_assert_eq!(normalize(&once), once.clone(), "on `{}`", path.display());
+            }
+
+            /// A normalized path has no `.` left, and any `..` that survives is
+            /// a *leading* one — the climb above the root that could not be
+            /// cancelled, which is precisely what [`escapes_root`] then looks
+            /// for. A `..` appearing after a normal component would mean the
+            /// fold missed a cancellation, and every path comparison downstream
+            /// would be reading a path that still had reducing left to do.
+            #[test]
+            fn a_normalized_path_keeps_only_the_climb_it_could_not_cancel(
+                path in messy_path(),
+            ) {
+                let normalized = normalize(&path);
+                let parts: Vec<_> = normalized.components().collect();
+                let climb = parts
+                    .iter()
+                    .take_while(|c| matches!(c, Component::ParentDir))
+                    .count();
+                prop_assert!(
+                    parts[climb..]
+                        .iter()
+                        .all(|c| matches!(c, Component::Normal(_) | Component::RootDir)),
+                    "`{}` normalized to `{}`",
+                    path.display(),
+                    normalized.display()
+                );
+            }
+        }
     }
 }

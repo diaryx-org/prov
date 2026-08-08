@@ -27,10 +27,20 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// tombstoning store it is never reissued, so dangling references stay
     /// diagnosable.
     ///
+    /// Also refuses the *body* half of a separated document unless forced — the
+    /// prose file some other node reaches through its `content` pointer. Naming
+    /// it is almost always a mistake for the node beside it: the node is what
+    /// carries the id, the links and the title, and deleting its body leaves it
+    /// pointing at nothing. The error names the node to delete instead. Under
+    /// `force` the delete proceeds and the orphaned `content` pointer is
+    /// reported like any other dangler. (Deleting the *node* takes its body with
+    /// it, below — the pair is handled in both directions.)
+    ///
     /// Returns the inbound references *left* dangling by the delete: every
     /// other document's overlay link or body wikilink that resolved to `path`
     /// (as [`Finding::BrokenLink`]), plus any `colophon:<id>` reference now
-    /// pointing at the tombstone (as [`Finding::DanglingId`]). The parent's
+    /// pointing at the tombstone (as [`Finding::DanglingId`]), plus the
+    /// `content` pointer of a node whose body was forced away. The parent's
     /// spanning entry is *not* reported — it is removed here — and a delete that
     /// nothing pointed at returns an empty list. Unlike `rename`, these are not
     /// rewritten: a link records intent, and there is no new target to send it
@@ -56,12 +66,26 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
 
         let parent = self.single_target(&doc, &inverse, &path);
+        let root = self.spanning_root(&path, &inverse).await?;
+
+        // The body half of a separated pair: refuse, naming the node instead.
+        let owner = self.content_owner(&path).await?;
+        if let Some(owner) = &owner
+            && !force
+        {
+            return Err(Error::Structure(format!(
+                "{} is the body of {}; delete that instead, or force to destroy \
+                 the body and leave {} pointing at nothing",
+                path.display(),
+                owner.display(),
+                owner.display()
+            )));
+        }
 
         // Diagnose inbound references that will dangle: census the tree and keep
         // every link resolving to `path`, except the parent's spanning entry
         // (removed below) and any self-reference in the doomed document itself.
-        let root = self.spanning_root(&path, &inverse).await?;
-        let danglers: Vec<Finding> = self
+        let mut danglers: Vec<Finding> = self
             .census(&root)
             .await?
             .into_iter()
@@ -85,6 +109,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 },
             })
             .collect();
+
+        // A forced body delete strands its node's `content` pointer. The census
+        // above cannot report it — `content` is not a relation and not a body
+        // link — so it is added here rather than left for `check` to discover,
+        // which is what makes this verb's promise ("returns the inbound
+        // references left dangling") true of the separated shape too.
+        if let Some(owner) = owner {
+            let target = self
+                .load(&owner)
+                .await
+                .ok()
+                .and_then(|(_, doc)| doc.content_attr().map(str::to_string))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            danglers.push(Finding::BrokenLink {
+                doc: owner,
+                site: LinkSite::Relation("content".to_string()),
+                target,
+            });
+        }
 
         let mut parent_write: Option<(PathBuf, String)> = None;
         if let Some(parent) = &parent {
@@ -187,6 +230,45 @@ mod tests {
             !read(&dir, "index.md").contains("a.md"),
             "parent entry cleaned"
         );
+    }
+
+    #[test]
+    fn delete_refuses_a_separated_body_and_names_its_node() {
+        // The pair, handled in both directions. Deleting the *node* takes its
+        // body with it (proven elsewhere in this file); naming the *body* is
+        // almost always a mistake for the node beside it, so it is refused with
+        // the node named — the node is what carries the id, the links and the
+        // title, and it is what the user meant.
+        //
+        // Found by the generated sequences in `super::properties`, which reached
+        // `separate` then `delete` on the resulting body in two operations.
+        let dir = tempdir("delete-separated-body");
+        write(&dir, "index.md", "---\ncontents:\n- b.yaml\n---\n");
+        write(&dir, "b.yaml", "part_of: index.md\ncontent: b.md\n");
+        write(&dir, "b.md", "B body.\n");
+
+        let err = block_on(ws(&dir).delete(Path::new("b.md"), false)).unwrap_err();
+        assert!(err.to_string().contains("is the body of b.yaml"), "{err}");
+        assert!(dir.join("b.md").exists(), "and nothing was destroyed");
+
+        // Forced, it proceeds — and says what it stranded, rather than leaving
+        // `check` to discover it later.
+        let danglers = block_on(ws(&dir).delete(Path::new("b.md"), true)).unwrap();
+        assert!(!dir.join("b.md").exists(), "the body is gone");
+        assert!(
+            danglers.iter().any(|f| matches!(f,
+                Finding::BrokenLink { doc, site: LinkSite::Relation(r), target }
+                    if doc == &PathBuf::from("b.yaml") && r == "content" && target == "b.md")),
+            "{danglers:?}"
+        );
+        // And what the verb reported is exactly what `check` goes on to find.
+        let findings = block_on(ws(&dir).check("index.md")).unwrap();
+        for reported in &danglers {
+            assert!(
+                findings.contains(reported),
+                "{reported:?} not in {findings:?}"
+            );
+        }
     }
 
     #[test]

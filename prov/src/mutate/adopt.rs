@@ -151,7 +151,7 @@ mod tests {
             "---\ntitle: Loose\n---\nOriginal body, kept.\n",
         );
         // The default markdown-root style authors `/index.md`, which resolves from
-        // a subdirectory child (a bare canonical path would not).
+        // a subdirectory child (a bare relative path would need `../`).
         let mut w = Workspace::builder(StdFs).root(&dir).build();
 
         block_on(w.adopt(Path::new("notes/loose.md"), Path::new("index.md"))).unwrap();
@@ -182,7 +182,7 @@ mod tests {
         write(&dir, "a.md", "---\ntitle: A\n---\n");
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
-            .link_style(LinkStyle::PlainCanonical)
+            .link_style(LinkStyle::PlainRelative)
             .build();
 
         // First adoption links it; a second is a clean no-op (no duplicate entry).

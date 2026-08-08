@@ -1304,9 +1304,9 @@ fn prompt_path_format(wrapper: WrapperArg) -> std::io::Result<LinkStyleArg> {
             )
             .item(LinkStyleArg::PlainRelative, "Plain relative", "../path.md")
             .item(
-                LinkStyleArg::PlainCanonical,
-                "Plain workspace path",
-                "path.md",
+                LinkStyleArg::PlainRoot,
+                "Plain workspace-absolute",
+                "/path.md",
             ),
         WrapperArg::Wikilink => select
             .item(
@@ -1316,9 +1316,9 @@ fn prompt_path_format(wrapper: WrapperArg) -> std::io::Result<LinkStyleArg> {
             )
             .item(LinkStyleArg::PlainRelative, "Relative", "[[../path.md]]")
             .item(
-                LinkStyleArg::PlainCanonical,
-                "Workspace path",
-                "[[path.md]]",
+                LinkStyleArg::PlainRoot,
+                "Workspace-absolute",
+                "[[/path.md]]",
             ),
     };
     select.interact()

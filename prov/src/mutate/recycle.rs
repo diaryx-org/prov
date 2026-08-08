@@ -82,9 +82,26 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let parent = self.single_target(&doc, &inverse, &path);
         let root = self.spanning_root(&path, &inverse).await?;
 
+        // Separated-body guard — identical to `delete`'s, and it matters more
+        // here: the CLI's `rm` routes to the bin by default, so this is the path
+        // a user actually reaches. Binning a node's prose half leaves the node
+        // pointing at nothing, and the census below cannot see `content`.
+        let owner = self.content_owner(&path).await?;
+        if let Some(owner) = &owner
+            && !force
+        {
+            return Err(Error::Structure(format!(
+                "{} is the body of {}; recycle that instead, or force to bin the \
+                 body and leave {} pointing at nothing",
+                path.display(),
+                owner.display(),
+                owner.display()
+            )));
+        }
+
         // Inbound references the move leaves dangling — the same diagnosis
         // `delete` returns, since a binned document is out of the live graph.
-        let danglers: Vec<Finding> = self
+        let mut danglers: Vec<Finding> = self
             .census(&root)
             .await?
             .into_iter()
@@ -108,6 +125,24 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 },
             })
             .collect();
+
+        // A forced body recycle strands its node's `content` pointer, and the
+        // census cannot report it (`content` is neither a relation nor a body
+        // link). Reported here so the verb's diagnosis covers the separated
+        // shape too — see `delete`, which does the same.
+        if let Some(owner) = owner {
+            let target = self
+                .load(&owner)
+                .await
+                .ok()
+                .and_then(|(_, doc)| doc.content_attr().map(str::to_string))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            danglers.push(Finding::BrokenLink {
+                doc: owner,
+                site: LinkSite::Relation("content".to_string()),
+                target,
+            });
+        }
 
         // Locate the bin, or plan to bootstrap it on this first deletion.
         let format = self.default_embed_format();
@@ -254,7 +289,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 cs.write(parent_path.clone(), text.clone());
             }
         }
-        if existing_index.is_none() {
+        // Link the bin from the root, the first time one is created — but never
+        // into the document being recycled.
+        //
+        // `root` here is `spanning_root` walked up from the subject, and for a
+        // subject with no spanning parent (an orphan — which `check` reports and
+        // users routinely bin — or a separated body under `force`) that walk
+        // lands back on the subject itself. Writing the pointer there staged a
+        // write to a path the same change set had just renamed away, which
+        // recreated the file in place: the user saw the document still sitting
+        // there, now carrying a `recycle_bin:` key it never had, *and* a copy in
+        // the bin.
+        //
+        // There is no reachable root to link from in that case, so the bin is
+        // simply left unlinked and the next recycle from a real node adopts it
+        // (`existing_index` is discovered by path, not by the pointer). A bin
+        // nothing links to is a finding `check` can raise; a deleted document
+        // that reappears with machinery stamped into it is data loss wearing a
+        // success message.
+        if existing_index.is_none() && root != path {
             let base = match &root_text {
                 Some(text) => text.clone(),
                 None => self.load(&root).await?.0,
@@ -513,6 +566,63 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
+
+    #[test]
+    fn recycling_a_parentless_document_does_not_resurrect_it() {
+        // Found while fixing the separated-body guard, and older than it: the
+        // bin-bootstrap wrote its pointer into `spanning_root(subject)`, which
+        // for a document with no parent *is the subject*. The change set renamed
+        // the file into the bin and then wrote it straight back, so `prov rm` on
+        // an orphan left the document in place — now carrying a `recycle_bin:`
+        // key — beside a copy in the bin.
+        //
+        // Orphans are precisely what a user bins: `check` reports them as the
+        // onboarding signal, and the answer is often "this was junk".
+        let dir = tempdir("recycle-parentless");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "loose.md", "---\ntitle: Loose\n---\nno parent\n");
+
+        block_on(ws(&dir).recycle(Path::new("loose.md"), false, None)).unwrap();
+
+        assert!(!dir.join("loose.md").exists(), "gone, and it stays gone");
+        assert_eq!(
+            read(&dir, "recyclebin/items/loose.md"),
+            "---\ntitle: Loose\n---\nno parent\n"
+        );
+    }
+
+    #[test]
+    fn recycle_refuses_a_separated_body_and_names_its_node() {
+        // `delete`'s guard, on the path a user actually takes: the CLI routes
+        // `rm` to the bin unless `--purge`, so binning a node's prose half is
+        // the reachable way to strand a `content` pointer.
+        let dir = tempdir("recycle-separated-body");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- b.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "b.yaml",
+            "title: B\npart_of: index.md\ncontent: b.md\n",
+        );
+        write(&dir, "b.md", "B body.\n");
+
+        let err = block_on(ws(&dir).recycle(Path::new("b.md"), false, None)).unwrap_err();
+        assert!(err.to_string().contains("is the body of b.yaml"), "{err}");
+        assert!(dir.join("b.md").exists(), "nothing was moved");
+
+        // Forced, it bins the body and reports the pointer it stranded.
+        let danglers = block_on(ws(&dir).recycle(Path::new("b.md"), true, None)).unwrap();
+        assert!(!dir.join("b.md").exists());
+        assert!(
+            danglers.iter().any(|f| matches!(f,
+                Finding::BrokenLink { doc, site: LinkSite::Relation(r), target }
+                    if doc == &PathBuf::from("b.yaml") && r == "content" && target == "b.md")),
+            "{danglers:?}"
+        );
+    }
 
     #[test]
     fn recycle_moves_a_document_into_the_bin_and_records_it() {

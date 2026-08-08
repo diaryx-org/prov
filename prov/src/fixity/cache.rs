@@ -501,4 +501,139 @@ mod tests {
             "a pre-epoch timestamp was clamped to the epoch"
         );
     }
+
+    /// Laws over the frame, rather than examples of it.
+    ///
+    /// This is the crate's one hand-rolled binary parser, and it reads a file
+    /// prov did not necessarily write: it lives outside the workspace, in a
+    /// user cache directory, where a half-finished write, a truncating backup,
+    /// or an unrelated file of the same name are all ordinary. The module's
+    /// promise is absolute — "`None` for anything that is not exactly what some
+    /// build of prov wrote for *this* workspace", with **every failure decoding
+    /// to nothing remembered** — and a length prefix read straight out of
+    /// untrusted bytes is exactly where that sort of promise usually has a hole.
+    ///
+    /// A parser is also the one place property testing most resembles fuzzing,
+    /// so both are here, and the difference between them is the lesson:
+    /// uniformly random bytes almost never get past `MAGIC`, so they prove only
+    /// that the front door is locked. *Corrupting a valid encoding* keeps the
+    /// header intact and lands the damage in a length prefix or a UTF-8
+    /// boundary — the code that never runs otherwise.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        const ROOT: &str = "/vault";
+
+        /// A cache built the only way one ever is: through `put`.
+        fn cache() -> impl Strategy<Value = FixityCache> {
+            prop::collection::vec(
+                (
+                    "[a-z/]{1,8}",
+                    0..4_000_000_000u64,
+                    0..64u64,
+                    "[a-f0-9]{0,8}",
+                ),
+                0..5usize,
+            )
+            .prop_map(|puts| {
+                let mut cache = FixityCache::new(ROOT);
+                for (path, secs, len, hash) in puts {
+                    cache.put(
+                        Path::new(&path),
+                        &meta(secs, len),
+                        &format!("sha256:{hash}"),
+                    );
+                }
+                cache
+            })
+        }
+
+        proptest! {
+            /// `decode ∘ encode = id`. The entries survive, the root survives,
+            /// and the reloaded cache is **not dirty** — the last clause is the
+            /// one with consequences, since a cache that decoded itself dirty
+            /// would rewrite the file on every run that learned nothing.
+            #[test]
+            fn what_was_encoded_decodes_back_to_the_same_cache(cache in cache()) {
+                let bytes = cache.encode();
+                let reloaded = FixityCache::decode(&bytes, Path::new(ROOT))
+                    .expect("prov's own bytes must decode");
+                prop_assert_eq!(reloaded.len(), cache.len());
+                prop_assert_eq!(reloaded.root(), cache.root());
+                prop_assert!(!reloaded.is_dirty());
+                // Encoding is a function of the contents, not of the order they
+                // were learned in — which is what makes the file diffable and
+                // two runs over one workspace agree byte for byte.
+                prop_assert_eq!(reloaded.encode(), bytes);
+            }
+
+            /// Arbitrary bytes: never a panic, and never a cache claiming a
+            /// root other than the one asked for. This is the front-door test —
+            /// it rarely gets past `MAGIC`, which is exactly why the next one
+            /// exists.
+            #[test]
+            fn arbitrary_bytes_decode_to_nothing_or_to_this_workspace(
+                bytes in prop::collection::vec(any::<u8>(), 0..96),
+            ) {
+                if let Some(cache) = FixityCache::decode(&bytes, Path::new(ROOT)) {
+                    prop_assert_eq!(cache.root(), Path::new(ROOT));
+                    prop_assert!(!cache.is_dirty());
+                }
+            }
+
+            /// **Corrupt one byte of a real encoding.** The header still passes,
+            /// so the damage lands in a length prefix, a UTF-8 sequence, or an
+            /// entry count — the paths random bytes never reach.
+            ///
+            /// What is *not* claimed: that corruption is detected. There is no
+            /// per-entry checksum, deliberately, because a wrong digest here can
+            /// only ever be served past the mtime-and-length gate the entry also
+            /// carries. The claim is the weaker, sufficient one: no panic, no
+            /// hang, and no cache attributed to the wrong workspace.
+            #[test]
+            fn a_corrupted_encoding_never_panics_and_never_changes_workspace(
+                cache in cache(),
+                at in any::<prop::sample::Index>(),
+                xor in 1..=255u8,
+            ) {
+                let mut bytes = cache.encode();
+                let at = at.index(bytes.len());
+                bytes[at] ^= xor;
+                if let Some(decoded) = FixityCache::decode(&bytes, Path::new(ROOT)) {
+                    prop_assert_eq!(decoded.root(), Path::new(ROOT));
+                    prop_assert!(!decoded.is_dirty());
+                }
+            }
+
+            /// **Truncation is never partial acceptance.** A short read — an
+            /// interrupted write, a copy that stopped — must decode to nothing,
+            /// not to the entries that happened to arrive. Anything less would
+            /// let a half-written cache answer questions about files whose
+            /// records never landed.
+            #[test]
+            fn a_truncated_encoding_decodes_to_nothing(
+                cache in cache(),
+                at in any::<prop::sample::Index>(),
+            ) {
+                let bytes = cache.encode();
+                let cut = at.index(bytes.len());
+                prop_assert!(
+                    FixityCache::decode(&bytes[..cut], Path::new(ROOT)).is_none(),
+                    "{cut} of {} bytes still decoded",
+                    bytes.len()
+                );
+            }
+
+            /// A cache written for another workspace is refused outright, however
+            /// well-formed it is — the entries may describe real files, but
+            /// nothing in them proves which workspace's.
+            #[test]
+            fn a_cache_from_another_workspace_is_refused(cache in cache()) {
+                prop_assert!(
+                    FixityCache::decode(&cache.encode(), Path::new("/elsewhere")).is_none()
+                );
+            }
+        }
+    }
 }

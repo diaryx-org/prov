@@ -73,4 +73,89 @@ mod tests {
         );
         assert_eq!(nearest_owned("colleagues", &cands), None);
     }
+
+    /// [`levenshtein`] claims to be a *distance*, and the callers lean on that
+    /// harder than the examples above show: `nearest` takes a `min_by_key` over
+    /// it and a threshold of 1..=2 — reasoning that only holds if the number is
+    /// a metric rather than merely a plausible-looking score. So the metric
+    /// axioms are worth asserting directly. A hand-rolled two-row dynamic
+    /// program is exactly the kind of code where an index slip yields something
+    /// that is right on the examples someone tried and asymmetric elsewhere.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Short ASCII words. ASCII keeps `chars()` and byte length in step, so
+        /// a failing case reads the way it looks; short keeps the DP small and
+        /// the shrunk output legible.
+        fn word() -> impl Strategy<Value = String> {
+            "[a-z_]{0,6}"
+        }
+
+        proptest! {
+            /// Identity of indiscernibles, in the direction that matters here:
+            /// a string is distance 0 from itself, and nothing else is 0 from it.
+            #[test]
+            fn only_a_string_itself_is_distance_zero(a in word(), b in word()) {
+                prop_assert_eq!(levenshtein(&a, &a), 0);
+                prop_assert_eq!(levenshtein(&a, &b) == 0, a == b);
+            }
+
+            /// Symmetry. `nearest` compares `key` against candidates in one
+            /// fixed order; if the metric were asymmetric, the suggestion a user
+            /// gets would depend on which side of the call their typo landed.
+            #[test]
+            fn distance_does_not_depend_on_the_order_of_its_arguments(
+                a in word(),
+                b in word(),
+            ) {
+                prop_assert_eq!(levenshtein(&a, &b), levenshtein(&b, &a));
+            }
+
+            /// The triangle inequality — the axiom that makes "within 2 edits"
+            /// mean something transitive rather than an isolated score.
+            #[test]
+            fn distance_never_exceeds_going_the_long_way(
+                a in word(),
+                b in word(),
+                c in word(),
+            ) {
+                prop_assert!(
+                    levenshtein(&a, &c) <= levenshtein(&a, &b) + levenshtein(&b, &c),
+                    "d({a},{c}) > d({a},{b}) + d({b},{c})"
+                );
+            }
+
+            /// Bounds: no more edits than the longer string has characters, and
+            /// no fewer than the difference in their lengths (every surplus
+            /// character costs at least one edit to account for).
+            #[test]
+            fn distance_is_bounded_by_the_lengths(a in word(), b in word()) {
+                let (la, lb) = (a.chars().count(), b.chars().count());
+                let d = levenshtein(&a, &b);
+                prop_assert!(d <= la.max(lb), "d={d} exceeds the longer string");
+                prop_assert!(d >= la.abs_diff(lb), "d={d} is below the length gap");
+            }
+
+            /// The threshold `nearest` is built on, stated as a law: an exact
+            /// match is never offered as a typo (distance 0 is excluded), and a
+            /// candidate is offered only when it really is within two edits.
+            #[test]
+            fn nearest_offers_only_genuine_near_misses(
+                key in word(),
+                candidates in prop::collection::vec(word(), 1..4),
+            ) {
+                let Some(hit) = nearest_owned(&key, &candidates) else { return Ok(()) };
+                let d = levenshtein(&key, &hit);
+                prop_assert!((1..=2).contains(&d), "offered `{hit}` at distance {d}");
+                // And it is the nearest such candidate, not merely a near one.
+                let best = candidates
+                    .iter()
+                    .map(|c| levenshtein(&key, c))
+                    .filter(|d| (1..=2).contains(d))
+                    .min();
+                prop_assert_eq!(Some(d), best);
+            }
+        }
+    }
 }

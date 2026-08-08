@@ -6,6 +6,65 @@ part_of: '[prov](/README.md)'
 Deferred items from the identity / wikilink / link-syntax work, so we don't lose
 them. Not curated design (that's `DESIGN.md`); this is a scratch backlog.
 
+## What the property tests turned up
+
+`proptest` is a dev-dependency, and six modules carry a `mod properties` beside
+their example tests: `link` (reference round-trips, path arithmetic), `mutate`
+(sequences of verbs against `check`), `index` (the id↔path bijection),
+`identity` (the check character), `fixity::cache` (the hand-rolled binary
+frame), and `textdist` (the metric axioms). Each states a claim the prose
+already made and quantifies it.
+
+Five defects found, **all fixed**:
+
+- **Both canonical link styles failed `resolve ∘ format = id`** — not just
+  `plain_canonical`, which is what this file had said for months. `PathStyle` is
+  now `root | relative`; see the link-syntax section below.
+
+- **`delete`/`recycle` on a separated node's body** stranded its `content:`
+  pointer silently. Both now refuse a body as a subject and name the node
+  instead; `--force` proceeds and reports the pointer it stranded, which the
+  dangler census could never see (`content` is neither a relation nor a body
+  link). `maintain::content_owner` answers "whose body is this", bounded to the
+  body's own directory — every body prov authors sits beside its node.
+
+- **A displaced id was forgotten rather than tombstoned,** so `is_known` — the
+  mint-by-rejection predicate — went true → false and the id became reissuable
+  while the displaced document still spelled it. Two operations reached it.
+  `FileIndex::register` now retires what it displaces.
+
+- **A re-registered id was held live *and* tombstoned** (the `restore`-from-bin
+  path), disagreeing with what `render` writes. `register` now clears the
+  tombstone — safe only because of the fix above, without which a restored id
+  that was later displaced would have had no tombstone left. The two had to land
+  together; the first attempt at this one alone regressed the other, and the
+  property caught it in three operations.
+
+- **`recycle` resurrected a parentless document.** Found while fixing the
+  separated-body guard, and older than it: the bin bootstrap wrote its pointer
+  into `spanning_root(subject)`, which for a document with no parent *is the
+  subject*, so the change set renamed the file into the bin and then wrote it
+  straight back — `prov rm` on an orphan left it in place carrying a
+  `recycle_bin:` key, beside a copy in the bin. Orphans are exactly what a user
+  bins, since `check` reports them as the onboarding signal.
+
+Two behaviours the laws had to be told about, both correct as they stand:
+`delete` reports rather than rewrites the references it strands (so the law is
+"introduces nothing it did not report", which also tests that the report is
+*complete*), and `duplicate` leaves a parentless copy unattached by its own
+documented contract.
+
+The `mutate` law is still scoped to the spanning tree's **nodes** rather than
+every file on disk. With the separated-body guard in place a body subject is now
+refused rather than mishandled, so widening the domain is mostly a question of
+what `rename` and `retitle` owe a file that is content but not a node — worth
+trying, and likely to surface a `rename`-shaped sibling of the `delete` finding.
+
+Not yet done: `journal`/`change` have no properties, and they are the obvious
+next site — replay idempotence, and "an interrupted set resolves fully-before or
+fully-after" quantified over generated change sets rather than the hand-placed
+`FailAtWrite` fixtures.
+
 ## Identity & backlinks
 
 - **Step 4 — gated malformed-id autofix.** The one document-repairing heal: when
@@ -487,10 +546,20 @@ which of the two questions it answered. Deferred deliberately, not overlooked.
   - **Bare paths — `resolve()` stays `bare = directory-relative`** (which already
     matches diaryx's legacy `Ambiguous` reading), so **no `PathType` machinery** is
     ported: the ambiguity is settled by committing to one meaning, not tagging it.
-    Retire/redefine `plain_canonical`, whose current "bare = *root*-relative" claim
-    is a latent bug — `path_text(PlainCanonical)` emits a root-relative bare path
-    but `resolve()` reads bare as dir-relative, so those links resolve correctly
-    only for documents at the workspace root.
+    ✅ **Done — both canonical styles retired.** The claim "bare = *root*-relative"
+    was a latent bug: `path_text` emitted a workspace-relative bare path but
+    `resolve()` reads bare as dir-relative, so those links resolved correctly only
+    for a document at the workspace root. It was *both* canonical styles, not just
+    the bare one — `resolve` never sees the wrapper, so `[Label](a.md)` written in
+    `a/a.md` resolved to `a/a.md`, itself. This entry said `plain_canonical` alone
+    until the `resolve ∘ format = id` property test found the other half, which is
+    the argument for that test in one line: the law was about a *style axis*, and a
+    hand-written example can only ever witness one point on it. `PathStyle` is now
+    `root | relative`, `LinkStyle` the 2×2 cross-product, and the law holds
+    unscoped for every style. A workspace still configured with `canonical` loads
+    with a fallback to `root` (same path, plus the slash that makes the reading
+    explicit) and a `check` finding; `prov convert <root> link_format markdown_root
+    -r` restyles the documents.
   - **Migration wrinkle this creates.** diaryx's `plain_canonical` *means*
     bare-root-relative, which prov will no longer offer — so a diaryx workspace
     on `plain_canonical` can't just remap the enum; its links resolve differently

@@ -91,8 +91,11 @@ pub trait IndexStore {
     /// [`Workspace::move_conflict`](crate::Workspace::move_conflict) first and
     /// refuse the collision up front — the document being displaced still
     /// spells the id in its own frontmatter. This eviction is the same last
-    /// line of defence `register` keeps: it guarantees only that the store
-    /// stays *consistent* when something slips through.
+    /// line of defence [`register`](IndexStore::register) keeps, for when
+    /// something slips through anyway. A store with tombstones should also
+    /// *retire* what it displaces, so an evicted id stays
+    /// [`is_known`](IndexStore::is_known) and can never be reissued;
+    /// [`FileIndex`] does.
     fn set_path(&mut self, id: &Id, new_path: &Path);
 
     /// Retire an ID (e.g. after a delete). A store with tombstones keeps the
@@ -581,8 +584,54 @@ impl FileIndex {
 }
 
 impl IndexStore for FileIndex {
+    /// Registering an id **retires its tombstone**, because the id is live
+    /// again and a record cannot be both. This is not a hypothetical pairing:
+    /// `restore` from the recycle bin re-registers the very id `recycle`
+    /// tombstoned, so the sequence runs whenever a delete is undone.
+    ///
+    /// [`render`](Self::render) has always resolved the two in this direction —
+    /// it lays the live records down *over* the tombstones — so without this the
+    /// store disagrees with its own serialization until the process restarts,
+    /// and a round trip through the registry document silently "changes" it.
+    /// Nothing is lost by forgetting the tombstone: `is_known` stays true
+    /// through `resolve` while the id is live, so mint-by-rejection cannot
+    /// reissue it, and retiring it again tombstones it again.
+    /// Registering maintains the tombstone set in **both** directions, which is
+    /// what makes "an ID is never reissued" (DESIGN §10) true of this store
+    /// rather than merely intended.
+    ///
+    /// *Retires whatever it displaces.* Taking a path out from under the id
+    /// currently carrying it evicts that id from the live map — the bijection
+    /// repair [`InMemoryIndex::register`] performs and documents. Eviction alone
+    /// would forget the id *entirely*, so [`is_known`](IndexStore::is_known)
+    /// would go from true to false and a later mint could reissue it while the
+    /// displaced document still spells it in its own frontmatter. Reaching that
+    /// needs a displacement to slip past `registration_conflict` /
+    /// `move_conflict`, which is precisely the case this store is the last line
+    /// of defence for, so the displaced id earns a tombstone on the way out.
+    ///
+    /// *Un-retires what it registers.* An id being registered is live, and a
+    /// record cannot be both live and retired. This runs whenever a delete is
+    /// undone: `restore` re-registers the very id `recycle` tombstoned.
+    /// [`render`](Self::render) has always resolved the pair this way — it lays
+    /// the live records over the tombstones — so without this the store
+    /// disagrees with its own serialization until the process restarts. Nothing
+    /// is lost by forgetting the tombstone, because the id is `is_known` through
+    /// `resolve` while it is live, and the clause above tombstones it again if it
+    /// is ever displaced.
+    ///
+    /// The two clauses only work together. Un-retiring without retiring the
+    /// displaced would make the forgetting *easier* to reach: an id restored
+    /// from the bin and then displaced would have no tombstone left to fall back
+    /// on.
     fn register(&mut self, id: &Id, path: &Path) {
+        if let Some(displaced) = self.live.id_for_path(path)
+            && displaced != *id
+        {
+            self.tombstones.insert(displaced);
+        }
         self.live.register(id, path);
+        self.tombstones.remove(id);
         self.dirty = true;
     }
 
@@ -594,11 +643,12 @@ impl IndexStore for FileIndex {
         self.live.id_for_path(path)
     }
 
-    /// Delegates to [`InMemoryIndex::set_path`], so the bijection-safe eviction
-    /// it performs (both directions, via `register`) covers this store too.
+    /// Moving an id onto a path is registering it there — the same
+    /// bijection-safe eviction in both directions — so this delegates rather
+    /// than restating it, exactly as [`InMemoryIndex::set_path`] delegates to
+    /// its own `register`.
     fn set_path(&mut self, id: &Id, new_path: &Path) {
-        self.live.set_path(id, new_path);
-        self.dirty = true;
+        self.register(id, new_path);
     }
 
     /// Retire to a tombstone: the ID stops resolving but stays known forever.
@@ -933,5 +983,305 @@ Prose does not belong in a record store.
     fn empty_text_is_an_empty_registry() {
         let ix = FileIndex::parse(Path::new("registry.yaml"), "").unwrap();
         assert!(ix.is_empty());
+    }
+
+    #[test]
+    fn a_displaced_id_is_retired_rather_than_forgotten() {
+        // `register` keeps the bijection by evicting whatever it displaced. What
+        // must *not* go with the eviction is the id's existence: `is_known` is
+        // the mint-by-rejection predicate, so forgetting the id would make it
+        // available to be minted again for a different document while the
+        // displaced one still spells it in its own frontmatter — the case
+        // DESIGN §10 answers with "IDs are never reissued".
+        //
+        // Reaching this needs a displacement to slip past `registration_conflict`
+        // / `move_conflict`. That is what those guards are for, and this store is
+        // the last line of defence when one gets through.
+        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let (first, second) = (Id("aaa111a".into()), Id("bbb222b".into()));
+
+        ix.register(&first, Path::new("a.md"));
+        ix.register(&second, Path::new("a.md")); // displaces `first`
+
+        assert_eq!(ix.resolve(&first), None, "evicted from the live map");
+        assert!(ix.is_tombstoned(&first), "and retired on the way out");
+        assert!(ix.is_known(&first), "so it can never be reissued");
+        assert_eq!(ix.resolve(&second), Some(PathBuf::from("a.md")));
+    }
+
+    #[test]
+    fn re_registering_an_id_retires_its_tombstone() {
+        // The `restore`-from-bin path: `recycle` tombstones the id, `restore`
+        // registers it again. A record cannot be live and retired at once, and
+        // `render` has always resolved that in favour of live — so the in-memory
+        // store must agree, or it disagrees with its own serialization until the
+        // process restarts.
+        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let id = Id("ccc333c".into());
+        ix.set_host("registry.yaml", "title: ID registry\n")
+            .unwrap();
+
+        ix.register(&id, Path::new("a.md"));
+        ix.unregister(&id);
+        assert!(ix.is_tombstoned(&id), "retired by the delete");
+
+        ix.register(&id, Path::new("a.md")); // the restore
+        assert_eq!(ix.resolve(&id), Some(PathBuf::from("a.md")), "live again");
+        assert!(!ix.is_tombstoned(&id), "and no longer retired");
+
+        // Which is what the file said all along, so the round trip is lossless.
+        let text = ix.render().unwrap();
+        let reloaded = FileIndex::parse(Path::new("registry.yaml"), &text).unwrap();
+        assert_eq!(reloaded.resolve(&id), Some(PathBuf::from("a.md")));
+        assert!(!reloaded.is_tombstoned(&id));
+    }
+
+    #[test]
+    fn a_restored_id_that_is_later_displaced_is_still_never_reissued() {
+        // The two clauses of `register` in one sequence — and the reason they
+        // had to land together. Un-retiring on registration, without retiring
+        // what a registration displaces, would make this the *easiest* way to
+        // forget an id rather than an impossible one.
+        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let (restored, other) = (Id("aaa111a".into()), Id("bbb222b".into()));
+
+        ix.register(&restored, Path::new("a.md"));
+        ix.unregister(&restored); // recycled
+        ix.register(&restored, Path::new("a.md")); // restored — tombstone cleared
+        ix.register(&other, Path::new("a.md")); // displaced again
+
+        assert!(ix.is_known(&restored), "retired again on the way out");
+    }
+
+    /// Laws over the registry, rather than examples of it.
+    ///
+    /// DESIGN §5 singles this store out: the graph and resolution parts of the
+    /// index are a derived cache, harmless when stale, but `id → path` is
+    /// *authoritative, non-derivable state* — lose it and no amount of reading
+    /// the documents puts it back. So the invariant it keeps deserves to be
+    /// asserted universally rather than witnessed:
+    ///
+    /// > **`forward` and `reverse` are two views of one bijection.**
+    ///
+    /// [`InMemoryIndex::register`] says as much in its own doc comment, and the
+    /// history is instructive — 11abd38 fixed a displacement that went unevicted
+    /// in one direction, leaving an id with a forward entry to a path it no
+    /// longer owned. That is a two-line slip in a four-line function, invisible
+    /// to any single example, and it is precisely what a sequence of colliding
+    /// registrations finds.
+    ///
+    /// The generators use **three ids and three paths**. That is the whole
+    /// design: a small universe makes collision and displacement the common
+    /// case rather than a rare one, which is where every bug in a bijection
+    /// lives. A generator drawing fresh ids would exercise the easy path
+    /// forever.
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        const IDS: [&str; 3] = ["aaa111a", "bbb222b", "ccc333c"];
+        const PATHS: [&str; 3] = ["a.md", "b.md", "n/c.md"];
+
+        #[derive(Debug, Clone)]
+        enum Op {
+            Register { id: usize, path: usize },
+            SetPath { id: usize, path: usize },
+            Unregister { id: usize },
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (0..IDS.len(), 0..PATHS.len()).prop_map(|(id, path)| Op::Register { id, path }),
+                (0..IDS.len(), 0..PATHS.len()).prop_map(|(id, path)| Op::SetPath { id, path }),
+                (0..IDS.len()).prop_map(|id| Op::Unregister { id }),
+            ]
+        }
+
+        fn run(ix: &mut impl IndexStore, op: &Op) {
+            match op {
+                Op::Register { id, path } => {
+                    ix.register(&Id(IDS[*id].into()), Path::new(PATHS[*path]))
+                }
+                Op::SetPath { id, path } => {
+                    ix.set_path(&Id(IDS[*id].into()), Path::new(PATHS[*path]))
+                }
+                Op::Unregister { id } => ix.unregister(&Id(IDS[*id].into())),
+            }
+        }
+
+        /// Both directions of the claim. Only ids and paths the sequence names
+        /// can be in the maps, so checking those is checking all of them.
+        fn assert_bijection(ix: &impl IndexStore) -> std::result::Result<(), TestCaseError> {
+            for id in IDS.map(|i| Id(i.into())) {
+                if let Some(path) = ix.resolve(&id) {
+                    let back = ix.id_for_path(&path);
+                    prop_assert_eq!(
+                        back.as_ref(),
+                        Some(&id),
+                        "`{}` resolves to `{}`, which does not point back",
+                        id,
+                        path.display()
+                    );
+                }
+            }
+            for path in PATHS.map(Path::new) {
+                if let Some(id) = ix.id_for_path(path) {
+                    let back = ix.resolve(&id);
+                    prop_assert_eq!(
+                        back.as_deref(),
+                        Some(path),
+                        "`{}` carries `{}`, which does not point back",
+                        path.display(),
+                        id
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        proptest! {
+            /// The registry never names two paths for one id, or two ids for one
+            /// path — after *any* sequence of registrations, moves and
+            /// retirements, however much they displace each other.
+            #[test]
+            fn the_id_map_stays_a_bijection(ops in prop::collection::vec(op(), 1..12)) {
+                let mut ix = InMemoryIndex::new();
+                for (n, op) in ops.iter().enumerate() {
+                    run(&mut ix, op);
+                    assert_bijection(&ix).map_err(|e| {
+                        TestCaseError::fail(format!("after op {n} ({op:?}) of {ops:?}: {e}"))
+                    })?;
+                }
+            }
+
+            /// The same law for the persistent store, which delegates but wraps
+            /// the delegation in dirty-tracking and tombstones — and inherits
+            /// nothing automatically just because it forwards today.
+            #[test]
+            fn the_persistent_id_map_stays_a_bijection(
+                ops in prop::collection::vec(op(), 1..12),
+            ) {
+                let mut ix = FileIndex::new(fig::Format::Yaml);
+                for op in &ops {
+                    run(&mut ix, op);
+                    assert_bijection(&ix)?;
+                }
+            }
+
+            /// **A retired id is never forgotten.** Mint-by-rejection depends on
+            /// it: an id that stops resolving must stay *known*, or a later mint
+            /// could reissue it and a dangling `id:` reference would quietly
+            /// change meaning — the difference between "that document was
+            /// deleted" and "that was never issued here" (DESIGN §10).
+            #[test]
+            fn a_retired_id_stays_known_forever(ops in prop::collection::vec(op(), 1..12)) {
+                let mut ix = FileIndex::new(fig::Format::Yaml);
+                let mut retired: Vec<Id> = Vec::new();
+                for op in &ops {
+                    run(&mut ix, op);
+                    if let Op::Unregister { id } = op {
+                        retired.push(Id(IDS[*id].into()));
+                    }
+                    for id in &retired {
+                        prop_assert!(ix.is_known(id), "`{id}` was retired and then forgotten");
+                    }
+                }
+            }
+
+            /// **An id that has ever been issued stays known.** DESIGN §10
+            /// settles the tombstone question with "IDs are never reissued", and
+            /// `is_known` is the predicate mint-by-rejection asks, so it must be
+            /// monotonic: once true for an id, true forever.
+            ///
+            /// Displacements included: this property found that an evicted id
+            /// was forgotten rather than tombstoned, and `FileIndex::register`
+            /// now retires what it displaces, so the law holds unscoped.
+            #[test]
+            fn is_known_is_monotonic(ops in prop::collection::vec(op(), 1..12)) {
+                let mut ix = FileIndex::new(fig::Format::Yaml);
+                let mut ever = Vec::new();
+                for (n, op) in ops.iter().enumerate() {
+                    run(&mut ix, op);
+                    for id in IDS.map(|i| Id(i.into())) {
+                        if ix.is_known(&id) && !ever.contains(&id) {
+                            ever.push(id);
+                        }
+                    }
+                    for id in &ever {
+                        prop_assert!(
+                            ix.is_known(id),
+                            "`{id}` was known and then forgotten at op {n} ({op:?}) of {ops:?}"
+                        );
+                    }
+                }
+            }
+
+            /// **Rollback restores exactly.** `checkpoint`/`rollback` is what
+            /// lets a failed change set unwind the registry alongside the
+            /// documents (DESIGN §5: the registry's write rides the same unit).
+            /// A partial restore would leave the one artifact that cannot be
+            /// rebuilt disagreeing with the files it describes.
+            #[test]
+            fn rollback_restores_the_map_it_checkpointed(
+                before in prop::collection::vec(op(), 0..6),
+                after in prop::collection::vec(op(), 1..8),
+            ) {
+                let mut ix = InMemoryIndex::new();
+                for op in &before {
+                    run(&mut ix, op);
+                }
+                let snapshot: Vec<Option<PathBuf>> =
+                    IDS.map(|i| ix.resolve(&Id(i.into()))).into();
+
+                ix.checkpoint();
+                for op in &after {
+                    run(&mut ix, op);
+                }
+                ix.rollback();
+
+                let restored: Vec<Option<PathBuf>> =
+                    IDS.map(|i| ix.resolve(&Id(i.into()))).into();
+                prop_assert_eq!(restored, snapshot, "rolled back to a different map");
+                assert_bijection(&ix)?;
+            }
+
+            /// **A rendered registry reads back as itself.** The store is a real
+            /// document a user (or a merge) can open, so the text is the durable
+            /// form — and its records must survive the round trip, tombstones
+            /// included, since a tombstone that failed to persist would let the
+            /// id be reissued by the next run.
+            #[test]
+            fn a_rendered_registry_parses_back_to_the_same_records(
+                ops in prop::collection::vec(op(), 1..12),
+            ) {
+                let mut ix = FileIndex::new(fig::Format::Yaml);
+                ix.set_host("registry.yaml", "title: ID registry\n").unwrap();
+                for op in &ops {
+                    run(&mut ix, op);
+                }
+
+                let text = ix.render().expect("render");
+                let reloaded = FileIndex::parse(Path::new("registry.yaml"), &text)
+                    .expect("prov's own registry must parse");
+
+                for id in IDS.map(|i| Id(i.into())) {
+                    prop_assert_eq!(
+                        reloaded.resolve(&id),
+                        ix.resolve(&id),
+                        "`{}` did not survive the round trip through:\n{}",
+                        id,
+                        text
+                    );
+                    prop_assert_eq!(
+                        reloaded.is_tombstoned(&id),
+                        ix.is_tombstoned(&id),
+                        "`{}`'s tombstone did not survive:\n{}",
+                        id,
+                        text
+                    );
+                }
+                assert_bijection(&reloaded)?;
+            }
+        }
     }
 }
