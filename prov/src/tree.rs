@@ -88,6 +88,20 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+/// Whether a failed [`load`](Workspace::load) means "the target is not there"
+/// — the [`NodeKind::Missing`] case — rather than "the target is there and
+/// something about it went wrong". Both spellings of absent count: a storage
+/// backend's `io::ErrorKind::NotFound`, and prov's own typed
+/// [`Error::NotFound`](crate::error::Error::NotFound), which a backend that
+/// reports absence structurally raises instead.
+fn is_missing(error: &crate::error::Error) -> bool {
+    match error {
+        crate::error::Error::NotFound(_) => true,
+        crate::error::Error::Io(e) => e.kind() == std::io::ErrorKind::NotFound,
+        _ => false,
+    }
+}
+
 impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// Materialize the spanning tree rooted at `start` (a workspace-relative
     /// path). Missing, unreadable, cyclic, unresolved-ID, and ambiguous-alias
@@ -173,9 +187,18 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     children: Vec::new(),
                 });
             }
-            match self.fs().try_exists(&self.root().join(&path)).await {
-                Ok(true) => {}
-                Ok(false) => {
+            // One read, not a stat and then a read: the open `load` performs
+            // already answers "does this exist", and its `NotFound` is exactly
+            // the `Missing` node a separate `try_exists` was asking for. The
+            // stat was pure overhead on every node of every walk — and on the
+            // memoized path it was the *only* syscall left, so a second pass
+            // inside a `read_scope` paid it for nothing. Checking existence
+            // first also meant stat-ing an escaping target (`../../etc/passwd`)
+            // before `load`'s root clamp got to refuse it; now the clamp is
+            // first.
+            let doc = match self.load(&path).await {
+                Ok((_, doc)) => doc,
+                Err(e) if is_missing(&e) => {
                     return Ok(Node {
                         path,
                         title: None,
@@ -184,18 +207,6 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                         children: Vec::new(),
                     });
                 }
-                Err(e) => {
-                    return Ok(Node {
-                        path,
-                        title: None,
-                        label,
-                        kind: NodeKind::Unreadable(e.to_string()),
-                        children: Vec::new(),
-                    });
-                }
-            }
-            let doc = match self.load(&path).await {
-                Ok((_, doc)) => doc,
                 Err(e) => {
                     return Ok(Node {
                         path,
@@ -358,6 +369,36 @@ mod tests {
 
         // `[[Ghost]]` → no document claims it; falls through to a missing path.
         assert_eq!(root.children[2].kind, NodeKind::Missing);
+    }
+
+    /// The walk asks for a document and reads the answer's *kind* — so the line
+    /// between "not there" (`Missing`) and "there and wrong" (`Unreadable`) now
+    /// lives in that one error match rather than in a preceding stat. Both
+    /// sides of it, pinned: a directory exists but is not a document, and a
+    /// target climbing out of the root is refused before it is opened at all.
+    #[test]
+    fn a_target_that_exists_but_cannot_be_read_is_unreadable_not_missing() {
+        let dir = tempdir("unreadable");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- sub\n- ../outside.md\n---\n",
+        );
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let root = block_on(ws.tree("index.md")).unwrap();
+        assert_eq!(root.children.len(), 2);
+        assert!(
+            matches!(root.children[0].kind, NodeKind::Unreadable(_)),
+            "a directory is not a missing document: {:?}",
+            root.children[0].kind
+        );
+        assert!(
+            matches!(root.children[1].kind, NodeKind::Unreadable(_)),
+            "an escaping target is refused, not reported absent: {:?}",
+            root.children[1].kind
+        );
     }
 
     #[test]

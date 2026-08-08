@@ -842,7 +842,13 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     ///
     /// The returned flag is `true` when a **spanning** link is alias-shaped: it
     /// cannot be followed without the title index, so the scope would be
-    /// incomplete and the caller must scan in full instead.
+    /// incomplete and the caller must scan in full instead. That answer is
+    /// final the moment it is reached, and the only caller throws `dirs` away
+    /// when it comes back set — so the walk **stops there** rather than
+    /// finishing a traversal whose result is already known to be discarded.
+    /// The abandoned half is not cheap: every remaining document would be read
+    /// and its prose body parsed (`scan_body_links`) purely to contribute
+    /// directories to a set nobody reads.
     async fn title_scope(&self, start: &Path) -> Result<(BTreeSet<PathBuf>, bool)> {
         let spanning = self.relations().spanning_relation().map(str::to_owned);
         let dir_of = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
@@ -854,7 +860,6 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
         let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
         let mut queue = vec![link::normalize(start)];
-        let mut needs_full = false;
         while let Some(path) = queue.pop() {
             if !visited.insert(path.clone()) {
                 continue;
@@ -874,8 +879,11 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                     continue;
                 }
                 if title::is_alias_shaped(&link.target) {
-                    // Can't resolve without the index; a spanning alias defeats bounding.
-                    needs_full = needs_full || is_spanning;
+                    // Can't resolve without the index; a spanning alias defeats
+                    // bounding, and nothing later can un-defeat it.
+                    if is_spanning {
+                        return Ok((BTreeSet::new(), true));
+                    }
                     continue;
                 }
                 if let Target::Path(target) = self.resolve_link(&path, &link) {
@@ -902,7 +910,9 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 }
             }
         }
-        Ok((dirs, needs_full))
+        // Reaching here means no spanning link was alias-shaped — every early
+        // return above is the only way `true` comes back.
+        Ok((dirs, false))
     }
 
     /// Scan every document under the root for a self-stored `id` frontmatter
