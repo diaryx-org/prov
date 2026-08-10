@@ -31,25 +31,33 @@
 //! resolution ([`resolve`], [`Target`]) built on top of it, the census types
 //! with the spanning-tree walker that fills them in, and the [`tree`] walker.
 //! They stay `impl`ed on [`Workspace`](crate::workspace::Workspace) rather
-//! than a graph type of its own. That split is now unblocked —
-//! [`validate`](crate::validate) has shed its repair half to
-//! [`remedy`](crate::remedy) and is a findings view and nothing else — but it
-//! is still not *warranted*: a `Graph` handle would have to be threaded
-//! through every mutation verb, each of which reads and writes in the same
-//! breath, and nothing yet asks for the seam that would buy.
+//! than a graph type of its own, but they no longer *require* it: every
+//! function here is bounded on [`ReadStorage`](crate::fs::ReadStorage) and
+//! [`IdIndex`](crate::index::IdIndex) — the read halves of the two ports — and
+//! on nothing else. That is a compiler-checked statement, not a convention: the
+//! read core cannot write a byte or change a registration, because the traits
+//! it is generic over have no method that could.
 //!
-//! `graph` is also the crate's sole *surface* onto [`Storage`](crate::fs::Storage)
-//! reads: every other module reaches the filesystem through a `Workspace`
-//! method housed here rather than calling `self.fs()` directly. Most of that
-//! surface is [`load`] — clamped against root escape and served from the
-//! read-scope memo — but a handful of call sites (existence checks, a
-//! directory listing, a raw byte read for something that is not a document)
-//! never wanted the clamp or the memo; those go through [`probe`]'s raw
-//! primitives instead.
+//! Those two splits exist for a consumer that does not exist yet: a language
+//! server, a renderer, a browser viewer — anything that must traverse a
+//! workspace without the authority to change it, and without linking the
+//! machinery that would. Narrowing the bounds is the step that proves such a
+//! consumer is *possible*; extracting a `prov-graph` crate is the step that
+//! makes it *cheap*, and follows from here as a file move rather than a
+//! redesign.
+//!
+//! `graph` is also the crate's sole *surface* onto
+//! [`ReadStorage`](crate::fs::ReadStorage): every other module reaches the
+//! filesystem for reads through a `Workspace` method housed here rather than
+//! calling `self.fs()` directly. Most of that surface is [`load`] — clamped
+//! against root escape and served from the read-scope memo — but a handful of
+//! call sites (existence checks, a directory listing, a raw byte read for
+//! something that is not a document) never wanted the clamp or the memo; those
+//! go through [`probe`]'s raw primitives instead.
 //!
 //! **What this module does not depend on.** `graph` imports the mechanism
 //! layers below it — [`crate::document`], [`crate::link`], [`crate::title`],
-//! [`crate::identity`], and the generic [`crate::index::IndexStore`] — but
+//! [`crate::identity`], and the generic [`crate::index::IdIndex`] — but
 //! never a *policy* module (`crate::config`, `crate::validate`,
 //! `crate::about`). The census walk raises [`StructuralFact`]s rather than
 //! [`Finding`](crate::validate::Finding)s for exactly this reason: `Finding`
@@ -65,7 +73,7 @@
 //! dependency [`census`] already carries. That is a stable seam, not a design
 //! gap the coupling papers over, so no `Resolve` trait was introduced here: it
 //! would exist only to abstract a single already-generic parameter
-//! (`Ix: IndexStore`) and a self-contained cache type, and would cost a layer
+//! (`Ix: IdIndex`) and a self-contained cache type, and would cost a layer
 //! of indirection for no dependency this module does not already own.
 
 mod census;

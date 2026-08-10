@@ -103,8 +103,8 @@ pub use fig::Format;
 pub use fig_schema::FieldType;
 pub use fixity::FixityCache;
 pub use fs::{
-    Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, StdFs, Storage,
-    SyncGuarantee,
+    Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, ReadStorage, StdFs,
+    Storage, SyncGuarantee,
 };
 pub use graph::{Backlink, CensusEntry, LinkSite, Node, NodeKind, Resolution, Target, TreeOptions};
 pub use history::{
@@ -112,7 +112,7 @@ pub use history::{
     RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, Version,
 };
 pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
-pub use index::{Collision, FileIndex, InMemoryIndex, IndexStore, NoIndex};
+pub use index::{Collision, FileIndex, IdIndex, InMemoryIndex, IndexStore, NoIndex};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use journal::{Recovered, recover};
 pub use link::{

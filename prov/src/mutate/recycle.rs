@@ -205,9 +205,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // A separated document's prose body travels with it.
         let body_from = content_target(&doc, &path);
         let body_bin = match &body_from {
-            Some(body) if self.exists(body).await? => {
-                Some((body.clone(), items_dir.join(body)))
-            }
+            Some(body) if self.exists(body).await? => Some((body.clone(), items_dir.join(body))),
             _ => None,
         };
 

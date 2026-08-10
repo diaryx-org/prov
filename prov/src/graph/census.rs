@@ -8,9 +8,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
-use crate::fs::Storage;
+use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
-use crate::index::IndexStore;
+use crate::index::IdIndex;
 use crate::link::{self, Link};
 use crate::meta::Value;
 use crate::title::{self, TitleIndex, TitleMatch};
@@ -242,7 +242,7 @@ pub(crate) fn reachable_set(
     reachable
 }
 
-impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
     /// [`reachable_set`], minus any **shadowed attachment payload**
     /// (`attach --opaque`) — the population a pass may parse *as a document*.
     ///
@@ -437,11 +437,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     Some(_) => {} // the registry agrees with the frontmatter
                     None => match self.index().resolve(&fm) {
                         // The id is live, but points at a *different* document.
-                        Some(other) if other != path => structural.push(StructuralFact::IdMismatch {
-                            doc: path.clone(),
-                            frontmatter: fm,
-                            registry: None,
-                        }),
+                        Some(other) if other != path => {
+                            structural.push(StructuralFact::IdMismatch {
+                                doc: path.clone(),
+                                frontmatter: fm,
+                                registry: None,
+                            })
+                        }
                         // resolve == this path but no reverse entry: consistent.
                         Some(_) => {}
                         // The registry has no record of this id at all.

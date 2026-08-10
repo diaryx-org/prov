@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::identity;
-use crate::index::IndexStore;
+use crate::index::IdIndex;
 use crate::link::{self, IdRef, Link};
 use crate::title::{self, TitleIndex, TitleMatch};
 use crate::workspace::Workspace;
@@ -51,7 +51,7 @@ pub enum Target {
     },
 }
 
-impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
+impl<FS, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// Resolve `link` (declared in the document at `doc`) to a workspace target,
     /// without nominal (alias) resolution — path and `id:` targets only. Use
     /// [`resolve_link_with`](Self::resolve_link_with) when a [`TitleIndex`] is
@@ -125,7 +125,7 @@ mod tests {
 
     use super::*;
     use crate::identity::Minter;
-    use crate::index::InMemoryIndex;
+    use crate::index::{InMemoryIndex, IndexStore};
 
     #[derive(Clone)]
     struct DummyFs;

@@ -1455,6 +1455,7 @@ mod tests {
     use crate::fs::StdFs;
     use crate::identity::Minter;
     use crate::index::FileIndex;
+    use crate::index::IdIndex;
     use crate::link::LinkStyle;
 
     fn write(dir: &Path, rel: &str, text: &str) {

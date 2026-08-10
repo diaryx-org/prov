@@ -159,8 +159,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // paths the manifests *claim*, and a blob is an orphan by not being
             // claimed, not by being absent.
             promised.insert(blob.clone());
-            if !self.exists(&blob).await? && !forgotten.contains(&hash)
-            {
+            if !self.exists(&blob).await? && !forgotten.contains(&hash) {
                 findings.push(missing);
             }
         }

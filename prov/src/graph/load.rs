@@ -7,11 +7,11 @@ use std::path::Path;
 
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::fs::Storage;
+use crate::fs::ReadStorage;
 use crate::link;
 use crate::workspace::Workspace;
 
-impl<FS: Storage, Id, Ix> Workspace<FS, Id, Ix> {
+impl<FS: ReadStorage, Id, Ix> Workspace<FS, Id, Ix> {
     /// Read and parse the workspace-relative document at `path`, returning the
     /// raw text alongside. The building block traversal, validation, and
     /// mutation share.

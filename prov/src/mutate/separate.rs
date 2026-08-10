@@ -187,6 +187,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
+    use crate::index::IdIndex;
 
     #[test]
     fn separate_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {

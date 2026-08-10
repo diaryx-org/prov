@@ -175,6 +175,7 @@ mod tests {
     use super::*;
     use crate::document::Document;
     use crate::identity::Trigger;
+    use crate::index::IdIndex;
 
     #[test]
     fn delete_refuses_children_then_forces() {

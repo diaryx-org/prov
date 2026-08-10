@@ -43,9 +43,9 @@ use fig::Segment;
 use crate::document::{is_opaque_payload, whole_file_extension};
 use crate::edit::MetaEditor;
 use crate::error::{Error, Result};
-use crate::fs::Storage;
+use crate::fs::{ReadStorage, Storage};
 use crate::identity::{IdentityPolicy, Trigger};
-use crate::index::IndexStore;
+use crate::index::{IdIndex, IndexStore};
 use crate::link;
 use crate::meta::{Mapping, Value};
 use crate::workspace::Workspace;
@@ -87,7 +87,7 @@ fn sidecar_path(payload: &Path, format: fig::Format) -> PathBuf {
     payload.with_file_name(format!("{name}.{ext}"))
 }
 
-impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
+impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// The metadata sidecar for the attachment `payload`, or `None` when it has
     /// none. Probes the `<payload>.<ext>` convention for each whole-file metadata
     /// extension and confirms the candidate's `content` actually resolves back to

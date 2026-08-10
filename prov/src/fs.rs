@@ -25,17 +25,21 @@ pub mod memory;
 
 pub use memory::InMemoryFs;
 
-/// An async filesystem backend prov can drive.
+/// The read half of an async filesystem backend: everything the traversal core
+/// needs, and nothing that can change a byte on disk.
 ///
-/// Each method mirrors the [`std::fs`] function of the same name. Backends
-/// implement the read/write/mutate/inspect surface; [`try_exists`] has a
-/// default in terms of [`metadata`].
+/// This is the trait [`crate::graph`] is generic over. The split is not
+/// decoration — it is what lets the read core be depended on by a consumer that
+/// must not, and cannot, write: a language server, a renderer, a browser
+/// viewer. A backend that implements only this is a *provably* read-only
+/// workspace, checked by the compiler rather than by review.
 ///
-/// [`try_exists`]: Storage::try_exists
-/// [`metadata`]: Storage::metadata
-pub trait Storage {
-    // ---- read ----
-
+/// Each method mirrors the [`std::fs`] function of the same name.
+/// [`try_exists`] has a default in terms of [`metadata`].
+///
+/// [`try_exists`]: ReadStorage::try_exists
+/// [`metadata`]: ReadStorage::metadata
+pub trait ReadStorage {
     /// Read the entire contents of a file as bytes. Mirrors [`std::fs::read`].
     fn read(&self, path: &Path) -> impl Future<Output = io::Result<Vec<u8>>>;
 
@@ -48,6 +52,30 @@ pub trait Storage {
     /// yet stable.
     fn read_dir(&self, path: &Path) -> impl Future<Output = io::Result<Vec<DirEntry>>>;
 
+    /// Return metadata about the entry at `path`. Mirrors
+    /// [`std::fs::metadata`]; follows symlinks.
+    fn metadata(&self, path: &Path) -> impl Future<Output = io::Result<Metadata>>;
+
+    /// Returns `Ok(true)` if the path exists, `Ok(false)` if it does not, and
+    /// `Err(_)` if the check itself failed. Mirrors [`std::fs::try_exists`].
+    fn try_exists(&self, path: &Path) -> impl Future<Output = io::Result<bool>> {
+        async move {
+            match self.metadata(path).await {
+                Ok(_) => Ok(true),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// An async filesystem backend prov can drive — [`ReadStorage`] plus everything
+/// that changes bytes on disk.
+///
+/// Each method mirrors the [`std::fs`] function of the same name. Backends
+/// implement the write/mutate/durability surface here and the read surface on
+/// [`ReadStorage`].
+pub trait Storage: ReadStorage {
     // ---- write ----
 
     /// Write a file, replacing it if it already exists. Mirrors
@@ -69,24 +97,6 @@ pub trait Storage {
 
     /// Rename or move a file or directory. Mirrors [`std::fs::rename`].
     fn rename(&self, from: &Path, to: &Path) -> impl Future<Output = io::Result<()>>;
-
-    // ---- inspect ----
-
-    /// Return metadata about the entry at `path`. Mirrors
-    /// [`std::fs::metadata`]; follows symlinks.
-    fn metadata(&self, path: &Path) -> impl Future<Output = io::Result<Metadata>>;
-
-    /// Returns `Ok(true)` if the path exists, `Ok(false)` if it does not, and
-    /// `Err(_)` if the check itself failed. Mirrors [`std::fs::try_exists`].
-    fn try_exists(&self, path: &Path) -> impl Future<Output = io::Result<bool>> {
-        async move {
-            match self.metadata(path).await {
-                Ok(_) => Ok(true),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-                Err(e) => Err(e),
-            }
-        }
-    }
 
     // ---- durability ----
     //
@@ -232,7 +242,7 @@ pub trait Storage {
 /// the trait's defaults would silently downgrade a real backend's guarantees
 /// to the pessimistic ones the moment it was borrowed, which is exactly the
 /// silent-discard the durability members exist to prevent.
-impl<S: Storage + ?Sized> Storage for &S {
+impl<S: ReadStorage + ?Sized> ReadStorage for &S {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         (**self).read(path).await
     }
@@ -245,6 +255,16 @@ impl<S: Storage + ?Sized> Storage for &S {
         (**self).read_dir(path).await
     }
 
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        (**self).metadata(path).await
+    }
+
+    async fn try_exists(&self, path: &Path) -> io::Result<bool> {
+        (**self).try_exists(path).await
+    }
+}
+
+impl<S: Storage + ?Sized> Storage for &S {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         (**self).write(path, contents).await
     }
@@ -263,14 +283,6 @@ impl<S: Storage + ?Sized> Storage for &S {
 
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         (**self).rename(from, to).await
-    }
-
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        (**self).metadata(path).await
-    }
-
-    async fn try_exists(&self, path: &Path) -> io::Result<bool> {
-        (**self).try_exists(path).await
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -295,7 +307,7 @@ impl<S: Storage + ?Sized> Storage for &S {
 /// `Arc<S>` derefs to `S` exactly like `&S` does, so the same explicit,
 /// every-member forwarding applies for the same reason: the trait's defaults
 /// must never be reached by accident.
-impl<S: Storage + ?Sized> Storage for Arc<S> {
+impl<S: ReadStorage + ?Sized> ReadStorage for Arc<S> {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         (**self).read(path).await
     }
@@ -308,6 +320,16 @@ impl<S: Storage + ?Sized> Storage for Arc<S> {
         (**self).read_dir(path).await
     }
 
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        (**self).metadata(path).await
+    }
+
+    async fn try_exists(&self, path: &Path) -> io::Result<bool> {
+        (**self).try_exists(path).await
+    }
+}
+
+impl<S: Storage + ?Sized> Storage for Arc<S> {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         (**self).write(path, contents).await
     }
@@ -326,14 +348,6 @@ impl<S: Storage + ?Sized> Storage for Arc<S> {
 
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         (**self).rename(from, to).await
-    }
-
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        (**self).metadata(path).await
-    }
-
-    async fn try_exists(&self, path: &Path) -> io::Result<bool> {
-        (**self).try_exists(path).await
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -494,7 +508,7 @@ fn temp_sibling(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.prov-tmp"))
 }
 
-/// One entry returned by [`Storage::read_dir`].
+/// One entry returned by [`ReadStorage::read_dir`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
     path: PathBuf,
@@ -587,7 +601,7 @@ impl Metadata {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StdFs;
 
-impl Storage for StdFs {
+impl ReadStorage for StdFs {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         std::fs::read(path)
     }
@@ -608,6 +622,17 @@ impl Storage for StdFs {
             .collect()
     }
 
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        let md = std::fs::metadata(path)?;
+        Ok(Metadata::new(
+            convert_file_type(md.file_type()),
+            md.len(),
+            md.modified().ok(),
+        ))
+    }
+}
+
+impl Storage for StdFs {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         std::fs::write(path, contents)
     }
@@ -626,15 +651,6 @@ impl Storage for StdFs {
 
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
-    }
-
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        let md = std::fs::metadata(path)?;
-        Ok(Metadata::new(
-            convert_file_type(md.file_type()),
-            md.len(),
-            md.modified().ok(),
-        ))
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -733,17 +749,35 @@ impl FailAtWrite {
     }
 }
 
+/// The read half of a test backend that fakes only writes: forwarded verbatim to
+/// [`StdFs`]. Three of the backends below differ from a real local filesystem
+/// exclusively in *what they refuse to write*, so spelling their reads out four
+/// times would be four copies of the same nine lines with nothing to say.
+#[cfg(test)]
+macro_rules! reads_like_stdfs {
+    ($ty:ty) => {
+        impl ReadStorage for $ty {
+            async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+                StdFs.read(path).await
+            }
+            async fn read_to_string(&self, path: &Path) -> io::Result<String> {
+                StdFs.read_to_string(path).await
+            }
+            async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+                StdFs.read_dir(path).await
+            }
+            async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+                StdFs.metadata(path).await
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+reads_like_stdfs!(FailAtWrite);
+
 #[cfg(test)]
 impl Storage for FailAtWrite {
-    async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        StdFs.read(path).await
-    }
-    async fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        StdFs.read_to_string(path).await
-    }
-    async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        StdFs.read_dir(path).await
-    }
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         // The write-ahead journal's own writes are infrastructure, not document
         // writes: leaving them uncounted keeps `nth` addressing the *document*
@@ -770,9 +804,6 @@ impl Storage for FailAtWrite {
     }
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         StdFs.rename(from, to).await
-    }
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        StdFs.metadata(path).await
     }
     // A faithful local filesystem in every respect but the chosen failing write,
     // so a change set applied over it exercises the *real* atomic-write protocol
@@ -857,7 +888,7 @@ fn tally(counter: &std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>,
 }
 
 #[cfg(test)]
-impl Storage for CountingFs {
+impl ReadStorage for CountingFs {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         tally(&self.bytes, path);
         StdFs.read(path).await
@@ -869,6 +900,13 @@ impl Storage for CountingFs {
     async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
         StdFs.read_dir(path).await
     }
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        StdFs.metadata(path).await
+    }
+}
+
+#[cfg(test)]
+impl Storage for CountingFs {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         StdFs.write(path, contents).await
     }
@@ -883,9 +921,6 @@ impl Storage for CountingFs {
     }
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         StdFs.rename(from, to).await
-    }
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        StdFs.metadata(path).await
     }
     fn capabilities(&self) -> Capabilities {
         StdFs.capabilities()
@@ -937,16 +972,10 @@ impl RecordingFs {
 }
 
 #[cfg(test)]
+reads_like_stdfs!(RecordingFs);
+
+#[cfg(test)]
 impl Storage for RecordingFs {
-    async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        StdFs.read(path).await
-    }
-    async fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        StdFs.read_to_string(path).await
-    }
-    async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        StdFs.read_dir(path).await
-    }
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         self.log
             .borrow_mut()
@@ -971,9 +1000,6 @@ impl Storage for RecordingFs {
             .push(FsEvent::Rename(from.to_path_buf(), to.to_path_buf()));
         StdFs.rename(from, to).await
     }
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        StdFs.metadata(path).await
-    }
     fn capabilities(&self) -> Capabilities {
         self.caps
     }
@@ -994,16 +1020,10 @@ impl Storage for RecordingFs {
 pub(crate) struct FailingRename;
 
 #[cfg(test)]
+reads_like_stdfs!(FailingRename);
+
+#[cfg(test)]
 impl Storage for FailingRename {
-    async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        StdFs.read(path).await
-    }
-    async fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        StdFs.read_to_string(path).await
-    }
-    async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        StdFs.read_dir(path).await
-    }
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         StdFs.write(path, contents).await
     }
@@ -1018,9 +1038,6 @@ impl Storage for FailingRename {
     }
     async fn rename(&self, _from: &Path, _to: &Path) -> io::Result<()> {
         Err(io::Error::other("rename failed (test)"))
-    }
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        StdFs.metadata(path).await
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities::LOCAL_FS

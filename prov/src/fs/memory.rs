@@ -11,7 +11,7 @@ use std::io::{self, Error, ErrorKind};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use super::{Capabilities, DirEntry, FileType, Metadata, Storage};
+use super::{Capabilities, DirEntry, FileType, Metadata, ReadStorage, Storage};
 
 /// An in-memory, clone-shared [`Storage`] backend.
 ///
@@ -31,11 +31,11 @@ use super::{Capabilities, DirEntry, FileType, Metadata, Storage};
 /// strings, the shape a JS/WASM caller wants. Directories are tracked
 /// explicitly (in a `HashSet`) rather than inferred from file paths, so an
 /// empty directory `create_dir_all` created still shows up in
-/// [`read_dir`](Storage::read_dir).
+/// [`read_dir`](ReadStorage::read_dir).
 ///
 /// Symlinks may be added with [`add_symlink`](Self::add_symlink): reading or
-/// getting [`metadata`](Storage::metadata) of the link resolves to the
-/// target's content, matching [`Storage::metadata`]'s documented
+/// getting [`metadata`](ReadStorage::metadata) of the link resolves to the
+/// target's content, matching [`ReadStorage::metadata`]'s documented
 /// "follows symlinks" contract. Resolution is a single hop, not a followed
 /// chain — a symlink to a symlink is not resolved further — which is all the
 /// coherence a test double needs; a real filesystem's chain-following and
@@ -136,8 +136,8 @@ impl InMemoryFs {
     }
 
     /// Add a symlink from `link` to `target`. Reading `link` (or its
-    /// [`metadata`](Storage::metadata)) resolves to `target`'s content;
-    /// `link`'s entry in its parent's [`read_dir`](Storage::read_dir) reports
+    /// [`metadata`](ReadStorage::metadata)) resolves to `target`'s content;
+    /// `link`'s entry in its parent's [`read_dir`](ReadStorage::read_dir) reports
     /// [`FileType::SYMLINK`] — the un-followed type a caller needs in order to
     /// recognize and skip it, since `metadata` itself only ever reports the
     /// followed, resolved type.
@@ -149,7 +149,7 @@ impl InMemoryFs {
     }
 
     /// The single-hop resolution [`Storage::read`], [`Storage::read_to_string`],
-    /// and [`Storage::metadata`] all use: a symlinked path resolves to its
+    /// and [`ReadStorage::metadata`] all use: a symlinked path resolves to its
     /// target; anything else resolves to itself.
     fn resolve(&self, normalized: &Path) -> PathBuf {
         self.symlinks
@@ -202,7 +202,7 @@ fn not_found(path: &Path) -> Error {
     )
 }
 
-impl Storage for InMemoryFs {
+impl ReadStorage for InMemoryFs {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         let normalized = normalize_path(path);
         let resolved = self.resolve(&normalized);
@@ -260,6 +260,31 @@ impl Storage for InMemoryFs {
         Ok(result)
     }
 
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        let normalized = normalize_path(path);
+        let resolved = self.resolve(&normalized);
+
+        if let Some(data) = self.binary_files.read().unwrap().get(&resolved) {
+            return Ok(Metadata::new(FileType::FILE, data.len() as u64, None));
+        }
+        if let Some(text) = self.files.read().unwrap().get(&resolved) {
+            return Ok(Metadata::new(FileType::FILE, text.len() as u64, None));
+        }
+        if self.directories.read().unwrap().contains(&resolved) {
+            return Ok(Metadata::new(FileType::DIR, 0, None));
+        }
+        Err(not_found(path))
+    }
+
+    // No modification-time tracking: unlike a real filesystem there is no
+    // clock backing these bytes, and a fabricated timestamp (e.g. "now" on
+    // every write) would claim a precision this backend cannot honor across
+    // a clone or an export/import round-trip. `Metadata::modified` reports
+    // `Unsupported` accordingly — an honest "this backend doesn't know",
+    // exactly as it would for a real backend that genuinely lacks the field.
+}
+
+impl Storage for InMemoryFs {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         let normalized = normalize_path(path);
         insert_ancestor_dirs(&mut self.directories.write().unwrap(), &normalized);
@@ -353,29 +378,6 @@ impl Storage for InMemoryFs {
             self.rename_file(&from_norm, &to_norm, from, to).await
         }
     }
-
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        let normalized = normalize_path(path);
-        let resolved = self.resolve(&normalized);
-
-        if let Some(data) = self.binary_files.read().unwrap().get(&resolved) {
-            return Ok(Metadata::new(FileType::FILE, data.len() as u64, None));
-        }
-        if let Some(text) = self.files.read().unwrap().get(&resolved) {
-            return Ok(Metadata::new(FileType::FILE, text.len() as u64, None));
-        }
-        if self.directories.read().unwrap().contains(&resolved) {
-            return Ok(Metadata::new(FileType::DIR, 0, None));
-        }
-        Err(not_found(path))
-    }
-
-    // No modification-time tracking: unlike a real filesystem there is no
-    // clock backing these bytes, and a fabricated timestamp (e.g. "now" on
-    // every write) would claim a precision this backend cannot honor across
-    // a clone or an export/import round-trip. `Metadata::modified` reports
-    // `Unsupported` accordingly — an honest "this backend doesn't know",
-    // exactly as it would for a real backend that genuinely lacks the field.
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::IN_MEMORY
@@ -659,7 +661,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
     }
 
-    // ---- symlinks: coherence with `Storage::metadata`'s "follows symlinks"
+    // ---- symlinks: coherence with `ReadStorage::metadata`'s "follows symlinks"
     // contract, and with `read_dir`'s un-followed listing — the two shapes
     // diaryx_core's validator actually exercises (skip a symlink named
     // directly, and skip one discovered by scanning a directory). ----

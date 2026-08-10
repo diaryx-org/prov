@@ -615,7 +615,12 @@ pub(crate) async fn discard_file<FS: Storage>(fs: &FS, root: &Path, path: &Path)
 /// crate::workspace::Workspace) probes whether the filesystem folds ASCII
 /// case — and then removed with [`discard_file`]. It is not workspace data,
 /// so there is nothing here to stage or undo.
-pub(crate) async fn write_probe<FS: Storage>(fs: &FS, root: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) async fn write_probe<FS: Storage>(
+    fs: &FS,
+    root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
     fs.write(&root.join(path), bytes).await?;
     Ok(())
 }

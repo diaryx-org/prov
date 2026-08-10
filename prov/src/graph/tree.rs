@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use crate::error::Result;
-use crate::fs::Storage;
-use crate::index::IndexStore;
+use crate::fs::ReadStorage;
+use crate::index::IdIndex;
 use crate::link::{self, Link};
 use crate::meta::Value;
 use crate::workspace::Workspace;
@@ -117,7 +117,7 @@ fn is_missing(error: &crate::error::Error) -> bool {
     }
 }
 
-impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
+impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// Materialize the spanning tree rooted at `start` (a workspace-relative
     /// path). Missing, unreadable, cyclic, unresolved-ID, and ambiguous-alias
     /// targets become marked nodes. `id:<id>` targets resolve through the

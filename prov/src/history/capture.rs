@@ -118,9 +118,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // real file when they got there, so the worst a wrong answer can
                 // do is record an event that misdescribes this instant — never
                 // park bytes under an address that is not their digest.
-                Some(hash) if self.exists(&blob_path(&store_index, &hash)?).await? => {
-                    hash
-                }
+                Some(hash) if self.exists(&blob_path(&store_index, &hash)?).await? => hash,
                 // Everything else reads the file — and hashes the bytes it read,
                 // so a digest prov writes down is always a digest of bytes prov
                 // has actually seen.

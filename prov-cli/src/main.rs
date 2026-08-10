@@ -29,9 +29,9 @@ use clap::Parser;
 use prov::document::MetaCarrier;
 use prov::{
     Addressing, Adoption, ChangeSet, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id,
-    IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind, Notation, PathStyle,
-    RelationSet, RoutePlan, Settings, StdFs, StructurePlan, SynthNode, Target, Trigger, Value,
-    Workspace, WorkspaceConfig, block_on, edit, link, meta,
+    IdIndex, IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind, Notation,
+    PathStyle, RelationSet, RoutePlan, Settings, StdFs, StructurePlan, SynthNode, Target, Trigger,
+    Value, Workspace, WorkspaceConfig, block_on, edit, link, meta,
 };
 
 mod backup;

@@ -246,6 +246,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
+    use crate::index::IdIndex;
     use crate::link::LinkStyle;
 
     // Exercises inheritance of a `fig`-dialect parent block, so it needs that

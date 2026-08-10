@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use prov::fs::{DirEntry, Metadata};
 use prov::{
     Capabilities, ChangeSet, Discovery, Durability, Error, InMemoryFs, InMemoryIndex, Minter,
-    RelationSet, StdFs, Storage, Workspace, block_on,
+    ReadStorage, RelationSet, StdFs, Storage, Workspace, block_on,
 };
 
 fn tmp(name: &str) -> PathBuf {
@@ -238,7 +238,7 @@ impl DoubleFault {
     }
 }
 
-impl Storage for DoubleFault {
+impl ReadStorage for DoubleFault {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         StdFs.read(path).await
     }
@@ -248,6 +248,12 @@ impl Storage for DoubleFault {
     async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
         StdFs.read_dir(path).await
     }
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        StdFs.metadata(path).await
+    }
+}
+
+impl Storage for DoubleFault {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         if self.should_fail(path) {
             return Err(io::Error::other("double fault (test)"));
@@ -265,9 +271,6 @@ impl Storage for DoubleFault {
     }
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         StdFs.rename(from, to).await
-    }
-    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
-        StdFs.metadata(path).await
     }
     // Report the local-filesystem guarantees so `write_atomic` runs its real
     // staging/rename protocol — the same path a production `StdFs` workspace takes.

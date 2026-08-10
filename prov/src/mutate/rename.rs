@@ -312,6 +312,7 @@ mod tests {
     use super::super::support::*;
     use super::*;
     use crate::identity::Trigger;
+    use crate::index::IdIndex;
 
     #[test]
     fn rename_maintains_parent_children_and_own_links() {

@@ -70,17 +70,43 @@ impl std::fmt::Display for Collision {
     }
 }
 
-/// Somewhere IDs (and eventually derived graph data) are persisted and queried.
-pub trait IndexStore {
-    /// Record that `id` names the document at `path`.
-    fn register(&mut self, id: &Id, path: &Path);
-
+/// The query half of an ID index: the three lookups link resolution needs, and
+/// no way to change what is stored.
+///
+/// This is the trait [`crate::graph`] is generic over, and it is the whole of
+/// what the read core asks of a registry — `id:` resolution
+/// ([`resolve`](IdIndex::resolve)), the reverse lookup a census entry is tagged
+/// with ([`id_for_path`](IdIndex::id_for_path)), and the tombstone question that
+/// distinguishes "never existed" from "retired"
+/// ([`is_known`](IdIndex::is_known)).
+///
+/// Split out of [`IndexStore`] for the same reason
+/// [`ReadStorage`](crate::fs::ReadStorage) is split out of
+/// [`Storage`](crate::fs::Storage): a read-only consumer must be able to depend
+/// on traversal without linking the staging machinery, and `IndexStore`'s
+/// staging half is not merely unused by the read core — it is *stated in write
+/// vocabulary*, down to [`rebase`](IndexStore::rebase) taking a
+/// [`ChangeSet`](crate::change::ChangeSet).
+pub trait IdIndex {
     /// Resolve an ID to its current path. `None` for unknown *and* tombstoned
-    /// IDs — use [`is_known`](IndexStore::is_known) to tell them apart.
+    /// IDs — use [`is_known`](IdIndex::is_known) to tell them apart.
     fn resolve(&self, id: &Id) -> Option<PathBuf>;
 
     /// The ID currently assigned to `path`, if any.
     fn id_for_path(&self, path: &Path) -> Option<Id>;
+
+    /// Whether `id` has *ever* been issued — live or tombstoned. This is the
+    /// mint-with-rejection predicate: a fresh ID must be `!is_known`.
+    fn is_known(&self, id: &Id) -> bool {
+        self.resolve(id).is_some()
+    }
+}
+
+/// Somewhere IDs (and eventually derived graph data) are persisted and queried —
+/// [`IdIndex`]'s lookups plus everything that changes what is stored.
+pub trait IndexStore: IdIndex {
+    /// Record that `id` names the document at `path`.
+    fn register(&mut self, id: &Id, path: &Path);
 
     /// Update the path an ID points at (e.g. after a move/rename).
     ///
@@ -94,19 +120,13 @@ pub trait IndexStore {
     /// line of defence [`register`](IndexStore::register) keeps, for when
     /// something slips through anyway. A store with tombstones should also
     /// *retire* what it displaces, so an evicted id stays
-    /// [`is_known`](IndexStore::is_known) and can never be reissued;
+    /// [`is_known`](IdIndex::is_known) and can never be reissued;
     /// [`FileIndex`] does.
     fn set_path(&mut self, id: &Id, new_path: &Path);
 
     /// Retire an ID (e.g. after a delete). A store with tombstones keeps the
     /// ID on record so it is never reissued; a plain store may forget it.
     fn unregister(&mut self, id: &Id);
-
-    /// Whether `id` has *ever* been issued — live or tombstoned. This is the
-    /// mint-with-rejection predicate: a fresh ID must be `!is_known`.
-    fn is_known(&self, id: &Id) -> bool {
-        self.resolve(id).is_some()
-    }
 
     // ---- staging ----
     //
@@ -184,14 +204,17 @@ pub trait IndexStore {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoIndex;
 
-impl IndexStore for NoIndex {
-    fn register(&mut self, _id: &Id, _path: &Path) {}
+impl IdIndex for NoIndex {
     fn resolve(&self, _id: &Id) -> Option<PathBuf> {
         None
     }
     fn id_for_path(&self, _path: &Path) -> Option<Id> {
         None
     }
+}
+
+impl IndexStore for NoIndex {
+    fn register(&mut self, _id: &Id, _path: &Path) {}
     fn set_path(&mut self, _id: &Id, _new_path: &Path) {}
     fn unregister(&mut self, _id: &Id) {}
 }
@@ -232,6 +255,16 @@ impl InMemoryIndex {
     }
 }
 
+impl IdIndex for InMemoryIndex {
+    fn resolve(&self, id: &Id) -> Option<PathBuf> {
+        self.forward.get(id).cloned()
+    }
+
+    fn id_for_path(&self, path: &Path) -> Option<Id> {
+        self.reverse.get(path).cloned()
+    }
+}
+
 impl IndexStore for InMemoryIndex {
     /// Displacing an existing registration must not leave the *other* map
     /// pointing at the old counterpart — [`set_path`](IndexStore::set_path)
@@ -255,14 +288,6 @@ impl IndexStore for InMemoryIndex {
         {
             self.forward.remove(&old_id);
         }
-    }
-
-    fn resolve(&self, id: &Id) -> Option<PathBuf> {
-        self.forward.get(id).cloned()
-    }
-
-    fn id_for_path(&self, path: &Path) -> Option<Id> {
-        self.reverse.get(path).cloned()
     }
 
     /// Moving an id onto a path is the same bijection-safe upsert as
@@ -583,6 +608,22 @@ impl FileIndex {
     }
 }
 
+impl IdIndex for FileIndex {
+    fn resolve(&self, id: &Id) -> Option<PathBuf> {
+        self.live.resolve(id)
+    }
+
+    fn id_for_path(&self, path: &Path) -> Option<Id> {
+        self.live.id_for_path(path)
+    }
+
+    /// A tombstoned id no longer resolves but stays known forever, so it can
+    /// never be reminted to mean something else.
+    fn is_known(&self, id: &Id) -> bool {
+        self.live.resolve(id).is_some() || self.tombstones.contains(id)
+    }
+}
+
 impl IndexStore for FileIndex {
     /// Registering an id **retires its tombstone**, because the id is live
     /// again and a record cannot be both. This is not a hypothetical pairing:
@@ -603,7 +644,7 @@ impl IndexStore for FileIndex {
     /// *Retires whatever it displaces.* Taking a path out from under the id
     /// currently carrying it evicts that id from the live map — the bijection
     /// repair [`InMemoryIndex::register`] performs and documents. Eviction alone
-    /// would forget the id *entirely*, so [`is_known`](IndexStore::is_known)
+    /// would forget the id *entirely*, so [`is_known`](IdIndex::is_known)
     /// would go from true to false and a later mint could reissue it while the
     /// displaced document still spells it in its own frontmatter. Reaching that
     /// needs a displacement to slip past `registration_conflict` /
@@ -635,14 +676,6 @@ impl IndexStore for FileIndex {
         self.dirty = true;
     }
 
-    fn resolve(&self, id: &Id) -> Option<PathBuf> {
-        self.live.resolve(id)
-    }
-
-    fn id_for_path(&self, path: &Path) -> Option<Id> {
-        self.live.id_for_path(path)
-    }
-
     /// Moving an id onto a path is registering it there — the same
     /// bijection-safe eviction in both directions — so this delegates rather
     /// than restating it, exactly as [`InMemoryIndex::set_path`] delegates to
@@ -656,10 +689,6 @@ impl IndexStore for FileIndex {
         self.live.unregister(id);
         self.tombstones.insert(id.clone());
         self.dirty = true;
-    }
-
-    fn is_known(&self, id: &Id) -> bool {
-        self.live.resolve(id).is_some() || self.tombstones.contains(id)
     }
 
     fn checkpoint(&mut self) {

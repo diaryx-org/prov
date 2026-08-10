@@ -31,10 +31,10 @@ use crate::content::ContentFormat;
 use crate::document::EmbedStyle;
 use crate::error::{Error, Result};
 use crate::fixity::FixityCache;
-use crate::fs::Storage;
-use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
-use crate::index::{Collision, IndexStore, NoIndex};
+use crate::fs::{ReadStorage, Storage};
 use crate::graph::Target;
+use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
+use crate::index::{Collision, IdIndex, IndexStore, NoIndex};
 use crate::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
 use crate::memo::{ReadMemo, ReadScope, lock};
 use crate::meta::Value;
@@ -572,7 +572,7 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     }
 }
 
-impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
+impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// The registry document this workspace's root declares: the first target
     /// of the registry-pointer relation on `root_doc`, resolved. `None` when
     /// the vocabulary has no registry relation or the root does not declare
@@ -1234,7 +1234,7 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
     }
 }
 
-impl<FS: Storage, Id, Ix> Workspace<FS, Id, Ix> {
+impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The underlying filesystem.
     pub fn fs(&self) -> &FS {
         &self.fs

@@ -36,7 +36,7 @@ mod tests {
 
     #[test]
     fn drives_chained_storage_futures() {
-        use crate::fs::{StdFs, Storage};
+        use crate::fs::{ReadStorage, StdFs};
         let exists = block_on(async {
             StdFs
                 .try_exists(std::path::Path::new("/definitely/not/here"))

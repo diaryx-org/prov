@@ -12,10 +12,10 @@
 use std::path::Path;
 
 use crate::error::Result;
-use crate::fs::{DirEntry, Metadata, Storage};
+use crate::fs::{DirEntry, Metadata, ReadStorage};
 use crate::workspace::Workspace;
 
-impl<FS: Storage, Id, Ix> Workspace<FS, Id, Ix> {
+impl<FS: ReadStorage, Id, Ix> Workspace<FS, Id, Ix> {
     /// Whether the workspace-relative `path` exists. Mirrors
     /// [`Storage::try_exists`], joined to the workspace root.
     pub(crate) async fn exists(&self, path: &Path) -> Result<bool> {

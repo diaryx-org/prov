@@ -112,9 +112,7 @@ impl From<StructuralFact> for Finding {
             StructuralFact::UnregisteredId { doc, frontmatter } => {
                 Finding::UnregisteredId { doc, frontmatter }
             }
-            StructuralFact::UnstampedId { doc, registry } => {
-                Finding::UnstampedId { doc, registry }
-            }
+            StructuralFact::UnstampedId { doc, registry } => Finding::UnstampedId { doc, registry },
             StructuralFact::DuplicateContainment { doc, target } => {
                 Finding::DuplicateContainment { doc, target }
             }
@@ -1949,7 +1947,6 @@ mod tests {
     #[test]
     fn id_mismatch_flags_a_frontmatter_id_disagreeing_with_the_registry() {
         use crate::identity::Id;
-        use crate::index::IndexStore;
 
         // A document that carries its own `id` (frontmatter storage, DESIGN §5).
         let dir = tempdir("id-mismatch");
@@ -2009,7 +2006,7 @@ mod tests {
     #[test]
     fn unregistered_id_is_found_and_adopted_into_the_registry() {
         use crate::identity::Id;
-        use crate::index::IndexStore;
+        use crate::index::IdIndex;
 
         // A document carries an `id` the (empty) registry has never seen.
         let dir = tempdir("unregistered-id");
@@ -2045,7 +2042,7 @@ mod tests {
     fn unstamped_id_is_found_and_written_into_the_document() {
         use crate::config::IdStorage;
         use crate::identity::Id;
-        use crate::index::IndexStore;
+        use crate::index::IdIndex;
 
         // A registry-only workspace: the id lives in the registry and the
         // document carries nothing — exactly the state a vault is in the moment
