@@ -48,7 +48,6 @@ compile_error!(
 
 pub mod about;
 pub mod attach;
-pub mod change;
 pub mod config;
 pub mod discovery;
 pub mod fixity;
@@ -57,7 +56,6 @@ mod fs_faults;
 pub mod history;
 pub mod identity;
 pub mod intake;
-pub mod journal;
 pub mod mutate;
 pub mod remedy;
 pub mod route;
@@ -91,7 +89,19 @@ pub use prov_graph::{
 };
 
 pub use about::AboutContext;
-pub use change::{ChangeSet, FileOp};
+/// Transaction primitives, retained at their original paths for compatibility.
+pub mod change {
+    pub use prov_transaction::change::{ChangeSet, FileOp};
+
+    pub(crate) use prov_transaction::change::{discard_file, write_blob_atomic, write_probe};
+}
+/// Journal recovery, retained at its original path for compatibility.
+pub mod journal {
+    pub use prov_transaction::journal::{Recovered, recover};
+
+    #[allow(unused_imports)]
+    pub(crate) use prov_transaction::journal::{JOURNAL_NAME, decode, encode, is_journal_path};
+}
 pub use config::{
     About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, OpenClosed,
     RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
@@ -111,8 +121,9 @@ pub use history::{
 };
 pub use identity::{IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
-pub use journal::{Recovered, recover};
 pub use mutate::Created;
+pub use prov_transaction::{ChangeSet, FileOp};
+pub use prov_transaction::{Recovered, recover};
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
 pub use validate::{CheckDiff, Finding};

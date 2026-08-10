@@ -471,6 +471,7 @@ dependencies = [
  "moid",
  "proptest",
  "prov-graph",
+ "prov-transaction",
  "thiserror",
  "twig-doc",
 ]
@@ -494,6 +495,13 @@ dependencies = [
  "proptest",
  "thiserror",
  "twig-doc",
+]
+
+[[package]]
+name = "prov-transaction"
+version = "0.4.0"
+dependencies = [
+ "prov-graph",
 ]
 
 [[package]]

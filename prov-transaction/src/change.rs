@@ -17,24 +17,17 @@
 //!
 //! ## What this does and does not buy
 //!
-//! This is **error** atomicity, and — per *file* — **crash** atomicity too; what
-//! it is not yet is crash atomicity across the whole *set*. A failed write, a
-//! full disk, a permission error, a rejected edit — none of these can leave a
-//! half-linked workspace, because unwinding puts back every op already applied.
-//! And no single document can be caught half-written even by a power cut: every
-//! [`FileOp::Write`] lands through [`Storage::write_atomic`], which stages the
-//! new bytes in a temporary sibling, flushes them, and renames it over the
-//! target, so an observer sees the whole old document or the whole new one, never
-//! a splice. What a `kill -9` or a power cut *between* ops can still do is leave
-//! some of the set's files on their new contents and some on their old — each one
-//! individually intact, but the set torn at a document boundary. The in-memory
-//! unwind cannot repair that, because memory dies with the process. Closing that
-//! last window needs a write-ahead journal on disk, replayed on recovery; the
-//! [`Storage::write_atomic`]/[`Storage::sync`] seam it will order itself against
-//! now exists, but the journal itself is a separate piece of work. The
-//! distinction is worth keeping sharp: the half in place already covers every
-//! failure short of a crash mid-set, and a crash mid-set can only land on a
-//! document boundary that [`crate::validate`] can name.
+//! This is **error** atomicity and **crash** atomicity across the whole set. A
+//! failed write, a full disk, a permission error, or a rejected edit cannot
+//! leave a half-linked workspace, because unwinding puts back every op already
+//! applied. And no single document can be caught half-written even by a power
+//! cut: every [`FileOp::Write`] lands through [`Storage::write_atomic`], which
+//! stages the new bytes in a temporary sibling, flushes them, and renames it
+//! over the target, so an observer sees the whole old document or the whole new
+//! one, never a splice. A `kill -9` or power cut *between* ops leaves the journal
+//! behind; [`crate::journal::recover`] replays it forward to the fully-applied
+//! state. The distinction is worth keeping sharp: caught errors abort back to
+//! the pre-change state, while crashes recover to the committed state.
 //!
 //! Two smaller honesties, both deliberate:
 //!
@@ -56,8 +49,8 @@
 //! *physical* one (which bytes reach which files), and the two compose: a
 //! semantic plan is realized by the ops that build change sets.
 //!
-//! This module (with its recovery arm in [`crate::journal`]) is the crate's
-//! sole [`Storage`] write surface — staged ops through [`ChangeSet::apply`],
+//! This module (with its recovery arm in [`crate::journal`]) is the transaction
+//! crate's [`Storage`] write surface — staged ops through [`ChangeSet::apply`],
 //! and the handful of writes that genuinely are not document mutations
 //! through the raw facade at the bottom of this file — so every write's
 //! durability and ordering guarantee is reviewable in one place.
@@ -302,9 +295,9 @@ impl ChangeSet {
     /// forward to the consistent applied state. Either way the workspace lands on
     /// a state prov can name.
     ///
-    /// Takes `fs`/`root` rather than a [`crate::workspace::Workspace`] so a
-    /// caller with neither — a bootstrap that must write two files before a
-    /// workspace exists to write them through — can still land them together.
+    /// Takes `fs`/`root` rather than a higher-level workspace object so a
+    /// bootstrap that must write two files before a workspace exists can still
+    /// land them together.
     pub async fn apply<FS: Storage>(&self, fs: &FS, root: &Path) -> Result<()> {
         if self.ops.is_empty() {
             return Ok(());
@@ -592,10 +585,8 @@ async fn ensure_parent<FS: Storage>(fs: &FS, full: &Path) -> Result<()> {
 /// of its bytes, so parking one is idempotent — replaying it after a crash
 /// can only write the same bytes to the same path — and there is nothing for
 /// an unwind to undo. Riding the change set would also cost a second whole
-/// copy of the payload in the journal, which embeds file contents; see
-/// [`Workspace::history_capture`](crate::workspace::Workspace) for the full
-/// argument.
-pub(crate) async fn write_blob_atomic<FS: Storage>(
+/// copy of the payload in the journal, which embeds file contents.
+pub async fn write_blob_atomic<FS: Storage>(
     fs: &FS,
     root: &Path,
     path: &Path,
@@ -610,15 +601,13 @@ pub(crate) async fn write_blob_atomic<FS: Storage>(
 /// Remove the file at `path` (workspace-relative). It must exist.
 ///
 /// Bypasses [`ChangeSet`] staging on purpose, for two different reasons at
-/// its two call sites. Freeing a history blob
-/// ([`Workspace::history_prune`](crate::workspace::Workspace),
-/// [`Workspace::history_forget`](crate::workspace::Workspace)) happens
-/// *after* the index rewrite that stops referencing it has already committed
-/// as its own set, so the removal was never part of that transaction — an
-/// interrupted GC pass just leaves the blob for the next run to find again.
+/// its two call sites. Removing an already-unreferenced blob happens *after*
+/// the index rewrite that stops referencing it has committed as its own set,
+/// so the removal was never part of that transaction — an interrupted cleanup
+/// pass just leaves the blob for the next run to find again.
 /// Removing [`write_probe`]'s throwaway file is not a document mutation to
 /// begin with.
-pub(crate) async fn discard_file<FS: Storage>(fs: &FS, root: &Path, path: &Path) -> Result<()> {
+pub async fn discard_file<FS: Storage>(fs: &FS, root: &Path, path: &Path) -> Result<()> {
     fs.remove_file(&root.join(path)).await?;
     Ok(())
 }
@@ -627,11 +616,11 @@ pub(crate) async fn discard_file<FS: Storage>(fs: &FS, root: &Path, path: &Path)
 /// atomic-replace protocol a document write gets.
 ///
 /// Bypasses [`ChangeSet`] staging on purpose: this is for a throwaway file
-/// used once to answer a question — [`Workspace::filesystem_case_folds`](
-/// crate::workspace::Workspace) probes whether the filesystem folds ASCII
+/// used once to answer a filesystem question — a caller can use it to probe
+/// whether the filesystem folds ASCII
 /// case — and then removed with [`discard_file`]. It is not workspace data,
 /// so there is nothing here to stage or undo.
-pub(crate) async fn write_probe<FS: Storage>(
+pub async fn write_probe<FS: Storage>(
     fs: &FS,
     root: &Path,
     path: &Path,

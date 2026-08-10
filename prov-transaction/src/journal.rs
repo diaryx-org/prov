@@ -85,8 +85,7 @@ const MAGIC: &[u8; 8] = b"COLOJRN1";
 /// Whether `path` names the journal (or its `write_atomic` staging sibling).
 /// Used so a fault-injecting test backend can leave the journal's own writes
 /// alone and fail only the document writes it means to.
-#[cfg(test)]
-pub(crate) fn is_journal_path(path: &Path) -> bool {
+pub fn is_journal_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.contains("prov-journal"))
@@ -94,7 +93,7 @@ pub(crate) fn is_journal_path(path: &Path) -> bool {
 
 /// Serialize a change set's ops into journal bytes: `MAGIC`, the op count, each
 /// op, then a checksum over everything preceding it.
-pub(crate) fn encode(ops: &[FileOp]) -> Result<Vec<u8>> {
+pub fn encode(ops: &[FileOp]) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(64);
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&(ops.len() as u64).to_le_bytes());
@@ -131,7 +130,7 @@ pub(crate) fn encode(ops: &[FileOp]) -> Result<Vec<u8>> {
 /// Parse journal bytes back into ops, verifying the magic and the checksum. A
 /// mismatch is an [`Error::Structure`] — a journal that cannot be trusted is
 /// refused, never partially replayed.
-pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<FileOp>> {
+pub fn decode(bytes: &[u8]) -> Result<Vec<FileOp>> {
     let corrupt = |what: &str| Error::Structure(format!("journal is corrupt: {what}"));
 
     if bytes.len() < MAGIC.len() + 8 + 8 || &bytes[..MAGIC.len()] != MAGIC {

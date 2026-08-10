@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov", "prov-cli"]
+members = ["prov-graph", "prov-transaction", "prov", "prov-cli"]
 
 [workspace.package]
 version = "0.4.0"
@@ -65,3 +65,7 @@ moid = "1.0.0"
 
 # Internal crate.
 prov = { path = "prov", version = "0.4.0" }
+# Read-only graph and storage ports.
+prov-graph = { path = "prov-graph", version = "0.4.0", default-features = false }
+# Crash-atomic staged filesystem changes and write-ahead recovery.
+prov-transaction = { path = "prov-transaction", version = "0.4.0" }

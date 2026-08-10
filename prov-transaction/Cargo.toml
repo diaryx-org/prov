@@ -1,0 +1,20 @@
+[package]
+name = "prov-transaction"
+description = "Crash-atomic staged filesystem changes and write-ahead recovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+prov-graph = { workspace = true, default-features = false }
+
+[features]
+default = ["yaml"]
+yaml = ["prov-graph/yaml"]
+json = ["prov-graph/json"]
+toml = ["prov-graph/toml"]
+fig-lang = ["prov-graph/fig-lang"]
