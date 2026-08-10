@@ -1,9 +1,9 @@
 //! Fixity — content checksums that let prov detect *bit-rot*, not just
 //! broken links.
 //!
-//! Link validation ([`crate::validate`]) answers "does the graph still hold
-//! together?"; fixity answers the other archival question: "are the bytes still
-//! the bytes?" A stored hash, recomputed on read and compared, catches the
+//! Link validation in the higher-level `prov` crate answers "does the graph
+//! still hold together?"; fixity answers the other archival question: "are the
+//! bytes still the bytes?" A stored hash, recomputed on read and compared, catches the
 //! silent corruption an archive most fears — a flipped bit in a decade-old
 //! attachment that no link check would ever notice.
 //!
@@ -35,6 +35,49 @@
 mod cache;
 
 pub use cache::FixityCache;
+
+/// How far content checksums cover a workspace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Fixity {
+    /// No content checksums are recorded or verified.
+    Off,
+    /// Attachment payloads only.
+    #[default]
+    Payloads,
+    /// Attachment payloads and document bodies.
+    Full,
+}
+
+impl Fixity {
+    /// Whether attachment payloads are checksummed.
+    pub fn covers_payloads(self) -> bool {
+        matches!(self, Self::Payloads | Self::Full)
+    }
+
+    /// Whether document bodies are checksummed.
+    pub fn covers_bodies(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Parse the configuration spelling; unknown values return `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "attachments" => Some(Self::Payloads),
+            "all" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// Return the configuration spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Payloads => "attachments",
+            Self::Full => "all",
+        }
+    }
+}
 
 /// The SHA-256 round constants — the first 32 bits of the fractional parts of
 /// the cube roots of the first 64 primes (FIPS 180-4 §4.2.2).

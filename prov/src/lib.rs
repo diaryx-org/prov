@@ -50,7 +50,8 @@ pub mod about;
 pub mod attach;
 pub mod config;
 pub mod discovery;
-pub mod fixity;
+/// Content fixity policy, digests, and the device-local cache.
+pub use prov_fixity as fixity;
 #[cfg(test)]
 mod fs_faults;
 pub mod history;

@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use fig::ExtKind;
 use fig_schema::FieldType;
 
+pub use crate::fixity::Fixity;
 use crate::identity::Registration;
 use crate::textdist::nearest;
 use prov_graph::content::ContentFormat;
@@ -236,67 +237,6 @@ pub fn field_type_as_config_str(ty: FieldType) -> Option<&'static str> {
         FieldType::Extended(ExtKind::LocalTime) => "time",
         FieldType::Null | FieldType::Extended(_) => return None,
     })
-}
-
-/// How far content-checksum (fixity) coverage extends — the archival integrity
-/// axis. Orthogonal to the identity and link axes; this is purely about
-/// detecting bit-rot in stored bytes.
-///
-/// The tiers exist because fixity means different things for different content.
-/// An **attachment** is never edited, so a change to its bytes is unambiguously
-/// corruption — safe to checksum by default, with no friction. A **document
-/// body** *is* edited, and a legitimate external edit is indistinguishable from
-/// rot to a checker, so hashing bodies is opt-in and best paired with
-/// `prov edit` (which restamps on save). Frontmatter is never hashed: it is
-/// small, structured, edited constantly by prov's own link maintenance, and
-/// its corruption already surfaces as parse or link findings.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Fixity {
-    /// No content checksums are recorded or verified (`off`).
-    Off,
-    /// **Attachments only** (`attachments`, the default): each attachment sidecar
-    /// records a `content_hash` of its payload, and `check` verifies it.
-    /// Unambiguous — a payload's bytes changing is always corruption — so there is
-    /// no edit friction and nothing to opt out of per document.
-    #[default]
-    Payloads,
-    /// **Attachments and document bodies** (`all`): additionally, each document
-    /// records a `content_hash` of its *body* (never its frontmatter). The
-    /// archival-grade tier; because a body is editable, pair it with
-    /// `prov edit` so a body change restamps the hash, and treat an
-    /// out-of-band edit as a `check` finding to re-bless rather than a hard error.
-    Full,
-}
-
-impl Fixity {
-    /// Whether attachment payloads are checksummed (true for every tier but off).
-    pub fn covers_payloads(self) -> bool {
-        matches!(self, Fixity::Payloads | Fixity::Full)
-    }
-
-    /// Whether document bodies are checksummed (only the `all` tier).
-    pub fn covers_bodies(self) -> bool {
-        matches!(self, Fixity::Full)
-    }
-
-    /// Parse the `fixity` config spelling; unknown → `None`.
-    pub fn from_config_str(value: &str) -> Option<Self> {
-        match value {
-            "off" => Some(Self::Off),
-            "attachments" => Some(Self::Payloads),
-            "all" => Some(Self::Full),
-            _ => None,
-        }
-    }
-
-    /// The `fixity` config spelling.
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Payloads => "attachments",
-            Self::Full => "all",
-        }
-    }
 }
 
 /// Whether the workspace keeps a **history store** — one immutable event

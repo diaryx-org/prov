@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov-transaction", "prov", "prov-cli"]
+members = ["prov-graph", "prov-transaction", "prov-fixity", "prov", "prov-cli"]
 
 [workspace.package]
 version = "0.4.0"
@@ -67,5 +67,7 @@ moid = "1.0.0"
 prov = { path = "prov", version = "0.4.0" }
 # Read-only graph and storage ports.
 prov-graph = { path = "prov-graph", version = "0.4.0", default-features = false }
+# Content fixity policy, digests, and the device-local cache.
+prov-fixity = { path = "prov-fixity", version = "0.4.0" }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { path = "prov-transaction", version = "0.4.0" }

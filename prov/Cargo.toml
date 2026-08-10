@@ -20,6 +20,9 @@ publish = true
 # prov.
 prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
 
+# Content fixity policy, digests, and the device-local stat-validated cache.
+prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
+
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { path = "../prov-transaction", version = "0.4.0", default-features = false }
 

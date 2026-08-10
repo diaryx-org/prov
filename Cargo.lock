@@ -470,6 +470,7 @@ dependencies = [
  "indexmap",
  "moid",
  "proptest",
+ "prov-fixity",
  "prov-graph",
  "prov-transaction",
  "thiserror",
@@ -483,6 +484,14 @@ dependencies = [
  "clap",
  "cliclack",
  "prov",
+]
+
+[[package]]
+name = "prov-fixity"
+version = "0.4.0"
+dependencies = [
+ "proptest",
+ "prov-graph",
 ]
 
 [[package]]

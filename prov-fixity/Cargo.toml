@@ -1,0 +1,18 @@
+[package]
+name = "prov-fixity"
+readme.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Content fixity digests, policy, and a device-local validation cache."
+keywords = ["checksum", "sha256", "integrity"]
+categories = ["filesystem"]
+
+[dependencies]
+prov-graph = { workspace = true, default-features = false }
+
+[dev-dependencies]
+proptest = "1"

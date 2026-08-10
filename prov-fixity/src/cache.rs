@@ -59,8 +59,8 @@
 //! the entry on its own. [`forget`](FixityCache::forget) is prov being tidy
 //! about its own writes, not the mechanism that keeps this honest.
 //!
-//! [`history_capture`]: crate::Workspace::history_capture
-//! [`fixity_findings`]: crate::Workspace::check
+//! The capture and check operations that consume this cache live in the
+//! higher-level `prov` crate.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
