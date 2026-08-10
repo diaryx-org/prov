@@ -530,10 +530,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // The same tight threshold `textdist::nearest` uses: recognized
                 // spellings are distinctive enough that an ordinary sibling never
                 // falls inside it.
-                let distance = crate::textdist::levenshtein(name, &candidate);
-                (1..=2)
-                    .contains(&distance)
-                    .then(|| (distance, dir.join(candidate)))
+                prov_config::vocabulary_distance(name, &candidate)
+                    .map(|distance| (distance, dir.join(candidate)))
             })
             .collect();
         scored.sort();
@@ -1014,7 +1012,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     return Ok(out);
                 };
                 for candidate in vocab.live_term_names() {
-                    if (1..=2).contains(&crate::textdist::levenshtein(value, &candidate)) {
+                    if prov_config::vocabulary_terms_near(value, &candidate) {
                         out.push(Remedy::new(
                             RemedyKind::SetTerm,
                             Warrant::Judgment,

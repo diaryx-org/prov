@@ -1105,9 +1105,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                             retired: vocab.is_retired(&term),
                         }),
                         crate::config::OpenClosed::Open => {
-                            if let Some(suggestion) =
-                                crate::textdist::nearest_owned(&term, &vocab.live_term_names())
-                            {
+                            if let Some(suggestion) = prov_config::nearest_vocabulary_term(
+                                &term,
+                                &vocab.live_term_names(),
+                            ) {
                                 findings.push(Finding::TermNearMiss {
                                     doc: path.clone(),
                                     field: field.clone(),

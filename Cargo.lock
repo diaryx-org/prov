@@ -469,6 +469,7 @@ dependencies = [
  "fig-schema",
  "indexmap",
  "proptest",
+ "prov-config",
  "prov-fixity",
  "prov-graph",
  "prov-identity",
@@ -484,6 +485,20 @@ dependencies = [
  "clap",
  "cliclack",
  "prov",
+]
+
+[[package]]
+name = "prov-config"
+version = "0.4.0"
+dependencies = [
+ "fig",
+ "fig-schema",
+ "indexmap",
+ "proptest",
+ "prov-fixity",
+ "prov-graph",
+ "prov-identity",
+ "thiserror",
 ]
 
 [[package]]

@@ -1,0 +1,29 @@
+[package]
+name = "prov-config"
+readme.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Workspace configuration policy, codecs, diagnostics, and vocabularies"
+
+[dependencies]
+prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
+prov-identity = { path = "../prov-identity", version = "0.4.0", default-features = false }
+prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
+fig.workspace = true
+fig-schema.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true
+
+[features]
+default = ["yaml"]
+yaml = ["fig/yaml", "prov-graph/yaml", "prov-identity/yaml"]
+json = ["fig/json", "prov-graph/json", "prov-identity/json"]
+toml = ["fig/toml", "prov-graph/toml", "prov-identity/toml"]
+fig-lang = ["fig/fig", "prov-graph/fig-lang", "prov-identity/fig-lang"]
+
+[dev-dependencies]
+proptest = "1"

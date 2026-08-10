@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::OpenClosed;
+use crate::OpenClosed;
 use prov_graph::identity::Id;
 use prov_graph::meta::Value;
 

@@ -48,7 +48,7 @@ compile_error!(
 
 pub mod about;
 pub mod attach;
-pub mod config;
+pub use prov_config as config;
 pub mod discovery;
 /// Content fixity policy, digests, and the device-local cache.
 pub use prov_fixity as fixity;
@@ -60,9 +60,8 @@ pub mod intake;
 pub mod mutate;
 pub mod remedy;
 pub mod route;
-pub mod textdist;
 pub mod validate;
-pub mod vocabulary;
+pub use prov_config::vocabulary;
 pub mod workspace;
 
 /// The read core, re-exported whole.

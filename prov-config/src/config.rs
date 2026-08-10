@@ -28,14 +28,14 @@ use std::collections::BTreeMap;
 use fig::ExtKind;
 use fig_schema::FieldType;
 
-pub use crate::fixity::Fixity;
-use crate::identity::Registration;
 use crate::textdist::nearest;
+pub use prov_fixity::Fixity;
 use prov_graph::content::ContentFormat;
 use prov_graph::document::EmbedStyle;
 use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
+use prov_identity::{Registration, Trigger};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because
 /// it is the one identity setting that changes what a link *resolves to* — a
@@ -631,8 +631,8 @@ impl WorkspaceConfig {
                 .resolved_relation_styles()
                 .values()
                 .any(|s| s.registers());
-        (link_registers && self.identity.fires_on(crate::identity::Trigger::Link))
-            || self.identity.fires_on(crate::identity::Trigger::Create)
+        (link_registers && self.identity.fires_on(Trigger::Link))
+            || self.identity.fires_on(Trigger::Create)
     }
 
     /// Overlay the recognized keys present in `meta` onto this config; absent
@@ -1606,7 +1606,7 @@ fn registration_str(registration: Registration) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::Trigger;
+    use prov_identity::Trigger;
 
     /// A config surface as a `Value::Mapping` from `(key, value)` pairs, values
     /// inferred as bools where they parse.
