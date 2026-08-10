@@ -31,8 +31,12 @@
 //! resolution ([`resolve`], [`Target`]) built on top of it, the census types
 //! with the spanning-tree walker that fills them in, and the [`tree`] walker.
 //! They stay `impl`ed on [`Workspace`](crate::workspace::Workspace) rather
-//! than a graph type of its own — that split is a later step, once
-//! `validate` has finished shedding everything that is not a findings view.
+//! than a graph type of its own. That split is now unblocked —
+//! [`validate`](crate::validate) has shed its repair half to
+//! [`remedy`](crate::remedy) and is a findings view and nothing else — but it
+//! is still not *warranted*: a `Graph` handle would have to be threaded
+//! through every mutation verb, each of which reads and writes in the same
+//! breath, and nothing yet asks for the seam that would buy.
 //!
 //! `graph` is also the crate's sole *surface* onto [`Storage`](crate::fs::Storage)
 //! reads: every other module reaches the filesystem through a `Workspace`

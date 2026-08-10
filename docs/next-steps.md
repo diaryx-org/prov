@@ -91,6 +91,16 @@ fully-after" quantified over generated change sets rather than the hand-placed
 
 ## Autofix (DESIGN §8 — the sleeper feature)
 
+Lives in **`prov/src/remedy.rs`**, carved out of `validate.rs`: a finding says
+what is wrong, a remedy says what could be done about it, and only the second
+knows how to change a document. `validate.rs` is now a findings view and nothing
+else — `Finding`, `CheckDiff`, `check` and its eight sub-passes — which is the
+same line that keeps `graph` ignorant of `Finding`, drawn one layer up. It also
+retires the precondition `graph/mod.rs` had recorded for a `Graph<FS>`
+carve-out; that split is unblocked, and still unwarranted (a `Graph` handle
+would have to thread through every mutation verb, and each of them reads and
+writes in the same breath).
+
 Principle **restated**: a repair edits structure — frontmatter, or a span *twig's
 own parser* reported as a link — and never ordinary prose; and it never deletes a
 file. The old formulation ("metadata only, never body prose") was a proxy for the

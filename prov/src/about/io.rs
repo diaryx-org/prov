@@ -198,7 +198,8 @@ mod tests {
     use crate::config::WorkspaceConfig;
     use crate::exec::block_on;
     use crate::fs::StdFs;
-    use crate::validate::{Finding, Fix};
+    use crate::remedy::Fix;
+    use crate::validate::Finding;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
