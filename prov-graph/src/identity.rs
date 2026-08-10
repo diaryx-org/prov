@@ -5,7 +5,7 @@
 //! spelled in, and [`verify`] — the check-character arithmetic that catches a
 //! typo'd `id:` link before it dangles silently.
 //!
-//! *Minting* an id is a write, and lives in `prov`'s own `identity` module
+//! *Minting* an id is a write, and lives in `prov-identity`.
 //! alongside the trigger set that decides when a document earns one. The split
 //! matters because this crate never issues an id; it only recognizes ids
 //! something else issued, which is exactly what link resolution needs.
@@ -52,23 +52,16 @@ pub const BLADE_RANDOM_LEN: usize = 6;
 /// Total ID length: the random body plus one check character.
 pub const BLADE_LEN: usize = BLADE_RANDOM_LEN + 1;
 
-/// The canonical [`moid`] minter for prov IDs: [`BLADE_RANDOM_LEN`] random
-/// NOID extended-digit characters plus a NOID check character.
-///
-/// Public because minting lives in `prov` while verification lives here, and
-/// the two must agree on the alphabet and check character or a freshly minted
-/// id would fail its own [`verify`]. Sharing the one constructor is what makes
-/// that agreement structural rather than a comment asking two crates to stay in
-/// step.
-pub fn canonical_minter() -> moid::Minter {
-    moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
-}
-
+/// Prov IDs use [`BLADE_RANDOM_LEN`] random NOID extended-digit characters plus
+/// a NOID check character. Minting lives in `prov-identity`; this crate only
+/// verifies IDs.
 /// Whether `id` is a well-formed prov ID: correct length, alphabet-only,
 /// and a matching trailing check character. This is what catches a typo'd
 /// `prov:` link before it dangles silently.
 pub fn verify(id: &str) -> bool {
-    canonical_minter().validate(id).is_ok()
+    moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
+        .validate(id)
+        .is_ok()
 }
 
 /// Where a document's stable ID is persisted — the identity-storage axis

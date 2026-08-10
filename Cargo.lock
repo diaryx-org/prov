@@ -468,10 +468,10 @@ dependencies = [
  "fig",
  "fig-schema",
  "indexmap",
- "moid",
  "proptest",
  "prov-fixity",
  "prov-graph",
+ "prov-identity",
  "prov-transaction",
  "thiserror",
  "twig-doc",
@@ -504,6 +504,15 @@ dependencies = [
  "proptest",
  "thiserror",
  "twig-doc",
+]
+
+[[package]]
+name = "prov-identity"
+version = "0.4.0"
+dependencies = [
+ "moid",
+ "proptest",
+ "prov-graph",
 ]
 
 [[package]]

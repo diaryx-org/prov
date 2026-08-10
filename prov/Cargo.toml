@@ -20,6 +20,9 @@ publish = true
 # prov.
 prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
 
+# Identity registration policies and opaque ID minting.
+prov-identity = { path = "../prov-identity", version = "0.4.0", default-features = false }
+
 # Content fixity policy, digests, and the device-local stat-validated cache.
 prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
 
@@ -34,10 +37,6 @@ fig.workspace = true
 fig-schema.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
-
-# Opaque document-ID minting (alphabet + check character + seeded PRNG). See
-# `src/identity.rs`; the policy layer around it stays prov's own.
-moid.workspace = true
 
 # Body-prose parsing (Djot/Markdown) — see `src/content.rs`. Zig-backed (its
 # build.rs runs `zig build`, same shape as `fig`), so building prov needs
@@ -67,9 +66,9 @@ default = ["yaml"]
 # format off, its Zig parser is left out of `libfig.a` *and* prov stops
 # recognizing that format (see `whole_file_format`). At least one must be on —
 # `lib.rs` enforces this with a `compile_error!`.
-yaml = ["fig/yaml", "prov-graph/yaml", "prov-transaction/yaml"]
-json = ["fig/json", "prov-graph/json", "prov-transaction/json"]
-toml = ["fig/toml", "prov-graph/toml", "prov-transaction/toml"]
+yaml = ["fig/yaml", "prov-graph/yaml", "prov-identity/yaml", "prov-transaction/yaml"]
+json = ["fig/json", "prov-graph/json", "prov-identity/json", "prov-transaction/json"]
+toml = ["fig/toml", "prov-graph/toml", "prov-identity/toml", "prov-transaction/toml"]
 # `fig` is the dependency name, so the native-dialect feature is spelled
 # `fig-lang` (a feature and a dependency may not share a name unambiguously).
-fig-lang = ["fig/fig", "prov-graph/fig-lang", "prov-transaction/fig-lang"]
+fig-lang = ["fig/fig", "prov-graph/fig-lang", "prov-identity/fig-lang", "prov-transaction/fig-lang"]
