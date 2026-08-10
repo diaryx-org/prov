@@ -22,16 +22,16 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::Document;
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::{Resolution, Target};
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::document::Document;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::{Resolution, Target};
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 /// Walking the spanning relation needs the relation set and the resolver, and
 /// neither of those is an identity concern — so these three sit outside the
@@ -414,7 +414,7 @@ pub(crate) fn splice_body_span(
 /// (`notes.yaml` ↔ `notes.md`). Shared by [`rename`](super::rename)'s
 /// `plan_body_move` and [`Workspace::duplicate`].
 pub(super) fn body_sibling(node_to: &Path, body_from: &Path) -> (PathBuf, String) {
-    let body_to = if crate::document::is_opaque_payload(body_from) {
+    let body_to = if prov_graph::document::is_opaque_payload(body_from) {
         let stem = node_to
             .file_stem()
             .and_then(|s| s.to_str())

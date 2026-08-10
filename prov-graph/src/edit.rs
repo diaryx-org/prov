@@ -52,7 +52,7 @@ impl MetaEditor {
     /// Open an editor over `text`, creating the metadata block when the
     /// document has none: an explicit carrier is honored (an absent fenced
     /// block is synthesized in place), and `None` defaults to a fresh
-    /// frontmatter block in [`default_embed_type`]'s archetype (`---` YAML
+    /// frontmatter block in `default_embed_type`'s archetype (`---` YAML
     /// when that feature is compiled in).
     pub fn open_or_init(text: &str, carrier: Option<MetaCarrier>) -> Result<Self> {
         Ok(match carrier {

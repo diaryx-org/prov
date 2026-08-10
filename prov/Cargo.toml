@@ -13,6 +13,13 @@ categories = ["text-processing", "filesystem"]
 publish = true
 
 [dependencies]
+# The read core: documents, links, and the traversal over them. `Workspace`
+# owns a `prov_graph::Graph` and forwards every read to it, so the two are the
+# same traversal rather than a reimplementation that can drift. prov re-exports
+# the whole of its public surface, so a consumer that needs both depends only on
+# prov.
+prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
+
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs
 # runs `zig build`). The value tree is prov's common currency. Which format
 # backends fig compiles in is governed by prov's features below.
@@ -54,9 +61,9 @@ default = ["yaml"]
 # format off, its Zig parser is left out of `libfig.a` *and* prov stops
 # recognizing that format (see `whole_file_format`). At least one must be on —
 # `lib.rs` enforces this with a `compile_error!`.
-yaml = ["fig/yaml"]
-json = ["fig/json"]
-toml = ["fig/toml"]
+yaml = ["fig/yaml", "prov-graph/yaml"]
+json = ["fig/json", "prov-graph/json"]
+toml = ["fig/toml", "prov-graph/toml"]
 # `fig` is the dependency name, so the native-dialect feature is spelled
 # `fig-lang` (a feature and a dependency may not share a name unambiguously).
-fig-lang = ["fig/fig"]
+fig-lang = ["fig/fig", "prov-graph/fig-lang"]

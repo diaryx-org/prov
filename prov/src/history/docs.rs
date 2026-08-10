@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::content::{ContentFormat, transcode};
-use crate::error::Result;
-use crate::identity::Id;
-use crate::link;
-use crate::meta::{Mapping, Value};
+use prov_graph::content::{ContentFormat, transcode};
+use prov_graph::error::Result;
+use prov_graph::identity::Id;
+use prov_graph::link;
+use prov_graph::meta::{Mapping, Value};
 
 use super::event_id::*;
 use super::layout::*;
@@ -120,7 +120,7 @@ pub(super) fn render_index(
         ),
     );
     let body = transcode(&format!("# {title}\n\n{prose}\n"), style.content)?;
-    crate::edit::reformat_block(&body, &map, style.embed)
+    prov_graph::edit::reformat_block(&body, &map, style.embed)
 }
 
 /// How a document in this store opens, in one clause a reader can act on —
@@ -251,7 +251,7 @@ pub(super) fn index_entries(index: &Path, meta: &Value) -> Vec<PathBuf> {
         .map(Value::link_strings)
         .unwrap_or_default()
         .iter()
-        .map(|raw| link::resolve(index, &crate::link::Link::parse(raw).target))
+        .map(|raw| link::resolve(index, &prov_graph::link::Link::parse(raw).target))
         .collect()
 }
 
@@ -333,7 +333,7 @@ pub(super) fn render_forgotten(
     let mut map = Mapping::new();
     map.insert("title".into(), Value::String("Forgotten".into()));
     map.insert(FORGOTTEN_STEM.into(), Value::Sequence(rows));
-    crate::meta::serialize_mapping(&map, format)
+    prov_graph::meta::serialize_mapping(&map, format)
 }
 
 /// Whether a manifest row is one the subject names.

@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::{LinkSite, Resolution};
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
 use crate::validate::Finding;
 use crate::workspace::Workspace;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::{LinkSite, Resolution};
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
 
 use super::maintain::content_target;
 
@@ -173,9 +173,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::document::Document;
     use crate::identity::Trigger;
-    use crate::index::IdIndex;
+    use prov_graph::document::Document;
+    use prov_graph::index::IdIndex;
 
     #[test]
     fn delete_refuses_children_then_forces() {
@@ -283,7 +283,7 @@ mod tests {
         let id = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
         let text = read(&dir, "index.md");
         let carrier = Document::parse("index.md", &text).unwrap().carrier;
-        let updated = crate::edit::set_in_text(
+        let updated = prov_graph::edit::set_in_text(
             &text,
             carrier,
             "contents.0",
@@ -298,7 +298,7 @@ mod tests {
         // to simulate the out-of-band case.
         let text = read(&dir, "index.md");
         let carrier = Document::parse("index.md", &text).unwrap().carrier;
-        let updated = crate::edit::set_in_text(
+        let updated = prov_graph::edit::set_in_text(
             &text,
             carrier,
             "contents",

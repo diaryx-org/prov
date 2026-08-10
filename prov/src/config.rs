@@ -28,13 +28,18 @@ use std::collections::BTreeMap;
 use fig::ExtKind;
 use fig_schema::FieldType;
 
-use crate::content::ContentFormat;
-use crate::document::EmbedStyle;
 use crate::identity::Registration;
-use crate::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
-use crate::meta::{Mapping, Value};
-use crate::relation::{Cardinality, Relation, RelationSet};
 use crate::textdist::nearest;
+use prov_graph::content::ContentFormat;
+use prov_graph::document::EmbedStyle;
+use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
+use prov_graph::meta::{Mapping, Value};
+use prov_graph::relation::{Cardinality, Relation, RelationSet};
+
+/// Where a document's stable id is persisted. Defined in `prov-graph`, because
+/// it is the one identity setting that changes what a link *resolves to* — a
+/// reader has to know whether frontmatter is a place an id can be found.
+pub use prov_graph::identity::IdStorage;
 
 /// The config-vocabulary version stamped as `spec` and recognized on read — a
 /// marker so a foreign tool (or a future prov) knows which vocabulary it is
@@ -54,7 +59,7 @@ pub const ROOT_CONFIG_KEY: &str = "prov";
 /// `relations` block. Each axis is optional and inherits the workspace default
 /// ([`WorkspaceConfig::reference_style`]) when absent — so a block need only name
 /// the axes it changes. This is the config form of
-/// [`Relation::style`](crate::relation::Relation::style), and what lets links
+/// [`Relation::style`](prov_graph::relation::Relation::style), and what lets links
 /// going "down" (`contents`) differ from links going "up" (`part_of`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RelationStyleConfig {
@@ -231,61 +236,6 @@ pub fn field_type_as_config_str(ty: FieldType) -> Option<&'static str> {
         FieldType::Extended(ExtKind::LocalTime) => "time",
         FieldType::Null | FieldType::Extended(_) => return None,
     })
-}
-
-/// Where a document's stable ID is persisted — the identity-storage axis
-/// (DESIGN §5). Orthogonal to *when* an ID is minted ([`Registration`]) and to
-/// how references are spelled; this is purely the ID's *home*.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum IdStorage {
-    /// **Registry only** (`registry`): IDs live solely in the registry document —
-    /// authoritative, non-derivable, resolved by direct lookup. The cleanest
-    /// documents (no `id` clutter), but identity does not travel with a file.
-    Registry,
-    /// **Frontmatter + registry** (`both`, the default): each document also
-    /// carries its own ID in an `id` frontmatter field (a portable, self-describing
-    /// shadow), and the registry is retained as a rebuildable cache + tombstone
-    /// ledger. The ID travels with the file across copies and out-of-band moves.
-    #[default]
-    Frontmatter,
-    /// **Frontmatter only** (`frontmatter`): the `id` field is the sole home; no
-    /// registry document is written and resolution rebuilds the id→path map by
-    /// scanning frontmatter. Maximally self-describing, but it forfeits tombstones
-    /// (a deleted file takes its ID with it), so an ID can in principle be reminted.
-    FrontmatterOnly,
-}
-
-impl IdStorage {
-    /// Whether this mode writes the ID into each document's `id` frontmatter.
-    pub fn stamps_frontmatter(self) -> bool {
-        matches!(self, IdStorage::Frontmatter | IdStorage::FrontmatterOnly)
-    }
-
-    /// Whether this mode keeps a registry document (the authoritative store, or —
-    /// under [`Frontmatter`](IdStorage::Frontmatter) — a rebuildable cache).
-    pub fn keeps_registry(self) -> bool {
-        matches!(self, IdStorage::Registry | IdStorage::Frontmatter)
-    }
-
-    /// Parse the `id_storage` config spelling; unknown → `None`. `both` is the
-    /// frontmatter+registry default; `frontmatter` is the registry-less mode.
-    pub fn from_config_str(value: &str) -> Option<Self> {
-        match value {
-            "registry" => Some(Self::Registry),
-            "both" => Some(Self::Frontmatter),
-            "frontmatter" => Some(Self::FrontmatterOnly),
-            _ => None,
-        }
-    }
-
-    /// The `id_storage` config spelling.
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Registry => "registry",
-            Self::Frontmatter => "both",
-            Self::FrontmatterOnly => "frontmatter",
-        }
-    }
 }
 
 /// How far content-checksum (fixity) coverage extends — the archival integrity
@@ -472,7 +422,7 @@ pub struct WorkspaceConfig {
     /// When a document earns a stable ID — the identity registration triggers.
     pub identity: Registration,
     /// The default reference **notation** (`markdown` / `wikilink` / `bare`).
-    /// Overridden per relation by [`Relation::style`](crate::relation::Relation::style).
+    /// Overridden per relation by [`Relation::style`](prov_graph::relation::Relation::style).
     pub notation: Notation,
     /// The default **path resolution** for path targets (`root` / `relative` /
     /// Ignored for id/alias targets.
@@ -482,7 +432,7 @@ pub struct WorkspaceConfig {
     /// Whether an id/alias reference carries a `|Title` label.
     pub reference_label: bool,
     /// Per-relation reference-style overrides, keyed by relation name — the
-    /// config form of [`Relation::style`](crate::relation::Relation::style).
+    /// config form of [`Relation::style`](prov_graph::relation::Relation::style).
     /// Each entry overlays the workspace default for that relation only, letting
     /// `contents` (down) and `part_of` (up) carry different styles. Empty means
     /// every relation inherits the default. Resolve with
@@ -551,7 +501,7 @@ pub struct WorkspaceConfig {
     /// about the archive, so it is the one piece that lives in its config. Where
     /// some *other* workspace can be found is a property of a device, not of
     /// this workspace, and deliberately has no config key — see
-    /// [`Target::Foreign`](crate::graph::Target::Foreign).
+    /// [`Target::Foreign`](prov_graph::graph::Target::Foreign).
     ///
     /// Must be [well-formed](is_valid_workspace_id): a malformed value is
     /// reported by [`diagnose`] and ignored rather than half-honored.
@@ -652,7 +602,7 @@ impl WorkspaceConfig {
     /// The declared per-relation overrides resolved to full [`ReferenceStyle`]s,
     /// each partial overlaid on the workspace default ([`reference_style`]) and
     /// normalized. Feed the result to
-    /// [`RelationSet::with_styles`](crate::relation::RelationSet::with_styles) to
+    /// [`RelationSet::with_styles`](prov_graph::relation::RelationSet::with_styles) to
     /// build the workspace's relation vocabulary from a config. Empty when no
     /// relation declares an override — every relation then inherits the default.
     ///
@@ -681,7 +631,7 @@ impl WorkspaceConfig {
     /// Build this workspace's relation vocabulary — the self-describing path
     /// (DESIGN §1, the `prov/1` spec). When [`relation_defs`](Self::relation_defs)
     /// is **empty**, this is the diaryx preset
-    /// ([`RelationSet::diaryx`](crate::relation::RelationSet::diaryx)) unchanged —
+    /// ([`RelationSet::diaryx`](prov_graph::relation::RelationSet::diaryx)) unchanged —
     /// graceful degradation, so a minimal vault that spells out nothing keeps
     /// working. When it declares definitions, the vocabulary is built from them,
     /// and the structural pointer relations (`registry`/`config`/`recycle_bin`)
@@ -1737,7 +1687,7 @@ mod tests {
     #[test]
     #[cfg(feature = "yaml")]
     fn relation_set_builds_a_custom_vocabulary_and_falls_back_to_diaryx() {
-        use crate::document::Document;
+        use prov_graph::document::Document;
 
         fn doc(text: &str) -> Document {
             Document::parse("index.md", text).unwrap()
@@ -1914,12 +1864,12 @@ mod tests {
 
         let styles = cfg.resolved_relation_styles();
         let down = styles.get("contents").expect("contents style");
-        assert_eq!(down.wrapper, crate::link::Wrapper::Wikilink);
+        assert_eq!(down.wrapper, prov_graph::link::Wrapper::Wikilink);
         assert_eq!(down.addressing, Addressing::Alias);
 
         let up = styles.get("part_of").expect("part_of style");
         // Inherits the default notation (markdown), keeps its own id target.
-        assert_eq!(up.wrapper, crate::link::Wrapper::Markdown);
+        assert_eq!(up.wrapper, prov_graph::link::Wrapper::Markdown);
         assert_eq!(up.addressing, Addressing::Id);
     }
 

@@ -64,7 +64,7 @@ pub fn whole_file_format(path: &Path) -> Option<fig::Format> {
 /// Enforce that a **record store** at `path` (the id registry, the recycle-bin
 /// index, a flat vocabulary) is a whole-file config document, returning its
 /// format. A [`MetaCarrier::Fenced`] carrier — markdown frontmatter — is
-/// rejected with [`Error::MarkdownStore`]: prov re-lays-out these stores as a
+/// rejected with [`Error::MarkdownStore`](crate::error::Error::MarkdownStore): prov re-lays-out these stores as a
 /// sorted record list (DESIGN §5), so human prose has no stable home in them and
 /// unambiguous extension→format sniffing depends on the carrier being whole-file.
 /// The single choke point every store loader passes through, so the rule cannot
@@ -128,7 +128,7 @@ pub fn frontmatter_carrier(format: fig::Format) -> MetaCarrier {
 /// carrier through [`embed_carrier`]: e.g. (`CodeBlock`, YAML) is a
 /// ```` ```yaml ```` block, (`Delimited`, TOML) is a `+++` block, and
 /// (`Separate`, JSON) is a whole-file `.json` sidecar. It is what the config
-/// document records (via [`WorkspaceConfig`](crate::WorkspaceConfig)) so a
+/// document records (via `prov`'s `WorkspaceConfig`) so a
 /// workspace stays self-describing about *how* its metadata is embedded, not
 /// just which format it is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,7 +371,7 @@ impl Document {
     /// metadata document whose `content` points at an [opaque
     /// payload](is_opaque_payload) rather than a prose body. Recognized two ways,
     /// so a hand-written sidecar need not be verbose: an explicit `attachment:
-    /// true` flag (what [`Workspace::attach`](crate::Workspace::attach) writes),
+    /// true` flag (what `prov`'s `Workspace::attach` writes),
     /// **or** a `content` target whose extension prov cannot read as text.
     ///
     /// A *separated prose* document (`content` → a `.md`/`.dj`/`.html` body) is

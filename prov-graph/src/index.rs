@@ -70,6 +70,22 @@ impl std::fmt::Display for Collision {
     }
 }
 
+/// What a pending change set can tell a store about its own persisted home.
+///
+/// [`IndexStore::rebase`] needs exactly two facts before it renders: where the
+/// document hosting its records will *end up* once the change lands, and what
+/// text will be in it. That is the whole of the dependency, so it is the whole
+/// of this trait — the alternative, handing `rebase` the change set itself,
+/// would make every store implementor depend on the mutation engine to answer
+/// two questions about a path.
+pub trait Rebase {
+    /// Where `path` will be after the change lands, if the change moves it.
+    fn renamed_to(&self, path: &Path) -> Option<PathBuf>;
+
+    /// The bytes the change will leave at `path`, if it writes there.
+    fn staged(&self, path: &Path) -> Option<&[u8]>;
+}
+
 /// The query half of an ID index: the three lookups link resolution needs, and
 /// no way to change what is stored.
 ///
@@ -85,8 +101,8 @@ impl std::fmt::Display for Collision {
 /// [`Storage`](crate::fs::Storage): a read-only consumer must be able to depend
 /// on traversal without linking the staging machinery, and `IndexStore`'s
 /// staging half is not merely unused by the read core — it is *stated in write
-/// vocabulary*, down to [`rebase`](IndexStore::rebase) taking a
-/// [`ChangeSet`](crate::change::ChangeSet).
+/// vocabulary*, down to [`rebase`](IndexStore::rebase), which only a pending
+/// mutation has anything to say to.
 pub trait IdIndex {
     /// Resolve an ID to its current path. `None` for unknown *and* tombstoned
     /// IDs — use [`is_known`](IdIndex::is_known) to tell them apart.
@@ -114,7 +130,7 @@ pub trait IndexStore: IdIndex {
     /// already carries a *different* id, that id's forward entry must not
     /// survive pointing at a path it no longer owns. A caller that moves an id
     /// it did not just mint should ask
-    /// [`Workspace::move_conflict`](crate::Workspace::move_conflict) first and
+    /// `prov`'s `Workspace::move_conflict` first and
     /// refuse the collision up front — the document being displaced still
     /// spells the id in its own frontmatter. This eviction is the same last
     /// line of defence [`register`](IndexStore::register) keeps, for when
@@ -160,7 +176,7 @@ pub trait IndexStore: IdIndex {
     /// there is nothing left to undo, while `dirty` clears only when the write
     /// actually went out. A store with no home stages nothing yet still commits
     /// successfully — leaving its checkpoint outstanding would make the *next*
-    /// op's [`change`](crate::workspace::Workspace::change) mistake it for one
+    /// op's `prov`'s `change`(`prov`'s `Workspace::change`) mistake it for one
     /// abandoned mid-edit and unwind a mutation that fully happened.
     ///
     /// [`pending_write`]: IndexStore::pending_write
@@ -182,7 +198,7 @@ pub trait IndexStore: IdIndex {
     /// silently reverting the op's edit, or recreating the file the op just
     /// renamed away from. Rebasing first makes the last write build *on* the
     /// earlier one instead of erasing it.
-    fn rebase(&mut self, cs: &crate::change::ChangeSet) -> Result<()> {
+    fn rebase(&mut self, cs: &dyn Rebase) -> Result<()> {
         let _ = cs;
         Ok(())
     }
@@ -274,8 +290,8 @@ impl IndexStore for InMemoryIndex {
     ///
     /// Eviction is the last line of defence, not the intended path: callers that
     /// register (or move, via `set_path`) an id they did not just mint should
-    /// ask [`registration_conflict`](crate::Workspace::registration_conflict) or
-    /// [`move_conflict`](crate::Workspace::move_conflict) first and refuse,
+    /// ask `prov`'s `Workspace::registration_conflict` or
+    /// `prov`'s `Workspace::move_conflict` first and refuse,
     /// because the document being displaced still spells the id in its own
     /// frontmatter. What this guarantees is only that the index stays
     /// *consistent* when something slips through.
@@ -729,7 +745,7 @@ impl IndexStore for FileIndex {
         }
     }
 
-    fn rebase(&mut self, cs: &crate::change::ChangeSet) -> Result<()> {
+    fn rebase(&mut self, cs: &dyn Rebase) -> Result<()> {
         let Some(host) = self.host.clone() else {
             return Ok(());
         };

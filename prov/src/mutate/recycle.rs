@@ -12,17 +12,17 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::Document;
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::{LinkSite, Resolution, Target};
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
+use prov_graph::document::Document;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::{LinkSite, Resolution, Target};
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 use super::maintain::content_target;
 
@@ -147,7 +147,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // Locate the bin, or plan to bootstrap it on this first deletion.
         let format = self.default_embed_format();
-        let ext = crate::document::whole_file_extension(format);
+        let ext = prov_graph::document::whole_file_extension(format);
         let existing_index = self.recycle_bin_path(&root).await?;
         let bin_index = existing_index
             .clone()
@@ -168,7 +168,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // The bin index is a record store — reject a markdown carrier
                 // (DESIGN §5, whole-file rule).
                 if let Some(carrier) = bin_doc.carrier {
-                    crate::document::require_whole_file(index, carrier)?;
+                    prov_graph::document::require_whole_file(index, carrier)?;
                 }
                 let recs = bin_doc
                     .meta
@@ -217,7 +217,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&path));
         let id_opt = self.index().id_for_path(&path);
-        let mut record = crate::meta::Mapping::new();
+        let mut record = prov_graph::meta::Mapping::new();
         record.insert("title".into(), Value::String(title));
         if let Some(id) = &id_opt {
             record.insert("id".into(), Value::String(id.to_string()));
@@ -251,10 +251,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         records.push(Value::Mapping(record));
 
-        let mut bin_map = crate::meta::Mapping::new();
+        let mut bin_map = prov_graph::meta::Mapping::new();
         bin_map.insert("title".into(), Value::String(bin_title));
         bin_map.insert("deleted".into(), Value::Sequence(records));
-        let bin_text = crate::meta::serialize_mapping(&bin_map, format)?;
+        let bin_text = prov_graph::meta::serialize_mapping(&bin_map, format)?;
 
         // The parent's spanning entry for the doomed document, removed.
         let mut parent_write: Option<(PathBuf, String)> = None;
@@ -319,11 +319,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .to_string();
             let root_dir = root.parent().unwrap_or(Path::new(""));
             let pointer = link::relative(root_dir, &bin_index);
-            root_text = Some(crate::edit::set_in_text(
+            root_text = Some(prov_graph::edit::set_in_text(
                 &base,
                 root_doc.carrier,
                 &relation,
-                crate::edit::infer_scalar(&pointer),
+                prov_graph::edit::infer_scalar(&pointer),
             )?);
         }
         if let Some(text) = root_text {
@@ -361,7 +361,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // The bin index is a record store — reject a markdown carrier
         // (DESIGN §5, whole-file rule).
         if let Some(carrier) = bin_doc.carrier {
-            crate::document::require_whole_file(&bin_index, carrier)?;
+            prov_graph::document::require_whole_file(&bin_index, carrier)?;
         }
         let records: Vec<Value> = bin_doc
             .meta
@@ -384,7 +384,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .ok_or_else(|| Error::Structure("recycle record has no `bin` path".into()))?,
         );
         let parent = str_field("parent").map(PathBuf::from);
-        let id = str_field("id").map(crate::identity::Id);
+        let id = str_field("id").map(prov_graph::identity::Id);
         let title = str_field("title").unwrap_or_else(|| link::path_to_title(&from));
         let body = match (str_field("body_from"), str_field("body_bin")) {
             (Some(from), Some(bin)) => Some((PathBuf::from(from), PathBuf::from(bin))),
@@ -419,7 +419,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .unwrap_or(Path::new("recyclebin"))
             .to_path_buf();
         let format = self.default_embed_format();
-        let mut bin_map = crate::meta::Mapping::new();
+        let mut bin_map = prov_graph::meta::Mapping::new();
         bin_map.insert(
             "title".into(),
             Value::String(
@@ -443,7 +443,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             ),
         );
         bin_map.insert("deleted".into(), Value::Sequence(remaining));
-        let bin_text = crate::meta::serialize_mapping(&bin_map, format)?;
+        let bin_text = prov_graph::meta::serialize_mapping(&bin_map, format)?;
 
         let mut cs = self.change();
         // Re-register the ID *after* `change`'s checkpoint, so authoring the
@@ -503,7 +503,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // The bin index is a record store — reject a markdown carrier
         // (DESIGN §5, whole-file rule).
         if let Some(carrier) = bin_doc.carrier {
-            crate::document::require_whole_file(&bin_index, carrier)?;
+            prov_graph::document::require_whole_file(&bin_index, carrier)?;
         }
         let records: Vec<Value> = bin_doc
             .meta
@@ -518,7 +518,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .unwrap_or(Path::new("recyclebin"))
             .to_path_buf();
         let format = self.default_embed_format();
-        let mut bin_map = crate::meta::Mapping::new();
+        let mut bin_map = prov_graph::meta::Mapping::new();
         bin_map.insert(
             "title".into(),
             Value::String(
@@ -542,7 +542,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             ),
         );
         bin_map.insert("deleted".into(), Value::Sequence(Vec::new()));
-        let bin_text = crate::meta::serialize_mapping(&bin_map, format)?;
+        let bin_text = prov_graph::meta::serialize_mapping(&bin_map, format)?;
 
         let mut cs = self.change();
         for record in &records {
@@ -735,7 +735,7 @@ mod tests {
         );
 
         let mut w = id_ws(&dir);
-        let id = crate::identity::Id("b7k2m".into());
+        let id = prov_graph::identity::Id("b7k2m".into());
         w.index_mut().register(&id, Path::new("note.md"));
         block_on(w.recycle(Path::new("note.md"), false, None)).unwrap();
         // The arrival: while note.md sat in the bin, the id turned up elsewhere.
@@ -743,7 +743,10 @@ mod tests {
 
         let err = block_on(w.restore(Path::new("note.md"), Path::new("index.md"))).unwrap_err();
         assert!(
-            matches!(err, Error::Collision(crate::index::Collision::Id { .. })),
+            matches!(
+                err,
+                Error::Collision(prov_graph::index::Collision::Id { .. })
+            ),
             "{err:?}"
         );
         assert!(
@@ -780,15 +783,22 @@ mod tests {
         );
 
         let mut w = id_ws(&dir);
-        w.index_mut()
-            .register(&crate::identity::Id("b7k2m".into()), Path::new("note.md"));
+        w.index_mut().register(
+            &prov_graph::identity::Id("b7k2m".into()),
+            Path::new("note.md"),
+        );
         block_on(w.recycle(Path::new("note.md"), false, None)).unwrap();
-        w.index_mut()
-            .register(&crate::identity::Id("zzzzzzz".into()), Path::new("note.md"));
+        w.index_mut().register(
+            &prov_graph::identity::Id("zzzzzzz".into()),
+            Path::new("note.md"),
+        );
 
         let err = block_on(w.restore(Path::new("note.md"), Path::new("index.md"))).unwrap_err();
         assert!(
-            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            matches!(
+                err,
+                Error::Collision(prov_graph::index::Collision::Path { .. })
+            ),
             "{err:?}"
         );
         assert!(!dir.join("note.md").exists(), "nothing moved");

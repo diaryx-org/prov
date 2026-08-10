@@ -2,7 +2,7 @@
 //!
 //! [`validate`](crate::validate) names what is wrong; this module names what
 //! could be done about it, and does it. The split is the same one that keeps
-//! [`graph`](crate::graph) ignorant of `Finding`, applied one layer up: a
+//! [`graph`](prov_graph::graph) ignorant of `Finding`, applied one layer up: a
 //! finding is a statement about the workspace, and a statement carries no
 //! opinion about which of several defensible repairs a person wants.
 //!
@@ -34,16 +34,16 @@ use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
-use crate::fs::Storage;
-use crate::graph::{LinkSite, Target};
 use crate::identity::{Id, IdentityPolicy};
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::mutate::maintain;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
+use prov_graph::error::Result;
+use prov_graph::fs::Storage;
+use prov_graph::graph::{LinkSite, Target};
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 /// A concrete repair for a finding — the fully-determined action
 /// [`apply_fix`](Workspace::apply_fix) takes, and what a [`Remedy`] commits to
@@ -1258,7 +1258,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .authored_target(relation, doc, parent, title, true)
                     .await?;
                 let (text, parsed) = self.load(doc).await?;
-                let updated = crate::edit::set_in_text(
+                let updated = prov_graph::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     relation,
@@ -1280,7 +1280,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // Trust the registry: overwrite the document's `id` frontmatter.
             Fix::SetId { doc, id } => {
                 let (text, parsed) = self.load(doc).await?;
-                let updated = crate::edit::set_in_text(
+                let updated = prov_graph::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     "id",
@@ -1297,7 +1297,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // bytes' hash (comment-/format-preservingly, like `SetId`).
             Fix::RestampFixity { doc, hash } => {
                 let (text, parsed) = self.load(doc).await?;
-                let updated = crate::edit::set_in_text(
+                let updated = prov_graph::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     "content_hash",
@@ -1399,12 +1399,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Fix::AddTerm { store, term } => {
                 let (text, parsed) = self.load(store).await?;
                 let Some(carrier) = parsed.carrier else {
-                    return Err(crate::error::Error::Structure(format!(
+                    return Err(prov_graph::error::Error::Structure(format!(
                         "{} has no metadata block to add a term to",
                         store.display()
                     )));
                 };
-                let mut editor = crate::edit::MetaEditor::open(&text, carrier)?;
+                let mut editor = prov_graph::edit::MetaEditor::open(&text, carrier)?;
                 editor.set_value(
                     &[fig::Segment::Key("terms"), fig::Segment::Key(term)],
                     fig::Value::Null,
@@ -1417,21 +1417,21 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Fix::SetConfigKey { doc, from, to } => {
                 let (text, parsed) = self.load(doc).await?;
                 let leaf = to.rsplit('.').next().unwrap_or(to);
-                let mut editor = crate::edit::MetaEditor::open(
+                let mut editor = prov_graph::edit::MetaEditor::open(
                     &text,
                     parsed.carrier.ok_or_else(|| {
-                        crate::error::Error::Structure(format!(
+                        prov_graph::error::Error::Structure(format!(
                             "{} has no metadata block to edit",
                             doc.display()
                         ))
                     })?,
                 )?;
-                editor.replace_key(&crate::edit::key_path(from), leaf)?;
+                editor.replace_key(&prov_graph::edit::key_path(from), leaf)?;
                 cs.write(doc, editor.render()?);
             }
             Fix::SetConfigValue { doc, key, value } => {
                 let (text, parsed) = self.load(doc).await?;
-                let updated = crate::edit::set_in_text(
+                let updated = prov_graph::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     key,
@@ -1451,12 +1451,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
     use crate::identity::Minter;
-    use crate::index::FileIndex;
-    use crate::index::IdIndex;
-    use crate::link::LinkStyle;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
+    use prov_graph::index::FileIndex;
+    use prov_graph::index::IdIndex;
+    use prov_graph::link::LinkStyle;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -1635,10 +1635,10 @@ mod tests {
         let ws = Workspace::builder(StdFs)
             .root(&dir)
             .relations(
-                crate::relation::RelationSet::new()
-                    .with(crate::relation::Relation::many("contents").inverse("part_of"))
-                    .with(crate::relation::Relation::one("part_of").inverse("contents"))
-                    .with(crate::relation::Relation::many("links"))
+                prov_graph::relation::RelationSet::new()
+                    .with(prov_graph::relation::Relation::many("contents").inverse("part_of"))
+                    .with(prov_graph::relation::Relation::one("part_of").inverse("contents"))
+                    .with(prov_graph::relation::Relation::many("links"))
                     .spanning("contents"),
             )
             .build();

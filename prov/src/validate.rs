@@ -3,7 +3,7 @@
 //! The sleeper feature (DESIGN §8): walk the spanning tree and report every
 //! violated invariant as a [`Finding`] — data, not a panic.
 //!
-//! Findings are a **view** over [`crate::graph`]'s census
+//! Findings are a **view** over [`prov_graph::graph`]'s census
 //! ([`Workspace::census`]): every forward link the walk resolves becomes a
 //! finding when it fails to resolve cleanly, joined with the structural
 //! findings (unreadable document, duplicate containment, missing inverse) the
@@ -39,24 +39,29 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::content::ContentFormat;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::{CensusEntry, LinkSite, Resolution, StructuralFact, Walk, reachable_set};
-use crate::identity::Id;
-use crate::index::IndexStore;
-use crate::link;
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::content::ContentFormat;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::{CensusEntry, LinkSite, Resolution, StructuralFact, Walk, reachable_set};
+use prov_graph::identity::Id;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
+use prov_graph::meta::Value;
 
-impl CensusEntry {
-    /// The integrity finding this entry represents when its target failed to
-    /// resolve cleanly — `None` for a link that resolves.
-    fn finding(&self) -> Option<Finding> {
-        let doc = self.source.clone();
-        let site = self.site.clone();
-        let target = self.target_text.clone();
-        match &self.resolution {
+/// The integrity finding a census entry represents when its target failed to
+/// resolve cleanly — `None` for a link that resolves.
+///
+/// A free function rather than a method because [`CensusEntry`] belongs to
+/// `prov-graph`, which deliberately knows nothing of [`Finding`]: the walk
+/// reports what it saw, and naming it is this module's job. The orphan rule
+/// enforcing that is the boundary working, not fighting it.
+fn finding_for(entry: &CensusEntry) -> Option<Finding> {
+    let doc = entry.source.clone();
+    let site = entry.site.clone();
+    let target = entry.target_text.clone();
+    {
+        match &entry.resolution {
             Resolution::CaseMismatch { actual, .. } => Some(Finding::CaseMismatch {
                 doc,
                 site,
@@ -94,7 +99,7 @@ impl CensusEntry {
 /// fact the walk observed — a document that would not load, a single-parent
 /// invariant broken, and so on — so this is a relabeling, not a judgment call:
 /// `graph` stays ignorant of `Finding` (see the module doc at
-/// [`crate::graph`]) and `validate` supplies the one vocabulary a report is
+/// [`prov_graph::graph`]) and `validate` supplies the one vocabulary a report is
 /// written in.
 impl From<StructuralFact> for Finding {
     fn from(fact: StructuralFact) -> Self {
@@ -850,7 +855,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             {
                 continue;
             }
-            findings.extend(entry.finding());
+            findings.extend(finding_for(entry));
         }
         findings.extend(self.orphans(start, &census, &content_bodies).await?);
         findings.extend(
@@ -921,7 +926,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-        let doc = crate::document::Document::parse(path, &text)?;
+        let doc = prov_graph::document::Document::parse(path, &text)?;
         Ok(doc
             .meta
             .get("title")
@@ -956,7 +961,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for (pointer, path) in stores {
             if let Ok((_, doc)) = self.load(&path).await
                 && let Some(carrier) = doc.carrier
-                && crate::document::require_whole_file(&path, carrier).is_err()
+                && prov_graph::document::require_whole_file(&path, carrier).is_err()
             {
                 findings.push(Finding::MalformedStore {
                     doc: path,
@@ -1287,11 +1292,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
     use crate::identity::Minter;
-    use crate::index::FileIndex;
-    use crate::link::LinkStyle;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
+    use prov_graph::index::FileIndex;
+    use prov_graph::link::LinkStyle;
     // The three id round-trips below assert that the repair *clears the
     // finding*, so they name a `Fix` from the module downstream of this one.
     use crate::remedy::Fix;
@@ -1333,7 +1338,7 @@ mod tests {
                 crate::fixity::digest(b"alpha\n")
             ),
         );
-        let fs = crate::fs::CountingFs::default();
+        let fs = crate::fs_faults::CountingFs::default();
         let ws = Workspace::builder(fs.clone()).root(&dir).build();
 
         assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
@@ -1355,7 +1360,7 @@ mod tests {
         let dir = tempdir("memo-scope");
         write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
         write(&dir, "a.md", "---\npart_of: index.md\n---\n");
-        let fs = crate::fs::CountingFs::default();
+        let fs = crate::fs_faults::CountingFs::default();
         let ws = Workspace::builder(fs.clone()).root(&dir).build();
 
         block_on(ws.check("index.md")).unwrap();
@@ -1369,8 +1374,8 @@ mod tests {
 
     #[test]
     fn check_flags_and_fixes_a_stale_id_link_label() {
-        use crate::link::{Addressing, ReferenceStyle, Wrapper};
-        use crate::relation::{Relation, RelationSet};
+        use prov_graph::link::{Addressing, ReferenceStyle, Wrapper};
+        use prov_graph::relation::{Relation, RelationSet};
 
         let by_id_labeled = ReferenceStyle {
             wrapper: Wrapper::Markdown,
@@ -1946,7 +1951,7 @@ mod tests {
 
     #[test]
     fn id_mismatch_flags_a_frontmatter_id_disagreeing_with_the_registry() {
-        use crate::identity::Id;
+        use prov_graph::identity::Id;
 
         // A document that carries its own `id` (frontmatter storage, DESIGN §5).
         let dir = tempdir("id-mismatch");
@@ -2005,8 +2010,8 @@ mod tests {
 
     #[test]
     fn unregistered_id_is_found_and_adopted_into_the_registry() {
-        use crate::identity::Id;
-        use crate::index::IdIndex;
+        use prov_graph::identity::Id;
+        use prov_graph::index::IdIndex;
 
         // A document carries an `id` the (empty) registry has never seen.
         let dir = tempdir("unregistered-id");
@@ -2041,8 +2046,8 @@ mod tests {
     #[test]
     fn unstamped_id_is_found_and_written_into_the_document() {
         use crate::config::IdStorage;
-        use crate::identity::Id;
-        use crate::index::IdIndex;
+        use prov_graph::identity::Id;
+        use prov_graph::index::IdIndex;
 
         // A registry-only workspace: the id lives in the registry and the
         // document carries nothing — exactly the state a vault is in the moment

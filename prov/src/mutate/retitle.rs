@@ -11,15 +11,15 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::Document;
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::Target;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
 use crate::workspace::Workspace;
+use prov_graph::document::Document;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::Target;
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Change the document's title, refreshing the display *label* of every
@@ -163,12 +163,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::link::LinkStyle;
+    use prov_graph::link::LinkStyle;
 
     #[test]
     fn retitle_refreshes_inbound_id_link_labels() {
-        use crate::link::{Addressing, ReferenceStyle, Wrapper};
-        use crate::relation::{Relation, RelationSet};
+        use prov_graph::link::{Addressing, ReferenceStyle, Wrapper};
+        use prov_graph::relation::{Relation, RelationSet};
 
         // `part_of` is authored as a *labeled id link*: `[Parent Title](id:…)`.
         // The id is the durable target; the label is the parent's title, which

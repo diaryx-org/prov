@@ -5,17 +5,17 @@
 
 use std::path::Path;
 
+use super::Graph;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::fs::ReadStorage;
 use crate::link;
-use crate::workspace::Workspace;
 
-impl<FS: ReadStorage, Id, Ix> Workspace<FS, Id, Ix> {
+impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// Read and parse the workspace-relative document at `path`, returning the
     /// raw text alongside. The building block traversal, validation, and
     /// mutation share.
-    pub(crate) async fn load(&self, path: &Path) -> Result<(String, Document)> {
+    pub async fn load(&self, path: &Path) -> Result<(String, Document)> {
         // Clamp reads to the workspace root: `path` may originate in a document's
         // own metadata (a `contents`/`part_of` target), so a hostile or careless
         // `../../../etc/passwd` must be refused here rather than opened. The
@@ -61,6 +61,8 @@ mod tests {
     use super::*;
     use crate::exec::block_on;
     use crate::fs::StdFs;
+    use crate::graph::ReadSettings;
+    use crate::index::NoIndex;
     use crate::meta::Value;
 
     fn write(dir: &Path, rel: &str, text: &str) {
@@ -85,7 +87,7 @@ mod tests {
             "---\ntitle: A\nauthor: Ada\n---\nbody text\n",
         );
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let doc = block_on(ws.document("notes/a.md")).unwrap();
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("A"));
         assert_eq!(doc.meta.get("author").and_then(Value::as_str), Some("Ada"));
@@ -95,7 +97,7 @@ mod tests {
     #[test]
     fn document_surfaces_the_error_for_an_unreadable_path() {
         let dir = tempdir("document-missing");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         assert!(block_on(ws.document("nope.md")).is_err());
     }
 }

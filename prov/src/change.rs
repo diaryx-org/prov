@@ -64,8 +64,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::fs::Storage;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
 
 /// One staged filesystem operation. Paths are **workspace-relative** — the root
 /// is joined on at [`apply`](ChangeSet::apply) time, so a set is portable
@@ -145,6 +145,22 @@ impl FileOp {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChangeSet {
     ops: Vec<FileOp>,
+}
+
+/// A pending change set can answer the two questions an [`IndexStore`] has
+/// before it renders: where its host document will end up, and what will be in
+/// it. Implementing the narrow trait rather than being passed whole is what
+/// keeps a store implementor free of the mutation engine.
+///
+/// [`IndexStore`]: prov_graph::index::IndexStore
+impl prov_graph::index::Rebase for ChangeSet {
+    fn renamed_to(&self, path: &Path) -> Option<PathBuf> {
+        ChangeSet::renamed_to(self, path)
+    }
+
+    fn staged(&self, path: &Path) -> Option<&[u8]> {
+        ChangeSet::staged(self, path)
+    }
 }
 
 impl ChangeSet {
@@ -539,10 +555,10 @@ async fn unwind<FS: Storage>(fs: &FS, undo: Vec<Undo>) -> Result<()> {
 
 /// Refuse a staged path that would resolve outside the workspace root. The
 /// write-side counterpart to the read guard in [`crate::Workspace`]'s `load`;
-/// both defer to [`crate::link::escapes_root`] so read and write clamp to the
+/// both defer to [`prov_graph::link::escapes_root`] so read and write clamp to the
 /// exact same boundary.
 fn guard_in_root(path: &Path) -> Result<()> {
-    if crate::link::escapes_root(path) {
+    if prov_graph::link::escapes_root(path) {
         return Err(Error::Escape(path.to_path_buf()));
     }
     Ok(())
@@ -628,9 +644,10 @@ pub(crate) async fn write_probe<FS: Storage>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::{FailAtWrite, FsEvent, RecordingFs, StdFs};
+    use crate::fs_faults::{FailAtWrite, FsEvent, RecordingFs};
     use crate::journal::JOURNAL_NAME;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-change-{name}"));
@@ -912,9 +929,9 @@ mod tests {
             fs.events(),
             vec![
                 FsEvent::Write(temp.clone()),
-                FsEvent::Sync(temp.clone(), crate::fs::Durability::Ordered),
+                FsEvent::Sync(temp.clone(), prov_graph::fs::Durability::Ordered),
                 FsEvent::Rename(temp, target),
-                FsEvent::Sync(root.clone(), crate::fs::Durability::Durable),
+                FsEvent::Sync(root.clone(), prov_graph::fs::Durability::Durable),
             ],
             "a set of one must cost exactly one atomic write and nothing else"
         );

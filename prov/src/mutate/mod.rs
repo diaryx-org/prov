@@ -16,11 +16,11 @@
 //! tombstones — and a `colophon:<id>` entry in another document's metadata is
 //! deliberately **not** rewritten by a move: the registry update is what keeps
 //! it resolving, which is the entire point of linking by ID. With
-//! [`crate::identity::NoIdentity`]/[`crate::index::NoIndex`] these hooks
+//! [`crate::identity::NoIdentity`]/[`prov_graph::index::NoIndex`] these hooks
 //! monomorphize to nothing.
 //!
 //! The vocabulary is never hardcoded: the spanning relation and its inverse
-//! come from the workspace's [`crate::relation::RelationSet`].
+//! come from the workspace's [`prov_graph::relation::RelationSet`].
 //!
 //! ## Writes are staged, not issued
 //!
@@ -122,11 +122,11 @@ mod tests {
             ids,
             vec![
                 (
-                    crate::identity::Id("aaaaaaa".into()),
+                    prov_graph::identity::Id("aaaaaaa".into()),
                     PathBuf::from("index.md")
                 ),
                 (
-                    crate::identity::Id("bbbbbbb".into()),
+                    prov_graph::identity::Id("bbbbbbb".into()),
                     PathBuf::from("sub/child.md")
                 ),
             ]
@@ -182,7 +182,7 @@ mod tests {
         let first = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
         let again = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
         assert_eq!(first, again, "idempotent");
-        assert!(crate::identity::verify(first.as_str()));
+        assert!(prov_graph::identity::verify(first.as_str()));
 
         // Lazy policy: `Create` does not fire.
         write(&dir, "b.md", "---\ntitle: B\n---\n");

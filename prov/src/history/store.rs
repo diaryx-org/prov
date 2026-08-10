@@ -2,12 +2,12 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::change::ChangeSet;
-use crate::document::MetaCarrier;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::index::IndexStore;
-use crate::link;
 use crate::workspace::Workspace;
+use prov_graph::document::MetaCarrier;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
 
 use super::EVENTS_DIR;
 use super::docs::*;
@@ -56,7 +56,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Ok(text.to_string());
         };
         let relation = relation.to_string();
-        let doc = crate::document::Document::parse(root_doc, text)?;
+        let doc = prov_graph::document::Document::parse(root_doc, text)?;
         if doc.meta.get(&relation).is_some() {
             return Ok(text.to_string());
         }
@@ -98,11 +98,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .to_string();
         let root_dir = root_doc.parent().unwrap_or(Path::new(""));
         let pointer = link::relative(root_dir, store_index);
-        crate::edit::set_in_text(
+        prov_graph::edit::set_in_text(
             text,
             carrier,
             &relation,
-            crate::edit::infer_scalar(&pointer),
+            prov_graph::edit::infer_scalar(&pointer),
         )
     }
 

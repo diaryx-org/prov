@@ -7,6 +7,7 @@ use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use super::Graph;
 use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
@@ -14,13 +15,12 @@ use crate::index::IdIndex;
 use crate::link::{self, Link};
 use crate::meta::Value;
 use crate::title::{self, TitleIndex, TitleMatch};
-use crate::workspace::Workspace;
 
 use super::Target;
 
 /// Where in a document a forward link is written — a frontmatter relation
 /// field or a body wikilink. Carried by every link-resolution finding
-/// ([`Finding`](crate::validate::Finding), derived in `validate` — see
+/// (`prov`'s `Finding`, derived in `validate` — see
 /// [`StructuralFact`]) and every [`CensusEntry`] so a report can point at the
 /// exact site.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +98,7 @@ impl Resolution {
 
 /// One forward link as found in a document: where it is written and how it
 /// resolves. The unit of the
-/// [`census`](crate::workspace::Workspace::census).
+/// [`census`](Graph::census).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CensusEntry {
     /// The document that declares the link (workspace-relative).
@@ -148,15 +148,15 @@ enum NameMatch {
 /// visited set, the inverse lookup — so only the walk can raise them; a
 /// single [`CensusEntry`]'s [`Resolution`] is not enough (that half of the
 /// story is `validate`'s [`CensusEntry`]-keyed
-/// [`finding`](crate::validate) instead, since a resolution *is* already the
+/// `prov`'s `validate` instead, since a resolution *is* already the
 /// fact). `validate::check` turns each variant here into the
-/// [`Finding`](crate::validate::Finding) that names it — one to one, since
+/// `prov`'s `Finding` that names it — one to one, since
 /// the walk already knows exactly what happened and there is nothing left to
 /// infer. Keeping the enum here rather than importing `Finding` is what
 /// keeps `graph` a pure "plain text → walkable graph" layer: it reports what
 /// it found, never how that should be judged.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StructuralFact {
+pub enum StructuralFact {
     /// A document that exists but could not be read or parsed.
     Unreadable { doc: PathBuf, error: String },
     /// A document's self-stored `id` frontmatter disagrees with the registry
@@ -198,14 +198,14 @@ pub(crate) enum StructuralFact {
 }
 
 /// The result of one spanning-tree
-/// [`walk`](crate::workspace::Workspace::census): the forward-link census,
+/// [`walk`](Graph::census): the forward-link census,
 /// the structural facts observed from traversal state, and the prose body
 /// files reached through separated nodes' `content` pointers (tracked for
 /// the orphan check, deliberately absent from the census).
-pub(crate) struct Walk {
-    pub(crate) census: Vec<CensusEntry>,
-    pub(crate) facts: Vec<StructuralFact>,
-    pub(crate) content_bodies: Vec<PathBuf>,
+pub struct Walk {
+    pub census: Vec<CensusEntry>,
+    pub facts: Vec<StructuralFact>,
+    pub content_bodies: Vec<PathBuf>,
 }
 
 /// The set of workspace-relative paths a walk from `start` reaches: `start`
@@ -220,7 +220,7 @@ pub(crate) struct Walk {
 ///
 /// The one definition of "reachable" that the orphan check, the fixity pass, the
 /// vocabulary pass, and the history capture set all share (DESIGN §8).
-pub(crate) fn reachable_set(
+pub fn reachable_set(
     start: &Path,
     census: &[CensusEntry],
     content_bodies: &[PathBuf],
@@ -242,24 +242,24 @@ pub(crate) fn reachable_set(
     reachable
 }
 
-impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
+impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// [`reachable_set`], minus any **shadowed attachment payload**
     /// (`attach --opaque`) — the population a pass may parse *as a document*.
     ///
     /// A shadowed payload is still reachable (it must not be reported as an
     /// orphan, and it is still fixity-checked *through its sidecar*), but its
     /// bytes are an exhibit prov promised never to interpret. That is the same
-    /// bound [`is_shadowed_payload`](Workspace::is_shadowed_payload) already
+    /// bound [`is_shadowed_payload`](Graph::is_shadowed_payload) already
     /// holds the flat title and id scans to; this is its reachability-walk
-    /// counterpart, for [`vocabulary_findings`](Self::vocabulary_findings) and
-    /// [`fixity_findings`](Self::fixity_findings) — the two passes that load
+    /// counterpart, for `prov`'s `vocabulary_findings` and
+    /// `prov`'s `fixity_findings` — the two passes that load
     /// every reachable path and read its frontmatter.
     ///
     /// The listing `is_shadowed_payload` needs is built the same way
-    /// [`orphans`](Self::orphans) builds one: the direct children of every
+    /// `prov`'s `orphans` builds one: the direct children of every
     /// directory the reachable set occupies, so a shadow check costs a set
     /// lookup per candidate extension rather than a stat.
-    pub(crate) async fn reachable_documents(
+    pub async fn reachable_documents(
         &self,
         start: &Path,
         census: &[CensusEntry],
@@ -285,18 +285,28 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
     /// disk — [`reachable_set`] over a fresh walk, filtered to real files.
     ///
     /// This is §8's bounded walk expressed as a *file set* rather than a findings
-    /// list: the same population `check` validates. [`history_capture`] captures
+    /// list: the same population `check` validates. `prov`'s `Workspace::history_capture` captures
     /// it (minus prov's two byte-parking stores) precisely so that an event is a
     /// consistent cut across everything the workspace considers its own.
     ///
-    /// [`history_capture`]: Workspace::history_capture
+    /// `prov`'s `Workspace::history_capture`: `prov`'s `Workspace::history_capture`
     pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
+        self.reachable_files_within(start, &[]).await
+    }
+
+    /// [`reachable_files`](Self::reachable_files), told which directories are
+    /// parked — see [`title_index_scoped`](Self::title_index_scoped).
+    pub async fn reachable_files_within(
+        &self,
+        start: impl AsRef<Path>,
+        parked: &[PathBuf],
+    ) -> Result<BTreeSet<PathBuf>> {
         let start = link::normalize(start);
         let Walk {
             census,
             content_bodies,
             ..
-        } = self.walk(&start).await?;
+        } = self.walk(&start, parked).await?;
         let mut files = BTreeSet::new();
         for path in reachable_set(&start, &census, &content_bodies) {
             if self.fs().try_exists(&self.root().join(&path)).await? {
@@ -315,7 +325,17 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
     /// is read from the documents, it is ground truth: a stored backlink index
     /// heals *toward* the census, never the reverse.
     pub async fn census(&self, start: impl AsRef<Path>) -> Result<Vec<CensusEntry>> {
-        Ok(self.walk(start.as_ref()).await?.census)
+        self.census_within(start, &[]).await
+    }
+
+    /// [`census`](Self::census), told which directories are parked — see
+    /// [`title_index_scoped`](Self::title_index_scoped).
+    pub async fn census_within(
+        &self,
+        start: impl AsRef<Path>,
+        parked: &[PathBuf],
+    ) -> Result<Vec<CensusEntry>> {
+        Ok(self.walk(start.as_ref(), parked).await?.census)
     }
 
     /// The backlink map for the workspace reachable from `start`: every resolved
@@ -327,49 +347,18 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
         &self,
         start: impl AsRef<Path>,
     ) -> Result<BTreeMap<PathBuf, Vec<Backlink>>> {
-        let mut map: BTreeMap<PathBuf, Vec<Backlink>> = BTreeMap::new();
-        for entry in self.census(start).await? {
-            let by_id = matches!(entry.resolution, Resolution::Id { .. });
-            let Some(target) = entry.resolution.resolved_path().cloned() else {
-                continue;
-            };
-            map.entry(target).or_default().push(Backlink {
-                source: entry.source,
-                site: entry.site,
-                by_id,
-            });
-        }
-        for links in map.values_mut() {
-            links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
-        }
-        Ok(map)
+        Ok(invert(self.census(start).await?))
     }
 
     /// The inbound references to a single `target` (workspace-relative) reachable
     /// from `start`, sorted by source. The focused form of
-    /// [`backlinks`](Workspace::backlinks) for "who links here?".
+    /// [`backlinks`](Self::backlinks) for "who links here?".
     pub async fn backlinks_to(
         &self,
         start: impl AsRef<Path>,
         target: impl AsRef<Path>,
     ) -> Result<Vec<Backlink>> {
-        let target = link::normalize(target);
-        let mut links: Vec<Backlink> = self
-            .census(start)
-            .await?
-            .into_iter()
-            .filter(|entry| entry.resolution.resolved_path() == Some(&target))
-            .map(|entry| {
-                let by_id = matches!(entry.resolution, Resolution::Id { .. });
-                Backlink {
-                    source: entry.source,
-                    site: entry.site,
-                    by_id,
-                }
-            })
-            .collect();
-        links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
-        Ok(links)
+        Ok(inbound(self.census(start).await?, target.as_ref()))
     }
 
     /// The shared spanning-tree walk: gathers the forward-link census and the
@@ -378,7 +367,7 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
     /// be spanning and so drive descent, the single-parent check, and the
     /// inverse check; body wikilinks are always overlay references —
     /// censused, never spanning.
-    pub(crate) async fn walk(&self, start: &Path) -> Result<Walk> {
+    pub async fn walk(&self, start: &Path, parked: &[PathBuf]) -> Result<Walk> {
         let mut census = Vec::new();
         let mut structural = Vec::new();
         // Prose bodies reached through a separated node's `content` pointer.
@@ -473,7 +462,7 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
                 // stripped), which is what both the census and findings record.
                 let link = Link::parse(&edge.target);
                 if titles.is_none() && title::is_alias_shaped(&link.target) {
-                    titles = Some(self.title_index_scoped(start).await?);
+                    titles = Some(self.title_index_scoped(start, parked).await?);
                 }
                 let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
 
@@ -502,7 +491,7 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
                                     .iter()
                                     .any(|t| title::is_alias_shaped(&Link::parse(t).target))
                             {
-                                titles = Some(self.title_index_scoped(start).await?);
+                                titles = Some(self.title_index_scoped(start, parked).await?);
                             }
                             let points_back = inverse_targets.iter().any(|t| {
                                 self.resolve_link_with(&resolved, &Link::parse(t), titles.as_ref())
@@ -534,7 +523,7 @@ impl<FS: ReadStorage, IdP, Ix: IdIndex> Workspace<FS, IdP, Ix> {
             for body_link in link::scan_body_links(&path, &doc.body) {
                 let wl = body_link.link;
                 if titles.is_none() && title::is_alias_shaped(&wl.target) {
-                    titles = Some(self.title_index_scoped(start).await?);
+                    titles = Some(self.title_index_scoped(start, parked).await?);
                 }
                 let resolution = self.resolve_forward(&path, &wl, titles.as_ref()).await;
                 census.push(CensusEntry {
@@ -696,6 +685,8 @@ mod tests {
     use super::*;
     use crate::exec::block_on;
     use crate::fs::StdFs;
+    use crate::graph::ReadSettings;
+    use crate::index::NoIndex;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -719,7 +710,7 @@ mod tests {
             "---\ncontents:\n- a.md\n---\nBody links [[a.md]] and [[gone.md]].\n",
         );
         write(&dir, "a.md", "---\npart_of: index.md\n---\n");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let census = block_on(ws.census("index.md")).unwrap();
 
         // The frontmatter `contents` edge, resolving to the existing file.
@@ -756,7 +747,7 @@ mod tests {
             "b.md",
             "---\npart_of: index.md\nlinks:\n- a.md\n---\nSee [[a.md]] again.\n",
         );
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
 
         // Who links to a.md? index.md (contents), b.md (links), b.md (body).
         let to_a = block_on(ws.backlinks_to("index.md", "a.md")).unwrap();
@@ -783,4 +774,50 @@ mod tests {
         let map = block_on(ws.backlinks("index.md")).unwrap();
         assert_eq!(map[&PathBuf::from("a.md")].len(), 3);
     }
+}
+
+/// Invert a census into a backlink map: every resolved target to the inbound
+/// references that reach it, each target's sorted by source.
+///
+/// A free function over an already-taken census, rather than a method that takes
+/// one, because the caller who has to bound the walk — `prov`, which knows where
+/// it parks its own bytes — has already done the walking. Taking the census as
+/// an argument is what lets the bounded and unbounded callers share this.
+pub fn invert(census: Vec<CensusEntry>) -> BTreeMap<PathBuf, Vec<Backlink>> {
+    let mut map: BTreeMap<PathBuf, Vec<Backlink>> = BTreeMap::new();
+    for entry in census {
+        let by_id = matches!(entry.resolution, Resolution::Id { .. });
+        let Some(target) = entry.resolution.resolved_path().cloned() else {
+            continue;
+        };
+        map.entry(target).or_default().push(Backlink {
+            source: entry.source,
+            site: entry.site,
+            by_id,
+        });
+    }
+    for links in map.values_mut() {
+        links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
+    }
+    map
+}
+
+/// The inbound references to one `target` within an already-taken census,
+/// sorted by source — [`invert`] focused on a single entry.
+pub fn inbound(census: Vec<CensusEntry>, target: &Path) -> Vec<Backlink> {
+    let target = link::normalize(target);
+    let mut links: Vec<Backlink> = census
+        .into_iter()
+        .filter(|entry| entry.resolution.resolved_path() == Some(&target))
+        .map(|entry| {
+            let by_id = matches!(entry.resolution, Resolution::Id { .. });
+            Backlink {
+                source: entry.source,
+                site: entry.site,
+                by_id,
+            }
+        })
+        .collect();
+    links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
+    links
 }

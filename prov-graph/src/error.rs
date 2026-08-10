@@ -55,17 +55,17 @@ pub enum Error {
     /// `..`. prov clamps every I/O to the tree it was pointed at (a link
     /// target is data, and data must never be able to name `/etc/passwd` or a
     /// sibling repo), so such a path is refused rather than followed. See
-    /// [`crate::link::escapes_root`], the guard at [`crate::Workspace`]'s `load`
-    /// and [`crate::ChangeSet::apply`].
+    /// [`crate::link::escapes_root`], the guard at `prov`'s `Workspace`'s `load`
+    /// and `prov`'s `ChangeSet::apply`.
     #[error("path escapes the workspace root: {0}")]
     Escape(PathBuf),
 
-    /// A [`ChangeSet`](crate::ChangeSet) was applied while a previous change's
+    /// A `prov`'s `ChangeSet` was applied while a previous change's
     /// write-ahead journal was still on disk — an earlier mutation was
     /// interrupted (a crash) and never recovered. Landing this set would
     /// overwrite that journal and lose the record needed to complete the
     /// interrupted change, so the apply refuses: run recovery
-    /// ([`crate::journal::recover`], which `prov check` performs) first, then
+    /// (`prov`'s `journal::recover`, which `prov check` performs) first, then
     /// retry.
     #[error(
         "a previous change was interrupted and not yet recovered (found {0}); \
@@ -74,7 +74,7 @@ pub enum Error {
     StaleJournal(PathBuf),
 
     /// A staged write failed *and* the rollback that should have undone it also
-    /// failed — see [`crate::change::ChangeSet::apply`]. The one case where
+    /// failed — see `prov`'s `ChangeSet::apply`. The one case where
     /// prov cannot say what is on disk, so it says exactly that instead of
     /// reporting the original failure as if the workspace were untouched.
     #[error(

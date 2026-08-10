@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::Document;
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::document::Document;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 use super::maintain::{body_sibling, content_target, splice_body};
 
@@ -169,7 +169,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Some(body_from) = content_target(doc, from) else {
             return Ok(None);
         };
-        let opaque = crate::document::is_opaque_payload(&body_from);
+        let opaque = prov_graph::document::is_opaque_payload(&body_from);
         let (body_to, new_ref) = body_sibling(to, &body_from);
         // An *attachment* payload is opaque bytes (an image, a PDF) — never read
         // it as text, and never rewrite it. The bare `rename` carries the bytes;
@@ -215,7 +215,7 @@ struct BodyMove {
 fn rerelativize(
     text: &str,
     doc: &Document,
-    relations: &[crate::relation::Relation],
+    relations: &[prov_graph::relation::Relation],
     from: &Path,
     to: &Path,
 ) -> Result<String> {
@@ -312,7 +312,7 @@ mod tests {
     use super::super::support::*;
     use super::*;
     use crate::identity::Trigger;
-    use crate::index::IdIndex;
+    use prov_graph::index::IdIndex;
 
     #[test]
     fn rename_maintains_parent_children_and_own_links() {
@@ -558,7 +558,7 @@ mod tests {
         let id = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
         let text = read(&dir, "index.md");
         let carrier = Document::parse("index.md", &text).unwrap().carrier;
-        let updated = crate::edit::set_in_text(
+        let updated = prov_graph::edit::set_in_text(
             &text,
             carrier,
             "contents.0",
@@ -868,8 +868,8 @@ mod tests {
         write(&dir, "p1.md", "---\ntitle: P1\npart_of: index.md\n---\n");
 
         let mut w = id_ws(&dir);
-        let a = crate::identity::Id("aaaaaaa".into());
-        let b = crate::identity::Id("bbbbbbb".into());
+        let a = prov_graph::identity::Id("aaaaaaa".into());
+        let b = prov_graph::identity::Id("bbbbbbb".into());
         w.index_mut().register(&a, Path::new("p1.md"));
         // p2.md's file was never created here: an ordinary half-synced state,
         // not a bug — a registry entry naming a path with no file behind it.
@@ -877,7 +877,10 @@ mod tests {
 
         let err = block_on(w.rename(Path::new("p1.md"), Path::new("p2.md"))).unwrap_err();
         assert!(
-            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            matches!(
+                err,
+                Error::Collision(prov_graph::index::Collision::Path { .. })
+            ),
             "{err:?}"
         );
         assert!(

@@ -470,6 +470,7 @@ dependencies = [
  "indexmap",
  "moid",
  "proptest",
+ "prov-graph",
  "thiserror",
  "twig-doc",
 ]
@@ -481,6 +482,18 @@ dependencies = [
  "clap",
  "cliclack",
  "prov",
+]
+
+[[package]]
+name = "prov-graph"
+version = "0.4.0"
+dependencies = [
+ "fig",
+ "indexmap",
+ "moid",
+ "proptest",
+ "thiserror",
+ "twig-doc",
 ]
 
 [[package]]

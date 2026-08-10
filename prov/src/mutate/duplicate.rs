@@ -9,14 +9,14 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, Trigger};
-use crate::index::IndexStore;
-use crate::link;
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
+use prov_graph::meta::Value;
 
 use super::maintain::{body_sibling, content_target};
 

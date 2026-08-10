@@ -35,11 +35,11 @@ use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
 
-use crate::exec::block_on;
-use crate::fs::InMemoryFs;
-use crate::relation::RelationSet;
 use crate::validate::{CheckDiff, Finding};
 use crate::workspace::Workspace;
+use prov_graph::exec::block_on;
+use prov_graph::fs::InMemoryFs;
+use prov_graph::relation::RelationSet;
 
 /// The workspace root, and the start `check` is asked from. No generated op
 /// ever takes it as a subject: renaming or deleting the root is a real thing to
@@ -198,7 +198,7 @@ fn build(fs: &InMemoryFs) -> Workspace<&InMemoryFs> {
 /// map, and a property test that cannot replay its own counterexample is worth
 /// very little.
 fn nodes(ws: &Workspace<&InMemoryFs>) -> Vec<PathBuf> {
-    fn walk(node: &crate::graph::Node, out: &mut Vec<PathBuf>) {
+    fn walk(node: &prov_graph::graph::Node, out: &mut Vec<PathBuf>) {
         out.push(node.path.clone());
         for child in &node.children {
             walk(child, out);

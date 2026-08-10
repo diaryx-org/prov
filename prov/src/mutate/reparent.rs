@@ -11,15 +11,15 @@ use std::path::Path;
 
 use fig::Segment;
 
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::Target;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::Target;
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Move the document at `child` to a different `parent` in the containment
@@ -126,7 +126,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let up = self
             .authored_target(&inverse, &child, &parent, &parent_title, true)
             .await?;
-        let updated = crate::edit::set_in_text(
+        let updated = prov_graph::edit::set_in_text(
             &child_text,
             child_doc.carrier,
             &inverse,

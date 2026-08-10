@@ -5,11 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
+use super::Graph;
 use crate::identity;
 use crate::index::IdIndex;
 use crate::link::{self, IdRef, Link};
 use crate::title::{self, TitleIndex, TitleMatch};
-use crate::workspace::Workspace;
 
 /// The resolution of one link target against a workspace: a path, an ID the
 /// registry does not currently resolve, or an off-workspace reference.
@@ -38,7 +38,7 @@ pub enum Target {
     /// diaryx resolves through its published ARK permalinks.
     ///
     /// A reference qualified with this workspace's own
-    /// [`workspace_id`](Workspace::workspace_id) is **not** foreign: it is
+    /// [`workspace_id`](Graph::workspace_id) is **not** foreign: it is
     /// resolved locally through the registry, so a document carrying one keeps
     /// working when it is copied into the workspace it names.
     Foreign {
@@ -51,7 +51,7 @@ pub enum Target {
     },
 }
 
-impl<FS, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
+impl<FS, Ix: IdIndex> Graph<FS, Ix> {
     /// Resolve `link` (declared in the document at `doc`) to a workspace target,
     /// without nominal (alias) resolution — path and `id:` targets only. Use
     /// [`resolve_link_with`](Self::resolve_link_with) when a [`TitleIndex`] is
@@ -124,22 +124,25 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::identity::Minter;
+    use crate::graph::ReadSettings;
     use crate::index::{InMemoryIndex, IndexStore};
 
     #[derive(Clone)]
     struct DummyFs;
 
-    /// A workspace named `notes` whose registry resolves `ajp7eq`.
-    fn named_ws(name: &str) -> Workspace<DummyFs, Minter, InMemoryIndex> {
+    /// A graph named `notes` whose registry resolves `ajp7eq`.
+    fn named_ws(name: &str) -> Graph<DummyFs, InMemoryIndex> {
         let mut index = InMemoryIndex::new();
         index.register(&identity::Id("ajp7eq".into()), Path::new("note.md"));
-        Workspace::builder(DummyFs)
-            .root("vault")
-            .identity(Minter::lazy(1))
-            .index(index)
-            .workspace_id(name)
-            .build()
+        Graph::new(
+            DummyFs,
+            "vault",
+            index,
+            ReadSettings {
+                workspace_id: name.to_string(),
+                ..ReadSettings::default()
+            },
+        )
     }
 
     #[test]

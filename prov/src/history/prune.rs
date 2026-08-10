@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::index::IndexStore;
-use crate::link;
 use crate::workspace::Workspace;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
 
 use super::EVENTS_DIR;
 use super::docs::*;
@@ -216,8 +216,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::exec::block_on;
     use crate::validate::Finding;
+    use prov_graph::exec::block_on;
 
     /// Plan and run a prune, the sequence the CLI performs.
     fn prune(dir: &Path, retention: &Retention) -> Pruned {

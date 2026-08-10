@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
-use crate::fs::Storage;
-use crate::index::IndexStore;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
+use prov_graph::error::Result;
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
 
 use super::docs::*;
 use super::layout::*;
@@ -287,7 +287,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         index: &Path,
         expected_text: &str,
     ) -> Result<()> {
-        let expected = match crate::document::Document::parse(index, expected_text) {
+        let expected = match prov_graph::document::Document::parse(index, expected_text) {
             Ok(doc) => index_entries(index, &doc.meta),
             Err(_) => Vec::new(),
         };
@@ -317,7 +317,7 @@ mod tests {
     use super::super::model::Captured;
     use super::super::support::*;
     use super::*;
-    use crate::exec::block_on;
+    use prov_graph::exec::block_on;
 
     /// A shard index is titled `"{Month} {Year}"`, which in a journal is an
     /// entirely ordinary thing for a person to have called a note. Before the

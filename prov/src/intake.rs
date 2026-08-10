@@ -22,13 +22,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::document::MetaCarrier;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link;
 use crate::workspace::Workspace;
+use prov_graph::document::MetaCarrier;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
 
 /// A plan to fold a directory tree into the containment tree — the `mirror`
 /// strategy from `docs/init-adoption.md`. Produced by [`Workspace::plan_mirror`]
@@ -263,8 +263,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);

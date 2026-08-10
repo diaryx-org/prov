@@ -225,9 +225,9 @@ impl RelationSet {
     /// keep whatever style they already carry (usually none → the workspace
     /// default). Names in `styles` with no matching relation are ignored. This is
     /// how a workspace's vocabulary picks up the `relations` block of its config
-    /// document (see [`WorkspaceConfig::resolved_relation_styles`]).
+    /// document (see `prov`'s `WorkspaceConfig::resolved_relation_styles`).
     ///
-    /// [`WorkspaceConfig::resolved_relation_styles`]: crate::config::WorkspaceConfig::resolved_relation_styles
+    /// `prov`'s `WorkspaceConfig::resolved_relation_styles`: `prov`'s `WorkspaceConfig::resolved_relation_styles`
     pub fn with_styles(
         mut self,
         styles: &std::collections::BTreeMap<String, ReferenceStyle>,

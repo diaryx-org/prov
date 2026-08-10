@@ -10,15 +10,15 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::{MetaCarrier, whole_file_format};
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, Trigger};
-use crate::index::IndexStore;
-use crate::link;
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::document::{MetaCarrier, whole_file_format};
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
+use prov_graph::meta::Value;
 
 /// The files [`Workspace::create`] wrote. Under a combined parent this is just
 /// the one document; under a **separated** parent it is the pair — the metadata
@@ -108,7 +108,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 None => match parent_doc.carrier {
                     Some(MetaCarrier::WholeFile(format)) if parent_doc.content_attr().is_some() => {
                         let node =
-                            path.with_extension(crate::document::whole_file_extension(format));
+                            path.with_extension(prov_graph::document::whole_file_extension(format));
                         (node, MetaCarrier::WholeFile(format), Some(path.clone()))
                     }
                     Some(MetaCarrier::Fenced(kind)) => {
@@ -116,7 +116,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     }
                     _ => (
                         path.clone(),
-                        crate::document::frontmatter_carrier(self.default_embed_format()),
+                        prov_graph::document::frontmatter_carrier(self.default_embed_format()),
                         None,
                     ),
                 },
@@ -196,14 +196,14 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .and_then(|n| n.to_str())
                     .unwrap_or_default()
                     .to_string();
-                let mut map = crate::meta::Mapping::new();
+                let mut map = prov_graph::meta::Mapping::new();
                 map.insert("title".into(), Value::String(title));
                 if let Some(id) = &stamp {
                     map.insert("id".into(), Value::String(id.0.clone()));
                 }
                 map.insert(inverse.clone(), Value::String(up));
                 map.insert("content".into(), Value::String(body_ref));
-                crate::meta::serialize_mapping(&map, *format)?
+                prov_graph::meta::serialize_mapping(&map, *format)?
             }
             _ => {
                 let mut new_doc = MetaEditor::open_or_init("", Some(node_carrier))?;
@@ -246,8 +246,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::index::IdIndex;
-    use crate::link::LinkStyle;
+    use prov_graph::index::IdIndex;
+    use prov_graph::link::LinkStyle;
 
     // Exercises inheritance of a `fig`-dialect parent block, so it needs that
     // backend on top of the module-wide `yaml` gate.
@@ -454,8 +454,8 @@ mod tests {
 
     #[test]
     fn create_authors_up_and_down_in_different_relation_styles() {
-        use crate::link::{Addressing, ReferenceStyle, Wrapper};
-        use crate::relation::{Relation, RelationSet};
+        use prov_graph::link::{Addressing, ReferenceStyle, Wrapper};
+        use prov_graph::relation::{Relation, RelationSet};
 
         // Down (`contents`) reads like a TOC — an alias wikilink. Up (`part_of`)
         // is durable bookkeeping — a bare markdown id link. Two relations, two
@@ -552,7 +552,7 @@ mod tests {
         // and spaces the stem cannot carry), and the parent's entry label follows.
         let dir = tempdir("create-title");
         write(&dir, "index.md", "---\ntitle: Root\n---\n");
-        let stem = crate::link::slug("My Great Note");
+        let stem = prov_graph::link::slug("My Great Note");
         assert_eq!(stem, "my-great-note");
         let path = PathBuf::from(format!("{stem}.md"));
 
@@ -596,7 +596,7 @@ mod tests {
             .index()
             .id_for_path(Path::new("a.md"))
             .expect("registered at birth");
-        assert!(crate::identity::verify(id.as_str()));
+        assert!(prov_graph::identity::verify(id.as_str()));
     }
 
     #[test]
@@ -731,7 +731,7 @@ mod tests {
 
         // Exactly what an op that bailed after minting would leave behind.
         w.index_mut().checkpoint();
-        let ghost = crate::identity::Id("ghostid".into());
+        let ghost = prov_graph::identity::Id("ghostid".into());
         w.index_mut()
             .register(&ghost, Path::new("never-written.md"));
         assert!(w.index().is_dirty(), "the abandoned op dirtied the store");

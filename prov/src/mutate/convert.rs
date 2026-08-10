@@ -1,6 +1,6 @@
 //! `convert` — the re-spellings that move no document.
 //!
-//! Three axes, one discipline: a link's [`LinkStyle`](crate::link::LinkStyle),
+//! Three axes, one discipline: a link's [`LinkStyle`](prov_graph::link::LinkStyle),
 //! the metadata block's frontmatter *language*, and its *embedding shape*. Each
 //! is per-file by default (DESIGN §8) — how a document spells its own links and
 //! metadata is its own to declare, so a workspace may sit in a mixed style and
@@ -11,15 +11,15 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::{Document, EmbedStyle, MetaCarrier};
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::document::{Document, EmbedStyle, MetaCarrier};
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 use super::maintain::splice_body;
 
@@ -39,7 +39,7 @@ enum ReformatAxis {
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Convert the **path-form** links the document at `file` declares into
     /// `style` — re-spelling each relative/absolute path target in the target
-    /// [`LinkStyle`](crate::link::LinkStyle) (root `/a`, relative `../a`, or bare
+    /// [`LinkStyle`](prov_graph::link::LinkStyle) (root `/a`, relative `../a`, or bare
     /// canonical `a`) while its resolved destination, label, and wrapper stay
     /// exactly the same. Id-form, external, and nominal (alias) targets are left
     /// untouched — `style` governs only how a *path* is written. Both frontmatter
@@ -54,7 +54,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     pub async fn convert_link_style(
         &mut self,
         file: &Path,
-        style: crate::link::LinkStyle,
+        style: prov_graph::link::LinkStyle,
         recursive: bool,
     ) -> Result<Vec<PathBuf>> {
         let file = link::normalize(file);
@@ -180,7 +180,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// than a silent skip.
     ///
     /// The two axes converge on the same reconstruction: resolve a target
-    /// [`EmbedType`](crate::document::EmbedType) from the document's `(style, format)`
+    /// [`EmbedType`](prov_graph::document::EmbedType) from the document's `(style, format)`
     /// pair with one coordinate replaced, then re-emit the block in it. `Format`
     /// replaces the format and keeps the current style; `Embed` replaces the style
     /// and keeps the current format.
@@ -216,10 +216,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 if kind.inner_format() == format {
                     return Ok(None);
                 }
-                (crate::document::embed_style_of(kind), format)
+                (prov_graph::document::embed_style_of(kind), format)
             }
             ReformatAxis::Embed(style) => {
-                if crate::document::embed_style_of(kind) == style {
+                if prov_graph::document::embed_style_of(kind) == style {
                     return Ok(None);
                 }
                 // `separate` is a whole-file sidecar, not a fenced shape — the same
@@ -234,7 +234,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 (style, kind.inner_format())
             }
         };
-        let target = match crate::document::embed_carrier(style, format) {
+        let target = match prov_graph::document::embed_carrier(style, format) {
             Some(MetaCarrier::Fenced(target)) => target,
             // The only `(style, format)` with no fenced archetype is
             // `delimited` + fig — the fig dialect has no `---`-style delimiter. A
@@ -251,7 +251,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 )));
             }
         };
-        Ok(Some(crate::edit::reformat_block(
+        Ok(Some(prov_graph::edit::reformat_block(
             &doc.body, mapping, target,
         )?))
     }
@@ -264,7 +264,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn restyle_document(
         &self,
         path: &Path,
-        style: crate::link::LinkStyle,
+        style: prov_graph::link::LinkStyle,
     ) -> Result<Option<String>> {
         let (text, doc) = self.load(path).await?;
         let meta_rewritten =
@@ -285,9 +285,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 fn restyle_frontmatter_links(
     text: &str,
     doc: &Document,
-    relations: &[crate::relation::Relation],
+    relations: &[prov_graph::relation::Relation],
     file: &Path,
-    style: crate::link::LinkStyle,
+    style: prov_graph::link::LinkStyle,
 ) -> Result<String> {
     let Some(carrier) = doc.carrier else {
         return Ok(text.to_string()); // no metadata: nothing to restyle
@@ -295,7 +295,7 @@ fn restyle_frontmatter_links(
     let mut editor = MetaEditor::open(text, carrier)?;
     let restyle = |raw: &str| -> Option<String> {
         let link = Link::parse(raw);
-        if !link.is_path_target() || crate::title::is_alias_shaped(&link.target) {
+        if !link.is_path_target() || prov_graph::title::is_alias_shaped(&link.target) {
             return None;
         }
         let resolved = link::resolve(file, &link.target);
@@ -342,7 +342,7 @@ fn restyle_body_links(
     text: &str,
     body: &str,
     file: &Path,
-    style: crate::link::LinkStyle,
+    style: prov_graph::link::LinkStyle,
 ) -> String {
     if body.is_empty() {
         return text.to_string();
@@ -351,7 +351,7 @@ fn restyle_body_links(
     let mut cursor = 0;
     let mut rewrote = false;
     for bl in link::scan_body_links(file, body) {
-        if !bl.is_path_target() || crate::title::is_alias_shaped(&bl.link.target) {
+        if !bl.is_path_target() || prov_graph::title::is_alias_shaped(&bl.link.target) {
             continue;
         }
         let resolved = link::resolve(file, &bl.link.target);
@@ -375,7 +375,7 @@ fn restyle_body_links(
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::link::LinkStyle;
+    use prov_graph::link::LinkStyle;
 
     #[test]
     fn convert_restyles_one_files_links_leaving_the_rest_alone() {

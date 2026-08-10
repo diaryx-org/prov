@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::change::ChangeSet;
-use crate::content::transcode;
-use crate::error::Result;
-use crate::fs::Storage;
-use crate::index::IndexStore;
-use crate::link;
-use crate::meta::{Mapping, Value};
 use crate::workspace::Workspace;
+use prov_graph::content::transcode;
+use prov_graph::error::Result;
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
+use prov_graph::meta::{Mapping, Value};
 
 use super::docs::*;
 use super::event_id::*;
@@ -241,7 +241,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .describe()
         );
         let event_text =
-            crate::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
+            prov_graph::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
 
         drop(scope);
         let mut cs = self.change();
@@ -376,8 +376,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::exec::block_on;
     use crate::validate::Finding;
+    use prov_graph::exec::block_on;
 
     /// The event document's **bytes**, pinned whole.
     ///
@@ -482,7 +482,7 @@ mod tests {
         );
         let mut w = ws_authoring(
             &dir,
-            crate::document::EmbedStyle::HtmlScript,
+            prov_graph::document::EmbedStyle::HtmlScript,
             fig::Format::Json,
         );
         let Captured::Written { id, .. } = block_on(w.history_capture(

@@ -91,7 +91,7 @@ fn parse(body: &str, format: ContentFormat) -> crate::error::Result<twig::Docume
 /// Transcode Markdown source into `format`.
 ///
 /// The one move behind every page prov *authors* rather than reads. Generated
-/// prose — [`crate::about`]'s page, the history store's index and event bodies —
+/// prose — `prov`'s `about`'s page, the history store's index and event bodies —
 /// is written as Markdown in the Rust source, where it is legible to whoever
 /// maintains it, and converted here to whatever grammar the workspace actually
 /// uses. Without this, an HTML workspace ends up holding `.html` files whose
@@ -133,7 +133,7 @@ const CODE_KINDS: [&str; 4] = ["verbatim", "code_block", "raw_inline", "raw_bloc
 /// fenced code blocks, raw inline/block escapes) — everything a link scan
 /// should treat as opaque. Built from `twig`'s generic query API
 /// (`twig_document_query`) by selecting each code-bearing node kind
-/// ([`CODE_KINDS`]) and taking its whole span; see
+/// (`CODE_KINDS`) and taking its whole span; see
 /// [`crate::link::scan_wikilinks`]. Spans are returned sorted by start offset.
 pub fn code_spans(
     body: &str,

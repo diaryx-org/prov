@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::identity::Id;
-use crate::index::Collision;
+use prov_graph::identity::Id;
+use prov_graph::index::Collision;
 
 use super::event_id::*;
 use super::paths::*;
@@ -404,7 +404,7 @@ pub struct Latest {
 /// [`history_store_bytes`](crate::Workspace::history_store_bytes) answers that
 /// separately, and says in its own name that it is the expensive one.
 ///
-/// [`DirEntry`]: crate::fs::DirEntry
+/// [`DirEntry`]: prov_graph::fs::DirEntry
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Summary {
     /// Whether a store was found at all — declared by the root, or sitting at

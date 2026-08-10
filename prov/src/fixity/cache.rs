@@ -66,7 +66,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use crate::fs::Metadata;
+use prov_graph::fs::Metadata;
 
 /// Identifies the format, so a file written by another program is refused
 /// rather than misread.
@@ -321,7 +321,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fs::FileType;
+    use prov_graph::fs::FileType;
     use std::time::Duration;
 
     fn meta(secs: u64, len: u64) -> Metadata {

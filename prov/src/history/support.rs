@@ -10,10 +10,11 @@ use crate::workspace::Workspace;
 
 // Re-exported so each verb's `mod tests` can pull the whole fixture surface —
 // helpers and the concrete workspace types they hand back — from one glob.
-pub(super) use crate::exec::block_on;
-pub(super) use crate::fs::{CountingFs, StdFs};
+pub(super) use crate::fs_faults::CountingFs;
 pub(super) use crate::identity::{Id, Minter};
-pub(super) use crate::index::FileIndex;
+pub(super) use prov_graph::exec::block_on;
+pub(super) use prov_graph::fs::StdFs;
+pub(super) use prov_graph::index::FileIndex;
 
 pub(super) fn tempdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("prov-history-{tag}-{}", std::process::id()));
@@ -60,7 +61,7 @@ pub(super) fn ws_history_off(dir: &Path) -> Workspace<StdFs, Minter, FileIndex> 
 /// writes an `index.html` root rather than passing a format here.
 pub(super) fn ws_authoring(
     dir: &Path,
-    style: crate::document::EmbedStyle,
+    style: prov_graph::document::EmbedStyle,
     format: fig::Format,
 ) -> Workspace<StdFs, Minter, FileIndex> {
     Workspace::builder(StdFs)

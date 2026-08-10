@@ -10,12 +10,12 @@
 
 use std::path::Path;
 
-use crate::error::Result;
-use crate::fs::Storage;
-use crate::index::IndexStore;
-use crate::link;
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::error::Result;
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
+use prov_graph::meta::Value;
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Record that a document's content just changed — the single seam for the
@@ -81,9 +81,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // have come from a document's own metadata, and this call reaches the
         // filesystem without `load` in front of it to refuse an escape.
         if link::escapes_root(&path) {
-            return Err(crate::error::Error::Escape(path));
+            return Err(prov_graph::error::Error::Escape(path));
         }
-        let doc = crate::document::Document::parse(&path, text)?;
+        let doc = prov_graph::document::Document::parse(&path, text)?;
         let stamped = self.stamped(&path, text, &doc, updated).await?;
         let mut cs = self.change();
         // No stamp applying is not "nothing to do" here, the way it is for
@@ -104,7 +104,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         &self,
         path: &Path,
         text: &str,
-        doc: &crate::document::Document,
+        doc: &prov_graph::document::Document,
         updated: Option<(&str, &str)>,
     ) -> Result<Option<String>> {
         // Fixity: does this document's kind get hashed, and has it drifted?
@@ -132,7 +132,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut text = text.to_string();
         let mut stamped = false;
         if let Some(hash) = new_hash {
-            text = crate::edit::set_in_text(
+            text = prov_graph::edit::set_in_text(
                 &text,
                 doc.carrier,
                 "content_hash",
@@ -143,7 +143,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let Some((field, at)) = updated
             && !field.is_empty()
         {
-            text = crate::edit::set_in_text(
+            text = prov_graph::edit::set_in_text(
                 &text,
                 doc.carrier,
                 field,
@@ -381,7 +381,10 @@ mod tests {
         let err = block_on(w.save_document("../escape.md", "---\ntitle: X\n---\n", None))
             .expect_err("an escaping path must be refused");
 
-        assert!(matches!(err, crate::error::Error::Escape(_)), "{err:?}");
+        assert!(
+            matches!(err, prov_graph::error::Error::Escape(_)),
+            "{err:?}"
+        );
         assert!(!dir.parent().unwrap().join("escape.md").exists());
     }
 

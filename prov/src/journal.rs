@@ -66,8 +66,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::change::FileOp;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
 
 /// The workspace-root-relative name of the journal file. A single transient
 /// dotfile: it exists only between a change set's commit point and its
@@ -355,8 +355,8 @@ fn fnv1a(data: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-journal-{name}-{}", std::process::id()));

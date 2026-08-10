@@ -1,0 +1,44 @@
+[package]
+name = "prov-graph"
+description = "The read core of a prov workspace: documents, links, and the traversal over them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+# Embedded-metadata backend. See the workspace manifest for why the version
+# floor is where it is. Which format backends fig compiles in is governed by
+# this crate's features below, which `prov` forwards to.
+fig.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true
+
+# Opaque document-ID *verification* — the alphabet and check-character
+# arithmetic needed to say whether a string is a well-formed id. Minting (the
+# seeded PRNG, the retry-on-collision policy) is a write concern and stays in
+# `prov`; this crate only ever reads an id someone else issued.
+moid.workspace = true
+
+# Body-prose parsing (Djot/Markdown). Zig-backed (its build.rs runs `zig
+# build`), so building this crate needs the Zig toolchain. Required, not
+# optional: the census scans body `[[wikilinks]]`, and doing that correctly
+# means parsing the body well enough to know which spans are code.
+twig-doc.workspace = true
+
+[dev-dependencies]
+# Property-based testing. The laws this crate carries — `resolve ∘ format = id`,
+# the id↔path bijection — are already written down in prose, and an example test
+# can only witness one input per law. Dev-only, so it costs a downstream
+# consumer nothing.
+proptest = "1"
+
+[features]
+default = ["yaml"]
+yaml = ["fig/yaml"]
+json = ["fig/json"]
+toml = ["fig/toml"]
+fig-lang = ["fig/fig"]

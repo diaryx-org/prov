@@ -37,17 +37,17 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::content::ContentFormat;
-use crate::document::MetaCarrier;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::Target;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
 use crate::intake::SynthNode;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::content::ContentFormat;
+use prov_graph::document::MetaCarrier;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::Target;
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 /// Where a route's *synthesized* nodes are written on disk.
 ///
@@ -166,7 +166,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// worse than addressing that misses.
     ///
     /// Two children sharing a title is an error, not a coin-flip: it is the same
-    /// unresolvable ambiguity [`NodeKind::AmbiguousAlias`](crate::graph::NodeKind)
+    /// unresolvable ambiguity [`NodeKind::AmbiguousAlias`](prov_graph::graph::NodeKind)
     /// marks in a walk and [`Finding::AmbiguousAlias`](crate::validate::Finding)
     /// reports in a check.
     async fn child_titled(&self, parent: &Path, segment: &str) -> Result<Option<PathBuf>> {
@@ -456,8 +456,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);

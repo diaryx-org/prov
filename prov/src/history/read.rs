@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::document::MetaCarrier;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::index::IndexStore;
 use crate::workspace::Workspace;
+use prov_graph::document::MetaCarrier;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
 
 use super::docs::*;
 use super::event_id::*;
@@ -43,9 +43,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// failing the capture over a presentational choice.
     pub(super) fn history_embed(&self) -> Result<fig::EmbedType> {
         let format = self.default_embed_format();
-        let carrier = crate::document::embed_carrier(self.embed_style(), format)
+        let carrier = prov_graph::document::embed_carrier(self.embed_style(), format)
             .filter(|c| matches!(c, MetaCarrier::Fenced(_)))
-            .unwrap_or_else(|| crate::document::frontmatter_carrier(format));
+            .unwrap_or_else(|| prov_graph::document::frontmatter_carrier(format));
         match carrier {
             MetaCarrier::Fenced(embed) => Ok(embed),
             // `frontmatter_carrier` only ever returns a fenced archetype.
@@ -252,7 +252,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// blob, every index.
     ///
     /// Separate from [`history_summary`](Self::history_summary), and expensive in
-    /// the way that one is not: a [`DirEntry`](crate::fs::DirEntry) carries no
+    /// the way that one is not: a [`DirEntry`](prov_graph::fs::DirEntry) carries no
     /// length, so this is one `metadata` call per file in the store. Over a
     /// file-provider backend that is a per-file round trip, so it belongs behind
     /// a screen a person opened on purpose — not on a path that runs at every
@@ -501,7 +501,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::exec::block_on;
+    use prov_graph::exec::block_on;
 
     /// The summary's whole contract: the same answer `history_list` gives, for
     /// the price of a listing. A store with no events at all is the boundary

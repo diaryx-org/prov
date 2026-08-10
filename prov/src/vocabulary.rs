@@ -17,8 +17,8 @@
 use std::collections::BTreeMap;
 
 use crate::config::OpenClosed;
-use crate::identity::Id;
-use crate::meta::Value;
+use prov_graph::identity::Id;
+use prov_graph::meta::Value;
 
 /// A single term in a vocabulary. prov reads only the three fields here; any
 /// other keys on the term entry are carried, not interpreted.
@@ -119,7 +119,7 @@ impl Vocabulary {
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::document::Document;
+    use prov_graph::document::Document;
 
     fn vocab(text: &str) -> Vocabulary {
         let doc = Document::parse("vocab/audiences.yaml", text).unwrap();

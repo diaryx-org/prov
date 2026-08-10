@@ -10,15 +10,15 @@ use std::path::Path;
 
 use fig::Segment;
 
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::graph::Target;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::graph::Target;
+use prov_graph::index::IndexStore;
+use prov_graph::link::{self, Link};
+use prov_graph::meta::Value;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Adopt an existing document at `child` as a spanning child of `parent`,
@@ -104,7 +104,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let up = self
                 .authored_target(&inverse, &child, &parent, &parent_title, true)
                 .await?;
-            let updated = crate::edit::set_in_text(
+            let updated = prov_graph::edit::set_in_text(
                 &child_text,
                 child_doc.carrier,
                 &inverse,
@@ -138,7 +138,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::link::LinkStyle;
+    use prov_graph::link::LinkStyle;
 
     #[test]
     fn adopt_links_an_existing_document_both_ways_preserving_its_body() {

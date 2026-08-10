@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::index::{Collision, IndexStore};
-use crate::link;
 use crate::workspace::Workspace;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::{Collision, IndexStore};
+use prov_graph::link;
 
 use super::layout::*;
 use super::model::*;
@@ -390,7 +390,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::exec::block_on;
+    use prov_graph::exec::block_on;
 
     #[test]
     fn a_captured_workspace_goes_back_from_its_blobs_without_a_journal_its_size() {

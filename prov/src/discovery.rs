@@ -4,7 +4,7 @@
 //! found, not configured: walk up from a starting directory and the first
 //! directory holding a **root document** — one with metadata and no `part_of`
 //! (nothing contains it) — is the workspace root. This is the counterpart to the
-//! traversal in [`crate::graph::tree`]: that walk goes *down* the spanning tree from a
+//! traversal in [`prov_graph::graph::tree`]: that walk goes *down* the spanning tree from a
 //! known root; this one goes *up* the filesystem to locate the root in the first
 //! place.
 //!
@@ -19,11 +19,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::{ROOT_CONFIG_KEY, WorkspaceConfig};
-use crate::content::ContentFormat;
-use crate::document::{self, Document};
-use crate::error::Result;
-use crate::fs::Storage;
 use crate::workspace::Workspace;
+use prov_graph::content::ContentFormat;
+use prov_graph::document::{self, Document};
+use prov_graph::error::Result;
+use prov_graph::fs::Storage;
 
 /// A located workspace: where the root directory is, which document in it is the
 /// root, the registry that root declares (if any), and the effective config
@@ -176,8 +176,8 @@ async fn build<FS: Storage + Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-discover-{name}-{}", std::process::id()));

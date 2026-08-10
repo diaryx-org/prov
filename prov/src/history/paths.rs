@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::identity::Id;
+use prov_graph::identity::Id;
 
 use super::model::*;
 

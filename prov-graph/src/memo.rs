@@ -19,12 +19,12 @@
 //! bounded by an *operation* barely has to be: nothing outside prov can write
 //! to the workspace between two of `check`'s sub-passes in any sense prov could
 //! have detected anyway, and everything inside prov that writes goes through
-//! [`ChangeSet`](crate::change::ChangeSet), which forgets what it touched
+//! `prov`'s `ChangeSet`, which forgets what it touched
 //! ([`Workspace::commit`]). There is no staleness window left that a stat could
 //! have closed and this cannot.
 //!
 //! The scope is explicit — a caller opens one with
-//! [`Workspace::read_scope`] and holds the guard — because a memo that switched
+//! [`Graph::read_scope`](crate::graph::Graph::read_scope) and holds the guard — because a memo that switched
 //! itself on would be a cache again, and because the caller is the only one who
 //! knows where its operation begins. Scopes nest: an operation that opens one
 //! and then calls another that opens its own gets a single memo lasting the
@@ -38,9 +38,9 @@
 //! on a path prov already knows is trouble, and the alternative is a memo that
 //! can report a file absent after it appeared.
 //!
-//! [`check`]: crate::Workspace::check
-//! [`load`]: crate::Workspace::load
-//! [`Workspace::commit`]: crate::Workspace
+//! [`check`]: https://docs.rs/prov
+//! [`load`]: crate::graph::Graph::load
+//! [`Workspace::commit`]: https://docs.rs/prov
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -60,7 +60,7 @@ use crate::document::Document;
 /// `apply` and `discover` from a multi-threaded runtime), which needs the
 /// workspace itself to be `Sync`, which a `RefCell` is not. No guard is ever
 /// held across an `.await`.
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -78,7 +78,7 @@ const MAX_DOCUMENT: usize = 1024 * 1024;
 
 /// What one operation has already read.
 #[derive(Debug, Default)]
-pub(crate) struct ReadMemo {
+pub struct ReadMemo {
     /// Scope nesting depth. Nothing is remembered outside a scope, and the
     /// outermost exit is what clears it.
     depth: usize,
@@ -122,7 +122,7 @@ impl ReadMemo {
     }
 
     /// Forget `path` — what a write to it means.
-    pub(crate) fn forget(&mut self, path: &Path) {
+    pub fn forget(&mut self, path: &Path) {
         if let Some((text, _)) = self.docs.remove(path) {
             self.bytes -= text.len();
         }
@@ -143,9 +143,17 @@ impl ReadMemo {
 /// An open read scope. Hold it for the operation; dropping it leaves the scope,
 /// and dropping the outermost one drops everything the operation remembered.
 ///
-/// Obtained from [`Workspace::read_scope`](crate::Workspace::read_scope).
+/// Obtained from [`Graph::read_scope`](crate::graph::Graph::read_scope)(crate::graph::Graph::read_scope).
 #[must_use = "a read scope ends the moment its guard is dropped"]
 pub struct ReadScope<'a>(pub(crate) &'a Mutex<ReadMemo>);
+
+impl<'a> ReadScope<'a> {
+    /// Enter the scope guarded by `memo`.
+    pub(crate) fn open(memo: &'a Mutex<ReadMemo>) -> Self {
+        lock(memo).enter();
+        ReadScope(memo)
+    }
+}
 
 impl Drop for ReadScope<'_> {
     fn drop(&mut self) {

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
+use prov_graph::error::{Error, Result};
 
 use super::{BLOBS_DIR, EVENTS_DIR, HISTORY_DIR};
 

@@ -1,0 +1,97 @@
+//! # prov-graph
+//!
+//! The read core of a [prov](https://docs.rs/prov) workspace: plaintext
+//! documents, the links declared in their own embedded metadata, and the
+//! traversal over them.
+//!
+//! ## What this crate is for
+//!
+//! A prov workspace describes itself. Follow the links in a document's
+//! frontmatter and body and the whole structure unfolds — no index to trust
+//! instead of the documents, no sidecar folder that has to be kept in step.
+//! This crate is that unfolding, and *only* that.
+//!
+//! Everything here reads. The filesystem port it asks for
+//! ([`fs::ReadStorage`]) has no method that writes a byte; the id index it asks
+//! for ([`index::IdIndex`]) has no method that changes a registration. So a
+//! consumer that must not modify a workspace — a language server, a static
+//! renderer, a browser viewer — can depend on this crate and be *unable* to,
+//! rather than merely intending not to. That is the whole reason the split
+//! exists.
+//!
+//! The verbs live in `prov`: creating, renaming, deleting, attaching, the
+//! change/journal machinery that makes a mutation crash-atomic, the version
+//! history, the config layer, the validation and repair passes. `prov` owns one
+//! [`Graph`] and forwards every read to it, so the two are the same traversal —
+//! not a reimplementation that can drift.
+//!
+//! ## The shape of it
+//!
+//! - [`Document`] — a plaintext file split into its embedded metadata block and
+//!   its body.
+//! - [`relation::RelationSet`] — which metadata fields are links. Exactly one
+//!   may be **spanning**: the single-parent tree that gives a workspace its
+//!   discovery spine. Every other relation may be many-to-many, so the tree is a
+//!   backbone, never a ceiling.
+//! - [`Graph`] — a root, a [`fs::ReadStorage`], an [`index::IdIndex`], and the
+//!   [`graph::ReadSettings`] that say how links are spelled. Its two walks are
+//!   the [`census`](Graph::census) (every forward link, flat, each tagged with
+//!   where it is written and how it resolves) and the [`tree`](Graph::tree)
+//!   (the spanning relation only, as a materialized outline).
+//!
+//! The census is ground truth. Reachability, the backlinks map, and prov's own
+//! validation findings are all views over it, and any stored index heals
+//! *toward* it, never the reverse.
+
+// At least one embedded-metadata format backend must be compiled in, otherwise
+// nothing here can parse a document at all. The format features (`yaml`,
+// `json`, `fig-lang`) forward to the matching `fig` parser.
+#[cfg(not(any(feature = "yaml", feature = "json", feature = "fig-lang")))]
+compile_error!(
+    "prov-graph needs at least one metadata-format feature enabled: \
+     `yaml` (the default), `json`, or `fig-lang`. \
+     You have disabled the default feature without selecting a replacement."
+);
+
+pub mod content;
+pub mod document;
+pub mod edit;
+pub mod error;
+pub mod exec;
+pub mod fs;
+pub mod graph;
+pub mod identity;
+pub mod index;
+pub mod link;
+pub mod memo;
+pub mod meta;
+pub mod relation;
+pub mod title;
+
+pub use content::{ContentFormat, code_spans, render_html};
+pub use document::{
+    Document, EmbedStyle, EmbedType, MetaCarrier, embed_carrier, embed_style_of, is_opaque_payload,
+    require_whole_file,
+};
+pub use error::{Error, Result};
+pub use exec::block_on;
+pub use fig::ExtKind;
+pub use fig::Format;
+pub use fs::{
+    Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, ReadStorage, StdFs,
+    Storage, SyncGuarantee,
+};
+pub use graph::{
+    Backlink, CensusEntry, Graph, LinkSite, Node, NodeKind, ReadSettings, Resolution,
+    StructuralFact, Target, TreeOptions, Walk, reachable_set,
+};
+pub use identity::{Id, IdStorage};
+pub use index::{Collision, FileIndex, IdIndex, InMemoryIndex, IndexStore, NoIndex, Rebase};
+pub use link::{
+    Addressing, BodyLink, Link, LinkStyle, Notation, PathStyle, ReferenceStyle, Wikilink, Wrapper,
+    escapes_root, format_link, path_to_title,
+};
+pub use memo::ReadScope;
+pub use meta::{Mapping, Value};
+pub use relation::{Cardinality, Edge, Relation, RelationSet};
+pub use title::{TitleIndex, TitleMatch};

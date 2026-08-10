@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Error, Result};
-use crate::fs::Storage;
-use crate::index::IndexStore;
-use crate::link;
 use crate::workspace::Workspace;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
 
 use super::docs::*;
 use super::layout::*;
@@ -34,7 +34,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 }
             }
         }
-        let ext = crate::document::whole_file_extension(self.default_embed_format());
+        let ext = prov_graph::document::whole_file_extension(self.default_embed_format());
         Ok((dir.join(format!("{FORGOTTEN_STEM}.{ext}")), false))
     }
 
@@ -281,8 +281,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::exec::block_on;
     use crate::validate::Finding;
+    use prov_graph::exec::block_on;
 
     fn forget(dir: &Path, subject: &Subject, now: &str, force: bool) -> Result<Forgotten> {
         block_on(ws(dir).history_forget(Path::new("index.md"), subject, now, force))

@@ -18,19 +18,19 @@
 //! both would mean threading two different revisit policies through a single
 //! traversal, which is more machinery than two short, separately-readable
 //! walks. They stay side by side in `graph` because they walk the same edges
-//! from the same [`Workspace`](crate::workspace::Workspace), not because they
+//! from the same [`Graph`], not because they
 //! share a shape.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+use super::Graph;
 use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::index::IdIndex;
 use crate::link::{self, Link};
 use crate::meta::Value;
-use crate::workspace::Workspace;
 
 use super::Target;
 
@@ -56,7 +56,7 @@ pub enum NodeKind {
     ///
     /// A leaf, always: the tree is *this* workspace's spanning walk, and prov
     /// has no map from a workspace name to a location to follow (see
-    /// [`Target::Foreign`](crate::graph::Target::Foreign)). Shown rather
+    /// [`Target::Foreign`]). Shown rather
     /// than dropped, because the link is really declared and a reader deserves
     /// to see the structure leave the building.
     Foreign {
@@ -65,7 +65,7 @@ pub enum NodeKind {
     },
 }
 
-/// Options controlling how [`Workspace::tree_with`] materializes a spanning
+/// Options controlling how [`Graph::tree_with`] materializes a spanning
 /// target that does not resolve on disk.
 ///
 /// The default (`tree()`'s behavior) materializes a [`NodeKind::Missing`]
@@ -87,9 +87,9 @@ pub struct TreeOptions {
 /// One node of the materialized spanning tree.
 #[derive(Debug, Clone)]
 pub struct Node {
-    /// Workspace-relative, normalized path — relative to [`Workspace::root`],
+    /// Workspace-relative, normalized path — relative to [`Graph::root`],
     /// *not* fs-readable as-is. Join it onto the root with
-    /// [`Workspace::fs_path`] before handing it to a [`Storage`](crate::fs::Storage)
+    /// [`Graph::fs_path`] before handing it to a [`Storage`](crate::fs::Storage)
     /// read; the raw form here is what makes a [`Node`] stable across a
     /// workspace re-rooted to a different directory.
     pub path: PathBuf,
@@ -117,7 +117,15 @@ fn is_missing(error: &crate::error::Error) -> bool {
     }
 }
 
-impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
+/// The context one [`tree`](Graph::tree) walk carries unchanged from its root
+/// to every leaf.
+struct Walk<'a> {
+    root: &'a Path,
+    options: TreeOptions,
+    parked: &'a [PathBuf],
+}
+
+impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// Materialize the spanning tree rooted at `start` (a workspace-relative
     /// path). Missing, unreadable, cyclic, unresolved-ID, and ambiguous-alias
     /// targets become marked nodes. `id:<id>` targets resolve through the
@@ -132,6 +140,17 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// with [`TreeOptions`] controlling how an unresolved spanning target is
     /// represented. `TreeOptions::default()` is exactly `tree()`'s behavior.
     pub async fn tree_with(&self, start: impl AsRef<Path>, options: TreeOptions) -> Result<Node> {
+        self.tree_within(start, options, &[]).await
+    }
+
+    /// [`tree_with`](Self::tree_with), told which directories are parked — see
+    /// [`title_index_scoped`](Self::title_index_scoped).
+    pub async fn tree_within(
+        &self,
+        start: impl AsRef<Path>,
+        options: TreeOptions,
+        parked: &[PathBuf],
+    ) -> Result<Node> {
         let start = link::normalize(start);
         // The title index is built lazily — only if a nominal (`[[alias]]`) link
         // is actually encountered. A path/id workspace never needs it, so it never
@@ -140,18 +159,27 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let mut titles: Option<crate::title::TitleIndex> = None;
         let mut trail: Vec<PathBuf> = Vec::new();
         let root = start.clone();
-        self.tree_node(start, None, &root, &mut titles, &mut trail, options)
+        let cx = Walk {
+            root: &root,
+            options,
+            parked,
+        };
+        self.tree_node(start, None, &cx, &mut titles, &mut trail)
             .await
     }
 
+    /// What stays the same for every node of one walk: the root the title index
+    /// is scoped to, the option controlling how an unresolved spanning target is
+    /// rendered, and the directories whose interiors must not be indexed. Bundled
+    /// rather than passed one by one because the recursion threads all three
+    /// unchanged through every level.
     fn tree_node<'a>(
         &'a self,
         path: PathBuf,
         label: Option<String>,
-        root: &'a Path,
+        cx: &'a Walk<'a>,
         titles: &'a mut Option<crate::title::TitleIndex>,
         trail: &'a mut Vec<PathBuf>,
-        options: TreeOptions,
     ) -> Pin<Box<dyn Future<Output = Result<Node>> + 'a>> {
         Box::pin(async move {
             if trail.contains(&path) {
@@ -206,7 +234,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 // Build the title index on first sight of a nominal link, never
                 // before — this is the only place the tree walk can need it.
                 if titles.is_none() && crate::title::is_alias_shaped(&child.target) {
-                    *titles = Some(self.title_index_scoped(root).await?);
+                    *titles = Some(self.title_index_scoped(cx.root, cx.parked).await?);
                 }
                 let child_path = match self.resolve_link_with(&path, &child, titles.as_ref()) {
                     Target::External => continue,
@@ -243,7 +271,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                     Target::Path(p) => p,
                 };
                 let child_node = self
-                    .tree_node(child_path, child.label, root, titles, trail, options)
+                    .tree_node(child_path, child.label, cx, titles, trail)
                     .await?;
                 // `ignore_missing` only ever removes what the default would have
                 // included: a `Missing` child is dropped here rather than pushed,
@@ -251,7 +279,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 // all, matching diaryx's traversal. Every other kind (including a
                 // deeper `Missing` several levels down, which surfaced as `Doc`
                 // with that descendant already filtered) is unaffected.
-                if !(options.ignore_missing && child_node.kind == NodeKind::Missing) {
+                if !(cx.options.ignore_missing && child_node.kind == NodeKind::Missing) {
                     children.push(child_node);
                 }
                 // (titles carried by &mut, so a nominal link deeper in the tree
@@ -276,6 +304,8 @@ mod tests {
     use super::*;
     use crate::exec::block_on;
     use crate::fs::StdFs;
+    use crate::graph::ReadSettings;
+    use crate::index::NoIndex;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -304,7 +334,7 @@ mod tests {
             "---\ntitle: A\npart_of: ../index.md\n---\n",
         );
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let root = block_on(ws.tree("index.md")).unwrap();
         assert_eq!(root.title.as_deref(), Some("Root"));
         assert_eq!(root.children.len(), 2);
@@ -329,7 +359,7 @@ mod tests {
         write(&dir, "one.md", "---\ntitle: Dup\n---\n");
         write(&dir, "two.md", "---\ntitle: Dup\n---\n");
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let root = block_on(ws.tree("index.md")).unwrap();
         assert_eq!(root.children.len(), 3);
 
@@ -362,7 +392,7 @@ mod tests {
         );
         std::fs::create_dir_all(dir.join("sub")).unwrap();
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let root = block_on(ws.tree("index.md")).unwrap();
         assert_eq!(root.children.len(), 2);
         assert!(
@@ -383,7 +413,7 @@ mod tests {
         write(&dir, "a.md", "---\ncontents:\n- b.md\n---\n");
         write(&dir, "b.md", "---\ncontents:\n- a.md\n---\n");
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let root = block_on(ws.tree("a.md")).unwrap();
         let b = &root.children[0];
         assert_eq!(b.kind, NodeKind::Doc);
@@ -404,7 +434,7 @@ mod tests {
         );
         write(&dir, "notes/a.md", "---\ntitle: A\n---\n");
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let root = block_on(ws.tree("index.md")).unwrap();
         assert_eq!(root.children.len(), 2);
         assert_eq!(root.children[1].kind, NodeKind::Missing);
@@ -424,7 +454,7 @@ mod tests {
         );
         write(&dir, "notes/a.md", "---\ntitle: A\n---\n");
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let options = TreeOptions {
             ignore_missing: true,
         };
@@ -442,7 +472,7 @@ mod tests {
         write(&dir, "a.md", "---\ncontents:\n- b.md\n- gone.md\n---\n");
         write(&dir, "b.md", "---\ncontents:\n- a.md\n---\n");
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let options = TreeOptions {
             ignore_missing: true,
         };
@@ -459,7 +489,7 @@ mod tests {
         let dir = tempdir("fs-path");
         write(&dir, "notes/a.md", "---\ntitle: A\n---\n");
 
-        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let node = block_on(ws.tree("notes/a.md")).unwrap();
         assert_eq!(ws.fs_path(&node.path), dir.join("notes/a.md"));
     }

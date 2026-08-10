@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 
 use crate::change::ChangeSet;
 use crate::config::WorkspaceConfig;
-use crate::error::Result;
-use crate::fs::Storage;
-use crate::index::IndexStore;
 use crate::workspace::Workspace;
+use prov_graph::error::Result;
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
 
 use super::AboutContext;
 
@@ -52,11 +52,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             && let Some(pointer) = self.relations().about_relation()
         {
             let (text, doc) = self.load(root_doc).await?;
-            let updated = crate::edit::set_in_text(
+            let updated = prov_graph::edit::set_in_text(
                 &text,
                 doc.carrier,
                 pointer,
-                crate::edit::infer_scalar(&path.to_string_lossy()),
+                prov_graph::edit::infer_scalar(&path.to_string_lossy()),
             )?;
             cs.write(root_doc, updated);
         }
@@ -84,7 +84,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         if let Some(pointer) = self.relations().about_relation() {
             let (text, doc) = self.load(root_doc).await?;
-            let updated = crate::edit::unset_in_text(&text, doc.carrier, pointer)?;
+            let updated = prov_graph::edit::unset_in_text(&text, doc.carrier, pointer)?;
             cs.write(root_doc, updated);
         }
         cs.apply(self.fs(), self.root()).await?;
@@ -174,7 +174,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 /// with no pointer traversal and no convention beyond being able to read. The
 /// pointer may name any path — placement is ergonomic (spec §5) — but the
 /// default must be the most guessable name in the most guessable place.
-pub fn default_about_name(format: crate::content::ContentFormat) -> String {
+pub fn default_about_name(format: prov_graph::content::ContentFormat) -> String {
     format!("about.{}", format.extension())
 }
 
@@ -196,10 +196,10 @@ pub struct AboutDiff {
 mod tests {
     use super::*;
     use crate::config::WorkspaceConfig;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
     use crate::remedy::Fix;
     use crate::validate::Finding;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);

@@ -88,13 +88,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{About, Fixity, IdStorage, WorkspaceConfig};
-use crate::content::{ContentFormat, transcode};
-use crate::document::{EmbedStyle, MetaCarrier, embed_carrier};
-use crate::error::{Error, Result};
 use crate::identity::Registration;
-use crate::link::{Addressing, Notation, PathStyle};
-use crate::meta::{Mapping, Value};
-use crate::relation::{Cardinality, RelationSet};
+use prov_graph::content::{ContentFormat, transcode};
+use prov_graph::document::{EmbedStyle, MetaCarrier, embed_carrier};
+use prov_graph::error::{Error, Result};
+use prov_graph::link::{Addressing, Notation, PathStyle};
+use prov_graph::meta::{Mapping, Value};
+use prov_graph::relation::{Cardinality, RelationSet};
 
 /// The `Workspace` methods that decide when to call [`generate`], where the
 /// result goes, and whether it differs from what is already on disk. Kept out
@@ -1080,7 +1080,7 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     // A blank line between the block and the `# ` heading — the body is prose in
     // the workspace's content format, and prose starts after the block, not
     // wedged against its closing fence.
-    crate::edit::reformat_block(&format!("\n{body}"), &mapping, kind)
+    prov_graph::edit::reformat_block(&format!("\n{body}"), &mapping, kind)
 }
 
 // ─── prose helpers ───────────────────────────────────────────────────────────
@@ -1363,7 +1363,7 @@ fn display_path(path: &Path) -> String {
 /// The target text of a configured link value (`'[Audiences](/vocab/a.yaml)'` →
 /// `/vocab/a.yaml`), so the page names the file rather than the link syntax.
 fn link_target_text(value: &str) -> String {
-    crate::link::Link::parse(value).target
+    prov_graph::link::Link::parse(value).target
 }
 
 /// The content relations, in reading order — each relation immediately followed
@@ -1377,9 +1377,9 @@ fn link_target_text(value: &str) -> String {
 /// Pointer relations are excluded entirely — they are machinery with their own
 /// section, and listing them here would invite a reader to follow them as
 /// though they were structure.
-fn content_relations(relations: &RelationSet) -> Vec<&crate::relation::Relation> {
+fn content_relations(relations: &RelationSet) -> Vec<&prov_graph::relation::Relation> {
     fn take<'a>(
-        ordered: &mut Vec<&'a crate::relation::Relation>,
+        ordered: &mut Vec<&'a prov_graph::relation::Relation>,
         relations: &'a RelationSet,
         name: &str,
     ) {
@@ -1391,7 +1391,7 @@ fn content_relations(relations: &RelationSet) -> Vec<&crate::relation::Relation>
         }
     }
 
-    let mut ordered: Vec<&crate::relation::Relation> = Vec::new();
+    let mut ordered: Vec<&prov_graph::relation::Relation> = Vec::new();
 
     // The spine and its inverse lead, because they are what a reader needs in
     // order to walk the directory at all.
@@ -1509,7 +1509,7 @@ pub fn same_body(actual: &str, expected: &str, format: ContentFormat) -> bool {
 /// trimmed.
 fn body_of(text: &str, format: ContentFormat) -> String {
     let path = format!("about.{}", format.extension());
-    match crate::document::Document::parse(&path, text) {
+    match prov_graph::document::Document::parse(&path, text) {
         Ok(doc) => doc.body.trim().to_string(),
         // An unparseable page is not a reason to refuse an answer — it is a
         // reason to say "this does not match", which the caller repairs by
@@ -1523,7 +1523,7 @@ fn body_of(text: &str, format: ContentFormat) -> String {
 mod tests {
     use super::*;
     use crate::config::{FieldSpec, OpenClosed, RelationDef};
-    use crate::relation::Cardinality;
+    use prov_graph::relation::Cardinality;
     use std::collections::BTreeMap;
 
     fn def(card: Cardinality, inverse: &str, means: &str) -> RelationDef {

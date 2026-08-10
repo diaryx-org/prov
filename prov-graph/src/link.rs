@@ -538,7 +538,7 @@ pub enum IdRef {
     /// `id:<workspace>/<id>` — a document in the workspace named `workspace`.
     ///
     /// prov resolves this only when `workspace` is the reading workspace's own
-    /// [`workspace_id`](crate::WorkspaceConfig::workspace_id), in which case it
+    /// [`workspace_id`](crate::graph::ReadSettings::workspace_id), in which case it
     /// *is* local and is treated as such. Any other name is somewhere prov
     /// cannot see: the library holds no map from a workspace name to a location
     /// (that is a fact about a device, not about an archive), so the reference is
@@ -1023,7 +1023,7 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
 
 /// The spans of markdown/djot inline links in `body`, via `twig` — empty when
 /// `path`'s extension names no grammar `twig` understands or the parse fails
-/// (the same degrade-to-lexical rule as [`code_spans_for`]).
+/// (the same degrade-to-lexical rule as `code_spans_for`).
 ///
 /// **The "twig says it is a link" predicate.** These spans come from twig's own
 /// `link` nodes, so a span here is a link an actual parser recognized, and each
@@ -1035,7 +1035,7 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
 /// editing body prose is that `[[float('inf')] * width]` must never be
 /// "repaired". So `validate`'s body-link remedies are offered for a span in this
 /// set and no other.
-pub(crate) fn parsed_link_spans(path: &Path, body: &str) -> Vec<Range<usize>> {
+pub fn parsed_link_spans(path: &Path, body: &str) -> Vec<Range<usize>> {
     let Some(format) = crate::content::ContentFormat::from_extension(path) else {
         return Vec::new();
     };
@@ -1127,7 +1127,7 @@ pub fn normalize(path: impl AsRef<Path>) -> PathBuf {
 /// jumps to wholesale, ignoring the root entirely; and one whose
 /// [`normalize`]d form still leads with `..`, a climb above the root that the
 /// `parent/..` folding could not cancel. Either is refused by the read/write
-/// guards ([`crate::Workspace`]'s `load`, [`crate::ChangeSet::apply`]) so a
+/// guards (`prov`'s `Workspace`'s `load`, `prov`'s `ChangeSet::apply`) so a
 /// relation target — which is *data*, authored by whoever wrote the document —
 /// can never name a file the workspace does not contain.
 ///

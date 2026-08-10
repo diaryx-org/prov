@@ -17,7 +17,7 @@
 //! tool-agnostic, self-describing ethos the whole crate is built on.
 //!
 //! It is implemented here rather than pulled from a crate for the same reason
-//! [`crate::exec::block_on`] and the journal's FNV checksum are: prov keeps
+//! [`prov_graph::exec::block_on`] and the journal's FNV checksum are: prov keeps
 //! its dependency surface tiny and WASM-clean (no build-toolchain cost, nothing
 //! to audit). SHA-256 is a fully specified, deterministic function with published
 //! test vectors, so correctness is *checked*, not trusted — the tests below pin

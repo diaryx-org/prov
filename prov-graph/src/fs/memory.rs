@@ -148,7 +148,7 @@ impl InMemoryFs {
         self.symlinks.write().unwrap().insert(link, target);
     }
 
-    /// The single-hop resolution [`Storage::read`], [`Storage::read_to_string`],
+    /// The single-hop resolution [`ReadStorage::read`], [`ReadStorage::read_to_string`],
     /// and [`ReadStorage::metadata`] all use: a symlinked path resolves to its
     /// target; anything else resolves to itself.
     fn resolve(&self, normalized: &Path) -> PathBuf {

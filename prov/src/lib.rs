@@ -50,82 +50,71 @@ pub mod about;
 pub mod attach;
 pub mod change;
 pub mod config;
-pub mod content;
 pub mod discovery;
-pub mod document;
-pub mod edit;
-pub mod error;
-pub mod exec;
 pub mod fixity;
-pub mod fs;
-pub mod graph;
+#[cfg(test)]
+mod fs_faults;
 pub mod history;
 pub mod identity;
-pub mod index;
 pub mod intake;
 pub mod journal;
-pub mod link;
-pub mod memo;
-pub mod meta;
 pub mod mutate;
-pub mod relation;
 pub mod remedy;
 pub mod route;
 pub mod textdist;
-pub mod title;
 pub mod validate;
 pub mod vocabulary;
 pub mod workspace;
 
+/// The read core, re-exported whole.
+///
+/// `prov` is `prov-graph` plus the verbs. A consumer that needs both should
+/// depend on `prov` alone and reach everything through here; a consumer that
+/// only traverses can depend on `prov-graph` directly and link none of the
+/// mutation, history, or config machinery.
+pub use prov_graph;
+pub use prov_graph::{
+    Addressing, Backlink, BodyLink, Capabilities, Cardinality, CensusEntry, Collision,
+    ContentFormat, DirEntry, Document, Durability, Edge, EmbedStyle, EmbedType, Error, ExtKind,
+    FileIndex, FileType, Format, Graph, Id, IdIndex, IdStorage, InMemoryFs, InMemoryIndex,
+    IndexStore, Link, LinkSite, LinkStyle, Mapping, MetaCarrier, Metadata, NoIndex, Node, NodeKind,
+    Notation, PathStyle, ReadScope, ReadSettings, ReadStorage, Rebase, ReferenceStyle, Relation,
+    RelationSet, Resolution, Result, StdFs, Storage, StructuralFact, SyncGuarantee, Target,
+    TitleIndex, TitleMatch, TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans,
+    embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title,
+    reachable_set, render_html, require_whole_file,
+};
+/// The read core's modules, re-exported at their original paths so `prov`'s
+/// public API is exactly what it was before the split.
+pub use prov_graph::{
+    content, document, edit, error, exec, fs, graph, index, link, memo, meta, relation, title,
+};
+
 pub use about::AboutContext;
 pub use change::{ChangeSet, FileOp};
 pub use config::{
-    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, IdStorage,
-    OpenClosed, RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose,
-    field_type_as_config_str, field_type_from_config_str, is_valid_workspace_id,
-    metadata_format_from_str, metadata_format_str, spec_ahead,
+    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, OpenClosed,
+    RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
+    field_type_from_config_str, is_valid_workspace_id, metadata_format_from_str,
+    metadata_format_str, spec_ahead,
 };
-pub use content::ContentFormat;
-pub use content::{code_spans, render_html};
 pub use discovery::{Discovered, Discovery, discover};
-pub use document::{
-    Document, EmbedStyle, EmbedType, MetaCarrier, embed_carrier, embed_style_of, is_opaque_payload,
-    require_whole_file,
-};
-pub use error::{Error, Result};
-pub use exec::block_on;
 /// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
 /// re-exported so a consumer can name types without depending on `fig-schema`
 /// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
 /// different version than the one prov resolves against.
-pub use fig::ExtKind;
-pub use fig::Format;
 pub use fig_schema::FieldType;
 pub use fixity::FixityCache;
-pub use fs::{
-    Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, ReadStorage, StdFs,
-    Storage, SyncGuarantee,
-};
-pub use graph::{Backlink, CensusEntry, LinkSite, Node, NodeKind, Resolution, Target, TreeOptions};
 pub use history::{
     Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Latest, Presence, Pruned,
     RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, Version,
 };
-pub use identity::{Id, IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
-pub use index::{Collision, FileIndex, IdIndex, InMemoryIndex, IndexStore, NoIndex};
+pub use identity::{IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use journal::{Recovered, recover};
-pub use link::{
-    Addressing, BodyLink, Link, LinkStyle, Notation, PathStyle, ReferenceStyle, Wikilink, Wrapper,
-    escapes_root, format_link, path_to_title,
-};
-pub use memo::ReadScope;
-pub use meta::{Mapping, Value};
 pub use mutate::Created;
-pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
-pub use title::{TitleIndex, TitleMatch};
 pub use validate::{CheckDiff, Finding};
 pub use vocabulary::{Term, Vocabulary};
 pub use workspace::{Settings, Workspace, WorkspaceBuilder};

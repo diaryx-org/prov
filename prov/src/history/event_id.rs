@@ -1,5 +1,5 @@
-use crate::error::{Error, Result};
-use crate::link;
+use prov_graph::error::{Error, Result};
+use prov_graph::link;
 
 use super::model::*;
 use super::paths::*;
@@ -225,7 +225,7 @@ mod tests {
         let files = vec![
             FileEntry {
                 path: "notes/foo.md".into(),
-                id: Some(crate::identity::Id("b7k2m".into())),
+                id: Some(prov_graph::identity::Id("b7k2m".into())),
                 hash: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
                     .into(),
             },

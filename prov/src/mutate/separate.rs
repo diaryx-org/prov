@@ -11,15 +11,15 @@ use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
-use crate::document::MetaCarrier;
-use crate::edit::MetaEditor;
-use crate::error::{Error, Result};
-use crate::fs::Storage;
 use crate::identity::IdentityPolicy;
-use crate::index::IndexStore;
-use crate::link;
-use crate::meta::Value;
 use crate::workspace::Workspace;
+use prov_graph::document::MetaCarrier;
+use prov_graph::edit::MetaEditor;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::Storage;
+use prov_graph::index::IndexStore;
+use prov_graph::link;
+use prov_graph::meta::Value;
 
 use super::maintain::content_target;
 
@@ -56,7 +56,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         };
         let format = kind.inner_format();
-        let meta_path = path.with_extension(crate::document::whole_file_extension(format));
+        let meta_path = path.with_extension(prov_graph::document::whole_file_extension(format));
         if meta_path == path {
             return Err(Error::Structure(format!(
                 "{} already has a metadata-file extension",
@@ -85,7 +85,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // body file (a sibling, so just its name).
         let mut map = mapping.clone();
         map.insert("content".into(), Value::String(body_ref));
-        let meta_text = crate::meta::serialize_mapping(&map, format)?;
+        let meta_text = prov_graph::meta::serialize_mapping(&map, format)?;
         let body_text = doc.body.clone();
 
         let mut cs = self.change();
@@ -156,7 +156,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // Rebuild the combined document: a fresh frontmatter block (the metadata
         // format) carrying every key except `content`, then the body.
-        let carrier = crate::document::frontmatter_carrier(format);
+        let carrier = prov_graph::document::frontmatter_carrier(format);
         let mut editor = MetaEditor::open_or_init(&body, Some(carrier))?;
         for (key, value) in mapping {
             if key.as_str() == "content" {
@@ -187,7 +187,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
-    use crate::index::IdIndex;
+    use prov_graph::index::IdIndex;
 
     #[test]
     fn separate_refuses_to_take_a_path_the_registry_binds_to_a_different_id() {
@@ -208,8 +208,8 @@ mod tests {
         );
 
         let mut w = id_ws(&dir);
-        let a = crate::identity::Id("aaaaaaa".into());
-        let b = crate::identity::Id("bbbbbbb".into());
+        let a = prov_graph::identity::Id("aaaaaaa".into());
+        let b = prov_graph::identity::Id("bbbbbbb".into());
         w.index_mut().register(&a, Path::new("doc.md"));
         // The metadata file `separate` would create is already bound to a
         // different id, though nothing has ever put a file there.
@@ -217,7 +217,10 @@ mod tests {
 
         let err = block_on(w.separate(Path::new("doc.md"))).unwrap_err();
         assert!(
-            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            matches!(
+                err,
+                Error::Collision(prov_graph::index::Collision::Path { .. })
+            ),
             "{err:?}"
         );
         assert!(err.to_string().contains("doc.yaml"), "{err}");
@@ -248,8 +251,8 @@ mod tests {
         write(&dir, "doc.md", "the prose\n");
 
         let mut w = id_ws(&dir);
-        let a = crate::identity::Id("aaaaaaa".into());
-        let b = crate::identity::Id("bbbbbbb".into());
+        let a = prov_graph::identity::Id("aaaaaaa".into());
+        let b = prov_graph::identity::Id("bbbbbbb".into());
         w.index_mut().register(&a, Path::new("doc.yaml"));
         // The body file already carries a registration of its own, under a
         // different id than the node being folded into it.
@@ -257,7 +260,10 @@ mod tests {
 
         let err = block_on(w.combine(Path::new("doc.yaml"))).unwrap_err();
         assert!(
-            matches!(err, Error::Collision(crate::index::Collision::Path { .. })),
+            matches!(
+                err,
+                Error::Collision(prov_graph::index::Collision::Path { .. })
+            ),
             "{err:?}"
         );
         assert!(err.to_string().contains("doc.md"), "{err}");

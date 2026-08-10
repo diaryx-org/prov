@@ -1,81 +1,30 @@
-//! Identity — a strictly-additive layer over a path-only workspace.
+//! Identity policy — when a document earns an id, and how one is minted.
 //!
-//! Everything below is optional. The graph and mutation layers operate on
-//! paths and never require an ID. This module only decides **when** a document
-//! earns a stable ID (the trigger set) and **what** that ID looks like (the
-//! mint). *Where* IDs are stored is [`crate::index`].
+//! Everything here is optional. The graph and mutation layers operate on paths
+//! and never require an ID. This module decides **when** a document earns a
+//! stable ID (the trigger set) and **what** that ID looks like (the mint).
+//! *Where* IDs are stored is [`prov_graph::index`]; the [`Id`] type itself and the
+//! well-formedness check over it are [`prov_graph::identity`], because
+//! resolving a link needs to *recognize* an id without being able to issue one.
 //!
 //! The default is [`NoIdentity`] — identity off, no ID ever written. The
 //! recommended lazy policy registers an ID only when something durably refers
 //! to a document (a link-by-id or a publish), keeping the authoritative set as
 //! small as possible.
 //!
-//! ## The ID scheme
-//!
-//! Prov's internal IDs share their lineage with diaryx's ARK blades but
-//! carry no NAAN or shoulder — they are workspace-internal, not published
-//! permalinks (DESIGN §4's two identity layers). The minting primitives come
-//! from the [`moid`] crate (*minimal opaque ID*): an ID is [`BLADE_RANDOM_LEN`]
-//! random characters from the 29-character NOID extended-digit alphabet
-//! ([`moid::Alphabet::noid_xdigit`] — digits plus consonants: no vowels, so no
-//! accidental words; no `l`, so no ambiguity with `1`) plus one NOID check
-//! character, so a typo'd ID is *detected* rather than silently resolving to
-//! nothing. The alphabet is the canonical NOID one, so the check character
-//! agrees with a real NOID minter and not merely with our own arithmetic. An ID
-//! may therefore contain — and begin with — a digit; anything stamping one into
-//! metadata must keep it a *string* (see [`crate::edit::infer_scalar`]). Minting
-//! is random (opaque for free), with uniqueness enforced by rejection against
-//! the index — including its tombstones, so a deleted document's ID is never
-//! reissued.
-//!
-//! This module keeps only prov's *policy* layer — [`Id`], the registration
-//! trigger set ([`Registration`]/[`Trigger`]), and the [`IdentityPolicy`] trait
-//! deciding *when* a document earns an ID. The alphabet, check-character
-//! arithmetic, and seeded PRNG all live in [`moid`].
+//! Minting is random (opaque for free), with uniqueness enforced by rejection
+//! against the index — including its tombstones, so a deleted document's ID is
+//! never reissued. An ID may contain, and begin with, a digit; anything
+//! stamping one into metadata must keep it a *string* (see
+//! [`prov_graph::edit::infer_scalar`]). The alphabet, check-character arithmetic,
+//! and seeded PRNG all live in [`moid`].
 
 use std::path::Path;
 
-use moid::{Alphabet, SeededRng};
+use moid::SeededRng;
+use prov_graph::identity::canonical_minter;
 
-/// A stable, opaque document identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Id(pub String);
-
-impl Id {
-    /// The id as a string slice.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Id {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// Random characters per ID (excluding the check character). 29^6 ≈ 595M —
-/// collision-free in practice for a workspace, enforced absolutely by
-/// mint-with-rejection.
-pub const BLADE_RANDOM_LEN: usize = 6;
-
-/// Total ID length: the random body plus one check character.
-pub const BLADE_LEN: usize = BLADE_RANDOM_LEN + 1;
-
-/// The canonical [`moid`] minter for prov IDs: [`BLADE_RANDOM_LEN`] random
-/// NOID extended-digit characters plus a NOID check character. Every mint and
-/// every [`verify`] goes through this exact configuration, so they agree by
-/// construction.
-fn canonical_minter() -> moid::Minter {
-    moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
-}
-
-/// Whether `id` is a well-formed prov ID: correct length, alphabet-only,
-/// and a matching trailing check character. This is what catches a typo'd
-/// `prov:` link before it dangles silently.
-pub fn verify(id: &str) -> bool {
-    canonical_minter().validate(id).is_ok()
-}
+pub use prov_graph::identity::{BLADE_LEN, BLADE_RANDOM_LEN, Id, verify};
 
 /// Which events cause a document to be assigned (registered) an ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +166,7 @@ impl IdentityPolicy for Minter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use moid::Alphabet;
 
     #[test]
     fn no_identity_is_off() {

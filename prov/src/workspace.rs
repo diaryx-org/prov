@@ -19,27 +19,27 @@
 //! The filesystem-driven `scan`/traverse/mutate engine ports from `diaryx_core`
 //! next; the seams are in place so that port has somewhere to land.
 
-use std::collections::BTreeSet;
-use std::future::Future;
+use prov_graph::document::Document;
+use prov_graph::fs::{DirEntry, Metadata};
+use prov_graph::graph::{Backlink, CensusEntry, Graph, Node, ReadSettings, TreeOptions, Walk};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Mutex;
 
 use crate::change::{ChangeSet, FileOp};
 use crate::config::{Fixity, History, IdStorage};
-use crate::content::ContentFormat;
-use crate::document::EmbedStyle;
-use crate::error::{Error, Result};
 use crate::fixity::FixityCache;
-use crate::fs::{ReadStorage, Storage};
-use crate::graph::Target;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
-use crate::index::{Collision, IdIndex, IndexStore, NoIndex};
-use crate::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
-use crate::memo::{ReadMemo, ReadScope, lock};
-use crate::meta::Value;
-use crate::relation::RelationSet;
-use crate::title::{self, TitleIndex};
+use prov_graph::document::EmbedStyle;
+use prov_graph::error::{Error, Result};
+use prov_graph::fs::{ReadStorage, Storage};
+use prov_graph::graph::Target;
+use prov_graph::index::{Collision, IdIndex, IndexStore, NoIndex};
+use prov_graph::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
+use prov_graph::memo::{ReadScope, lock};
+use prov_graph::meta::Value;
+use prov_graph::relation::RelationSet;
+use prov_graph::title::TitleIndex;
 
 /// The workspace's **policy knobs**, as one value.
 ///
@@ -151,25 +151,22 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
 /// the [`Settings`] that say how it authors and reads documents.
 #[derive(Debug)]
 pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
-    fs: FS,
-    root: PathBuf,
+    /// The read core: the root, the filesystem, the id index, and the memo.
+    /// Every traversal this workspace performs *is* a `prov-graph` traversal —
+    /// the read methods below forward here rather than restating the walk, so
+    /// the two can never drift into two answers for one workspace.
+    graph: Graph<FS, Ix>,
     identity: Id,
-    index: Ix,
+    /// All ten authoring settings. The three the read core also needs are
+    /// copied into `graph`'s own [`ReadSettings`] when the workspace is built;
+    /// nothing mutates either afterwards, so the copies cannot drift.
     settings: Settings,
     /// Documents that earned an id this operation and, under a stamping mode,
     /// still need it written into their own frontmatter. Drained by
     /// [`commit`](Workspace::commit) into the operation's change set, so a
     /// document's id and the registry entry for it land in the same crash-atomic
     /// write — never one without the other.
-    pending_stamps: Vec<(PathBuf, crate::identity::Id)>,
-    /// What the current operation has already read — empty unless a
-    /// [`read_scope`](Workspace::read_scope) is open. See [`crate::memo`].
-    ///
-    /// Interior mutability because the passes that benefit take `&self`:
-    /// `check` and its seven sub-passes are read-only operations, and making
-    /// them `&mut` to let them remember what they read would be the tail wagging
-    /// the dog.
-    memo: Mutex<ReadMemo>,
+    pending_stamps: Vec<(PathBuf, prov_graph::identity::Id)>,
     /// What this device remembers of the workspace's file digests. Absent until
     /// a host supplies one — see [`crate::fixity::FixityCache`], which is also
     /// where the rule about who may consult it is written down.
@@ -192,13 +189,10 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
 impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
     fn clone(&self) -> Self {
         Self {
-            fs: self.fs.clone(),
-            root: self.root.clone(),
+            graph: self.graph.clone(),
             identity: self.identity.clone(),
-            index: self.index.clone(),
             settings: self.settings.clone(),
             pending_stamps: self.pending_stamps.clone(),
-            memo: Mutex::default(),
             fixity_cache: Mutex::new(lock(&self.fixity_cache).clone()),
         }
     }
@@ -228,12 +222,21 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
 }
 
 impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
-    /// The workspace root.
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// The read core this workspace traverses through.
+    ///
+    /// Hand this to anything that only needs to *see* the workspace: it can
+    /// read, resolve and walk, and it cannot write, because [`Graph`] exposes
+    /// no method that does.
+    pub fn graph(&self) -> &Graph<FS, Ix> {
+        &self.graph
     }
 
-    /// Join a workspace-relative path — a [`Node::path`](crate::graph::Node::path),
+    /// The workspace root.
+    pub fn root(&self) -> &Path {
+        self.graph.root()
+    }
+
+    /// Join a workspace-relative path — a [`Node::path`](prov_graph::graph::Node::path),
     /// or any other path this crate hands back — onto the workspace root,
     /// producing the fs-readable form a [`Storage`] read needs.
     ///
@@ -244,7 +247,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// place that independence is given up, for the caller that actually needs
     /// to open the file.
     pub fn fs_path(&self, rel: impl AsRef<Path>) -> PathBuf {
-        self.root.join(rel)
+        self.graph.fs_path(rel)
     }
 
     /// The configured relation vocabulary.
@@ -266,7 +269,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// ([`commit`](Self::commit) drops what its change set touched), and the
     /// scope ends before control returns to a caller who might write behind
     /// prov's back — which is why this needs no invalidation policy and has
-    /// none. See [`crate::memo`].
+    /// none. See [`prov_graph::memo`].
     ///
     /// ```no_run
     /// # use prov::Workspace;
@@ -280,8 +283,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// ```
     #[must_use = "the scope ends the moment its guard is dropped"]
     pub fn read_scope(&self) -> ReadScope<'_> {
-        lock(&self.memo).enter();
-        ReadScope(&self.memo)
+        self.graph.read_scope()
     }
 
     /// Give this workspace a [`FixityCache`] to hash through, or `None` to take
@@ -303,20 +305,13 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         lock(&self.fixity_cache).take()
     }
 
-    /// What the current operation already read for `path`, if a
-    /// [`read_scope`](Self::read_scope) is open and it read it.
-    pub(crate) fn memo_hit(&self, path: &Path) -> Option<(String, crate::document::Document)> {
-        lock(&self.memo).get(path)
-    }
-
-    /// Remember what `path` read as, for the rest of the operation.
-    pub(crate) fn memo_remember(&self, path: &Path, text: &str, doc: &crate::document::Document) {
-        lock(&self.memo).remember(path, text, doc);
-    }
-
     /// The remembered digest for the workspace-relative `path`, if the cache
     /// still describes the file `meta` stat'ed.
-    pub(crate) fn fixity_cached(&self, path: &Path, meta: &crate::fs::Metadata) -> Option<String> {
+    pub(crate) fn fixity_cached(
+        &self,
+        path: &Path,
+        meta: &prov_graph::fs::Metadata,
+    ) -> Option<String> {
         lock(&self.fixity_cache)
             .as_ref()?
             .get(path, meta)
@@ -325,7 +320,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
 
     /// Remember that `path` hashed to `hash` at the stat `meta` describes.
     /// Silently nothing when no cache is attached.
-    pub(crate) fn fixity_remember(&self, path: &Path, meta: &crate::fs::Metadata, hash: &str) {
+    pub(crate) fn fixity_remember(&self, path: &Path, meta: &prov_graph::fs::Metadata, hash: &str) {
         if let Some(cache) = lock(&self.fixity_cache).as_mut() {
             cache.put(path, meta, hash);
         }
@@ -344,7 +339,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// editor, or a sync daemon — retires it whether or not prov thought to say
     /// so. The read memo has no such backstop, which is why it needs this.
     fn forget_written(&self, cs: &ChangeSet) {
-        let mut memo = lock(&self.memo);
+        let mut memo = self.graph.memo_lock();
         let mut cache = lock(&self.fixity_cache);
         let mut forget = |path: &Path| {
             memo.forget(path);
@@ -372,7 +367,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
 
     /// The index store.
     pub fn index(&self) -> &Ix {
-        &self.index
+        self.graph.index()
     }
 
     /// The link style this workspace authors in (read from the root's
@@ -471,36 +466,8 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
 
     /// Mutable access to the index store (e.g. to persist it after mutations).
     pub fn index_mut(&mut self) -> &mut Ix {
-        &mut self.index
+        self.graph.index_mut()
     }
-}
-
-/// Whether `path` names a document the title scan should read — one whose
-/// extension is a recognized body format (Markdown/Djot/HTML) or a whole-file
-/// metadata format (YAML/JSON/…). Non-document files (images, binaries) are
-/// skipped so the scan neither reads nor mis-indexes them.
-fn is_document_path(path: &Path) -> bool {
-    !crate::document::is_opaque_payload(path)
-}
-
-/// The workspace-relative paths of the *files* among a directory's `entries`,
-/// the listing a shadow check probes
-/// ([`is_shadowed_payload`](Workspace::is_shadowed_payload)). Hidden entries are
-/// skipped, matching the scans that build this.
-fn file_listing(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> BTreeSet<PathBuf> {
-    entries
-        .iter()
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.file_name().and_then(|n| n.to_str()).map(str::to_owned))
-        .filter(|name| !name.starts_with('.'))
-        .map(|name| {
-            if rel_dir.as_os_str().is_empty() {
-                PathBuf::from(name)
-            } else {
-                rel_dir.join(name)
-            }
-        })
-        .collect()
 }
 
 impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
@@ -522,10 +489,10 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// what is already there displaces nothing.
     pub fn registration_conflict(
         &self,
-        id: &crate::identity::Id,
+        id: &prov_graph::identity::Id,
         path: &Path,
     ) -> Option<Collision> {
-        if let Some(held_by) = self.index.resolve(id)
+        if let Some(held_by) = self.graph.index().resolve(id)
             && held_by != path
         {
             return Some(Collision::Id {
@@ -533,7 +500,7 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 held_by,
             });
         }
-        if let Some(held) = self.index.id_for_path(path)
+        if let Some(held) = self.graph.index().id_for_path(path)
             && held != *id
         {
             return Some(Collision::Path {
@@ -563,8 +530,12 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// already carries this same `id` — a same-id no-op — is not a collision.
     ///
     /// [`registration_conflict`]: Self::registration_conflict
-    pub(crate) fn move_conflict(&self, id: &crate::identity::Id, dest: &Path) -> Option<Collision> {
-        let held = self.index.id_for_path(dest)?;
+    pub(crate) fn move_conflict(
+        &self,
+        id: &prov_graph::identity::Id,
+        dest: &Path,
+    ) -> Option<Collision> {
+        let held = self.graph.index().id_for_path(dest)?;
         (held != *id).then(|| Collision::Path {
             path: dest.to_path_buf(),
             held,
@@ -683,7 +654,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         &self,
         root_doc: &Path,
         key: &str,
-    ) -> Result<Option<crate::meta::Value>> {
+    ) -> Result<Option<prov_graph::meta::Value>> {
         let Some(config_doc) = self.config_path(root_doc).await? else {
             return Ok(None);
         };
@@ -734,7 +705,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// (no `vocabulary` marker). The store must be a whole-file config document
     /// (DESIGN §5); a markdown carrier is refused via [`require_whole_file`].
     ///
-    /// [`require_whole_file`]: crate::document::require_whole_file
+    /// [`require_whole_file`]: prov_graph::document::require_whole_file
     pub async fn load_vocabulary(
         &self,
         root_doc: &Path,
@@ -745,375 +716,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         };
         let (_, doc) = self.load(&path).await?;
         if let Some(carrier) = doc.carrier {
-            crate::document::require_whole_file(&path, carrier)?;
+            prov_graph::document::require_whole_file(&path, carrier)?;
         }
         Ok(crate::vocabulary::Vocabulary::from_meta(&doc.meta))
     }
-
-    /// Build the workspace's [`TitleIndex`] by scanning every document under the
-    /// root and registering it under its `title` and its file stem. This is a
-    /// **derived cache** (DESIGN §5): rebuilt on demand, never persisted. It is
-    /// what makes nominal (`[[My File]]`) references resolvable — a flat
-    /// filesystem scan, deliberately independent of link resolution so that
-    /// alias links can themselves be *spanning* (`contents: alias`) without a
-    /// chicken-and-egg between "walk the tree" and "resolve the walk's links."
-    pub async fn title_index(&self) -> Result<TitleIndex> {
-        let mut index = TitleIndex::new();
-        self.scan_titles(PathBuf::new(), &[], &mut index).await?;
-        Ok(index)
-    }
-
-    /// The title index bounded to the directories the workspace reaches from
-    /// `start` (DESIGN §8) — the reachability-scoped counterpart to
-    /// [`title_index`](Self::title_index). Only documents in a directory some
-    /// link path/id-reaches are indexed, so a `[[alias]]` resolves within the
-    /// workspace without scanning `target/`, a vendored tree, or a nested
-    /// workspace at the repo root.
-    ///
-    /// Falls back to the full [`title_index`](Self::title_index) when the
-    /// **spanning** relation is addressed by alias: descending the tree then needs
-    /// every title up front, so the scan cannot be bounded (the chicken-and-egg
-    /// the flat scan was written to avoid). An overlay alias to an *orphan* (a doc
-    /// no path/id link reaches) likewise falls outside the scope and reads as
-    /// broken — which it effectively is.
-    pub async fn title_index_scoped(&self, start: &Path) -> Result<TitleIndex> {
-        let (dirs, needs_full) = self.title_scope(start).await?;
-        if needs_full {
-            // The unbounded fallback still owes the same exclusion: falling back
-            // is about not being able to *bound* the scan, not about suddenly
-            // being willing to name prov's bookkeeping.
-            let mut index = TitleIndex::new();
-            let parked = self.parked_dirs(start).await?;
-            self.scan_titles(PathBuf::new(), &parked, &mut index)
-                .await?;
-            return Ok(index);
-        }
-        let mut index = TitleIndex::new();
-        let files = self.direct_child_files(&dirs).await?;
-        let listing: BTreeSet<PathBuf> = files.iter().cloned().collect();
-        for rel in files {
-            if !is_document_path(&rel) || self.is_shadowed_payload(&rel, &listing).await {
-                continue;
-            }
-            if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
-                index.insert(stem, rel.clone());
-            }
-            if let Ok((_, doc)) = self.load(&rel).await
-                && let Some(title) = doc.meta.get("title").and_then(Value::as_str)
-            {
-                index.insert(title, rel.clone());
-            }
-        }
-        Ok(index)
-    }
-
-    /// The directories the workspace occupies, reached from `start` by following
-    /// path/id links — spanning links drive descent, and every relation's (and
-    /// body wikilink's) path/id target contributes its directory, so an alias can
-    /// resolve to anything the tree links. The scope [`title_index_scoped`] indexes.
-    ///
-    /// The returned flag is `true` when a **spanning** link is alias-shaped: it
-    /// cannot be followed without the title index, so the scope would be
-    /// incomplete and the caller must scan in full instead. That answer is
-    /// final the moment it is reached, and the only caller throws `dirs` away
-    /// when it comes back set — so the walk **stops there** rather than
-    /// finishing a traversal whose result is already known to be discarded.
-    /// The abandoned half is not cheap: every remaining document would be read
-    /// and its prose body parsed (`scan_body_links`) purely to contribute
-    /// directories to a set nobody reads.
-    async fn title_scope(&self, start: &Path) -> Result<(BTreeSet<PathBuf>, bool)> {
-        let spanning = self.relations().spanning_relation().map(str::to_owned);
-        let dir_of = |p: &Path| p.parent().unwrap_or(Path::new("")).to_path_buf();
-        // Where prov parks bytes. Reached like anything else — the root points at
-        // each store's index — but the interiors are bookkeeping, and a name found
-        // in one is not a place a reader can go. See [`parked_dirs`](Self::parked_dirs).
-        let parked = self.parked_dirs(start).await?;
-        let is_parked = |dir: &Path| parked.iter().any(|p| dir.starts_with(p));
-        let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
-        let mut queue = vec![link::normalize(start)];
-        while let Some(path) = queue.pop() {
-            if !visited.insert(path.clone()) {
-                continue;
-            }
-            let dir = dir_of(&path);
-            if is_parked(&dir) {
-                continue;
-            }
-            dirs.insert(dir);
-            let Ok((_, doc)) = self.load(&path).await else {
-                continue;
-            };
-            for edge in self.relations().edges(&doc.meta) {
-                let link = Link::parse(&edge.target);
-                let is_spanning = Some(edge.relation.as_str()) == spanning.as_deref();
-                if link.is_external() {
-                    continue;
-                }
-                if title::is_alias_shaped(&link.target) {
-                    // Can't resolve without the index; a spanning alias defeats
-                    // bounding, and nothing later can un-defeat it.
-                    if is_spanning {
-                        return Ok((BTreeSet::new(), true));
-                    }
-                    continue;
-                }
-                if let Target::Path(target) = self.resolve_link(&path, &link) {
-                    let dir = dir_of(&target);
-                    if is_parked(&dir) {
-                        continue;
-                    }
-                    dirs.insert(dir);
-                    if is_spanning {
-                        queue.push(target);
-                    }
-                }
-            }
-            for body_link in link::scan_body_links(&path, &doc.body) {
-                let link = body_link.link;
-                if link.is_external() || title::is_alias_shaped(&link.target) {
-                    continue;
-                }
-                if let Target::Path(target) = self.resolve_link(&path, &link) {
-                    let dir = dir_of(&target);
-                    if !is_parked(&dir) {
-                        dirs.insert(dir);
-                    }
-                }
-            }
-        }
-        // Reaching here means no spanning link was alias-shaped — every early
-        // return above is the only way `true` comes back.
-        Ok((dirs, false))
-    }
-
-    /// Scan every document under the root for a self-stored `id` frontmatter
-    /// field, returning the `(id, path)` pairs — the rebuildable id→path map for
-    /// the frontmatter-only identity storage mode ([`IdStorage::FrontmatterOnly`]).
-    /// Like [`title_index`](Self::title_index) this is a flat filesystem scan,
-    /// deliberately independent of link resolution (so it can bootstrap the very
-    /// index that id links resolve through, with no chicken-and-egg).
-    ///
-    /// [`IdStorage::FrontmatterOnly`]: crate::config::IdStorage::FrontmatterOnly
-    pub async fn scan_ids(&self) -> Result<Vec<(crate::identity::Id, PathBuf)>> {
-        let mut ids = Vec::new();
-        self.scan_ids_dir(PathBuf::new(), &mut ids).await?;
-        Ok(ids)
-    }
-
-    /// Every content document (Markdown/Djot/HTML) under the root, as sorted
-    /// workspace-relative paths — the on-disk population the orphan check diffs
-    /// against what the spanning tree reaches (DESIGN §8). Deliberately restricted
-    /// to *content* documents: whole-file metadata sidecars (a config or registry
-    /// document, a stray `.yaml`) are not prose a user orphans, so they are not
-    /// candidates. A flat filesystem scan (hidden entries skipped), independent of
-    /// link resolution, like the title/id scans beside it.
-    pub async fn content_documents(&self) -> Result<Vec<PathBuf>> {
-        let mut docs = Vec::new();
-        self.scan_content_dir(PathBuf::new(), &mut docs).await?;
-        docs.sort();
-        Ok(docs)
-    }
-
-    /// The workspace-relative direct-child files of each directory in `dirs`
-    /// (non-recursive), skipping hidden entries and unreadable directories.
-    ///
-    /// The bounded-scan primitive behind reachability-scoped discovery (DESIGN
-    /// §8): it opens only the directories it is handed and never descends into
-    /// subdirectories, so an *unreached* directory — a vendored tree, a nested
-    /// prov workspace — is neither read nor reported. Callers filter the
-    /// result for the file kind they care about (content documents for the orphan
-    /// check, opaque payloads for `attach --all`).
-    pub(crate) async fn direct_child_files(
-        &self,
-        dirs: &BTreeSet<PathBuf>,
-    ) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        for dir in dirs {
-            let Ok(entries) = self.listing(dir).await else {
-                continue;
-            };
-            for entry in entries {
-                let Some(name) = entry
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_owned)
-                else {
-                    continue;
-                };
-                if name.starts_with('.') || !entry.file_type().is_file() {
-                    continue;
-                }
-                files.push(if dir.as_os_str().is_empty() {
-                    PathBuf::from(&name)
-                } else {
-                    dir.join(&name)
-                });
-            }
-        }
-        Ok(files)
-    }
-
-    /// The directories the reachable set `reachable` occupies — each reached
-    /// document's own directory (the workspace root's directory always among
-    /// them, since the root document is reachable). The scope
-    /// [`direct_child_files`](Self::direct_child_files) is bounded to: a directory
-    /// is "known" precisely when a linked document lives directly in it.
-    pub(crate) fn reached_dirs(reachable: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
-        reachable
-            .iter()
-            .map(|p| p.parent().unwrap_or(Path::new("")).to_path_buf())
-            .collect()
-    }
-
-    /// Recursively collect content-document paths under `rel_dir`. Same walk as
-    /// [`scan_ids_dir`](Self::scan_ids_dir); unreadable/hidden entries are skipped.
-    fn scan_content_dir<'a>(
-        &'a self,
-        rel_dir: PathBuf,
-        docs: &'a mut Vec<PathBuf>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move {
-            let Ok(entries) = self.listing(&rel_dir).await else {
-                return Ok(());
-            };
-            for entry in entries {
-                let Some(name) = entry
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_owned)
-                else {
-                    continue;
-                };
-                if name.starts_with('.') {
-                    continue;
-                }
-                let rel = if rel_dir.as_os_str().is_empty() {
-                    PathBuf::from(&name)
-                } else {
-                    rel_dir.join(&name)
-                };
-                if entry.file_type().is_dir() {
-                    self.scan_content_dir(rel, docs).await?;
-                } else if entry.file_type().is_file()
-                    && ContentFormat::from_extension(&rel).is_some()
-                {
-                    docs.push(rel);
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Recursively collect self-stored `id` fields under `rel_dir`. Same walk as
-    /// [`scan_titles`](Self::scan_titles); unreadable/hidden entries are skipped.
-    fn scan_ids_dir<'a>(
-        &'a self,
-        rel_dir: PathBuf,
-        ids: &'a mut Vec<(crate::identity::Id, PathBuf)>,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move {
-            let Ok(entries) = self.listing(&rel_dir).await else {
-                return Ok(());
-            };
-            let listing = file_listing(&rel_dir, &entries);
-            for entry in entries {
-                let Some(name) = entry
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_owned)
-                else {
-                    continue;
-                };
-                if name.starts_with('.') {
-                    continue;
-                }
-                let rel = if rel_dir.as_os_str().is_empty() {
-                    PathBuf::from(&name)
-                } else {
-                    rel_dir.join(&name)
-                };
-                if entry.file_type().is_dir() {
-                    self.scan_ids_dir(rel, ids).await?;
-                } else if entry.file_type().is_file()
-                    && is_document_path(&rel)
-                    // An `id:` inside a shadowed payload is an example, not a
-                    // claim on the registry (see `attach_opaque`).
-                    && !self.is_shadowed_payload(&rel, &listing).await
-                    && let Ok((_, doc)) = self.load(&rel).await
-                    && let Some(id) = doc.meta.get("id").and_then(Value::as_str)
-                    && !id.trim().is_empty()
-                {
-                    ids.push((crate::identity::Id(id.trim().to_string()), rel));
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Recursively index the documents under the workspace-relative `rel_dir`,
-    /// never descending into a directory under `parked`. Unreadable directories
-    /// and files are skipped (a title index is a best-effort cache, not a
-    /// validation pass); hidden entries (`.`-prefixed) are ignored.
-    ///
-    /// `parked` is [`parked_dirs`](Self::parked_dirs) — prov's byte-parking
-    /// stores. Excluded by *not descending* rather than by filtering afterwards,
-    /// so a workspace with a thousand history events does not read a thousand
-    /// event documents in order to throw their titles away.
-    fn scan_titles<'a>(
-        &'a self,
-        rel_dir: PathBuf,
-        parked: &'a [PathBuf],
-        index: &'a mut TitleIndex,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move {
-            if parked.iter().any(|p| rel_dir.starts_with(p)) {
-                return Ok(());
-            }
-            let Ok(entries) = self.listing(&rel_dir).await else {
-                return Ok(());
-            };
-            let listing = file_listing(&rel_dir, &entries);
-            for entry in entries {
-                let Some(name) = entry
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_owned)
-                else {
-                    continue;
-                };
-                if name.starts_with('.') {
-                    continue;
-                }
-                let rel = if rel_dir.as_os_str().is_empty() {
-                    PathBuf::from(&name)
-                } else {
-                    rel_dir.join(&name)
-                };
-                if entry.file_type().is_dir() {
-                    self.scan_titles(rel, parked, index).await?;
-                } else if entry.file_type().is_file()
-                    && is_document_path(&rel)
-                    // A shadowed payload is bytes prov agreed not to read: its
-                    // title is a specimen's, and must not answer `[[alias]]`.
-                    && !self.is_shadowed_payload(&rel, &listing).await
-                {
-                    // Always index by stem (name-based resolution, Obsidian-style)…
-                    if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
-                        index.insert(stem, rel.clone());
-                    }
-                    // …and by the declared `title` when the document parses.
-                    if let Ok((_, doc)) = self.load(&rel).await
-                        && let Some(title) = doc.meta.get("title").and_then(Value::as_str)
-                    {
-                        index.insert(title, rel.clone());
-                    }
-                }
-            }
-            Ok(())
-        })
-    }
-
     /// Resolve the first target of `relation` declared on `root_doc` to a
     /// workspace path — the shared mechanic behind the registry and config
     /// pointers: a workspace resource named by a well-known relation on the root.
@@ -1123,7 +729,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let Some(raw) = doc
             .meta
             .get(relation)
-            .map(crate::meta::Value::link_strings)
+            .map(prov_graph::meta::Value::link_strings)
             .and_then(|targets| targets.into_iter().next())
         else {
             return Ok(None);
@@ -1144,9 +750,13 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// set fires on `event` (DESIGN §4's registration lifecycle) — an inactive
     /// trigger is an error, so callers cannot silently grow the authoritative
     /// set beyond what the policy allows.
-    pub async fn register(&mut self, path: &Path, event: Trigger) -> Result<crate::identity::Id> {
+    pub async fn register(
+        &mut self,
+        path: &Path,
+        event: Trigger,
+    ) -> Result<prov_graph::identity::Id> {
         let path = link::normalize(path);
-        if let Some(id) = self.index.id_for_path(&path) {
+        if let Some(id) = self.graph.index().id_for_path(&path) {
             return Ok(id);
         }
         if !self.identity.registration().fires_on(event) {
@@ -1158,17 +768,17 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
             return Err(Error::NotFound(path.to_path_buf()));
         }
         let id = self.mint_unique(&path);
-        self.index.register(&id, &path);
+        self.graph.index_mut().register(&id, &path);
         self.queue_stamp(&path, &id);
         Ok(id)
     }
 
     /// Mint until the ID is unknown to the index — including tombstones, so a
     /// deleted document's ID is never reissued to mean something else.
-    pub(crate) fn mint_unique(&mut self, path: &Path) -> crate::identity::Id {
+    pub(crate) fn mint_unique(&mut self, path: &Path) -> prov_graph::identity::Id {
         loop {
             let id = self.identity.mint(path);
-            if !self.index.is_known(&id) {
+            if !self.graph.index().is_known(&id) {
                 return id;
             }
         }
@@ -1212,13 +822,13 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// document this same operation is creating — so the on-disk existence check
     /// in [`register`](Self::register) does not yet hold. Idempotent: returns any
     /// existing ID, else mints and registers one.
-    pub(crate) fn register_for_authoring(&mut self, path: &Path) -> crate::identity::Id {
+    pub(crate) fn register_for_authoring(&mut self, path: &Path) -> prov_graph::identity::Id {
         let path = link::normalize(path);
-        if let Some(id) = self.index.id_for_path(&path) {
+        if let Some(id) = self.graph.index().id_for_path(&path) {
             return id;
         }
         let id = self.mint_unique(&path);
-        self.index.register(&id, &path);
+        self.graph.index_mut().register(&id, &path);
         self.queue_stamp(&path, &id);
         id
     }
@@ -1227,7 +837,7 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// [`commit`](Self::commit) to stage. A no-op unless the workspace stores ids
     /// in the document (DESIGN §5) — under registry-only storage a document never
     /// learns its own id.
-    fn queue_stamp(&mut self, path: &Path, id: &crate::identity::Id) {
+    fn queue_stamp(&mut self, path: &Path, id: &prov_graph::identity::Id) {
         if self.settings.id_storage.stamps_frontmatter() {
             self.pending_stamps.push((path.to_path_buf(), id.clone()));
         }
@@ -1237,7 +847,7 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
 impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The underlying filesystem.
     pub fn fs(&self) -> &FS {
-        &self.fs
+        self.graph.fs()
     }
 }
 
@@ -1261,8 +871,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// one. A store with nothing checkpointed ignores it, which is the ordinary
     /// case; the one that has something is the one that left it behind.
     pub(crate) fn change(&mut self) -> ChangeSet {
-        self.index.rollback();
-        self.index.checkpoint();
+        self.graph.index_mut().rollback();
+        self.graph.index_mut().checkpoint();
         ChangeSet::new()
     }
 
@@ -1275,13 +885,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         &self,
         cs: &ChangeSet,
         path: &Path,
-    ) -> Result<(String, crate::document::Document)> {
+    ) -> Result<(String, prov_graph::document::Document)> {
         let Some(bytes) = cs.staged(path) else {
             return self.load(path).await;
         };
         let text = String::from_utf8(bytes.to_vec())
             .map_err(|e| Error::Structure(format!("{} is not valid UTF-8: {e}", path.display())))?;
-        let doc = crate::document::Document::parse(path, &text)?;
+        let doc = prov_graph::document::Document::parse(path, &text)?;
         Ok((text, doc))
     }
 
@@ -1308,24 +918,24 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // disagree because of an interrupted write.
         if let Err(e) = self.stage_pending_stamps(&mut cs).await {
             self.pending_stamps.clear();
-            self.index.rollback();
+            self.graph.index_mut().rollback();
             return Err(e);
         }
         // The registry lives in a document, and the op may be moving or rewriting
         // that very document. Follow it before rendering — staged last, this write
         // would otherwise clobber the op's own edit to it.
-        if let Err(e) = self.index.rebase(&cs) {
-            self.index.rollback();
+        if let Err(e) = self.graph.index_mut().rebase(&cs) {
+            self.graph.index_mut().rollback();
             return Err(e);
         }
-        let staged_index = match self.index.pending_write() {
+        let staged_index = match self.graph.index_mut().pending_write() {
             Ok(Some((path, text))) => {
                 cs.write(path, text);
                 true
             }
             Ok(None) => false,
             Err(e) => {
-                self.index.rollback();
+                self.graph.index_mut().rollback();
                 return Err(e);
             }
         };
@@ -1333,18 +943,18 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // before it lands, so a set that fails halfway leaves nothing behind
         // claiming to know what is on disk.
         self.forget_written(&cs);
-        match cs.apply(&self.fs, &self.root).await {
+        match cs.apply(self.graph.fs(), self.graph.root()).await {
             Ok(()) => {
                 // Unconditional: the op succeeded, so its checkpoint is spent
                 // either way. `staged_index` only says whether the store may now
                 // call itself persisted — a store with no home stages nothing and
                 // must stay dirty for whoever does write it, but its checkpoint is
                 // just as finished as anyone's.
-                self.index.committed(staged_index);
+                self.graph.index_mut().committed(staged_index);
                 Ok(())
             }
             Err(e) => {
-                self.index.rollback();
+                self.graph.index_mut().rollback();
                 Err(e)
             }
         }
@@ -1387,12 +997,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     Err(e) => return Err(e),
                 },
             };
-            let doc = crate::document::Document::parse(&path, &text)?;
+            let doc = prov_graph::document::Document::parse(&path, &text)?;
             if doc.meta.get("id").and_then(Value::as_str) == Some(id.0.as_str()) {
                 continue;
             }
-            let updated =
-                crate::edit::set_in_text(&text, doc.carrier, "id", fig::Value::Str(id.0.clone()))?;
+            let updated = prov_graph::edit::set_in_text(
+                &text,
+                doc.carrier,
+                "id",
+                fig::Value::Str(id.0.clone()),
+            )?;
             cs.write(&path, updated);
         }
         Ok(())
@@ -1418,36 +1032,200 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         root_doc: &Path,
         pointer: &str,
         sidecar: &Path,
-        seed: &crate::meta::Mapping,
+        seed: &prov_graph::meta::Mapping,
         format: fig::Format,
     ) -> Result<bool> {
         let mut cs = ChangeSet::new();
         let created = !self.exists(sidecar).await?;
         if created {
-            cs.write(sidecar, crate::meta::serialize_mapping(seed, format)?);
+            cs.write(sidecar, prov_graph::meta::serialize_mapping(seed, format)?);
         }
         // The pointer value is the sidecar path as written (a bare filename when it
         // sits beside the root, which is the convention). Set it comment- and
         // format-preservingly, like any other metadata edit.
         let (text, doc) = self.load(root_doc).await?;
-        let updated = crate::edit::set_in_text(
+        let updated = prov_graph::edit::set_in_text(
             &text,
             doc.carrier,
             pointer,
-            crate::edit::infer_scalar(&sidecar.to_string_lossy()),
+            prov_graph::edit::infer_scalar(&sidecar.to_string_lossy()),
         )?;
         cs.write(root_doc, updated);
-        cs.apply(&self.fs, &self.root).await?;
+        cs.apply(self.graph.fs(), self.graph.root()).await?;
         Ok(created)
     }
 
     // TODO(port): scan/traverse from diaryx_core::workspace land here.
 }
 
-/// Builder for [`Workspace`]. Setting an identity policy or index store returns
-/// a builder with a new type parameter, so the composed [`Workspace`] carries
+/// The read surface, forwarded to [`Graph`].
+///
+/// Every method here is one line. That is the point: `Workspace`'s traversal
+/// *is* `prov-graph`'s traversal, not a second implementation that happens to
+/// agree with it today. What the workspace adds is the two things the read core
+/// deliberately does not know — where prov parks its own bytes (a history
+/// store's interiors, the recycle bin), which the scoped walks must not index,
+/// and the config layer those parked directories are declared in.
+impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
+    /// Read and split the document at a workspace-relative `path`, served from
+    /// the read-scope memo when one is open.
+    pub(crate) async fn load(&self, path: &Path) -> Result<(String, Document)> {
+        self.graph.load(path).await
+    }
+
+    /// The parsed document at a workspace-relative `path`.
+    pub async fn document(&self, path: impl AsRef<Path>) -> Result<Document> {
+        self.graph.document(path).await
+    }
+
+    /// Whether `path` exists, unclamped and unmemoized.
+    pub async fn exists(&self, path: &Path) -> Result<bool> {
+        self.graph.exists(path).await
+    }
+
+    /// The raw bytes at `path` — for something that is not a document.
+    pub async fn read_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        self.graph.read_bytes(path).await
+    }
+
+    /// The raw text at `path` — for something that is not a document.
+    pub async fn read_text(&self, path: &Path) -> Result<String> {
+        self.graph.read_text(path).await
+    }
+
+    /// The entries of the directory at `path`.
+    pub async fn listing(&self, path: &Path) -> Result<Vec<DirEntry>> {
+        self.graph.listing(path).await
+    }
+
+    /// Metadata for the entry at `path`.
+    pub async fn stat(&self, path: &Path) -> Result<Metadata> {
+        self.graph.stat(path).await
+    }
+
+    /// Resolve `link`, written in the document at `doc`, to what it names.
+    pub fn resolve_link(&self, doc: &Path, link: &Link) -> Target {
+        self.graph.resolve_link(doc, link)
+    }
+
+    /// [`resolve_link`](Self::resolve_link), with a title index for nominal
+    /// (`[[alias]]`) references.
+    pub fn resolve_link_with(
+        &self,
+        doc: &Path,
+        link: &Link,
+        titles: Option<&TitleIndex>,
+    ) -> Target {
+        self.graph.resolve_link_with(doc, link, titles)
+    }
+
+    /// The census of every forward link reachable from `start`, with prov's own
+    /// parked directories excluded from the nominal scan.
+    pub async fn census(&self, start: impl AsRef<Path>) -> Result<Vec<CensusEntry>> {
+        let start = start.as_ref();
+        let parked = self.parked_dirs(start).await?;
+        self.graph.census_within(start, &parked).await
+    }
+
+    /// The shared spanning-tree walk behind [`census`](Self::census) and the
+    /// structural findings.
+    pub(crate) async fn walk(&self, start: &Path) -> Result<Walk> {
+        let parked = self.parked_dirs(start).await?;
+        self.graph.walk(start, &parked).await
+    }
+
+    /// The backlink map for the workspace reachable from `start`: every resolved
+    /// target to the inbound references that reach it. The census inverted, so
+    /// it is always fresh — there is no stored index to drift.
+    pub async fn backlinks(
+        &self,
+        start: impl AsRef<Path>,
+    ) -> Result<BTreeMap<PathBuf, Vec<Backlink>>> {
+        Ok(prov_graph::graph::invert(self.census(start).await?))
+    }
+
+    /// The inbound references to a single `target`, sorted by source.
+    pub async fn backlinks_to(
+        &self,
+        start: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+    ) -> Result<Vec<Backlink>> {
+        Ok(prov_graph::graph::inbound(
+            self.census(start).await?,
+            target.as_ref(),
+        ))
+    }
+
+    /// Every file the workspace reaches from `start` that is actually on disk.
+    pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
+        let start = start.as_ref();
+        let parked = self.parked_dirs(start).await?;
+        self.graph.reachable_files_within(start, &parked).await
+    }
+
+    /// The documents among a walk's reachable set.
+    pub async fn reachable_documents(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<BTreeSet<PathBuf>> {
+        self.graph
+            .reachable_documents(start, census, content_bodies)
+            .await
+    }
+
+    /// The materialized spanning tree rooted at `start`.
+    pub async fn tree(&self, start: impl AsRef<Path>) -> Result<Node> {
+        self.tree_with(start, TreeOptions::default()).await
+    }
+
+    /// [`tree`](Self::tree), with [`TreeOptions`].
+    pub async fn tree_with(&self, start: impl AsRef<Path>, options: TreeOptions) -> Result<Node> {
+        let start = start.as_ref();
+        let parked = self.parked_dirs(start).await?;
+        self.graph.tree_within(start, options, &parked).await
+    }
+
+    /// The full title index — every document under the root.
+    pub async fn title_index(&self) -> Result<TitleIndex> {
+        self.graph.title_index().await
+    }
+
+    /// The title index bounded to what the workspace reaches from `start`.
+    pub async fn title_index_scoped(&self, start: &Path) -> Result<TitleIndex> {
+        let parked = self.parked_dirs(start).await?;
+        self.graph.title_index_scoped(start, &parked).await
+    }
+
+    /// Every `id` spelled in a document's own frontmatter, with its path.
+    pub async fn scan_ids(&self) -> Result<Vec<(prov_graph::identity::Id, PathBuf)>> {
+        self.graph.scan_ids().await
+    }
+
+    /// Every prose document under the root.
+    pub async fn content_documents(&self) -> Result<Vec<PathBuf>> {
+        self.graph.content_documents().await
+    }
+
+    /// The files directly inside `dirs` — the bounded listing the scans share.
+    pub(crate) async fn direct_child_files(
+        &self,
+        dirs: &BTreeSet<PathBuf>,
+    ) -> Result<Vec<PathBuf>> {
+        self.graph.direct_child_files(dirs).await
+    }
+
+    /// The directories a reachable set occupies.
+    pub(crate) fn reached_dirs(reachable: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+        Graph::<FS, Ix>::reached_dirs(reachable)
+    }
+}
+
 /// exactly the layers requested — and none it does not.
 #[derive(Debug, Clone)]
+/// Builder for [`Workspace`]. Setting an identity policy or index store returns
+/// a builder with a new type parameter, so the composed [`Workspace`] carries
 pub struct WorkspaceBuilder<FS, Id, Ix> {
     fs: FS,
     root: PathBuf,
@@ -1588,15 +1366,22 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     }
 
     /// Finish building.
+    ///
+    /// This is where the ten authoring settings are split: the three the read
+    /// core needs are copied into the [`Graph`]'s [`ReadSettings`], and the
+    /// whole set is kept alongside for the verbs. Nothing mutates either
+    /// afterwards, so the two copies of those three cannot drift.
     pub fn build(self) -> Workspace<FS, Id, Ix> {
+        let read = ReadSettings {
+            relations: self.settings.relations.clone(),
+            workspace_id: self.settings.workspace_id.clone(),
+            id_storage: self.settings.id_storage,
+        };
         Workspace {
-            fs: self.fs,
-            root: self.root,
+            graph: Graph::new(self.fs, self.root, self.index, read),
             identity: self.identity,
-            index: self.index,
             settings: self.settings,
             pending_stamps: Vec::new(),
-            memo: Mutex::default(),
             fixity_cache: Mutex::new(self.fixity_cache),
         }
     }
@@ -1606,7 +1391,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
 mod tests {
     use super::*;
     use crate::identity::{IdentityPolicy, Minter};
-    use crate::index::InMemoryIndex;
+    use prov_graph::index::InMemoryIndex;
 
     // A stand-in filesystem — the seam is exercised without a real backend.
     #[derive(Clone)]
