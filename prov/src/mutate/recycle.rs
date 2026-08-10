@@ -16,12 +16,13 @@ use crate::document::Document;
 use crate::edit::MetaEditor;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::graph::{LinkSite, Resolution, Target};
 use crate::identity::IdentityPolicy;
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
-use crate::validate::{Finding, LinkSite, Resolution};
-use crate::workspace::{Target, Workspace};
+use crate::validate::Finding;
+use crate::workspace::Workspace;
 
 use super::maintain::content_target;
 
@@ -190,7 +191,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // items directory, with a numeric suffix on the rare same-path collision.
         let mut node_bin = items_dir.join(&path);
         let mut bump = 1;
-        while self.fs().try_exists(&self.root().join(&node_bin)).await? {
+        while self.exists(&node_bin).await? {
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy())
@@ -204,7 +205,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // A separated document's prose body travels with it.
         let body_from = content_target(&doc, &path);
         let body_bin = match &body_from {
-            Some(body) if self.fs().try_exists(&self.root().join(body)).await? => {
+            Some(body) if self.exists(body).await? => {
                 Some((body.clone(), items_dir.join(body)))
             }
             _ => None,
@@ -405,7 +406,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Err(conflict.into());
         }
 
-        if self.fs().try_exists(&self.root().join(&from)).await? {
+        if self.exists(&from).await? {
             return Err(Error::Structure(format!(
                 "{} already exists; cannot restore over it",
                 from.display()
@@ -462,7 +463,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // Re-add the parent's spanning entry (its removal is all `recycle` did to
         // the parent). Skip when the parent is gone or already links the child.
         if let Some(parent) = &parent
-            && self.fs().try_exists(&self.root().join(parent)).await?
+            && self.exists(parent).await?
         {
             let (parent_text, parent_doc) = self.load(parent).await?;
             let already =
@@ -550,7 +551,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             for key in ["bin", "body_bin"] {
                 if let Some(path) = record.get(key).and_then(Value::as_str) {
                     let rel = PathBuf::from(path);
-                    if self.fs().try_exists(&self.root().join(&rel)).await? {
+                    if self.exists(&rel).await? {
                         cs.remove(rel);
                     }
                 }

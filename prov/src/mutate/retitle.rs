@@ -15,10 +15,11 @@ use crate::document::Document;
 use crate::edit::MetaEditor;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::graph::Target;
 use crate::identity::IdentityPolicy;
 use crate::index::IndexStore;
 use crate::link::{self, Link};
-use crate::workspace::{Target, Workspace};
+use crate::workspace::Workspace;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Change the document's title, refreshing the display *label* of every
@@ -38,7 +39,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// them in the meantime).
     pub async fn retitle(&mut self, path: &Path, new_title: &str) -> Result<usize> {
         let path = link::normalize(path);
-        if !self.fs().try_exists(&self.root().join(&path)).await? {
+        if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));
         }
         let (text, doc) = self.load(&path).await?;

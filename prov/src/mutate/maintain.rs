@@ -26,12 +26,12 @@ use crate::document::Document;
 use crate::edit::MetaEditor;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::graph::{Resolution, Target};
 use crate::identity::IdentityPolicy;
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
-use crate::validate::Resolution;
-use crate::workspace::{Target, Workspace};
+use crate::workspace::Workspace;
 
 /// Walking the spanning relation needs the relation set and the resolver, and
 /// neither of those is an identity concern — so these three sit outside the

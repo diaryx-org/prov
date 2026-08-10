@@ -124,7 +124,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // Refuse if either file (the node, or a separated body) already exists.
         for existing in std::iter::once(&node).chain(body.iter()) {
-            if self.fs().try_exists(&self.root().join(existing)).await? {
+            if self.exists(existing).await? {
                 return Err(Error::AlreadyExists(existing.to_path_buf()));
             }
         }

@@ -4,7 +4,7 @@
 //! found, not configured: walk up from a starting directory and the first
 //! directory holding a **root document** — one with metadata and no `part_of`
 //! (nothing contains it) — is the workspace root. This is the counterpart to the
-//! traversal in [`crate::tree`]: that walk goes *down* the spanning tree from a
+//! traversal in [`crate::graph::tree`]: that walk goes *down* the spanning tree from a
 //! known root; this one goes *up* the filesystem to locate the root in the first
 //! place.
 //!

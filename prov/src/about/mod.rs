@@ -96,6 +96,14 @@ use crate::link::{Addressing, Notation, PathStyle};
 use crate::meta::{Mapping, Value};
 use crate::relation::{Cardinality, RelationSet};
 
+/// The `Workspace` methods that decide when to call [`generate`], where the
+/// result goes, and whether it differs from what is already on disk. Kept out
+/// of this module's own body, which stays a pure function of configuration —
+/// see the module doc's "Prose in, prose out" note on why no filesystem is
+/// touched above this line.
+mod io;
+pub use io::{AboutDiff, default_about_name};
+
 /// The column the generator wraps prose paragraphs at. Narrow on purpose: the
 /// page is read in whatever the reader has to hand, which may be a terminal.
 const WRAP: usize = 74;
@@ -1580,7 +1588,7 @@ mod tests {
     }
 
     fn render(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
-        let relations = RelationSet::from_config(config);
+        let relations = config.relation_set();
         generate(config, &relations, ctx).expect("generate")
     }
 

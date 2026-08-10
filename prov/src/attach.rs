@@ -99,7 +99,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     pub async fn attachment_for(&self, payload: &Path) -> Result<Option<PathBuf>> {
         let payload = link::normalize(payload);
         for candidate in sidecar_candidates(&payload) {
-            if !self.fs().try_exists(&self.root().join(&candidate)).await? {
+            if !self.exists(&candidate).await? {
                 continue;
             }
             if self.sidecar_claims(&candidate, &payload).await {
@@ -206,7 +206,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         out: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.fs().read_dir(&self.root().join(&rel_dir)).await else {
+            let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
             for entry in entries {
@@ -295,7 +295,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let payload = link::normalize(payload);
         let parent = link::normalize(parent);
 
-        if !self.fs().try_exists(&self.root().join(&payload)).await? {
+        if !self.exists(&payload).await? {
             return Err(Error::NotFound(payload.to_path_buf()));
         }
         // An attachment shadows *external* content. A file prov can read is a
@@ -313,7 +313,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let (spanning, inverse) = self.spanning_pair()?;
         let format = self.default_embed_format();
         let node = sidecar_path(&payload, format);
-        if self.fs().try_exists(&self.root().join(&node)).await? {
+        if self.exists(&node).await? {
             return Err(Error::AlreadyExists(node.to_path_buf()));
         }
 
@@ -359,7 +359,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // edited — so it is recorded whenever the workspace covers payloads, with
         // no per-file opt-in. The payload is read once here, at attach time.
         if self.fixity().covers_payloads() {
-            let bytes = self.fs().read(&self.root().join(&payload)).await?;
+            let bytes = self.read_bytes(&payload).await?;
             map.insert(
                 "content_hash".into(),
                 Value::String(crate::fixity::digest(&bytes)),

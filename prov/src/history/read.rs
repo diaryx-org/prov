@@ -269,7 +269,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut total = 0u64;
         let mut stack = vec![store_dir(&store_index)];
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = self.fs().read_dir(&self.root().join(&dir)).await else {
+            let Ok(entries) = self.listing(&dir).await else {
                 continue;
             };
             for entry in entries {
@@ -279,7 +279,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 let path = dir.join(name);
                 if entry.file_type().is_dir() {
                     stack.push(path);
-                } else if let Ok(meta) = self.fs().metadata(&self.root().join(&path)).await {
+                } else if let Ok(meta) = self.stat(&path).await {
                     total += meta.len();
                 }
             }
@@ -387,7 +387,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Ok(None);
         }
         let path = event_path(&store_index, id, self.history_ext(root_doc))?;
-        if !self.fs().try_exists(&self.root().join(&path)).await? {
+        if !self.exists(&path).await? {
             return Ok(None);
         }
         let (_, doc) = self.load(&path).await?;
@@ -424,7 +424,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Some(present) => *present,
                 None => {
                     let present = match blob_path(&store_index, &file.hash) {
-                        Ok(blob) => self.fs().try_exists(&self.root().join(blob)).await?,
+                        Ok(blob) => self.exists(&blob).await?,
                         Err(_) => false,
                     };
                     seen.insert(&file.hash, present);

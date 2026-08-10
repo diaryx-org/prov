@@ -3,14 +3,13 @@
 //! The sleeper feature (DESIGN §8): walk the spanning tree and report every
 //! violated invariant as a [`Finding`] — data, not a panic.
 //!
-//! Underneath sits the **census** ([`Workspace::census`]): one traversal that
-//! yields every forward link reachable from the root — frontmatter relation
-//! edges *and* body `[[…]]` wikilinks alike — each tagged with where it is
-//! written ([`LinkSite`]) and how it resolves ([`Resolution`]). Because it is
-//! read straight from the documents, the census is *ground truth*; the backlink
-//! map, these findings, and (in `mutate`) inbound-rename maintenance are all
-//! views over it, and any stored index heals toward it. [`Workspace::check`] is
-//! the findings view. The checks:
+//! Findings are a **view** over [`crate::graph`]'s census
+//! ([`Workspace::census`]): every forward link the walk resolves becomes a
+//! finding when it fails to resolve cleanly, joined with the structural
+//! findings (unreadable document, duplicate containment, missing inverse) the
+//! same walk raises from traversal state. See `graph`'s module doc for why the
+//! census is ground truth and everything here is downstream of it.
+//! [`Workspace::check`] is the findings view. The checks:
 //!
 //! - **broken link** — a path target (in a relation or a wikilink) that
 //!   resolves to nothing on disk;
@@ -29,116 +28,22 @@
 //! External targets (URLs, `mailto:`) are never checked. Autofix comes with
 //! the mutation layer's growth; findings first.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::content::ContentFormat;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::fs::Storage;
-use crate::identity::{self, Id, IdentityPolicy};
+use crate::graph::{
+    CensusEntry, LinkSite, Resolution, StructuralFact, Target, Walk, reachable_set,
+};
+use crate::identity::{Id, IdentityPolicy};
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
 use crate::mutate::maintain;
-use crate::title::{self, TitleIndex, TitleMatch};
-use crate::workspace::{Target, Workspace};
-
-/// Where in a document a forward link is written — a frontmatter relation field
-/// or a body wikilink. Carried by every link-resolution [`Finding`] and every
-/// [`CensusEntry`] so a report can point at the exact site.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkSite {
-    /// A frontmatter relation field, by name (e.g. `contents`, `links`).
-    Relation(String),
-    /// A `[[…]]` wikilink in the body, at this byte span.
-    Body(Range<usize>),
-}
-
-impl fmt::Display for LinkSite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LinkSite::Relation(name) => f.write_str(name),
-            LinkSite::Body(_) => f.write_str("body"),
-        }
-    }
-}
-
-/// How a forward link resolves against the workspace. Path and id forms stay
-/// distinct on purpose: the registry owns id resolution (location-independent,
-/// stable across moves), while a path is checked against the on-disk name — so
-/// a caller can tell which links a rename must rewrite (paths) from which it
-/// must leave alone (ids).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Resolution {
-    /// A path target that resolves to an existing file (exact name).
-    Path(PathBuf),
-    /// A path target that only matches case-insensitively; `got` is the target
-    /// as resolved, `actual` the exact on-disk name.
-    CaseMismatch { got: PathBuf, actual: String },
-    /// A path target with nothing on disk.
-    Broken,
-    /// A `prov:<id>` target the registry resolves to the live path `to`.
-    Id { id: Id, to: PathBuf },
-    /// A well-formed `prov:<id>` target with no live registry entry;
-    /// `tombstoned` separates "deleted" from "never issued here" (§4 hazard).
-    DanglingId { id: Id, tombstoned: bool },
-    /// A `prov:<id>` target failing its check character — a typo.
-    MalformedId,
-    /// A nominal (alias) target several documents claim — unresolvable.
-    /// `candidates` are the sharers, sorted.
-    AmbiguousAlias {
-        name: String,
-        candidates: Vec<PathBuf>,
-    },
-    /// A URL / mail address — off-workspace, never resolved or rewritten.
-    External,
-    /// An `id:<workspace>/<id>` target naming a document in another workspace.
-    ///
-    /// A clean resolution, not a finding: prov holds no map from a workspace
-    /// name to a location (see
-    /// [`Target::Foreign`](crate::workspace::Target::Foreign)), so it has no
-    /// evidence either way about whether the target exists. Reporting a link it
-    /// cannot check as broken would be a false positive every host would then
-    /// have to suppress — and a `check` that must be filtered is one nobody
-    /// reads. The id is deliberately **not** check-verified: the foreign
-    /// workspace owns its id space and need not be a prov workspace.
-    Foreign { workspace: String, id: Id },
-}
-
-impl Resolution {
-    /// The workspace path this link reaches, if it resolves to one (by path or
-    /// through the registry) — what the spanning walk descends into and what a
-    /// backlink map keys on. `None` for broken, dangling, malformed, external.
-    pub fn resolved_path(&self) -> Option<&PathBuf> {
-        match self {
-            Resolution::Path(p)
-            | Resolution::CaseMismatch { got: p, .. }
-            | Resolution::Id { to: p, .. } => Some(p),
-            _ => None,
-        }
-    }
-}
-
-/// One forward link as found in a document: where it is written and how it
-/// resolves. The unit of the [`census`](Workspace::census).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CensusEntry {
-    /// The document that declares the link (workspace-relative).
-    pub source: PathBuf,
-    /// Where in `source` the link is written.
-    pub site: LinkSite,
-    /// The target exactly as written (bare — the `[label](…)` wrapper stripped).
-    pub target_text: String,
-    /// The display label the link carried, when written `[label](target)` /
-    /// `[[target|label]]` — `None` for a bare target. Kept so a caller can check
-    /// a label against the target's current title (stale-label detection) without
-    /// re-reading the source.
-    pub label: Option<String>,
-    /// How the target resolves.
-    pub resolution: Resolution,
-}
+use crate::workspace::Workspace;
 
 impl CensusEntry {
     /// The integrity finding this entry represents when its target failed to
@@ -181,20 +86,59 @@ impl CensusEntry {
     }
 }
 
-/// An inbound reference to a document, as discovered by the census: which
-/// document links here ([`source`](Backlink::source)), where in it
-/// ([`site`](Backlink::site)), and whether the link is by stable id (survives
-/// moves) or by path (rewritten on a move). The inverse of a forward
-/// [`CensusEntry`] — the marquee payoff of the identity layer (DESIGN §6).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Backlink {
-    /// The document that links to the target.
-    pub source: PathBuf,
-    /// Where in `source` the link is written.
-    pub site: LinkSite,
-    /// `true` when the link is a `prov:<id>` reference (location-independent),
-    /// `false` when it is a path.
-    pub by_id: bool,
+/// The walk's [`StructuralFact`]s, named. Each variant here is exactly the
+/// fact the walk observed — a document that would not load, a single-parent
+/// invariant broken, and so on — so this is a relabeling, not a judgment call:
+/// `graph` stays ignorant of `Finding` (see the module doc at
+/// [`crate::graph`]) and `validate` supplies the one vocabulary a report is
+/// written in.
+impl From<StructuralFact> for Finding {
+    fn from(fact: StructuralFact) -> Self {
+        match fact {
+            StructuralFact::Unreadable { doc, error } => Finding::Unreadable { doc, error },
+            StructuralFact::IdMismatch {
+                doc,
+                frontmatter,
+                registry,
+            } => Finding::IdMismatch {
+                doc,
+                frontmatter,
+                registry,
+            },
+            StructuralFact::UnregisteredId { doc, frontmatter } => {
+                Finding::UnregisteredId { doc, frontmatter }
+            }
+            StructuralFact::UnstampedId { doc, registry } => {
+                Finding::UnstampedId { doc, registry }
+            }
+            StructuralFact::DuplicateContainment { doc, target } => {
+                Finding::DuplicateContainment { doc, target }
+            }
+            StructuralFact::MissingInverse {
+                doc,
+                child,
+                inverse,
+            } => Finding::MissingInverse {
+                doc,
+                child,
+                inverse,
+            },
+            StructuralFact::CaseMismatch {
+                doc,
+                site,
+                target,
+                actual,
+            } => Finding::CaseMismatch {
+                doc,
+                site,
+                target,
+                actual,
+            },
+            StructuralFact::BrokenLink { doc, site, target } => {
+                Finding::BrokenLink { doc, site, target }
+            }
+        }
+    }
 }
 
 /// One integrity finding. `doc` is always the document that *declares* the
@@ -1298,104 +1242,7 @@ impl fmt::Display for Remedy {
     }
 }
 
-/// The set of workspace-relative paths a walk from `start` reaches: `start`
-/// itself, every path a census link resolves to (any relation, a body wikilink,
-/// or an id through the registry), and every `content` target.
-///
-/// A **case-mismatched** link counts its *actual* on-disk file as reached, so a
-/// file is never both case-mismatched and orphaned. Prose bodies (and attachment
-/// payloads) arrive through `content_bodies` rather than the census, because a
-/// `content` pointer is not a graph edge — but it does reach a file, which is
-/// what every caller here cares about.
-///
-/// The one definition of "reachable" that the orphan check, the fixity pass, the
-/// vocabulary pass, and the history capture set all share (DESIGN §8).
-pub(crate) fn reachable_set(
-    start: &Path,
-    census: &[CensusEntry],
-    content_bodies: &[PathBuf],
-) -> BTreeSet<PathBuf> {
-    let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
-    reachable.insert(link::normalize(start));
-    reachable.extend(content_bodies.iter().cloned());
-    for entry in census {
-        match &entry.resolution {
-            Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                reachable.insert(p.clone());
-            }
-            Resolution::CaseMismatch { got, actual } => {
-                reachable.insert(got.with_file_name(actual));
-            }
-            _ => {}
-        }
-    }
-    reachable
-}
-
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
-    /// [`reachable_set`], minus any **shadowed attachment payload**
-    /// (`attach --opaque`) — the population a pass may parse *as a document*.
-    ///
-    /// A shadowed payload is still reachable (it must not be reported as an
-    /// orphan, and it is still fixity-checked *through its sidecar*), but its
-    /// bytes are an exhibit prov promised never to interpret. That is the same
-    /// bound [`is_shadowed_payload`](Workspace::is_shadowed_payload) already
-    /// holds the flat title and id scans to; this is its reachability-walk
-    /// counterpart, for [`vocabulary_findings`](Self::vocabulary_findings) and
-    /// [`fixity_findings`](Self::fixity_findings) — the two passes that load
-    /// every reachable path and read its frontmatter.
-    ///
-    /// The listing `is_shadowed_payload` needs is built the same way
-    /// [`orphans`](Self::orphans) builds one: the direct children of every
-    /// directory the reachable set occupies, so a shadow check costs a set
-    /// lookup per candidate extension rather than a stat.
-    async fn reachable_documents(
-        &self,
-        start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
-    ) -> Result<BTreeSet<PathBuf>> {
-        let reachable = reachable_set(start, census, content_bodies);
-        let reached_dirs = Self::reached_dirs(&reachable);
-        let listing: BTreeSet<PathBuf> = self
-            .direct_child_files(&reached_dirs)
-            .await?
-            .into_iter()
-            .collect();
-        let mut documents = BTreeSet::new();
-        for path in reachable {
-            if !self.is_shadowed_payload(&path, &listing).await {
-                documents.insert(path);
-            }
-        }
-        Ok(documents)
-    }
-
-    /// Every file the workspace reaches from `start` that actually exists on
-    /// disk — [`reachable_set`] over a fresh walk, filtered to real files.
-    ///
-    /// This is §8's bounded walk expressed as a *file set* rather than a findings
-    /// list: the same population `check` validates. [`history_capture`] captures
-    /// it (minus prov's two byte-parking stores) precisely so that an event is a
-    /// consistent cut across everything the workspace considers its own.
-    ///
-    /// [`history_capture`]: Workspace::history_capture
-    pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
-        let start = link::normalize(start);
-        let Walk {
-            census,
-            content_bodies,
-            ..
-        } = self.walk(&start).await?;
-        let mut files = BTreeSet::new();
-        for path in reachable_set(&start, &census, &content_bodies) {
-            if self.fs().try_exists(&self.root().join(&path)).await? {
-                files.insert(path);
-            }
-        }
-        Ok(files)
-    }
-
     /// The **recommended** metadata-only [`Fix`] for `finding`, or `None` when
     /// prov has nothing safe to offer.
     ///
@@ -1429,7 +1276,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Vec::new();
         };
         let dir = wanted.parent().unwrap_or(Path::new(""));
-        let Ok(entries) = self.fs().read_dir(&self.root().join(dir)).await else {
+        let Ok(entries) = self.listing(dir).await else {
             return Vec::new();
         };
         let mut scored: Vec<(usize, PathBuf)> = entries
@@ -1598,7 +1445,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut out = Vec::new();
         let mut dir = orphan.parent().map(Path::to_path_buf);
         while let Some(current) = dir {
-            if let Ok(entries) = self.fs().read_dir(&self.root().join(&current)).await {
+            if let Ok(entries) = self.listing(&current).await {
                 let mut here: Vec<PathBuf> = Vec::new();
                 for entry in entries {
                     let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
@@ -2157,9 +2004,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let start = start.as_ref();
         let Walk {
             census,
-            mut findings,
+            facts,
             content_bodies,
         } = self.walk(start).await?;
+        let mut findings: Vec<Finding> = facts.into_iter().map(Finding::from).collect();
         for entry in &census {
             // An `about` pointer at a page that is not there is not a broken
             // link. The page is *derived* (spec §4, generated prose — "a pure
@@ -2240,10 +2088,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// The `title` a document declares, or `None` when it is missing or the file
     /// cannot be read.
     async fn title_of(&self, path: &Path) -> Result<Option<String>> {
-        let text = match self.fs().read_to_string(&self.root().join(path)).await {
+        let text = match self.read_text(path).await {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
         };
         let doc = crate::document::Document::parse(path, &text)?;
         Ok(doc
@@ -2340,7 +2188,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             for key in ["bin", "body_bin"] {
                 if let Some(parked) = field(key) {
                     let parked = PathBuf::from(parked);
-                    if !self.fs().try_exists(&self.root().join(&parked)).await? {
+                    if !self.exists(&parked).await? {
                         missing.push(parked);
                     }
                 }
@@ -2541,7 +2389,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Some(raw) => {
                     let dir = path.parent().unwrap_or(Path::new(""));
                     let target = link::normalize(dir.join(raw));
-                    match self.fs().read(&self.root().join(&target)).await {
+                    match self.read_bytes(&target).await {
                         Ok(bytes) => crate::fixity::digest(&bytes),
                         // A missing payload is a broken-`content` matter, not a
                         // fixity one — leave it for that check, don't double-report.
@@ -2559,150 +2407,6 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
         Ok(findings)
-    }
-
-    /// Record that a document's content just changed — the single seam for the
-    /// bookkeeping an edit implies, done as one crash-safe write.
-    ///
-    /// Two independent effects, each self-gating:
-    /// - **Fixity**: (re)stamp `content_hash` when the workspace records fixity
-    ///   for this document's kind (a payload for an attachment, a body otherwise)
-    ///   *and* the bytes have actually drifted from what is recorded — so an
-    ///   unchanged document restamps nothing.
-    /// - **Timestamp**: when `updated` is `Some((field, at))`, set that frontmatter
-    ///   `field` to `at`. The *caller* decides an edit happened and supplies the
-    ///   time — the library stays clockless and deterministic (DESIGN §2: the
-    ///   client produces the instant, prov owns the field and its RFC 3339
-    ///   convention). Pass `None` to reconcile the checksum only.
-    ///
-    /// Returns whether anything was written. Hashes the same bytes `check`
-    /// verifies: the `content` sibling for a document that points at one, else the
-    /// document's own body.
-    pub async fn record_content_update(
-        &mut self,
-        path: impl AsRef<Path>,
-        updated: Option<(&str, &str)>,
-    ) -> Result<bool> {
-        let path = link::normalize(path.as_ref());
-        let (original, doc) = self.load(&path).await?;
-        let Some(text) = self.stamped(&path, &original, &doc, updated).await? else {
-            return Ok(false);
-        };
-        let mut cs = self.change();
-        cs.write(&path, text);
-        self.commit(cs).await?;
-        Ok(true)
-    }
-
-    /// Write `text` to the document at `path`, stamping what the write itself
-    /// implies — the counterpart to
-    /// [`record_content_update`](Self::record_content_update) for a caller who
-    /// *has* the new text rather than one reconciling text already on disk.
-    ///
-    /// Same two stamps, decided the same way and documented there: `content_hash`
-    /// where the workspace records fixity for this document's kind and the bytes
-    /// have drifted, and the `updated` frontmatter field when a caller supplies
-    /// one. The difference is only when they are applied. Stamping text on its way
-    /// to the disk costs one journaled write; stamping it afterwards costs the
-    /// first write, a read back, and a second write of the same document —
-    /// three atomic-write protocols where one will do, and, on a synced
-    /// filesystem, two uploads of one document per save.
-    ///
-    /// It is sound to stamp first because neither stamp can invalidate the other
-    /// or itself: both live in the frontmatter, and the hash covers the body (or a
-    /// `content` sibling), so amending the frontmatter cannot change what the hash
-    /// is *of*. The hash the caller's text arrived carrying is what drift is
-    /// measured against, exactly as if the text had been read back.
-    pub async fn save_document(
-        &mut self,
-        path: impl AsRef<Path>,
-        text: &str,
-        updated: Option<(&str, &str)>,
-    ) -> Result<()> {
-        let path = link::normalize(path.as_ref());
-        // The same clamp `load` applies on the way in, owed here too: `path` may
-        // have come from a document's own metadata, and this call reaches the
-        // filesystem without `load` in front of it to refuse an escape.
-        if link::escapes_root(&path) {
-            return Err(crate::error::Error::Escape(path));
-        }
-        let doc = crate::document::Document::parse(&path, text)?;
-        let stamped = self.stamped(&path, text, &doc, updated).await?;
-        let mut cs = self.change();
-        // No stamp applying is not "nothing to do" here, the way it is for
-        // `record_content_update`: the caller's text is the point, stamped or not.
-        cs.write(&path, stamped.unwrap_or_else(|| text.to_string()));
-        self.commit(cs).await
-    }
-
-    /// Apply to `text` the frontmatter stamps a content change implies, given the
-    /// `doc` that text parses to. `None` when neither applies and `text` already
-    /// says what it should.
-    ///
-    /// The shared middle of [`save_document`](Self::save_document) and
-    /// [`record_content_update`](Self::record_content_update). Both make the same
-    /// two decisions over the same text; all that differs is whether that text is
-    /// on its way to the disk or already there.
-    async fn stamped(
-        &self,
-        path: &Path,
-        text: &str,
-        doc: &crate::document::Document,
-        updated: Option<(&str, &str)>,
-    ) -> Result<Option<String>> {
-        // Fixity: does this document's kind get hashed, and has it drifted?
-        let covered = if doc.is_attachment() {
-            self.fixity().covers_payloads()
-        } else {
-            self.fixity().covers_bodies()
-        };
-        let new_hash = if covered {
-            let hash = match doc.content_attr() {
-                Some(raw) => {
-                    let dir = path.parent().unwrap_or(Path::new(""));
-                    let target = link::normalize(dir.join(raw));
-                    crate::fixity::digest(&self.fs().read(&self.root().join(&target)).await?)
-                }
-                None => crate::fixity::digest(doc.body.as_bytes()),
-            };
-            (doc.meta.get("content_hash").and_then(Value::as_str) != Some(hash.as_str()))
-                .then_some(hash)
-        } else {
-            None
-        };
-
-        // Apply both frontmatter edits (if any) to the one text, write once.
-        let mut text = text.to_string();
-        let mut stamped = false;
-        if let Some(hash) = new_hash {
-            text = crate::edit::set_in_text(
-                &text,
-                doc.carrier,
-                "content_hash",
-                fig::Value::Str(hash),
-            )?;
-            stamped = true;
-        }
-        if let Some((field, at)) = updated
-            && !field.is_empty()
-        {
-            text = crate::edit::set_in_text(
-                &text,
-                doc.carrier,
-                field,
-                fig::Value::Str(at.to_string()),
-            )?;
-            stamped = true;
-        }
-        Ok(stamped.then_some(text))
-    }
-
-    /// Reconcile the content checksum for the document at `path` — [
-    /// `record_content_update`](Self::record_content_update) with no timestamp.
-    /// The prov-mediated way to keep fixity true across an edit, and how a
-    /// document first *earns* a body hash under the `full` tier.
-    pub async fn restamp_fixity(&mut self, path: impl AsRef<Path>) -> Result<bool> {
-        self.record_content_update(path, None).await
     }
 
     /// The content documents in the workspace's *reached* directories that
@@ -2748,386 +2452,6 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 root: link::normalize(start),
             })
             .collect())
-    }
-
-    /// Take a census of every forward link reachable from `start`: one
-    /// [`CensusEntry`] per frontmatter relation edge *and* per body `[[…]]`
-    /// wikilink, each carrying its [`LinkSite`] and [`Resolution`].
-    ///
-    /// This is the one traversal the backlink map, the integrity findings, and
-    /// (via `mutate`) inbound-rename maintenance are all views over. Because it
-    /// is read from the documents, it is ground truth: a stored backlink index
-    /// heals *toward* the census, never the reverse.
-    pub async fn census(&self, start: impl AsRef<Path>) -> Result<Vec<CensusEntry>> {
-        Ok(self.walk(start.as_ref()).await?.census)
-    }
-
-    /// The backlink map for the workspace reachable from `start`: every resolved
-    /// target to the inbound references ([`Backlink`]s) that reach it, path- and
-    /// id-form alike. This is the census inverted — recomputed from the
-    /// documents, so it is always fresh (the Route-N "reconcile-on-load": no
-    /// stored index to drift). Each target's backlinks are sorted by source.
-    pub async fn backlinks(
-        &self,
-        start: impl AsRef<Path>,
-    ) -> Result<BTreeMap<PathBuf, Vec<Backlink>>> {
-        let mut map: BTreeMap<PathBuf, Vec<Backlink>> = BTreeMap::new();
-        for entry in self.census(start).await? {
-            let by_id = matches!(entry.resolution, Resolution::Id { .. });
-            let Some(target) = entry.resolution.resolved_path().cloned() else {
-                continue;
-            };
-            map.entry(target).or_default().push(Backlink {
-                source: entry.source,
-                site: entry.site,
-                by_id,
-            });
-        }
-        for links in map.values_mut() {
-            links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
-        }
-        Ok(map)
-    }
-
-    /// The inbound references to a single `target` (workspace-relative) reachable
-    /// from `start`, sorted by source. The focused form of
-    /// [`backlinks`](Workspace::backlinks) for "who links here?".
-    pub async fn backlinks_to(
-        &self,
-        start: impl AsRef<Path>,
-        target: impl AsRef<Path>,
-    ) -> Result<Vec<Backlink>> {
-        let target = link::normalize(target);
-        let mut links: Vec<Backlink> = self
-            .census(start)
-            .await?
-            .into_iter()
-            .filter(|entry| entry.resolution.resolved_path() == Some(&target))
-            .map(|entry| {
-                let by_id = matches!(entry.resolution, Resolution::Id { .. });
-                Backlink {
-                    source: entry.source,
-                    site: entry.site,
-                    by_id,
-                }
-            })
-            .collect();
-        links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
-        Ok(links)
-    }
-
-    /// The shared spanning-tree walk: gathers the forward-link census and the
-    /// structural findings (which depend on traversal state, not on a single
-    /// link's resolution) in one pass. Frontmatter edges may be spanning and so
-    /// drive descent, the single-parent check, and the inverse check; body
-    /// wikilinks are always overlay references — censused, never spanning.
-    async fn walk(&self, start: &Path) -> Result<Walk> {
-        let mut census = Vec::new();
-        let mut structural = Vec::new();
-        // Prose bodies reached through a separated node's `content` pointer.
-        // Kept out of the census (not a graph edge), but tracked so the orphan
-        // check does not mistake a linked body file for an unlinked one.
-        let mut content_bodies = Vec::new();
-        let mut visited = BTreeSet::new();
-        let mut queue = vec![link::normalize(start)];
-
-        // The nominal-resolution index, built lazily — only if a `[[alias]]` link
-        // is actually encountered. A path/id workspace never scans (which, at the
-        // root of a larger repo, would read every file under `target/`, vendored
-        // trees, and the rest — the reported multi-second `tree`/`check`).
-        let mut titles: Option<TitleIndex> = None;
-
-        let spanning = self.relations().spanning_relation().map(str::to_owned);
-        let inverse = spanning.as_deref().and_then(|s| {
-            self.relations()
-                .relations()
-                .iter()
-                .find(|r| r.name == s)
-                .and_then(|r| r.inverse.clone())
-        });
-
-        while let Some(path) = queue.pop() {
-            if !visited.insert(path.clone()) {
-                continue;
-            }
-            let doc = match self.load(&path).await {
-                Ok((_, doc)) => doc,
-                Err(e) => {
-                    structural.push(Finding::Unreadable {
-                        doc: path,
-                        error: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-
-            // Reconcile a self-stored `id` against the registry (frontmatter
-            // storage, DESIGN §5). Three outcomes when a document carries its own
-            // `id`: the registry agrees (nothing to do); the registry records a
-            // *different* id for this path, or hands this id to another document
-            // (`IdMismatch` — a drift); or the registry has never heard of the id
-            // (`UnregisteredId` — the shadow got ahead of the cache).
-            if let Some(fm) = doc.meta.get("id").and_then(Value::as_str)
-                && !fm.trim().is_empty()
-            {
-                let fm = Id(fm.trim().to_string());
-                match self.index().id_for_path(&path) {
-                    Some(reg) if reg != fm => structural.push(Finding::IdMismatch {
-                        doc: path.clone(),
-                        frontmatter: fm,
-                        registry: Some(reg),
-                    }),
-                    Some(_) => {} // the registry agrees with the frontmatter
-                    None => match self.index().resolve(&fm) {
-                        // The id is live, but points at a *different* document.
-                        Some(other) if other != path => structural.push(Finding::IdMismatch {
-                            doc: path.clone(),
-                            frontmatter: fm,
-                            registry: None,
-                        }),
-                        // resolve == this path but no reverse entry: consistent.
-                        Some(_) => {}
-                        // The registry has no record of this id at all.
-                        None => structural.push(Finding::UnregisteredId {
-                            doc: path.clone(),
-                            frontmatter: fm,
-                        }),
-                    },
-                }
-            } else if self.id_storage().stamps_frontmatter()
-                && let Some(reg) = self.index().id_for_path(&path)
-            {
-                // The other direction: a stamping workspace expects every
-                // registered document to carry its own id, and this one does not
-                // (a workspace converted from registry-only storage, or an `id`
-                // stripped out of band). The registry is the authority — the id
-                // is already live and linked to — so the repair writes it down.
-                structural.push(Finding::UnstampedId {
-                    doc: path.clone(),
-                    registry: reg,
-                });
-            }
-
-            // Frontmatter relation edges — the only links that can be spanning.
-            for edge in self.relations().edges(&doc.meta) {
-                // Parse once: `link.target` is the bare target (any `[label](…)`
-                // stripped), which is what both the census and findings record.
-                let link = Link::parse(&edge.target);
-                if titles.is_none() && title::is_alias_shaped(&link.target) {
-                    titles = Some(self.title_index_scoped(start).await?);
-                }
-                let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
-
-                if Some(edge.relation.as_str()) == spanning.as_deref()
-                    && let Some(resolved) = resolution.resolved_path().cloned()
-                {
-                    // Single-parent check, inverse check, descent.
-                    if visited.contains(&resolved) || queue.contains(&resolved) {
-                        structural.push(Finding::DuplicateContainment {
-                            doc: path.clone(),
-                            target: link.target.clone(),
-                        });
-                    } else {
-                        if let Some(inverse) = inverse.as_deref()
-                            && let Ok((_, child_doc)) = self.load(&resolved).await
-                            && child_doc.has_meta()
-                        {
-                            let inverse_targets = child_doc
-                                .meta
-                                .get(inverse)
-                                .map(Value::link_strings)
-                                .unwrap_or_default();
-                            // Build the title index if a nominal inverse link needs it.
-                            if titles.is_none()
-                                && inverse_targets
-                                    .iter()
-                                    .any(|t| title::is_alias_shaped(&Link::parse(t).target))
-                            {
-                                titles = Some(self.title_index_scoped(start).await?);
-                            }
-                            let points_back = inverse_targets.iter().any(|t| {
-                                self.resolve_link_with(&resolved, &Link::parse(t), titles.as_ref())
-                                    == Target::Path(path.clone())
-                            });
-                            if !points_back {
-                                structural.push(Finding::MissingInverse {
-                                    doc: path.clone(),
-                                    child: resolved.clone(),
-                                    inverse: inverse.to_string(),
-                                });
-                            }
-                        }
-                        queue.push(resolved);
-                    }
-                }
-
-                census.push(CensusEntry {
-                    source: path.clone(),
-                    site: LinkSite::Relation(edge.relation),
-                    label: link.label,
-                    target_text: link.target,
-                    resolution,
-                });
-            }
-
-            // Body links — `[[wikilinks]]` and markdown/djot `[t](a)` links
-            // alike — overlay references, censused but never spanning.
-            for body_link in link::scan_body_links(&path, &doc.body) {
-                let wl = body_link.link;
-                if titles.is_none() && title::is_alias_shaped(&wl.target) {
-                    titles = Some(self.title_index_scoped(start).await?);
-                }
-                let resolution = self.resolve_forward(&path, &wl, titles.as_ref()).await;
-                census.push(CensusEntry {
-                    source: path.clone(),
-                    site: LinkSite::Body(body_link.span),
-                    label: wl.label,
-                    target_text: wl.target,
-                    resolution,
-                });
-            }
-
-            // A separated document's `content` must resolve to an existing body
-            // file. Validated here (not a graph edge, so kept out of the census).
-            if let Some(content) = doc.content_attr() {
-                let target = link::resolve(&path, content);
-                let site = LinkSite::Relation("content".to_string());
-                match self.exact_name(&target).await {
-                    NameMatch::Exact => content_bodies.push(target),
-                    NameMatch::CaseOnly(actual) => {
-                        // The linked body exists under a different case: record its
-                        // real name as reached (so it is not also an orphan), and
-                        // still flag the portability hazard.
-                        content_bodies.push(target.with_file_name(&actual));
-                        structural.push(Finding::CaseMismatch {
-                            doc: path.clone(),
-                            site,
-                            target: content.to_string(),
-                            actual,
-                        });
-                    }
-                    NameMatch::None => structural.push(Finding::BrokenLink {
-                        doc: path.clone(),
-                        site,
-                        target: content.to_string(),
-                    }),
-                }
-            }
-        }
-        Ok(Walk {
-            census,
-            findings: structural,
-            content_bodies,
-        })
-    }
-
-    /// Resolve one forward link (declared in the document at `source`) into a
-    /// [`Resolution`]. A path target is checked against the on-disk name; an
-    /// `id:<id>` target resolves through the registry and stays an id-form
-    /// resolution; an `id:<workspace>/<id>` target naming another workspace
-    /// stops at [`Resolution::Foreign`]; a nominal (`[[My File]]`) target
-    /// resolves through `titles` — `Unique` to the on-disk path, `Ambiguous` to
-    /// [`Resolution::AmbiguousAlias`], `Unknown` falling through to a path (so a
-    /// nominal link to nothing reports as `Broken`, like any dead link).
-    async fn resolve_forward(
-        &self,
-        source: &Path,
-        link: &Link,
-        titles: Option<&TitleIndex>,
-    ) -> Resolution {
-        if link.is_external() {
-            return Resolution::External;
-        }
-        // Mirrors `Workspace::resolve_link_with`: a reference qualified with
-        // this workspace's own name is local, any other qualifier is foreign,
-        // and a malformed `id:` body is a broken id rather than a filename that
-        // happens to contain a colon.
-        let local_id = match link.id_ref() {
-            Some(crate::link::IdRef::Local(id)) => Some(id),
-            Some(crate::link::IdRef::Foreign { workspace, id }) => {
-                if self.workspace_id().is_empty() || workspace != self.workspace_id() {
-                    return Resolution::Foreign { workspace, id };
-                }
-                Some(id)
-            }
-            Some(crate::link::IdRef::Malformed) => return Resolution::MalformedId,
-            None => None,
-        };
-        if let Some(id) = local_id {
-            if !identity::verify(id.as_str()) {
-                return Resolution::MalformedId;
-            }
-            return match self.index().resolve(&id) {
-                Some(path) => Resolution::Id {
-                    id,
-                    to: link::normalize(path),
-                },
-                None => Resolution::DanglingId {
-                    tombstoned: self.index().is_known(&id),
-                    id,
-                },
-            };
-        }
-        // Only a nominal link needs the title index; the caller builds it lazily
-        // the first time one appears, so `titles` is `Some` here whenever it is
-        // consulted. If absent, fall through to path resolution.
-        if let Some(titles) = titles.filter(|_| title::is_alias_shaped(&link.target)) {
-            match titles.resolve(&link.target) {
-                TitleMatch::Unique(path) => {
-                    return match self.exact_name(&path).await {
-                        NameMatch::Exact => Resolution::Path(path),
-                        NameMatch::CaseOnly(actual) => {
-                            Resolution::CaseMismatch { got: path, actual }
-                        }
-                        NameMatch::None => Resolution::Broken,
-                    };
-                }
-                TitleMatch::Ambiguous(candidates) => {
-                    return Resolution::AmbiguousAlias {
-                        name: link.target.clone(),
-                        candidates,
-                    };
-                }
-                TitleMatch::Unknown => {}
-            }
-        }
-        let resolved = link::resolve(source, &link.target);
-        match self.exact_name(&resolved).await {
-            NameMatch::Exact => Resolution::Path(resolved),
-            NameMatch::CaseOnly(actual) => Resolution::CaseMismatch {
-                got: resolved,
-                actual,
-            },
-            NameMatch::None => Resolution::Broken,
-        }
-    }
-
-    /// How `path`'s final component matches its parent directory's listing:
-    /// exactly, only case-insensitively (the portability hazard), or not at all.
-    async fn exact_name(&self, path: &Path) -> NameMatch {
-        let full = self.root().join(path);
-        let (Some(parent), Some(name)) = (full.parent(), full.file_name()) else {
-            return NameMatch::None;
-        };
-        let Ok(entries) = self.fs().read_dir(parent).await else {
-            return NameMatch::None;
-        };
-        let mut case_only = None;
-        for entry in entries {
-            let Some(entry_name) = entry.file_name() else {
-                continue;
-            };
-            if entry_name == name {
-                return NameMatch::Exact;
-            }
-            if entry_name.eq_ignore_ascii_case(name) {
-                case_only = Some(entry_name.to_string_lossy().into_owned());
-            }
-        }
-        match case_only {
-            Some(actual) => NameMatch::CaseOnly(actual),
-            None => NameMatch::None,
-        }
     }
 }
 
@@ -3348,22 +2672,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         self.commit(cs).await
     }
-}
-
-enum NameMatch {
-    Exact,
-    CaseOnly(String),
-    None,
-}
-
-/// The result of one spanning-tree [`walk`](Workspace::walk): the forward-link
-/// census, the structural findings raised from traversal state, and the prose
-/// body files reached through separated nodes' `content` pointers (tracked for
-/// the orphan check, deliberately absent from the census).
-struct Walk {
-    census: Vec<CensusEntry>,
-    findings: Vec<Finding>,
-    content_bodies: Vec<PathBuf>,
 }
 
 // These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
@@ -3834,80 +3142,6 @@ mod tests {
             )),
             "the id is ours, and it resolves to nothing: {findings:?}"
         );
-    }
-
-    #[test]
-    fn census_covers_frontmatter_edges_and_body_wikilinks() {
-        let dir = tempdir("census");
-        write(
-            &dir,
-            "index.md",
-            "---\ncontents:\n- a.md\n---\nBody links [[a.md]] and [[gone.md]].\n",
-        );
-        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        let census = block_on(ws.census("index.md")).unwrap();
-
-        // The frontmatter `contents` edge, resolving to the existing file.
-        assert!(
-            census.iter().any(
-                |e| matches!(&e.site, LinkSite::Relation(r) if r == "contents")
-                    && matches!(&e.resolution, Resolution::Path(p) if p == &PathBuf::from("a.md"))
-            ),
-            "{census:?}"
-        );
-        // The body wikilink to the same file — sited in the body, resolving.
-        assert!(
-            census.iter().any(|e| matches!(e.site, LinkSite::Body(_))
-                && e.target_text == "a.md"
-                && matches!(&e.resolution, Resolution::Path(_))),
-            "{census:?}"
-        );
-        // The body wikilink to a missing file — a Broken resolution.
-        assert!(
-            census
-                .iter()
-                .any(|e| e.target_text == "gone.md" && matches!(e.resolution, Resolution::Broken)),
-            "{census:?}"
-        );
-    }
-
-    #[test]
-    fn backlinks_invert_the_census_across_relations_and_body() {
-        let dir = tempdir("backlinks");
-        write(&dir, "index.md", "---\ncontents:\n- a.md\n- b.md\n---\n");
-        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
-        write(
-            &dir,
-            "b.md",
-            "---\npart_of: index.md\nlinks:\n- a.md\n---\nSee [[a.md]] again.\n",
-        );
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-
-        // Who links to a.md? index.md (contents), b.md (links), b.md (body).
-        let to_a = block_on(ws.backlinks_to("index.md", "a.md")).unwrap();
-        assert_eq!(to_a.len(), 3, "{to_a:?}");
-        assert!(
-            to_a.iter().any(|bl| bl.source == Path::new("index.md")
-                && matches!(&bl.site, LinkSite::Relation(r) if r == "contents")),
-            "{to_a:?}"
-        );
-        assert!(
-            to_a.iter().any(|bl| bl.source == Path::new("b.md")
-                && matches!(&bl.site, LinkSite::Relation(r) if r == "links")),
-            "{to_a:?}"
-        );
-        assert!(
-            to_a.iter()
-                .any(|bl| bl.source == Path::new("b.md") && matches!(bl.site, LinkSite::Body(_))),
-            "{to_a:?}"
-        );
-        // All path-form (this workspace has no registry / id links).
-        assert!(to_a.iter().all(|bl| !bl.by_id), "{to_a:?}");
-
-        // The full map keys targets by path; a.md is one of them.
-        let map = block_on(ws.backlinks("index.md")).unwrap();
-        assert_eq!(map[&PathBuf::from("a.md")].len(), 3);
     }
 
     #[test]
@@ -4542,256 +3776,6 @@ mod tests {
     }
 
     #[test]
-    fn full_tier_body_fixity_round_trips_through_restamp_and_check() {
-        // The `full` tier: a document's *body* carries its own checksum. The whole
-        // prov-edit loop, exercised at the library level (no $EDITOR needed):
-        // stamp → verify → out-of-band body edit is caught → restamp re-blesses.
-        use crate::config::Fixity;
-        let dir = tempdir("fixity-body");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nhello world\n",
-        );
-
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-
-        // The document earns a body hash; restamping unchanged bytes is a no-op.
-        assert!(
-            block_on(w.restamp_fixity("note.md")).unwrap(),
-            "first stamp records a hash"
-        );
-        assert!(
-            !block_on(w.restamp_fixity("note.md")).unwrap(),
-            "restamp of unchanged bytes writes nothing"
-        );
-        assert!(
-            std::fs::read_to_string(dir.join("note.md"))
-                .unwrap()
-                .contains("content_hash: sha256:")
-        );
-        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
-
-        // Edit the body out-of-band (bypassing `prov edit`) — check catches it.
-        let stamped = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        std::fs::write(
-            dir.join("note.md"),
-            stamped.replace("hello world", "goodbye world"),
-        )
-        .unwrap();
-        let findings = block_on(w.check("index.md")).unwrap();
-        assert!(
-            findings.iter().any(
-                |f| matches!(f, Finding::FixityMismatch { doc, .. } if doc == Path::new("note.md"))
-            ),
-            "an out-of-band body edit must be caught: {findings:?}"
-        );
-
-        // Restamp (what `prov edit` does on save) re-blesses it.
-        assert!(block_on(w.restamp_fixity("note.md")).unwrap());
-        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
-    }
-
-    #[test]
-    fn record_content_update_stamps_the_timestamp_field_and_the_hash_together() {
-        use crate::config::Fixity;
-        let dir = tempdir("content-update");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-
-        // A content edit at a caller-supplied instant: both the `updated` field
-        // (the client's chosen name + RFC-3339 value) and the body hash land in
-        // one write.
-        assert!(
-            block_on(w.record_content_update("note.md", Some(("updated", "2026-07-16T10:00:00Z"))))
-                .unwrap()
-        );
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        assert!(text.contains("updated: 2026-07-16T10:00:00Z"), "{text}");
-        assert!(text.contains("content_hash: sha256:"), "{text}");
-        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
-
-        // The library never reads a clock: the exact string it is handed is what
-        // it writes (DESIGN §2 — the client produces the instant).
-        assert!(
-            block_on(w.record_content_update("note.md", Some(("updated", "2099-01-01T00:00:00Z"))))
-                .unwrap()
-        );
-        assert!(
-            std::fs::read_to_string(dir.join("note.md"))
-                .unwrap()
-                .contains("updated: 2099-01-01T00:00:00Z")
-        );
-    }
-
-    #[test]
-    fn save_document_lands_the_new_text_and_both_stamps_in_one_write() {
-        // The stamp-first path has to reach the same place the read-back path
-        // does: new body on disk, `updated` set, `content_hash` covering the body
-        // that was actually saved — and `check` agreeing the hash is true, which
-        // is the assertion that would fail if the hash were taken of the wrong
-        // bytes (the old body, or the text before its frontmatter was stamped).
-        use crate::config::Fixity;
-        let dir = tempdir("save-document");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-
-        let edited = "---\ntitle: Note\npart_of: index.md\n---\na different body\n";
-        block_on(w.save_document("note.md", edited, Some(("updated", "2026-08-06T09:00:00Z"))))
-            .unwrap();
-
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        assert!(text.contains("a different body"), "{text}");
-        assert!(text.contains("updated: 2026-08-06T09:00:00Z"), "{text}");
-        assert!(text.contains("content_hash: sha256:"), "{text}");
-        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
-    }
-
-    #[test]
-    fn save_document_agrees_byte_for_byte_with_writing_then_recording() {
-        // The change is meant to be a saving, not a difference: the same edit
-        // through the old two-step route must produce the same file. Anything
-        // else would be a silent format or ordering change in every document a
-        // client saves.
-        use crate::config::Fixity;
-        let one_step = tempdir("save-equivalence-new");
-        let two_step = tempdir("save-equivalence-old");
-        let edited = "---\ntitle: Note\npart_of: index.md\n---\nrewritten\n";
-        let stamp = Some(("updated", "2026-08-06T09:00:00Z"));
-
-        for dir in [&one_step, &two_step] {
-            write(
-                dir,
-                "index.md",
-                "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-            );
-            write(
-                dir,
-                "note.md",
-                "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-            );
-        }
-
-        let mut w = Workspace::builder(StdFs)
-            .root(&one_step)
-            .fixity(Fixity::Full)
-            .build();
-        block_on(w.save_document("note.md", edited, stamp)).unwrap();
-
-        let mut old = Workspace::builder(StdFs)
-            .root(&two_step)
-            .fixity(Fixity::Full)
-            .build();
-        std::fs::write(two_step.join("note.md"), edited).unwrap();
-        assert!(block_on(old.record_content_update("note.md", stamp)).unwrap());
-
-        assert_eq!(
-            std::fs::read_to_string(one_step.join("note.md")).unwrap(),
-            std::fs::read_to_string(two_step.join("note.md")).unwrap(),
-        );
-    }
-
-    #[test]
-    fn save_document_writes_the_text_even_when_no_stamp_applies() {
-        // With fixity off and no `updated` field there is nothing to stamp — which
-        // makes `record_content_update` a no-op, but must not make a *save* one.
-        // The text is the point; the stamps are bookkeeping around it.
-        use crate::config::Fixity;
-        let dir = tempdir("save-document-unstamped");
-        write(&dir, "index.md", "---\ntitle: Home\n---\nold\n");
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Off)
-            .build();
-
-        block_on(w.save_document("index.md", "---\ntitle: Home\n---\nnew\n", None)).unwrap();
-
-        let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
-        assert!(text.contains("new"), "{text}");
-        assert!(!text.contains("content_hash"), "{text}");
-    }
-
-    #[test]
-    fn save_document_refuses_a_path_that_escapes_the_root() {
-        let dir = tempdir("save-document-escape");
-        write(&dir, "index.md", "---\ntitle: Home\n---\n");
-        let mut w = Workspace::builder(StdFs).root(&dir).build();
-
-        let err = block_on(w.save_document("../escape.md", "---\ntitle: X\n---\n", None))
-            .expect_err("an escaping path must be refused");
-
-        assert!(matches!(err, crate::error::Error::Escape(_)), "{err:?}");
-        assert!(!dir.parent().unwrap().join("escape.md").exists());
-    }
-
-    #[test]
-    fn record_content_update_writes_a_timestamp_even_with_fixity_off() {
-        // The timestamp axis is independent of fixity: `updated` tracking works
-        // with no checksums at all (and writes no content_hash then).
-        use crate::config::Fixity;
-        let dir = tempdir("content-update-nofix");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Off)
-            .build();
-
-        assert!(
-            block_on(
-                w.record_content_update("note.md", Some(("modified", "2026-07-16T10:00:00Z")))
-            )
-            .unwrap()
-        );
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        assert!(text.contains("modified: 2026-07-16T10:00:00Z"), "{text}");
-        assert!(
-            !text.contains("content_hash"),
-            "fixity off records no hash: {text}"
-        );
-    }
-
-    #[test]
     fn a_check_diff_separates_what_an_operation_fixed_broke_and_inherited() {
         let orphan = |name: &str| Finding::Orphan {
             doc: PathBuf::from(name),
@@ -4828,197 +3812,6 @@ mod tests {
 
         // And two clean runs agree on everything.
         assert_eq!(CheckDiff::between(&[], &[]), CheckDiff::default());
-    }
-}
-
-// The `about` page's own findings — its staleness check and the autofix that
-// repairs it. YAML fixtures, so gated like the rest of this module's tests.
-#[cfg(all(test, feature = "yaml"))]
-mod about_tests {
-    use super::tests::{tempdir, write};
-    use super::*;
-    use crate::about::AboutContext;
-    use crate::config::WorkspaceConfig;
-    use crate::exec::block_on;
-    use crate::fs::StdFs;
-
-    fn fixture(tag: &str) -> (std::path::PathBuf, WorkspaceConfig, AboutContext) {
-        let dir = tempdir(tag);
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: T\nabout: about.md\n---\nbody\n",
-        );
-        let config = WorkspaceConfig::default();
-        let ctx = AboutContext::new("index.md", "0.0.0");
-        (dir, config, ctx)
-    }
-
-    #[test]
-    fn a_current_page_is_not_a_finding() {
-        let (dir, config, ctx) = fixture("about-current");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        let finding =
-            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(finding.is_none(), "{finding:?}");
-    }
-
-    #[test]
-    fn a_missing_page_the_pointer_promises_is_a_finding_but_not_a_broken_link() {
-        let (dir, config, ctx) = fixture("about-missing");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        let finding =
-            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(matches!(
-            finding,
-            Some(Finding::AboutStale { missing: true, .. })
-        ));
-
-        // The derived page is discardable, so a pointer at an absent one must not
-        // also surface as a broken link — that would be a duplicate finding
-        // inviting the wrong repair.
-        let findings = block_on(ws.check("index.md")).unwrap();
-        assert!(
-            !findings
-                .iter()
-                .any(|f| matches!(f, Finding::BrokenLink { target, .. } if target == "about.md")),
-            "{findings:?}"
-        );
-    }
-
-    #[test]
-    fn a_hand_edited_page_is_stale_and_the_fix_restores_it() {
-        let (dir, config, ctx) = fixture("about-edited");
-        let mut ws = Workspace::builder(StdFs).root(&dir).build();
-        let path =
-            block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        let generated = std::fs::read_to_string(dir.join(&path)).unwrap();
-
-        std::fs::write(
-            dir.join(&path),
-            generated.replace("is the root", "is definitely the root"),
-        )
-        .unwrap();
-        let finding = block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx))
-            .unwrap()
-            .expect("stale");
-        assert!(matches!(
-            finding,
-            Finding::AboutStale { missing: false, .. }
-        ));
-
-        let fix = block_on(ws.suggest_fix(&finding)).unwrap().expect("a fix");
-        assert!(matches!(fix, Fix::RegenerateAbout { .. }));
-        block_on(ws.apply_fix(&fix)).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join(&path)).unwrap(), generated);
-    }
-
-    #[test]
-    fn a_version_bump_in_the_byline_is_not_staleness() {
-        // The comparison is over the body only, so upgrading prov must not mark
-        // every workspace on earth stale and rewrite files whose prose is
-        // identical.
-        let (dir, config, ctx) = fixture("about-version");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        let path =
-            block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        let page = std::fs::read_to_string(dir.join(&path)).unwrap();
-        std::fs::write(
-            dir.join(&path),
-            page.replace("generated_by: prov 0.0.0", "generated_by: prov 99.0.0"),
-        )
-        .unwrap();
-
-        let finding =
-            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(
-            finding.is_none(),
-            "a stale byline is not a stale page: {finding:?}"
-        );
-    }
-
-    #[test]
-    fn a_prov_upgrade_between_generation_and_check_is_not_staleness() {
-        // The byline test above only ever tampers with the metadata line by
-        // hand; it never actually varies `ctx.version`, so it would pass even
-        // if the body itself leaked the version. Here the page is *generated*
-        // under one version and *checked* under another — the scenario that
-        // happens for real when two synced devices run different prov builds,
-        // or a workspace is checked the day after an upgrade. Nothing about
-        // the page's prose changed, so this must not be a finding.
-        let (dir, config, old_ctx) = fixture("about-upgrade");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        block_on(ws.write_about(std::path::Path::new("index.md"), &config, &old_ctx)).unwrap();
-
-        let new_ctx = AboutContext::new("index.md", "99.0.0");
-        let finding =
-            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &new_ctx)).unwrap();
-        assert!(
-            finding.is_none(),
-            "a page generated under one prov version must read as current under \
-             another: {finding:?}"
-        );
-    }
-
-    #[test]
-    fn a_workspace_that_asked_for_no_page_is_silent() {
-        let dir = tempdir("about-off");
-        // No `about` pointer, and the axis is off: nothing was promised.
-        write(&dir, "index.md", "---\ntitle: T\n---\nbody\n");
-        let config = WorkspaceConfig {
-            about: crate::config::About::Off,
-            ..WorkspaceConfig::default()
-        };
-        let ctx = AboutContext::new("index.md", "0.0.0");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        let finding =
-            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(finding.is_none(), "{finding:?}");
-    }
-
-    #[test]
-    fn the_derived_page_is_never_parked_in_the_history_store() {
-        // Capturing it would park a new blob on every config change to store
-        // something the captured config already determines — and the first
-        // capture bootstraps the store, which changes what the page says, so the
-        // captured copy would be one the capture itself invalidated.
-        let (dir, config, ctx) = fixture("about-not-captured");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: T\nabout: about.md\n---\nbody\n",
-        );
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-
-        let set = block_on(ws.history_capture_set(std::path::Path::new("index.md"))).unwrap();
-        assert!(
-            !set.iter().any(|p| p == std::path::Path::new("about.md")),
-            "the derived page must stay out of the capture set: {set:?}"
-        );
-        // The root itself is still captured — only the derived page is excluded.
-        assert!(
-            set.iter().any(|p| p == std::path::Path::new("index.md")),
-            "{set:?}"
-        );
-    }
-
-    #[test]
-    fn a_pointer_left_behind_is_still_checked_even_with_the_axis_off() {
-        // Turning the axis off does not retract a promise the root still makes.
-        let (dir, _, ctx) = fixture("about-off-but-pointed");
-        let config = WorkspaceConfig {
-            about: crate::config::About::Off,
-            ..WorkspaceConfig::default()
-        };
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        let finding =
-            block_on(ws.check_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
-        assert!(matches!(
-            finding,
-            Some(Finding::AboutStale { missing: true, .. })
-        ));
     }
 }
 

@@ -93,7 +93,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
             // A size that cannot be read is not worth failing a prune over; the
             // total is a report, not a decision.
-            bytes += match self.fs().metadata(&self.root().join(&blob)).await {
+            bytes += match self.stat(&blob).await {
                 Ok(meta) => meta.len(),
                 Err(_) => 0,
             };
@@ -201,12 +201,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.commit(cs).await?;
 
         for blob in &plan.blobs {
-            let full = self.root().join(blob);
             // Tolerant of an already-absent blob: this runs after the commit, so a
             // re-run of an interrupted prune must be able to finish rather than
             // fail on the bytes the first run already freed.
-            if self.fs().try_exists(&full).await? {
-                self.fs().remove_file(&full).await?;
+            if self.exists(blob).await? {
+                crate::change::discard_file(self.fs(), self.root(), blob).await?;
             }
         }
         Ok(())

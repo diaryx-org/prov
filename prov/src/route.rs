@@ -41,12 +41,13 @@ use crate::content::ContentFormat;
 use crate::document::MetaCarrier;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::graph::Target;
 use crate::identity::IdentityPolicy;
 use crate::index::IndexStore;
 use crate::intake::SynthNode;
 use crate::link::{self, Link};
 use crate::meta::Value;
-use crate::workspace::{Target, Workspace};
+use crate::workspace::Workspace;
 
 /// Where a route's *synthesized* nodes are written on disk.
 ///
@@ -165,7 +166,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// worse than addressing that misses.
     ///
     /// Two children sharing a title is an error, not a coin-flip: it is the same
-    /// unresolvable ambiguity [`NodeKind::AmbiguousAlias`](crate::tree::NodeKind)
+    /// unresolvable ambiguity [`NodeKind::AmbiguousAlias`](crate::graph::NodeKind)
     /// marks in a walk and [`Finding::AmbiguousAlias`](crate::validate::Finding)
     /// reports in a check.
     async fn child_titled(&self, parent: &Path, segment: &str) -> Result<Option<PathBuf>> {
@@ -228,7 +229,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         layout: Layout,
     ) -> Result<RoutePlan> {
         let start = link::normalize(start);
-        if !self.fs().try_exists(&self.root().join(&start)).await? {
+        if !self.exists(&start).await? {
             return Err(Error::NotFound(start.clone()));
         }
         // Synthesized nodes are minted in the start document's grammar.
@@ -336,7 +337,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// neighbours are the parent's own siblings and finding nodes there is
     /// expected, not evidence of anything.
     async fn assert_vacant(&self, path: &Path, segment: &str, layout: Layout) -> Result<()> {
-        if self.fs().try_exists(&self.root().join(path)).await? {
+        if self.exists(path).await? {
             return Err(Error::Structure(format!(
                 "route segment {segment:?} would create {}, but a file is already there",
                 path.display()
@@ -348,11 +349,10 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) else {
             return Ok(());
         };
-        let abs = self.root().join(dir);
-        if !self.fs().try_exists(&abs).await? {
+        if !self.exists(dir).await? {
             return Ok(());
         }
-        let Ok(entries) = self.fs().read_dir(&abs).await else {
+        let Ok(entries) = self.listing(dir).await else {
             return Ok(());
         };
         for entry in entries {

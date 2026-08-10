@@ -1,0 +1,784 @@
+//! The census types, the spanning-tree walker that fills them in, and the
+//! reachability views built over the result. See the module doc at
+//! [`crate::graph`] for why the census is ground truth.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+
+use crate::error::Result;
+use crate::fs::Storage;
+use crate::identity::{self, Id};
+use crate::index::IndexStore;
+use crate::link::{self, Link};
+use crate::meta::Value;
+use crate::title::{self, TitleIndex, TitleMatch};
+use crate::workspace::Workspace;
+
+use super::Target;
+
+/// Where in a document a forward link is written — a frontmatter relation
+/// field or a body wikilink. Carried by every link-resolution finding
+/// ([`Finding`](crate::validate::Finding), derived in `validate` — see
+/// [`StructuralFact`]) and every [`CensusEntry`] so a report can point at the
+/// exact site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkSite {
+    /// A frontmatter relation field, by name (e.g. `contents`, `links`).
+    Relation(String),
+    /// A `[[…]]` wikilink in the body, at this byte span.
+    Body(Range<usize>),
+}
+
+impl fmt::Display for LinkSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LinkSite::Relation(name) => f.write_str(name),
+            LinkSite::Body(_) => f.write_str("body"),
+        }
+    }
+}
+
+/// How a forward link resolves against the workspace. Path and id forms stay
+/// distinct on purpose: the registry owns id resolution (location-independent,
+/// stable across moves), while a path is checked against the on-disk name — so
+/// a caller can tell which links a rename must rewrite (paths) from which it
+/// must leave alone (ids).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// A path target that resolves to an existing file (exact name).
+    Path(PathBuf),
+    /// A path target that only matches case-insensitively; `got` is the target
+    /// as resolved, `actual` the exact on-disk name.
+    CaseMismatch { got: PathBuf, actual: String },
+    /// A path target with nothing on disk.
+    Broken,
+    /// A `prov:<id>` target the registry resolves to the live path `to`.
+    Id { id: Id, to: PathBuf },
+    /// A well-formed `prov:<id>` target with no live registry entry;
+    /// `tombstoned` separates "deleted" from "never issued here" (§4 hazard).
+    DanglingId { id: Id, tombstoned: bool },
+    /// A `prov:<id>` target failing its check character — a typo.
+    MalformedId,
+    /// A nominal (alias) target several documents claim — unresolvable.
+    /// `candidates` are the sharers, sorted.
+    AmbiguousAlias {
+        name: String,
+        candidates: Vec<PathBuf>,
+    },
+    /// A URL / mail address — off-workspace, never resolved or rewritten.
+    External,
+    /// An `id:<workspace>/<id>` target naming a document in another workspace.
+    ///
+    /// A clean resolution, not a finding: prov holds no map from a workspace
+    /// name to a location (see
+    /// [`Target::Foreign`]), so it has no
+    /// evidence either way about whether the target exists. Reporting a link it
+    /// cannot check as broken would be a false positive every host would then
+    /// have to suppress — and a `check` that must be filtered is one nobody
+    /// reads. The id is deliberately **not** check-verified: the foreign
+    /// workspace owns its id space and need not be a prov workspace.
+    Foreign { workspace: String, id: Id },
+}
+
+impl Resolution {
+    /// The workspace path this link reaches, if it resolves to one (by path or
+    /// through the registry) — what the spanning walk descends into and what a
+    /// backlink map keys on. `None` for broken, dangling, malformed, external.
+    pub fn resolved_path(&self) -> Option<&PathBuf> {
+        match self {
+            Resolution::Path(p)
+            | Resolution::CaseMismatch { got: p, .. }
+            | Resolution::Id { to: p, .. } => Some(p),
+            _ => None,
+        }
+    }
+}
+
+/// One forward link as found in a document: where it is written and how it
+/// resolves. The unit of the
+/// [`census`](crate::workspace::Workspace::census).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CensusEntry {
+    /// The document that declares the link (workspace-relative).
+    pub source: PathBuf,
+    /// Where in `source` the link is written.
+    pub site: LinkSite,
+    /// The target exactly as written (bare — the `[label](…)` wrapper stripped).
+    pub target_text: String,
+    /// The display label the link carried, when written `[label](target)` /
+    /// `[[target|label]]` — `None` for a bare target. Kept so a caller can check
+    /// a label against the target's current title (stale-label detection) without
+    /// re-reading the source.
+    pub label: Option<String>,
+    /// How the target resolves.
+    pub resolution: Resolution,
+}
+
+/// An inbound reference to a document, as discovered by the census: which
+/// document links here ([`source`](Backlink::source)), where in it
+/// ([`site`](Backlink::site)), and whether the link is by stable id (survives
+/// moves) or by path (rewritten on a move). The inverse of a forward
+/// [`CensusEntry`] — the marquee payoff of the identity layer (DESIGN §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backlink {
+    /// The document that links to the target.
+    pub source: PathBuf,
+    /// Where in `source` the link is written.
+    pub site: LinkSite,
+    /// `true` when the link is a `prov:<id>` reference (location-independent),
+    /// `false` when it is a path.
+    pub by_id: bool,
+}
+
+enum NameMatch {
+    Exact,
+    CaseOnly(String),
+    None,
+}
+
+/// A structural observation the walk makes as it traverses — not a verdict,
+/// just what it saw: a document that would not load, a self-stored id
+/// disagreeing with (or absent from) the registry, a spanning edge that
+/// revisits an already-reached node, a spanning child whose inverse field
+/// does not point back, or a `content` pointer that failed to resolve.
+///
+/// These are facts about *traversal state* — they need the queue, the
+/// visited set, the inverse lookup — so only the walk can raise them; a
+/// single [`CensusEntry`]'s [`Resolution`] is not enough (that half of the
+/// story is `validate`'s [`CensusEntry`]-keyed
+/// [`finding`](crate::validate) instead, since a resolution *is* already the
+/// fact). `validate::check` turns each variant here into the
+/// [`Finding`](crate::validate::Finding) that names it — one to one, since
+/// the walk already knows exactly what happened and there is nothing left to
+/// infer. Keeping the enum here rather than importing `Finding` is what
+/// keeps `graph` a pure "plain text → walkable graph" layer: it reports what
+/// it found, never how that should be judged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StructuralFact {
+    /// A document that exists but could not be read or parsed.
+    Unreadable { doc: PathBuf, error: String },
+    /// A document's self-stored `id` frontmatter disagrees with the registry
+    /// (or claims an id the registry hands to a different document).
+    /// `registry` is `None` when the registry has no record of the path at
+    /// all under this id.
+    IdMismatch {
+        doc: PathBuf,
+        frontmatter: Id,
+        registry: Option<Id>,
+    },
+    /// A document carries a self-stored `id` the registry has no record of.
+    UnregisteredId { doc: PathBuf, frontmatter: Id },
+    /// A stamping workspace's registered document does not carry its own
+    /// `id` frontmatter.
+    UnstampedId { doc: PathBuf, registry: Id },
+    /// A spanning target already reached by the walk — a cycle or a second
+    /// parent.
+    DuplicateContainment { doc: PathBuf, target: String },
+    /// A spanning child whose inverse field does not link back to `doc`.
+    MissingInverse {
+        doc: PathBuf,
+        child: PathBuf,
+        inverse: String,
+    },
+    /// A `content` pointer resolving only case-insensitively.
+    CaseMismatch {
+        doc: PathBuf,
+        site: LinkSite,
+        target: String,
+        actual: String,
+    },
+    /// A `content` pointer resolving to nothing on disk.
+    BrokenLink {
+        doc: PathBuf,
+        site: LinkSite,
+        target: String,
+    },
+}
+
+/// The result of one spanning-tree
+/// [`walk`](crate::workspace::Workspace::census): the forward-link census,
+/// the structural facts observed from traversal state, and the prose body
+/// files reached through separated nodes' `content` pointers (tracked for
+/// the orphan check, deliberately absent from the census).
+pub(crate) struct Walk {
+    pub(crate) census: Vec<CensusEntry>,
+    pub(crate) facts: Vec<StructuralFact>,
+    pub(crate) content_bodies: Vec<PathBuf>,
+}
+
+/// The set of workspace-relative paths a walk from `start` reaches: `start`
+/// itself, every path a census link resolves to (any relation, a body wikilink,
+/// or an id through the registry), and every `content` target.
+///
+/// A **case-mismatched** link counts its *actual* on-disk file as reached, so a
+/// file is never both case-mismatched and orphaned. Prose bodies (and attachment
+/// payloads) arrive through `content_bodies` rather than the census, because a
+/// `content` pointer is not a graph edge — but it does reach a file, which is
+/// what every caller here cares about.
+///
+/// The one definition of "reachable" that the orphan check, the fixity pass, the
+/// vocabulary pass, and the history capture set all share (DESIGN §8).
+pub(crate) fn reachable_set(
+    start: &Path,
+    census: &[CensusEntry],
+    content_bodies: &[PathBuf],
+) -> BTreeSet<PathBuf> {
+    let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
+    reachable.insert(link::normalize(start));
+    reachable.extend(content_bodies.iter().cloned());
+    for entry in census {
+        match &entry.resolution {
+            Resolution::Path(p) | Resolution::Id { to: p, .. } => {
+                reachable.insert(p.clone());
+            }
+            Resolution::CaseMismatch { got, actual } => {
+                reachable.insert(got.with_file_name(actual));
+            }
+            _ => {}
+        }
+    }
+    reachable
+}
+
+impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// [`reachable_set`], minus any **shadowed attachment payload**
+    /// (`attach --opaque`) — the population a pass may parse *as a document*.
+    ///
+    /// A shadowed payload is still reachable (it must not be reported as an
+    /// orphan, and it is still fixity-checked *through its sidecar*), but its
+    /// bytes are an exhibit prov promised never to interpret. That is the same
+    /// bound [`is_shadowed_payload`](Workspace::is_shadowed_payload) already
+    /// holds the flat title and id scans to; this is its reachability-walk
+    /// counterpart, for [`vocabulary_findings`](Self::vocabulary_findings) and
+    /// [`fixity_findings`](Self::fixity_findings) — the two passes that load
+    /// every reachable path and read its frontmatter.
+    ///
+    /// The listing `is_shadowed_payload` needs is built the same way
+    /// [`orphans`](Self::orphans) builds one: the direct children of every
+    /// directory the reachable set occupies, so a shadow check costs a set
+    /// lookup per candidate extension rather than a stat.
+    pub(crate) async fn reachable_documents(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<BTreeSet<PathBuf>> {
+        let reachable = reachable_set(start, census, content_bodies);
+        let reached_dirs = Self::reached_dirs(&reachable);
+        let listing: BTreeSet<PathBuf> = self
+            .direct_child_files(&reached_dirs)
+            .await?
+            .into_iter()
+            .collect();
+        let mut documents = BTreeSet::new();
+        for path in reachable {
+            if !self.is_shadowed_payload(&path, &listing).await {
+                documents.insert(path);
+            }
+        }
+        Ok(documents)
+    }
+
+    /// Every file the workspace reaches from `start` that actually exists on
+    /// disk — [`reachable_set`] over a fresh walk, filtered to real files.
+    ///
+    /// This is §8's bounded walk expressed as a *file set* rather than a findings
+    /// list: the same population `check` validates. [`history_capture`] captures
+    /// it (minus prov's two byte-parking stores) precisely so that an event is a
+    /// consistent cut across everything the workspace considers its own.
+    ///
+    /// [`history_capture`]: Workspace::history_capture
+    pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
+        let start = link::normalize(start);
+        let Walk {
+            census,
+            content_bodies,
+            ..
+        } = self.walk(&start).await?;
+        let mut files = BTreeSet::new();
+        for path in reachable_set(&start, &census, &content_bodies) {
+            if self.fs().try_exists(&self.root().join(&path)).await? {
+                files.insert(path);
+            }
+        }
+        Ok(files)
+    }
+
+    /// Take a census of every forward link reachable from `start`: one
+    /// [`CensusEntry`] per frontmatter relation edge *and* per body `[[…]]`
+    /// wikilink, each carrying its [`LinkSite`] and [`Resolution`].
+    ///
+    /// This is the one traversal the backlink map, the integrity findings, and
+    /// (via `mutate`) inbound-rename maintenance are all views over. Because it
+    /// is read from the documents, it is ground truth: a stored backlink index
+    /// heals *toward* the census, never the reverse.
+    pub async fn census(&self, start: impl AsRef<Path>) -> Result<Vec<CensusEntry>> {
+        Ok(self.walk(start.as_ref()).await?.census)
+    }
+
+    /// The backlink map for the workspace reachable from `start`: every resolved
+    /// target to the inbound references ([`Backlink`]s) that reach it, path- and
+    /// id-form alike. This is the census inverted — recomputed from the
+    /// documents, so it is always fresh (the Route-N "reconcile-on-load": no
+    /// stored index to drift). Each target's backlinks are sorted by source.
+    pub async fn backlinks(
+        &self,
+        start: impl AsRef<Path>,
+    ) -> Result<BTreeMap<PathBuf, Vec<Backlink>>> {
+        let mut map: BTreeMap<PathBuf, Vec<Backlink>> = BTreeMap::new();
+        for entry in self.census(start).await? {
+            let by_id = matches!(entry.resolution, Resolution::Id { .. });
+            let Some(target) = entry.resolution.resolved_path().cloned() else {
+                continue;
+            };
+            map.entry(target).or_default().push(Backlink {
+                source: entry.source,
+                site: entry.site,
+                by_id,
+            });
+        }
+        for links in map.values_mut() {
+            links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
+        }
+        Ok(map)
+    }
+
+    /// The inbound references to a single `target` (workspace-relative) reachable
+    /// from `start`, sorted by source. The focused form of
+    /// [`backlinks`](Workspace::backlinks) for "who links here?".
+    pub async fn backlinks_to(
+        &self,
+        start: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+    ) -> Result<Vec<Backlink>> {
+        let target = link::normalize(target);
+        let mut links: Vec<Backlink> = self
+            .census(start)
+            .await?
+            .into_iter()
+            .filter(|entry| entry.resolution.resolved_path() == Some(&target))
+            .map(|entry| {
+                let by_id = matches!(entry.resolution, Resolution::Id { .. });
+                Backlink {
+                    source: entry.source,
+                    site: entry.site,
+                    by_id,
+                }
+            })
+            .collect();
+        links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
+        Ok(links)
+    }
+
+    /// The shared spanning-tree walk: gathers the forward-link census and the
+    /// structural facts ([`StructuralFact`], which depend on traversal state,
+    /// not on a single link's resolution) in one pass. Frontmatter edges may
+    /// be spanning and so drive descent, the single-parent check, and the
+    /// inverse check; body wikilinks are always overlay references —
+    /// censused, never spanning.
+    pub(crate) async fn walk(&self, start: &Path) -> Result<Walk> {
+        let mut census = Vec::new();
+        let mut structural = Vec::new();
+        // Prose bodies reached through a separated node's `content` pointer.
+        // Kept out of the census (not a graph edge), but tracked so the orphan
+        // check does not mistake a linked body file for an unlinked one.
+        let mut content_bodies = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut queue = vec![link::normalize(start)];
+
+        // The nominal-resolution index, built lazily — only if a `[[alias]]` link
+        // is actually encountered. A path/id workspace never scans (which, at the
+        // root of a larger repo, would read every file under `target/`, vendored
+        // trees, and the rest — the reported multi-second `tree`/`check`).
+        let mut titles: Option<TitleIndex> = None;
+
+        let spanning = self.relations().spanning_relation().map(str::to_owned);
+        let inverse = spanning.as_deref().and_then(|s| {
+            self.relations()
+                .relations()
+                .iter()
+                .find(|r| r.name == s)
+                .and_then(|r| r.inverse.clone())
+        });
+
+        while let Some(path) = queue.pop() {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
+            let doc = match self.load(&path).await {
+                Ok((_, doc)) => doc,
+                Err(e) => {
+                    structural.push(StructuralFact::Unreadable {
+                        doc: path,
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            // Reconcile a self-stored `id` against the registry (frontmatter
+            // storage, DESIGN §5). Three outcomes when a document carries its own
+            // `id`: the registry agrees (nothing to do); the registry records a
+            // *different* id for this path, or hands this id to another document
+            // (`IdMismatch` — a drift); or the registry has never heard of the id
+            // (`UnregisteredId` — the shadow got ahead of the cache).
+            if let Some(fm) = doc.meta.get("id").and_then(Value::as_str)
+                && !fm.trim().is_empty()
+            {
+                let fm = Id(fm.trim().to_string());
+                match self.index().id_for_path(&path) {
+                    Some(reg) if reg != fm => structural.push(StructuralFact::IdMismatch {
+                        doc: path.clone(),
+                        frontmatter: fm,
+                        registry: Some(reg),
+                    }),
+                    Some(_) => {} // the registry agrees with the frontmatter
+                    None => match self.index().resolve(&fm) {
+                        // The id is live, but points at a *different* document.
+                        Some(other) if other != path => structural.push(StructuralFact::IdMismatch {
+                            doc: path.clone(),
+                            frontmatter: fm,
+                            registry: None,
+                        }),
+                        // resolve == this path but no reverse entry: consistent.
+                        Some(_) => {}
+                        // The registry has no record of this id at all.
+                        None => structural.push(StructuralFact::UnregisteredId {
+                            doc: path.clone(),
+                            frontmatter: fm,
+                        }),
+                    },
+                }
+            } else if self.id_storage().stamps_frontmatter()
+                && let Some(reg) = self.index().id_for_path(&path)
+            {
+                // The other direction: a stamping workspace expects every
+                // registered document to carry its own id, and this one does not
+                // (a workspace converted from registry-only storage, or an `id`
+                // stripped out of band). The registry is the authority — the id
+                // is already live and linked to — so the repair writes it down.
+                structural.push(StructuralFact::UnstampedId {
+                    doc: path.clone(),
+                    registry: reg,
+                });
+            }
+
+            // Frontmatter relation edges — the only links that can be spanning.
+            for edge in self.relations().edges(&doc.meta) {
+                // Parse once: `link.target` is the bare target (any `[label](…)`
+                // stripped), which is what both the census and findings record.
+                let link = Link::parse(&edge.target);
+                if titles.is_none() && title::is_alias_shaped(&link.target) {
+                    titles = Some(self.title_index_scoped(start).await?);
+                }
+                let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
+
+                if Some(edge.relation.as_str()) == spanning.as_deref()
+                    && let Some(resolved) = resolution.resolved_path().cloned()
+                {
+                    // Single-parent check, inverse check, descent.
+                    if visited.contains(&resolved) || queue.contains(&resolved) {
+                        structural.push(StructuralFact::DuplicateContainment {
+                            doc: path.clone(),
+                            target: link.target.clone(),
+                        });
+                    } else {
+                        if let Some(inverse) = inverse.as_deref()
+                            && let Ok((_, child_doc)) = self.load(&resolved).await
+                            && child_doc.has_meta()
+                        {
+                            let inverse_targets = child_doc
+                                .meta
+                                .get(inverse)
+                                .map(Value::link_strings)
+                                .unwrap_or_default();
+                            // Build the title index if a nominal inverse link needs it.
+                            if titles.is_none()
+                                && inverse_targets
+                                    .iter()
+                                    .any(|t| title::is_alias_shaped(&Link::parse(t).target))
+                            {
+                                titles = Some(self.title_index_scoped(start).await?);
+                            }
+                            let points_back = inverse_targets.iter().any(|t| {
+                                self.resolve_link_with(&resolved, &Link::parse(t), titles.as_ref())
+                                    == Target::Path(path.clone())
+                            });
+                            if !points_back {
+                                structural.push(StructuralFact::MissingInverse {
+                                    doc: path.clone(),
+                                    child: resolved.clone(),
+                                    inverse: inverse.to_string(),
+                                });
+                            }
+                        }
+                        queue.push(resolved);
+                    }
+                }
+
+                census.push(CensusEntry {
+                    source: path.clone(),
+                    site: LinkSite::Relation(edge.relation),
+                    label: link.label,
+                    target_text: link.target,
+                    resolution,
+                });
+            }
+
+            // Body links — `[[wikilinks]]` and markdown/djot `[t](a)` links
+            // alike — overlay references, censused but never spanning.
+            for body_link in link::scan_body_links(&path, &doc.body) {
+                let wl = body_link.link;
+                if titles.is_none() && title::is_alias_shaped(&wl.target) {
+                    titles = Some(self.title_index_scoped(start).await?);
+                }
+                let resolution = self.resolve_forward(&path, &wl, titles.as_ref()).await;
+                census.push(CensusEntry {
+                    source: path.clone(),
+                    site: LinkSite::Body(body_link.span),
+                    label: wl.label,
+                    target_text: wl.target,
+                    resolution,
+                });
+            }
+
+            // A separated document's `content` must resolve to an existing body
+            // file. Validated here (not a graph edge, so kept out of the census).
+            if let Some(content) = doc.content_attr() {
+                let target = link::resolve(&path, content);
+                let site = LinkSite::Relation("content".to_string());
+                match self.exact_name(&target).await {
+                    NameMatch::Exact => content_bodies.push(target),
+                    NameMatch::CaseOnly(actual) => {
+                        // The linked body exists under a different case: record its
+                        // real name as reached (so it is not also an orphan), and
+                        // still flag the portability hazard.
+                        content_bodies.push(target.with_file_name(&actual));
+                        structural.push(StructuralFact::CaseMismatch {
+                            doc: path.clone(),
+                            site,
+                            target: content.to_string(),
+                            actual,
+                        });
+                    }
+                    NameMatch::None => structural.push(StructuralFact::BrokenLink {
+                        doc: path.clone(),
+                        site,
+                        target: content.to_string(),
+                    }),
+                }
+            }
+        }
+        Ok(Walk {
+            census,
+            facts: structural,
+            content_bodies,
+        })
+    }
+
+    /// Resolve one forward link (declared in the document at `source`) into a
+    /// [`Resolution`]. A path target is checked against the on-disk name; an
+    /// `id:<id>` target resolves through the registry and stays an id-form
+    /// resolution; an `id:<workspace>/<id>` target naming another workspace
+    /// stops at [`Resolution::Foreign`]; a nominal (`[[My File]]`) target
+    /// resolves through `titles` — `Unique` to the on-disk path, `Ambiguous` to
+    /// [`Resolution::AmbiguousAlias`], `Unknown` falling through to a path (so a
+    /// nominal link to nothing reports as `Broken`, like any dead link).
+    async fn resolve_forward(
+        &self,
+        source: &Path,
+        link: &Link,
+        titles: Option<&TitleIndex>,
+    ) -> Resolution {
+        if link.is_external() {
+            return Resolution::External;
+        }
+        // Mirrors `Workspace::resolve_link_with`: a reference qualified with
+        // this workspace's own name is local, any other qualifier is foreign,
+        // and a malformed `id:` body is a broken id rather than a filename that
+        // happens to contain a colon.
+        let local_id = match link.id_ref() {
+            Some(crate::link::IdRef::Local(id)) => Some(id),
+            Some(crate::link::IdRef::Foreign { workspace, id }) => {
+                if self.workspace_id().is_empty() || workspace != self.workspace_id() {
+                    return Resolution::Foreign { workspace, id };
+                }
+                Some(id)
+            }
+            Some(crate::link::IdRef::Malformed) => return Resolution::MalformedId,
+            None => None,
+        };
+        if let Some(id) = local_id {
+            if !identity::verify(id.as_str()) {
+                return Resolution::MalformedId;
+            }
+            return match self.index().resolve(&id) {
+                Some(path) => Resolution::Id {
+                    id,
+                    to: link::normalize(path),
+                },
+                None => Resolution::DanglingId {
+                    tombstoned: self.index().is_known(&id),
+                    id,
+                },
+            };
+        }
+        // Only a nominal link needs the title index; the caller builds it lazily
+        // the first time one appears, so `titles` is `Some` here whenever it is
+        // consulted. If absent, fall through to path resolution.
+        if let Some(titles) = titles.filter(|_| title::is_alias_shaped(&link.target)) {
+            match titles.resolve(&link.target) {
+                TitleMatch::Unique(path) => {
+                    return match self.exact_name(&path).await {
+                        NameMatch::Exact => Resolution::Path(path),
+                        NameMatch::CaseOnly(actual) => {
+                            Resolution::CaseMismatch { got: path, actual }
+                        }
+                        NameMatch::None => Resolution::Broken,
+                    };
+                }
+                TitleMatch::Ambiguous(candidates) => {
+                    return Resolution::AmbiguousAlias {
+                        name: link.target.clone(),
+                        candidates,
+                    };
+                }
+                TitleMatch::Unknown => {}
+            }
+        }
+        let resolved = link::resolve(source, &link.target);
+        match self.exact_name(&resolved).await {
+            NameMatch::Exact => Resolution::Path(resolved),
+            NameMatch::CaseOnly(actual) => Resolution::CaseMismatch {
+                got: resolved,
+                actual,
+            },
+            NameMatch::None => Resolution::Broken,
+        }
+    }
+
+    /// How `path`'s final component matches its parent directory's listing:
+    /// exactly, only case-insensitively (the portability hazard), or not at all.
+    async fn exact_name(&self, path: &Path) -> NameMatch {
+        let full = self.root().join(path);
+        let (Some(parent), Some(name)) = (full.parent(), full.file_name()) else {
+            return NameMatch::None;
+        };
+        let Ok(entries) = self.fs().read_dir(parent).await else {
+            return NameMatch::None;
+        };
+        let mut case_only = None;
+        for entry in entries {
+            let Some(entry_name) = entry.file_name() else {
+                continue;
+            };
+            if entry_name == name {
+                return NameMatch::Exact;
+            }
+            if entry_name.eq_ignore_ascii_case(name) {
+                case_only = Some(entry_name.to_string_lossy().into_owned());
+            }
+        }
+        match case_only {
+            Some(actual) => NameMatch::CaseOnly(actual),
+            None => NameMatch::None,
+        }
+    }
+}
+
+// These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
+#[cfg(all(test, feature = "yaml"))]
+mod tests {
+    use super::*;
+    use crate::exec::block_on;
+    use crate::fs::StdFs;
+
+    fn write(dir: &Path, rel: &str, text: &str) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prov-census-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn census_covers_frontmatter_edges_and_body_wikilinks() {
+        let dir = tempdir("census");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- a.md\n---\nBody links [[a.md]] and [[gone.md]].\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let census = block_on(ws.census("index.md")).unwrap();
+
+        // The frontmatter `contents` edge, resolving to the existing file.
+        assert!(
+            census.iter().any(
+                |e| matches!(&e.site, LinkSite::Relation(r) if r == "contents")
+                    && matches!(&e.resolution, Resolution::Path(p) if p == &PathBuf::from("a.md"))
+            ),
+            "{census:?}"
+        );
+        // The body wikilink to the same file — sited in the body, resolving.
+        assert!(
+            census.iter().any(|e| matches!(e.site, LinkSite::Body(_))
+                && e.target_text == "a.md"
+                && matches!(&e.resolution, Resolution::Path(_))),
+            "{census:?}"
+        );
+        // The body wikilink to a missing file — a Broken resolution.
+        assert!(
+            census
+                .iter()
+                .any(|e| e.target_text == "gone.md" && matches!(e.resolution, Resolution::Broken)),
+            "{census:?}"
+        );
+    }
+
+    #[test]
+    fn backlinks_invert_the_census_across_relations_and_body() {
+        let dir = tempdir("backlinks");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n- b.md\n---\n");
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        write(
+            &dir,
+            "b.md",
+            "---\npart_of: index.md\nlinks:\n- a.md\n---\nSee [[a.md]] again.\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        // Who links to a.md? index.md (contents), b.md (links), b.md (body).
+        let to_a = block_on(ws.backlinks_to("index.md", "a.md")).unwrap();
+        assert_eq!(to_a.len(), 3, "{to_a:?}");
+        assert!(
+            to_a.iter().any(|bl| bl.source == Path::new("index.md")
+                && matches!(&bl.site, LinkSite::Relation(r) if r == "contents")),
+            "{to_a:?}"
+        );
+        assert!(
+            to_a.iter().any(|bl| bl.source == Path::new("b.md")
+                && matches!(&bl.site, LinkSite::Relation(r) if r == "links")),
+            "{to_a:?}"
+        );
+        assert!(
+            to_a.iter()
+                .any(|bl| bl.source == Path::new("b.md") && matches!(bl.site, LinkSite::Body(_))),
+            "{to_a:?}"
+        );
+        // All path-form (this workspace has no registry / id links).
+        assert!(to_a.iter().all(|bl| !bl.by_id), "{to_a:?}");
+
+        // The full map keys targets by path; a.md is one of them.
+        let map = block_on(ws.backlinks("index.md")).unwrap();
+        assert_eq!(map[&PathBuf::from("a.md")].len(), 3);
+    }
+}

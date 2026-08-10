@@ -50,6 +50,9 @@
 //! - `duplicate` — a shallow copy as a fresh sibling.
 //! - `convert` — the re-spellings that move no document: a link's style, and a
 //!   metadata block's language or embedding shape.
+//! - `save` — a content edit's own bookkeeping (the `content_hash` and
+//!   `updated` stamps), landed either with the caller's new text in one write
+//!   or reconciled afterward against what is already on disk.
 //!
 //! `maintain` holds the plumbing those verbs share: walking the spanning
 //! relation (up to the root, down a subtree, along one entry), resolving the
@@ -71,6 +74,7 @@ mod recycle;
 mod rename;
 mod reparent;
 mod retitle;
+mod save;
 mod separate;
 
 pub use create::Created;

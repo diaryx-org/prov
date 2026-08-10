@@ -22,7 +22,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// quiet because a setting changed.
     async fn history_forgotten_path(&self, store_index: &Path) -> Result<(PathBuf, bool)> {
         let dir = store_dir(store_index);
-        if let Ok(entries) = self.fs().read_dir(&self.root().join(&dir)).await {
+        if let Ok(entries) = self.listing(&dir).await {
             for entry in entries {
                 let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
                     continue;
@@ -194,8 +194,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let Ok(blob) = blob_path(&store_index, hash) else {
                 continue;
             };
-            if self.fs().try_exists(&self.root().join(&blob)).await? {
-                bytes += match self.fs().metadata(&self.root().join(&blob)).await {
+            if self.exists(&blob).await? {
+                bytes += match self.stat(&blob).await {
                     Ok(meta) => meta.len(),
                     Err(_) => 0,
                 };
@@ -239,9 +239,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.commit(cs).await?;
 
         for blob in &blobs {
-            let full = self.root().join(blob);
-            if self.fs().try_exists(&full).await? {
-                self.fs().remove_file(&full).await?;
+            if self.exists(blob).await? {
+                crate::change::discard_file(self.fs(), self.root(), blob).await?;
             }
         }
         Ok(Forgotten {

@@ -198,7 +198,7 @@ fn build(fs: &InMemoryFs) -> Workspace<&InMemoryFs> {
 /// map, and a property test that cannot replay its own counterexample is worth
 /// very little.
 fn nodes(ws: &Workspace<&InMemoryFs>) -> Vec<PathBuf> {
-    fn walk(node: &crate::tree::Node, out: &mut Vec<PathBuf>) {
+    fn walk(node: &crate::graph::Node, out: &mut Vec<PathBuf>) {
         out.push(node.path.clone());
         for child in &node.children {
             walk(child, out);

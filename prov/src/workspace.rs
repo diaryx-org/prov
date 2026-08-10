@@ -34,11 +34,12 @@ use crate::fixity::FixityCache;
 use crate::fs::Storage;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use crate::index::{Collision, IndexStore, NoIndex};
+use crate::graph::Target;
 use crate::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
 use crate::memo::{ReadMemo, ReadScope, lock};
 use crate::meta::Value;
 use crate::relation::RelationSet;
-use crate::title::{self, TitleIndex, TitleMatch};
+use crate::title::{self, TitleIndex};
 
 /// A composed workspace: a filesystem, a relation vocabulary, an identity
 /// policy, an index store, and the link style it authors in.
@@ -156,7 +157,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         &self.root
     }
 
-    /// Join a workspace-relative path — a [`Node::path`](crate::tree::Node::path),
+    /// Join a workspace-relative path — a [`Node::path`](crate::graph::Node::path),
     /// or any other path this crate hands back — onto the workspace root,
     /// producing the fs-readable form a [`Storage`] read needs.
     ///
@@ -425,46 +426,6 @@ fn file_listing(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> BTreeSet<Pat
         .collect()
 }
 
-/// The resolution of one link target against a workspace: a path, an ID the
-/// registry does not currently resolve, or an off-workspace reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    /// A (normalized, workspace-relative) path.
-    Path(PathBuf),
-    /// An `id:<id>` reference with no live registry entry — unknown,
-    /// tombstoned, or the workspace has no registry at all.
-    UnresolvedId(crate::identity::Id),
-    /// A nominal (alias) reference whose name several documents claim, so it
-    /// cannot be resolved to one. The `String` is the name as written.
-    AmbiguousAlias(String),
-    /// A URL or mail address — never resolved against the workspace and never
-    /// rewritten by moves.
-    External,
-    /// An `id:<workspace>/<id>` reference naming a document in *another*
-    /// workspace — carried, never rewritten, and never reported broken.
-    ///
-    /// prov stops here on purpose. Resolving this would require a map from a
-    /// workspace name to a location, and that map is a property of the device
-    /// doing the reading, not of the archive being read: the same reference
-    /// resolves to a directory on one machine, a URL on another, and nothing at
-    /// all on a third. So the library reports *what was named* and leaves
-    /// *where it lives* to the host — `prov-cli` keeps a device-local peer map,
-    /// diaryx resolves through its published ARK permalinks.
-    ///
-    /// A reference qualified with this workspace's own
-    /// [`workspace_id`](Workspace::workspace_id) is **not** foreign: it is
-    /// resolved locally through the registry, so a document carrying one keeps
-    /// working when it is copied into the workspace it names.
-    Foreign {
-        /// The workspace qualifier, exactly as written.
-        workspace: String,
-        /// The id within that workspace, exactly as written — never
-        /// check-verified here (that workspace owns its id space, and may not
-        /// be a prov workspace at all).
-        id: crate::identity::Id,
-    },
-}
-
 impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// Whether registering `id` at `path` would displace a registration the index
     /// already holds — the guard for any op that registers an id it did **not**
@@ -531,72 +492,6 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             path: dest.to_path_buf(),
             held,
         })
-    }
-
-    /// Resolve `link` (declared in the document at `doc`) to a workspace target,
-    /// without nominal (alias) resolution — path and `id:` targets only. Use
-    /// [`resolve_link_with`](Self::resolve_link_with) when a [`TitleIndex`] is
-    /// available and `[[My File]]`-style aliases should resolve.
-    pub fn resolve_link(&self, doc: &Path, link: &Link) -> Target {
-        self.resolve_link_with(doc, link, None)
-    }
-
-    /// Resolve `link` to a workspace target. Path targets resolve relative to
-    /// `doc`'s directory; an `id:<id>` target resolves through the registry (the
-    /// location-independent path that stays valid across moves); an
-    /// alias-shaped target (a bare name) resolves through `titles` when one is
-    /// supplied — `Unique` to its path, `Ambiguous` to
-    /// [`Target::AmbiguousAlias`], and `Unknown` falling through to a path (so a
-    /// nominal link to nothing surfaces as a missing/broken path, exactly as
-    /// before aliases existed). With `titles` `None`, alias resolution is off
-    /// and this is the pure path/id resolver.
-    pub fn resolve_link_with(
-        &self,
-        doc: &Path,
-        link: &Link,
-        titles: Option<&TitleIndex>,
-    ) -> Target {
-        if link.is_external() {
-            return Target::External;
-        }
-        // A reference qualified with this workspace's own name *is* local — the
-        // registry that issued the id is the one in hand. That equivalence is
-        // what makes a qualified reference survive being copied into the
-        // workspace it names, instead of going inert at the boundary.
-        let id = match link.id_ref() {
-            Some(crate::link::IdRef::Local(id)) => Some(id),
-            Some(crate::link::IdRef::Foreign { workspace, id }) => {
-                if !self.workspace_id.is_empty() && workspace == self.workspace_id {
-                    Some(id)
-                } else {
-                    return Target::Foreign { workspace, id };
-                }
-            }
-            // Malformed: the author wrote `id:`, so this is a broken id
-            // reference, not a filename that happens to contain a colon.
-            Some(crate::link::IdRef::Malformed) => {
-                return Target::UnresolvedId(crate::identity::Id(link.target.clone()));
-            }
-            None => None,
-        };
-        if let Some(id) = id {
-            return match self.index.resolve(&id) {
-                Some(path) => Target::Path(link::normalize(path)),
-                None => Target::UnresolvedId(id),
-            };
-        }
-        if let Some(titles) = titles
-            && title::is_alias_shaped(&link.target)
-        {
-            match titles.resolve(&link.target) {
-                TitleMatch::Unique(path) => return Target::Path(link::normalize(path)),
-                TitleMatch::Ambiguous(_) => return Target::AmbiguousAlias(link.target.clone()),
-                // Unknown: fall through — a bare name with nothing behind it is
-                // treated as a path, so it reads as missing like any dead link.
-                TitleMatch::Unknown => {}
-            }
-        }
-        Target::Path(link::resolve(doc, &link.target))
     }
 }
 
@@ -958,7 +853,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     ) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for dir in dirs {
-            let Ok(entries) = self.fs.read_dir(&self.root.join(dir)).await else {
+            let Ok(entries) = self.listing(dir).await else {
                 continue;
             };
             for entry in entries {
@@ -1002,7 +897,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         docs: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
+            let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
             for entry in entries {
@@ -1041,7 +936,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         ids: &'a mut Vec<(crate::identity::Id, PathBuf)>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
+            let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
             let listing = file_listing(&rel_dir, &entries);
@@ -1098,7 +993,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
             if parked.iter().any(|p| rel_dir.starts_with(p)) {
                 return Ok(());
             }
-            let Ok(entries) = self.fs.read_dir(&self.root.join(&rel_dir)).await else {
+            let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
             let listing = file_listing(&rel_dir, &entries);
@@ -1182,7 +1077,7 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 "identity policy does not register on {event:?}"
             )));
         }
-        if !self.fs.try_exists(&self.root.join(&path)).await? {
+        if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));
         }
         let id = self.mint_unique(&path);
@@ -1409,10 +1304,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     // no frontmatter to stamp.
                     Err(_) => continue,
                 },
-                None => match self.fs.read_to_string(&self.root.join(&path)).await {
+                None => match self.read_text(&path).await {
                     Ok(text) => text,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e.into()),
+                    Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
                 },
             };
             let doc = crate::document::Document::parse(&path, &text)?;
@@ -1450,7 +1345,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         format: fig::Format,
     ) -> Result<bool> {
         let mut cs = ChangeSet::new();
-        let created = !self.fs.try_exists(&self.root.join(sidecar)).await?;
+        let created = !self.exists(sidecar).await?;
         if created {
             cs.write(sidecar, crate::meta::serialize_mapping(seed, format)?);
         }
@@ -1469,176 +1364,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(created)
     }
 
-    /// Write the generated `about.md` and point the root at it, in one change
-    /// set. Returns the path written.
-    ///
-    /// Unlike [`link_sidecar`](Self::link_sidecar) — which bootstraps a
-    /// whole-file *record store* and leaves it alone thereafter — this rewrites
-    /// the file **whole** every time, because the page is a pure function of
-    /// configuration and there is nothing in it to preserve. Spec §4 calls this
-    /// target kind *generated prose*: no inverse, no `part_of`, no id, not in
-    /// the spanning tree, and never merged.
-    ///
-    /// The pointer is created if absent and left alone if present, so a
-    /// workspace that has moved its page keeps it where it put it.
-    pub async fn write_about(
-        &self,
-        root_doc: &Path,
-        config: &crate::config::WorkspaceConfig,
-        ctx: &crate::about::AboutContext,
-    ) -> Result<PathBuf> {
-        let page = crate::about::generate(config, self.relations(), ctx)?;
-        let path = match self.about_path(root_doc).await? {
-            Some(existing) => existing,
-            None => PathBuf::from(default_about_name(config.content_format)),
-        };
-
-        let mut cs = ChangeSet::new();
-        cs.write(&path, page);
-        // Point the root at it only when it is not already pointed at, so the
-        // root's own bytes are untouched on an ordinary regeneration.
-        if self.about_path(root_doc).await?.is_none()
-            && let Some(pointer) = self.relations().about_relation()
-        {
-            let (text, doc) = self.load(root_doc).await?;
-            let updated = crate::edit::set_in_text(
-                &text,
-                doc.carrier,
-                pointer,
-                crate::edit::infer_scalar(&path.to_string_lossy()),
-            )?;
-            cs.write(root_doc, updated);
-        }
-        cs.apply(&self.fs, &self.root).await?;
-        Ok(path)
-    }
-
-    /// Remove the generated page and the root's pointer to it — the
-    /// `about: structure` → `off` transition.
-    ///
-    /// Deleting is safe here in a way it is not anywhere else in prov: the page
-    /// is derived, so nothing user-authored can be lost (spec §4 — "a pure
-    /// function of configuration, therefore discardable"). It is *not* routed to
-    /// the recycle bin for the same reason; a bin entry would promise a recovery
-    /// worth having, and regeneration is always available instead.
-    ///
-    /// Returns the path removed, or `None` when there was no page to remove.
-    pub async fn remove_about(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
-        let Some(path) = self.about_path(root_doc).await? else {
-            return Ok(None);
-        };
-        let mut cs = ChangeSet::new();
-        if self.fs.try_exists(&self.root.join(&path)).await? {
-            cs.remove(&path);
-        }
-        if let Some(pointer) = self.relations().about_relation() {
-            let (text, doc) = self.load(root_doc).await?;
-            let updated = crate::edit::unset_in_text(&text, doc.carrier, pointer)?;
-            cs.write(root_doc, updated);
-        }
-        cs.apply(&self.fs, &self.root).await?;
-        Ok(Some(path))
-    }
-
-    /// The page prov *would* generate, beside what is on disk — the staleness
-    /// question, answered without writing anything.
-    ///
-    /// `Ok(None)` means the page is current. `Ok(Some(diff))` carries the
-    /// expected page and what is actually there (`None` when the file is
-    /// missing), which is what `check` reports and `prov about --check` prints.
-    ///
-    /// **The comparison is over the body only.** The metadata block is excluded
-    /// deliberately, and that single choice does two jobs: a content-only page
-    /// (`embed_style: separate`, where there is no block at all) has nothing
-    /// missing from the comparison, and `generated_by: prov <version>` never
-    /// makes a workspace stale merely because prov was upgraded. A byline that
-    /// names an older version is harmless; a `check` that fires in every
-    /// workspace on earth after a release is not.
-    pub async fn about_diff(
-        &self,
-        root_doc: &Path,
-        config: &crate::config::WorkspaceConfig,
-        ctx: &crate::about::AboutContext,
-    ) -> Result<Option<AboutDiff>> {
-        let expected = crate::about::generate(config, self.relations(), ctx)?;
-        let Some(path) = self.about_path(root_doc).await? else {
-            return Ok(Some(AboutDiff {
-                path: PathBuf::from(default_about_name(config.content_format)),
-                expected,
-                actual: None,
-            }));
-        };
-        if !self.fs.try_exists(&self.root.join(&path)).await? {
-            return Ok(Some(AboutDiff {
-                path,
-                expected,
-                actual: None,
-            }));
-        }
-        let actual = self.fs.read_to_string(&self.root.join(&path)).await?;
-        if crate::about::same_body(&actual, &expected, config.content_format) {
-            return Ok(None);
-        }
-        Ok(Some(AboutDiff {
-            path,
-            expected,
-            actual: Some(actual),
-        }))
-    }
-
-    /// The [`Finding::AboutStale`] this workspace's generated page warrants, if
-    /// any — the `check` view over [`about_diff`](Self::about_diff).
-    ///
-    /// Silent when the workspace asks for no page (`about: off`) *and* declares
-    /// no pointer: nothing was promised, so nothing is broken. A workspace that
-    /// still declares a pointer is still checked, because the pointer is a
-    /// promise regardless of what the axis now says.
-    ///
-    /// [`Finding::AboutStale`]: crate::validate::Finding::AboutStale
-    pub async fn check_about(
-        &self,
-        root_doc: &Path,
-        config: &crate::config::WorkspaceConfig,
-        ctx: &crate::about::AboutContext,
-    ) -> Result<Option<crate::validate::Finding>> {
-        let declared = self.about_path(root_doc).await?.is_some();
-        if !crate::about::enabled(config) && !declared {
-            return Ok(None);
-        }
-        Ok(self.about_diff(root_doc, config, ctx).await?.map(|diff| {
-            crate::validate::Finding::AboutStale {
-                path: diff.path,
-                missing: diff.actual.is_none(),
-                expected: diff.expected,
-            }
-        }))
-    }
-
     // TODO(port): scan/traverse from diaryx_core::workspace land here.
-}
-
-/// The default filename for the generated page, in the workspace's content
-/// format.
-///
-/// Load-bearing, and the reason it is a constant rather than a setting the user
-/// is asked about: a person opening the directory finds this file *by its name*,
-/// with no pointer traversal and no convention beyond being able to read. The
-/// pointer may name any path — placement is ergonomic (spec §5) — but the
-/// default must be the most guessable name in the most guessable place.
-pub fn default_about_name(format: crate::content::ContentFormat) -> String {
-    format!("about.{}", format.extension())
-}
-
-/// What [`Workspace::about_diff`] found: the page prov would write, and what is
-/// there instead.
-#[derive(Debug, Clone)]
-pub struct AboutDiff {
-    /// Where the page lives (or would).
-    pub path: PathBuf,
-    /// The page prov would generate from the current configuration.
-    pub expected: String,
-    /// What is on disk, or `None` when the file is missing.
-    pub actual: Option<String>,
 }
 
 /// Builder for [`Workspace`]. Setting an identity policy or index store returns
@@ -1861,72 +1587,5 @@ mod tests {
             .build();
         assert!(ws.identity().registration().on_link);
         assert!(ws.index().is_empty());
-    }
-
-    /// A workspace named `notes` whose registry resolves `ajp7eq`.
-    fn named_ws(name: &str) -> Workspace<DummyFs, Minter, InMemoryIndex> {
-        let mut index = InMemoryIndex::new();
-        index.register(&crate::identity::Id("ajp7eq".into()), Path::new("note.md"));
-        Workspace::builder(DummyFs)
-            .root("vault")
-            .identity(Minter::lazy(1))
-            .index(index)
-            .workspace_id(name)
-            .build()
-    }
-
-    #[test]
-    fn a_reference_to_another_workspace_resolves_to_foreign() {
-        let ws = named_ws("notes");
-        let link = Link::parse("id:diaryx/xk4m2p");
-        assert_eq!(
-            ws.resolve_link(Path::new("a.md"), &link),
-            Target::Foreign {
-                workspace: "diaryx".into(),
-                id: crate::identity::Id("xk4m2p".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn a_reference_qualified_with_our_own_name_is_local() {
-        // The invariant with teeth: a document written elsewhere as
-        // `id:notes/ajp7eq` keeps working once it is copied *into* `notes`,
-        // instead of going inert at the boundary.
-        let ws = named_ws("notes");
-        assert_eq!(
-            ws.resolve_link(Path::new("a.md"), &Link::parse("id:notes/ajp7eq")),
-            Target::Path(PathBuf::from("note.md"))
-        );
-        // And it agrees with the unqualified spelling of the same reference.
-        assert_eq!(
-            ws.resolve_link(Path::new("a.md"), &Link::parse("id:ajp7eq")),
-            ws.resolve_link(Path::new("a.md"), &Link::parse("id:notes/ajp7eq"))
-        );
-    }
-
-    #[test]
-    fn an_anonymous_workspace_treats_every_qualifier_as_foreign() {
-        // With no name of its own, a workspace has nothing to compare against —
-        // so it must not guess that `id:notes/…` means itself.
-        let ws = named_ws("");
-        assert_eq!(
-            ws.resolve_link(Path::new("a.md"), &Link::parse("id:notes/ajp7eq")),
-            Target::Foreign {
-                workspace: "notes".into(),
-                id: crate::identity::Id("ajp7eq".into()),
-            }
-        );
-    }
-
-    #[test]
-    fn a_malformed_id_reference_is_not_reread_as_a_path() {
-        // `id:a/b/c` is a broken id reference, not a filename. Resolving it as a
-        // path would turn a typo into a plausible-looking dead path link.
-        let ws = named_ws("notes");
-        assert!(matches!(
-            ws.resolve_link(Path::new("a.md"), &Link::parse("id:a/b/c")),
-            Target::UnresolvedId(_)
-        ));
     }
 }

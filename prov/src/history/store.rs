@@ -33,7 +33,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Stage the removal of an index whose directory no longer holds any event —
     /// but only if it is actually there.
     pub(super) async fn stage_index_removal(&self, cs: &mut ChangeSet, index: &Path) -> Result<()> {
-        if self.fs().try_exists(&self.root().join(index)).await? {
+        if self.exists(index).await? {
             cs.remove(index);
         }
         Ok(())
@@ -116,7 +116,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let suffix = format!(".{ext}");
         let index = format!("index.{ext}");
         let mut ids = BTreeSet::new();
-        let Ok(entries) = self.fs().read_dir(&self.root().join(shard)).await else {
+        let Ok(entries) = self.listing(shard).await else {
             return Ok(ids);
         };
         for entry in entries {
@@ -139,7 +139,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// directory is empty, not an error — the store is grown lazily.
     pub(super) async fn subdirs(&self, dir: &Path) -> Result<BTreeSet<String>> {
         let mut names = BTreeSet::new();
-        let Ok(entries) = self.fs().read_dir(&self.root().join(dir)).await else {
+        let Ok(entries) = self.listing(dir).await else {
             return Ok(names);
         };
         for entry in entries {

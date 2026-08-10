@@ -204,51 +204,6 @@ impl RelationSet {
             .about("about")
     }
 
-    /// Build a workspace's relation vocabulary from its [`WorkspaceConfig`] — the
-    /// self-describing path (DESIGN §1, the `prov/1` spec). When the config
-    /// declares **no** relation definitions, this is the diaryx preset
-    /// ([`diaryx`](Self::diaryx)) unchanged — graceful degradation, so a minimal
-    /// vault that spells out nothing keeps working. When it declares definitions,
-    /// the vocabulary is built from them, and the structural pointer relations
-    /// (`registry`/`config`/`recycle_bin`) are preserved so those pointers stay
-    /// reachable regardless. An explicit `spanning` in the config always wins;
-    /// per-relation reference styles are overlaid last.
-    ///
-    /// [`WorkspaceConfig`]: crate::config::WorkspaceConfig
-    pub fn from_config(config: &crate::config::WorkspaceConfig) -> Self {
-        let mut set = if config.relation_defs.is_empty() {
-            Self::diaryx()
-        } else {
-            let mut s = Self::new();
-            for (name, def) in &config.relation_defs {
-                let mut rel = match def.cardinality.unwrap_or(Cardinality::Many) {
-                    Cardinality::One => Relation::one(name),
-                    Cardinality::Many => Relation::many(name),
-                };
-                if let Some(inverse) = &def.inverse {
-                    rel = rel.inverse(inverse);
-                }
-                s = s.with(rel);
-            }
-            // Keep the structural pointer relations reachable even under a fully
-            // custom vocabulary — but never shadow one the user already declared.
-            for pointer in ["registry", "config", "recycle_bin", "history", "about"] {
-                if !s.relations.iter().any(|r| r.name == pointer) {
-                    s = s.with(Relation::one(pointer));
-                }
-            }
-            s.registry("registry")
-                .config("config")
-                .recycle("recycle_bin")
-                .history("history")
-                .about("about")
-        };
-        if let Some(spanning) = &config.spanning {
-            set = set.spanning(spanning);
-        }
-        set.with_styles(&config.resolved_relation_styles())
-    }
-
     /// The configured relations.
     pub fn relations(&self) -> &[Relation] {
         &self.relations
@@ -438,56 +393,5 @@ mod tests {
             set.children(&d.meta),
             vec!["one.md".to_string(), "two.md".to_string()]
         );
-    }
-
-    #[test]
-    fn from_config_builds_a_custom_vocabulary_and_falls_back_to_diaryx() {
-        use crate::config::{RelationDef, WorkspaceConfig};
-        use std::collections::BTreeMap;
-
-        // No relation defs → the diaryx preset unchanged (graceful degradation).
-        let default_set = RelationSet::from_config(&WorkspaceConfig::default());
-        assert_eq!(default_set.spanning_relation(), Some("contents"));
-        assert_eq!(default_set.registry_relation(), Some("registry"));
-
-        // Declared defs → a self-described `part`/`whole` vocabulary, still with
-        // the structural pointer relations preserved.
-        let config = WorkspaceConfig {
-            spanning: Some("part".into()),
-            relation_defs: BTreeMap::from([
-                (
-                    "part".to_string(),
-                    RelationDef {
-                        cardinality: Some(Cardinality::Many),
-                        inverse: Some("whole".to_string()),
-                        means: None,
-                    },
-                ),
-                (
-                    "whole".to_string(),
-                    RelationDef {
-                        cardinality: Some(Cardinality::One),
-                        inverse: Some("part".to_string()),
-                        means: None,
-                    },
-                ),
-            ]),
-            ..WorkspaceConfig::default()
-        };
-        let set = RelationSet::from_config(&config);
-        assert_eq!(set.spanning_relation(), Some("part"));
-        let d = doc("---\npart:\n- one.md\n- two.md\n---\nbody\n");
-        assert_eq!(
-            set.children(&d.meta),
-            vec!["one.md".to_string(), "two.md".to_string()]
-        );
-        // Pointer relations survive a custom vocabulary so registry/config/bin
-        // stay reachable.
-        assert_eq!(set.registry_relation(), Some("registry"));
-        assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
-        assert_eq!(set.history_relation(), Some("history"));
-        assert!(set.relations().iter().any(|r| r.name == "history"));
-        assert_eq!(set.about_relation(), Some("about"));
-        assert!(set.relations().iter().any(|r| r.name == "about"));
     }
 }

@@ -13,11 +13,12 @@ use fig::Segment;
 use crate::edit::MetaEditor;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::graph::Target;
 use crate::identity::IdentityPolicy;
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
-use crate::workspace::{Target, Workspace};
+use crate::workspace::Workspace;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Adopt an existing document at `child` as a spanning child of `parent`,
@@ -45,7 +46,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let (spanning, inverse) = self.spanning_pair()?;
 
         for existing in [&child, &parent] {
-            if !self.fs().try_exists(&self.root().join(existing)).await? {
+            if !self.exists(existing).await? {
                 return Err(Error::NotFound(existing.to_path_buf()));
             }
         }

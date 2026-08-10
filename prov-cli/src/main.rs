@@ -27,12 +27,11 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use prov::document::MetaCarrier;
-use prov::tree::{Node, NodeKind};
 use prov::{
     Addressing, Adoption, ChangeSet, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id,
-    IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Notation, PathStyle, RelationSet,
-    RoutePlan, StdFs, StructurePlan, SynthNode, Target, Trigger, Value, Workspace, WorkspaceConfig,
-    block_on, edit, link, meta,
+    IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind, Notation, PathStyle,
+    RelationSet, RoutePlan, StdFs, StructurePlan, SynthNode, Target, Trigger, Value, Workspace,
+    WorkspaceConfig, block_on, edit, link, meta,
 };
 
 mod backup;
@@ -375,7 +374,7 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
     // The relation vocabulary is derived from the config: its declared
     // definitions + spanning (or the diaryx preset when none are declared),
     // with per-relation `style` overrides (up≠down) overlaid.
-    let relations = RelationSet::from_config(&ctx.config);
+    let relations = ctx.config.relation_set();
     Ok(Workspace::builder(StdFs)
         .root(&ctx.root_dir)
         .relations(relations)
@@ -1837,7 +1836,7 @@ fn cmd_empty_bin() -> CmdResult {
 fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
     let probe: Workspace<StdFs> = Workspace::builder(StdFs)
         .root(&ctx.root_dir)
-        .relations(RelationSet::from_config(&ctx.config))
+        .relations(ctx.config.relation_set())
         .build();
     Ok(prov::AboutContext {
         root_doc: ctx.root_doc.clone(),
@@ -1897,7 +1896,7 @@ fn cmd_about(check: bool, print: bool) -> CmdResult {
 fn diff_path_display(ctx: &Ctx, path: Option<&Path>) -> String {
     match path {
         Some(path) => path.display().to_string(),
-        None => prov::workspace::default_about_name(ctx.config.content_format),
+        None => prov::about::default_about_name(ctx.config.content_format),
     }
 }
 

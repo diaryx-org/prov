@@ -37,7 +37,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// journal embeds file contents ([`crate::journal::encode`]), so a genesis
     /// capture riding the change set would write a second whole copy of the
     /// workspace into `.prov-journal`. They go through
-    /// [`Storage::write_atomic`] directly instead, which is safe precisely
+    /// [`crate::change::write_blob_atomic`] instead, which is safe precisely
     /// because a content-addressed write is idempotent — replaying it can only
     /// write the same bytes to the same path.
     ///
@@ -99,13 +99,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Some(text) if path == root_doc => Some(text.clone().into_bytes()),
                 _ => None,
             };
-            let full = self.root().join(&path);
             // One stat, and on a hit it is the *only* thing this file costs: no
             // read, and no pass over its bytes. A stat this pass has to be able
             // to afford, since the alternative it replaces is reading the file.
             let meta = match staged {
                 Some(_) => None,
-                None => self.fs().metadata(&full).await.ok(),
+                None => self.stat(&path).await.ok(),
             };
             let remembered = match &meta {
                 Some(meta) => self.fixity_cached(&path, meta),
@@ -119,12 +118,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // real file when they got there, so the worst a wrong answer can
                 // do is record an event that misdescribes this instant — never
                 // park bytes under an address that is not their digest.
-                Some(hash)
-                    if self
-                        .fs()
-                        .try_exists(&self.root().join(blob_path(&store_index, &hash)?))
-                        .await? =>
-                {
+                Some(hash) if self.exists(&blob_path(&store_index, &hash)?).await? => {
                     hash
                 }
                 // Everything else reads the file — and hashes the bytes it read,
@@ -133,18 +127,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 _ => {
                     let bytes = match staged {
                         Some(bytes) => bytes,
-                        None => self.fs().read(&full).await?,
+                        None => self.read_bytes(&path).await?,
                     };
                     let hash = crate::fixity::digest(&bytes);
                     // Content-addressed, so a hash already on disk *is* the same
                     // bytes — nothing to rewrite, and two devices parking the
                     // same content converge instead of conflicting.
-                    let blob = self.root().join(blob_path(&store_index, &hash)?);
-                    if !self.fs().try_exists(&blob).await? {
-                        if let Some(dir) = blob.parent() {
-                            self.fs().create_dir_all(dir).await?;
-                        }
-                        self.fs().write_atomic(&blob, &bytes).await?;
+                    let blob_rel = blob_path(&store_index, &hash)?;
+                    if !self.exists(&blob_rel).await? {
+                        crate::change::write_blob_atomic(self.fs(), self.root(), &blob_rel, &bytes)
+                            .await?;
                         parked += 1;
                     }
                     if let Some(meta) = &meta {
@@ -333,14 +325,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// all — takes exactly the `try_exists`-false-means-absent path it always
     /// did. Nothing here reads the target OS; the filesystem answers for itself.
     pub(super) async fn on_disk_identity(&self, path: &Path) -> Result<Option<PathBuf>> {
-        let full = self.root().join(path);
-        if !self.fs().try_exists(&full).await? {
+        if !self.exists(path).await? {
             return Ok(None);
         }
-        let (Some(parent), Some(name)) = (full.parent(), full.file_name()) else {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return Ok(Some(path.to_path_buf()));
         };
-        let Ok(entries) = self.fs().read_dir(parent).await else {
+        let Ok(entries) = self.listing(parent).await else {
             // `try_exists` already said yes; a listing that cannot then confirm
             // it (a permission fault, a race) is not grounds to guess a
             // different spelling than the one asked for.
@@ -375,12 +366,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// byte moves" promise holds for every restore but this one, already-doomed
     /// shape.
     pub(super) async fn filesystem_case_folds(&self) -> Result<bool> {
-        let probe = self.root().join(".prov-case-probe.tmp");
-        let folded = self.root().join(".PROV-CASE-PROBE.tmp");
-        self.fs().write(&probe, b"").await?;
-        let collides = self.fs().try_exists(&folded).await;
-        let _ = self.fs().remove_file(&probe).await;
-        Ok(collides?)
+        let probe = Path::new(".prov-case-probe.tmp");
+        crate::change::write_probe(self.fs(), self.root(), probe, b"").await?;
+        let collides = self.exists(Path::new(".PROV-CASE-PROBE.tmp")).await;
+        let _ = crate::change::discard_file(self.fs(), self.root(), probe).await;
+        collides
     }
 }
 

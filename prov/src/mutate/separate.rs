@@ -33,7 +33,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// [`combine`](Workspace::combine).
     pub async fn separate(&mut self, path: &Path) -> Result<PathBuf> {
         let path = link::normalize(path);
-        if !self.fs().try_exists(&self.root().join(&path)).await? {
+        if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));
         }
         let (_, doc) = self.load(&path).await?;
@@ -63,7 +63,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 path.display()
             )));
         }
-        if self.fs().try_exists(&self.root().join(&meta_path)).await? {
+        if self.exists(&meta_path).await? {
             return Err(Error::AlreadyExists(meta_path.to_path_buf()));
         }
         // `meta_path` is only an extension swap of `path` — derived, not freshly
@@ -130,7 +130,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 path.display()
             )));
         };
-        if !self.fs().try_exists(&self.root().join(&content)).await? {
+        if !self.exists(&content).await? {
             return Err(Error::Structure(format!(
                 "{}'s content file {} is missing",
                 path.display(),

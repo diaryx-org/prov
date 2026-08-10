@@ -58,6 +58,7 @@ pub mod error;
 pub mod exec;
 pub mod fixity;
 pub mod fs;
+pub mod graph;
 pub mod history;
 pub mod identity;
 pub mod index;
@@ -71,7 +72,6 @@ pub mod relation;
 pub mod route;
 pub mod textdist;
 pub mod title;
-pub mod tree;
 pub mod validate;
 pub mod vocabulary;
 pub mod workspace;
@@ -105,6 +105,7 @@ pub use fs::{
     Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, StdFs, Storage,
     SyncGuarantee,
 };
+pub use graph::{Backlink, CensusEntry, LinkSite, Node, NodeKind, Resolution, Target, TreeOptions};
 pub use history::{
     Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Latest, Presence, Pruned,
     RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, Version,
@@ -123,10 +124,6 @@ pub use mutate::Created;
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use route::{Layout, RoutePlan};
 pub use title::{TitleIndex, TitleMatch};
-pub use tree::{Node, NodeKind, TreeOptions};
-pub use validate::{
-    Backlink, CensusEntry, CheckDiff, Finding, Fix, LinkSite, Remedy, RemedyKind, Resolution,
-    Warrant,
-};
+pub use validate::{CheckDiff, Finding, Fix, Remedy, RemedyKind, Warrant};
 pub use vocabulary::{Term, Vocabulary};
-pub use workspace::{Target, Workspace, WorkspaceBuilder};
+pub use workspace::{Workspace, WorkspaceBuilder};

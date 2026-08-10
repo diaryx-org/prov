@@ -55,6 +55,12 @@
 //! the *semantic* plan (which documents should exist); a `ChangeSet` is the
 //! *physical* one (which bytes reach which files), and the two compose: a
 //! semantic plan is realized by the ops that build change sets.
+//!
+//! This module (with its recovery arm in [`crate::journal`]) is the crate's
+//! sole [`Storage`] write surface — staged ops through [`ChangeSet::apply`],
+//! and the handful of writes that genuinely are not document mutations
+//! through the raw facade at the bottom of this file — so every write's
+//! durability and ordering guarantee is reviewable in one place.
 
 use std::path::{Path, PathBuf};
 
@@ -549,6 +555,68 @@ async fn ensure_parent<FS: Storage>(fs: &FS, full: &Path) -> Result<()> {
     if let Some(dir) = full.parent() {
         fs.create_dir_all(dir).await?;
     }
+    Ok(())
+}
+
+// Raw writes that deliberately bypass `ChangeSet` staging.
+//
+// Everything above lands a *document mutation*: an edit with an undo, that
+// must reach disk with its siblings or not at all. The three functions below
+// are not that, and routing them through a set would misrepresent what they
+// are — see each one's own doc for its reason. They live here rather than
+// beside their callers in `history/` so that every `Storage` write in the
+// crate stays reviewable in one file — this one owns the durability and
+// ordering policy, even for the writes that opt out of it. Each is a thin,
+// byte-identical delegation to the direct calls it replaces.
+
+/// Park `bytes` at `path` (workspace-relative) as a content-addressed blob,
+/// creating any missing parent directory.
+///
+/// Bypasses [`ChangeSet`] staging on purpose: a blob's address is the digest
+/// of its bytes, so parking one is idempotent — replaying it after a crash
+/// can only write the same bytes to the same path — and there is nothing for
+/// an unwind to undo. Riding the change set would also cost a second whole
+/// copy of the payload in the journal, which embeds file contents; see
+/// [`Workspace::history_capture`](crate::workspace::Workspace) for the full
+/// argument.
+pub(crate) async fn write_blob_atomic<FS: Storage>(
+    fs: &FS,
+    root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<()> {
+    let full = root.join(path);
+    ensure_parent(fs, &full).await?;
+    fs.write_atomic(&full, bytes).await?;
+    Ok(())
+}
+
+/// Remove the file at `path` (workspace-relative). It must exist.
+///
+/// Bypasses [`ChangeSet`] staging on purpose, for two different reasons at
+/// its two call sites. Freeing a history blob
+/// ([`Workspace::history_prune`](crate::workspace::Workspace),
+/// [`Workspace::history_forget`](crate::workspace::Workspace)) happens
+/// *after* the index rewrite that stops referencing it has already committed
+/// as its own set, so the removal was never part of that transaction — an
+/// interrupted GC pass just leaves the blob for the next run to find again.
+/// Removing [`write_probe`]'s throwaway file is not a document mutation to
+/// begin with.
+pub(crate) async fn discard_file<FS: Storage>(fs: &FS, root: &Path, path: &Path) -> Result<()> {
+    fs.remove_file(&root.join(path)).await?;
+    Ok(())
+}
+
+/// Write `bytes` to `path` (workspace-relative) directly, without the
+/// atomic-replace protocol a document write gets.
+///
+/// Bypasses [`ChangeSet`] staging on purpose: this is for a throwaway file
+/// used once to answer a question — [`Workspace::filesystem_case_folds`](
+/// crate::workspace::Workspace) probes whether the filesystem folds ASCII
+/// case — and then removed with [`discard_file`]. It is not workspace data,
+/// so there is nothing here to stage or undo.
+pub(crate) async fn write_probe<FS: Storage>(fs: &FS, root: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    fs.write(&root.join(path), bytes).await?;
     Ok(())
 }
 

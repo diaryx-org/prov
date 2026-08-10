@@ -44,10 +44,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let from = link::normalize(from);
         let to = link::normalize(to);
 
-        if !self.fs().try_exists(&self.root().join(&from)).await? {
+        if !self.exists(&from).await? {
             return Err(Error::NotFound(from.to_path_buf()));
         }
-        if self.fs().try_exists(&self.root().join(&to)).await? {
+        if self.exists(&to).await? {
             return Err(Error::AlreadyExists(to.to_path_buf()));
         }
 
@@ -87,7 +87,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // since the body's name is *derived* (`notes.yaml` → `notes.md`) and so
         // never passed by the caller, who therefore never sees the collision.
         if let Some(mv) = &body_move
-            && self.fs().try_exists(&self.root().join(&mv.to)).await?
+            && self.exists(&mv.to).await?
         {
             return Err(Error::Structure(format!(
                 "{}'s content file would move to {}, which already exists",

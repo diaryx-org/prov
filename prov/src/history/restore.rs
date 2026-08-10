@@ -162,7 +162,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // Presence of the bytes first: a row prov cannot supply has no
             // disposition worth computing, and there is nothing to read.
             let parked = match blob_path(&store_index, &file.hash) {
-                Ok(blob) => self.fs().try_exists(&self.root().join(blob)).await?,
+                Ok(blob) => self.exists(&blob).await?,
                 // A hash prov could not have parked names no blob that could be
                 // found — missing, rather than fatal to the whole plan.
                 Err(_) => false,
@@ -179,7 +179,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 (false, _) => (Disposition::NoBytes, None),
                 (true, None) => (Disposition::Create, None),
                 (true, Some(actual)) => {
-                    let bytes = self.fs().read(&self.root().join(&actual)).await?;
+                    let bytes = self.read_bytes(&actual).await?;
                     let matches = crate::fixity::digest(&bytes) == file.hash;
                     let recased = actual != file.path;
                     match (matches, recased) {
@@ -356,7 +356,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     let blob = blob_path(&store_index, hash)?;
                     match op.path == root_doc {
                         true => {
-                            let bytes = self.fs().read(&self.root().join(&blob)).await?;
+                            let bytes = self.read_bytes(&blob).await?;
                             let text = String::from_utf8(bytes).map_err(|e| {
                                 Error::Structure(format!(
                                     "the captured {} is not valid UTF-8: {e}",

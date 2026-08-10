@@ -58,7 +58,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         recursive: bool,
     ) -> Result<Vec<PathBuf>> {
         let file = link::normalize(file);
-        if !self.fs().try_exists(&self.root().join(&file)).await? {
+        if !self.exists(&file).await? {
             return Err(Error::NotFound(file.to_path_buf()));
         }
         let targets = if recursive {
@@ -151,7 +151,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         recursive: bool,
     ) -> Result<Vec<PathBuf>> {
         let file = link::normalize(file);
-        if !self.fs().try_exists(&self.root().join(&file)).await? {
+        if !self.exists(&file).await? {
             return Err(Error::NotFound(file.to_path_buf()));
         }
         let targets = if recursive {

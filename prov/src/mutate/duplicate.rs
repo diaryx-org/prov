@@ -46,7 +46,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// the copy points at *its own* body.
     pub async fn duplicate(&mut self, source: &Path) -> Result<PathBuf> {
         let source = link::normalize(source);
-        if !self.fs().try_exists(&self.root().join(&source)).await? {
+        if !self.exists(&source).await? {
             return Err(Error::NotFound(source.to_path_buf()));
         }
         let (source_text, doc) = self.load(&source).await?;
@@ -112,7 +112,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // payload bytes carried verbatim), then the parent's updated entry.
         cs.write(&dest, copy_text);
         if let (Some(body_from), Some((body_to, _))) = (&body_from, &body_dest) {
-            let bytes = self.fs().read(&self.root().join(body_from)).await?;
+            let bytes = self.read_bytes(body_from).await?;
             cs.write(body_to, bytes);
         }
         if let Some((parent, text)) = parent_write {
@@ -159,9 +159,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 None => PathBuf::from(name),
             };
             let body = body_from.map(|b| body_sibling(&node, b));
-            let node_free = !self.fs().try_exists(&self.root().join(&node)).await?;
+            let node_free = !self.exists(&node).await?;
             let body_free = match &body {
-                Some((body_to, _)) => !self.fs().try_exists(&self.root().join(body_to)).await?,
+                Some((body_to, _)) => !self.exists(body_to).await?,
                 None => true,
             };
             if node_free && body_free {

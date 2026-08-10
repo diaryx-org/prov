@@ -193,7 +193,7 @@ fn public_types_are_send() {
     assert_send::<ChangeSet>();
     assert_send::<Error>();
     assert_send::<prov::Discovered>();
-    assert_send::<prov::tree::Node>();
+    assert_send::<prov::Node>();
 }
 
 /// Compile-time only: never called, but type-checked. If either the transactional

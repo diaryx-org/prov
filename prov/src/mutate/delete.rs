@@ -12,10 +12,11 @@ use fig::Segment;
 use crate::edit::MetaEditor;
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::graph::{LinkSite, Resolution};
 use crate::identity::IdentityPolicy;
 use crate::index::IndexStore;
 use crate::link::{self, Link};
-use crate::validate::{Finding, LinkSite, Resolution};
+use crate::validate::Finding;
 use crate::workspace::Workspace;
 
 use super::maintain::content_target;
@@ -145,7 +146,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // A separated node's body lives in a sibling file; delete the pair.
         let body_file = content_target(&doc, &path);
         let body_exists = match &body_file {
-            Some(body) => self.fs().try_exists(&self.root().join(body)).await?,
+            Some(body) => self.exists(body).await?,
             None => false,
         };
 

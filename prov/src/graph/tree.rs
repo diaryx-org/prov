@@ -6,18 +6,33 @@
 //! unparseable target becomes a marked node, not an error — because a
 //! traversal that dies on the first broken link cannot power `tree`, `check`,
 //! or any editor view of an imperfect (i.e. real) workspace.
+//!
+//! **Why this is a second walker, not a view over [`census`](super::census).**
+//! The census is a flat BFS over a global `visited` set: once a path is
+//! reached it is never redescended, and a spanning edge back into it is a
+//! *finding* (a second parent breaking the single-parent tree). This walk is
+//! a DFS over a per-branch `trail`: revisiting a node from another branch is
+//! fine (each branch materializes its own subtree — that is what makes `tree`
+//! a tree rather than a DAG rendered flat), and only a back-edge to an
+//! *ancestor on the current path* is a cycle. Forcing one skeleton to serve
+//! both would mean threading two different revisit policies through a single
+//! traversal, which is more machinery than two short, separately-readable
+//! walks. They stay side by side in `graph` because they walk the same edges
+//! from the same [`Workspace`](crate::workspace::Workspace), not because they
+//! share a shape.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use crate::document::Document;
 use crate::error::Result;
 use crate::fs::Storage;
 use crate::index::IndexStore;
 use crate::link::{self, Link};
 use crate::meta::Value;
-use crate::workspace::{Target, Workspace};
+use crate::workspace::Workspace;
+
+use super::Target;
 
 /// Why a node appears in the tree the way it does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +56,7 @@ pub enum NodeKind {
     ///
     /// A leaf, always: the tree is *this* workspace's spanning walk, and prov
     /// has no map from a workspace name to a location to follow (see
-    /// [`Target::Foreign`](crate::workspace::Target::Foreign)). Shown rather
+    /// [`Target::Foreign`](crate::graph::Target::Foreign)). Shown rather
     /// than dropped, because the link is really declared and a reader deserves
     /// to see the structure leave the building.
     Foreign {
@@ -127,45 +142,6 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         let root = start.clone();
         self.tree_node(start, None, &root, &mut titles, &mut trail, options)
             .await
-    }
-
-    /// Read and parse the workspace-relative document at `path`, returning the
-    /// raw text alongside. The building block traversal, validation, and
-    /// mutation share.
-    pub(crate) async fn load(&self, path: &Path) -> Result<(String, Document)> {
-        // Clamp reads to the workspace root: `path` may originate in a document's
-        // own metadata (a `contents`/`part_of` target), so a hostile or careless
-        // `../../../etc/passwd` must be refused here rather than opened. The
-        // traversal turns this error into an `Unreadable` node; a direct caller
-        // sees the `Escape` error itself.
-        if link::escapes_root(path) {
-            return Err(crate::error::Error::Escape(path.to_path_buf()));
-        }
-        // Inside a `read_scope`, a document already read this operation is
-        // answered from memory — the escape check above still runs first, so a
-        // memo can never be the thing that lets a hostile path through.
-        if let Some(hit) = self.memo_hit(path) {
-            return Ok(hit);
-        }
-        let text = self.fs().read_to_string(&self.root().join(path)).await?;
-        let doc = Document::parse(path, &text)?;
-        self.memo_remember(path, &text, &doc);
-        Ok((text, doc))
-    }
-
-    /// Read and parse the workspace-relative document at `path`, returning its
-    /// full [`Document`] — the public counterpart to [`load`](Self::load), for
-    /// a caller walking a [`Node`] tree who needs more than [`Node::title`]
-    /// (the rest of the frontmatter, the body, the carrier) without re-reading
-    /// and re-parsing the file by hand.
-    ///
-    /// Unlike the traversal, which degrades a bad target to a
-    /// [`NodeKind::Unreadable`] node, this surfaces the [`Error`](crate::error::Error)
-    /// directly — a caller who names a path expects to know why it failed, not
-    /// to receive a placeholder.
-    pub async fn document(&self, path: impl AsRef<Path>) -> Result<Document> {
-        let path = link::normalize(path);
-        self.load(&path).await.map(|(_, doc)| doc)
     }
 
     fn tree_node<'a>(
@@ -476,29 +452,6 @@ mod tests {
         assert_eq!(b.kind, NodeKind::Doc);
         assert_eq!(b.children.len(), 1);
         assert_eq!(b.children[0].kind, NodeKind::Cycle);
-    }
-
-    #[test]
-    fn document_reads_full_metadata_for_a_workspace_relative_path() {
-        let dir = tempdir("document");
-        write(
-            &dir,
-            "notes/a.md",
-            "---\ntitle: A\nauthor: Ada\n---\nbody text\n",
-        );
-
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        let doc = block_on(ws.document("notes/a.md")).unwrap();
-        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("A"));
-        assert_eq!(doc.meta.get("author").and_then(Value::as_str), Some("Ada"));
-        assert_eq!(doc.body, "body text\n");
-    }
-
-    #[test]
-    fn document_surfaces_the_error_for_an_unreadable_path() {
-        let dir = tempdir("document-missing");
-        let ws = Workspace::builder(StdFs).root(&dir).build();
-        assert!(block_on(ws.document("nope.md")).is_err());
     }
 
     #[test]

@@ -33,7 +33,7 @@ use crate::document::EmbedStyle;
 use crate::identity::Registration;
 use crate::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
 use crate::meta::{Mapping, Value};
-use crate::relation::Cardinality;
+use crate::relation::{Cardinality, Relation, RelationSet};
 use crate::textdist::nearest;
 
 /// The config-vocabulary version stamped as `spec` and recognized on read — a
@@ -496,8 +496,7 @@ pub struct WorkspaceConfig {
     /// Per-relation structural **definitions**, keyed by relation name — the
     /// self-describing half of the `relations` block (cardinality, inverse,
     /// human gloss). Empty means the workspace uses its built-in vocabulary
-    /// (diaryx) unchanged. Consumed by
-    /// [`RelationSet::from_config`](crate::relation::RelationSet::from_config).
+    /// (diaryx) unchanged. Consumed by [`relation_set`](Self::relation_set).
     pub relation_defs: BTreeMap<String, RelationDef>,
     /// Controlled-vocabulary field declarations, keyed by frontmatter field name
     /// (`tags`, `audience`). Empty means no field is controlled — every such
@@ -552,7 +551,7 @@ pub struct WorkspaceConfig {
     /// about the archive, so it is the one piece that lives in its config. Where
     /// some *other* workspace can be found is a property of a device, not of
     /// this workspace, and deliberately has no config key — see
-    /// [`Target::Foreign`](crate::workspace::Target::Foreign).
+    /// [`Target::Foreign`](crate::graph::Target::Foreign).
     ///
     /// Must be [well-formed](is_valid_workspace_id): a malformed value is
     /// reported by [`diagnose`] and ignored rather than half-honored.
@@ -677,6 +676,49 @@ impl WorkspaceConfig {
                 (name.clone(), style)
             })
             .collect()
+    }
+
+    /// Build this workspace's relation vocabulary — the self-describing path
+    /// (DESIGN §1, the `prov/1` spec). When [`relation_defs`](Self::relation_defs)
+    /// is **empty**, this is the diaryx preset
+    /// ([`RelationSet::diaryx`](crate::relation::RelationSet::diaryx)) unchanged —
+    /// graceful degradation, so a minimal vault that spells out nothing keeps
+    /// working. When it declares definitions, the vocabulary is built from them,
+    /// and the structural pointer relations (`registry`/`config`/`recycle_bin`)
+    /// are preserved so those pointers stay reachable regardless. An explicit
+    /// `spanning` always wins; per-relation reference styles are overlaid last.
+    pub fn relation_set(&self) -> RelationSet {
+        let mut set = if self.relation_defs.is_empty() {
+            RelationSet::diaryx()
+        } else {
+            let mut s = RelationSet::new();
+            for (name, def) in &self.relation_defs {
+                let mut rel = match def.cardinality.unwrap_or(Cardinality::Many) {
+                    Cardinality::One => Relation::one(name),
+                    Cardinality::Many => Relation::many(name),
+                };
+                if let Some(inverse) = &def.inverse {
+                    rel = rel.inverse(inverse);
+                }
+                s = s.with(rel);
+            }
+            // Keep the structural pointer relations reachable even under a fully
+            // custom vocabulary — but never shadow one the user already declared.
+            for pointer in ["registry", "config", "recycle_bin", "history", "about"] {
+                if !s.relations().iter().any(|r| r.name == pointer) {
+                    s = s.with(Relation::one(pointer));
+                }
+            }
+            s.registry("registry")
+                .config("config")
+                .recycle("recycle_bin")
+                .history("history")
+                .about("about")
+        };
+        if let Some(spanning) = &self.spanning {
+            set = set.spanning(spanning);
+        }
+        set.with_styles(&self.resolved_relation_styles())
     }
 
     /// Whether a *mutation* under this config could mint a new stable ID — so a
@@ -1689,6 +1731,62 @@ mod tests {
             map.insert((*k).into(), value);
         }
         Value::Mapping(map)
+    }
+
+    // Uses YAML frontmatter fixtures, so it runs under the `yaml` feature.
+    #[test]
+    #[cfg(feature = "yaml")]
+    fn relation_set_builds_a_custom_vocabulary_and_falls_back_to_diaryx() {
+        use crate::document::Document;
+
+        fn doc(text: &str) -> Document {
+            Document::parse("index.md", text).unwrap()
+        }
+
+        // No relation defs → the diaryx preset unchanged (graceful degradation).
+        let default_set = WorkspaceConfig::default().relation_set();
+        assert_eq!(default_set.spanning_relation(), Some("contents"));
+        assert_eq!(default_set.registry_relation(), Some("registry"));
+
+        // Declared defs → a self-described `part`/`whole` vocabulary, still with
+        // the structural pointer relations preserved.
+        let config = WorkspaceConfig {
+            spanning: Some("part".into()),
+            relation_defs: BTreeMap::from([
+                (
+                    "part".to_string(),
+                    RelationDef {
+                        cardinality: Some(Cardinality::Many),
+                        inverse: Some("whole".to_string()),
+                        means: None,
+                    },
+                ),
+                (
+                    "whole".to_string(),
+                    RelationDef {
+                        cardinality: Some(Cardinality::One),
+                        inverse: Some("part".to_string()),
+                        means: None,
+                    },
+                ),
+            ]),
+            ..WorkspaceConfig::default()
+        };
+        let set = config.relation_set();
+        assert_eq!(set.spanning_relation(), Some("part"));
+        let d = doc("---\npart:\n- one.md\n- two.md\n---\nbody\n");
+        assert_eq!(
+            set.children(&d.meta),
+            vec!["one.md".to_string(), "two.md".to_string()]
+        );
+        // Pointer relations survive a custom vocabulary so registry/config/bin
+        // stay reachable.
+        assert_eq!(set.registry_relation(), Some("registry"));
+        assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
+        assert_eq!(set.history_relation(), Some("history"));
+        assert!(set.relations().iter().any(|r| r.name == "history"));
+        assert_eq!(set.about_relation(), Some("about"));
+        assert!(set.relations().iter().any(|r| r.name == "about"));
     }
 
     #[test]
