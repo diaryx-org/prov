@@ -89,6 +89,8 @@ mod read;
 mod restore;
 mod store;
 
+pub use prov_history::{HistoryIssue, HistoryStore};
+
 pub use layout::{StoreLocation, blob_path, event_path, shard_of, store_dir};
 pub use model::{
     Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Latest, Presence, Pruned,

@@ -116,8 +116,9 @@ pub use discovery::{Discovered, Discovery, discover};
 pub use fig_schema::FieldType;
 pub use fixity::FixityCache;
 pub use history::{
-    Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Latest, Presence, Pruned,
-    RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, Version,
+    Captured, Conflict, Disposition, Event, FileEntry, Forgotten, HistoryIssue, HistoryStore,
+    Latest, Presence, Pruned, RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject,
+    Summary, Version,
 };
 pub use identity::{IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};

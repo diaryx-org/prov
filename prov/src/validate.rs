@@ -39,6 +39,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::history::HistoryIssue;
 use crate::workspace::Workspace;
 use prov_graph::content::ContentFormat;
 use prov_graph::error::{Error, Result};
@@ -144,6 +145,35 @@ impl From<StructuralFact> for Finding {
             StructuralFact::BrokenLink { doc, site, target } => {
                 Finding::BrokenLink { doc, site, target }
             }
+        }
+    }
+}
+
+/// Translate history's bounded-context diagnostics into the global validation
+/// vocabulary. The dependency points one way: history reports its own issues;
+/// validation decides how those issues are presented alongside graph findings.
+impl From<HistoryIssue> for Finding {
+    fn from(issue: HistoryIssue) -> Self {
+        match issue {
+            HistoryIssue::IndexStale {
+                index,
+                missing,
+                extra,
+            } => Finding::HistoryIndexStale {
+                index,
+                missing,
+                extra,
+            },
+            HistoryIssue::BlobMissing { store, hash, paths } => {
+                Finding::HistoryBlobMissing { store, hash, paths }
+            }
+            HistoryIssue::BlobOrphaned { store, blobs } => {
+                Finding::HistoryBlobOrphaned { store, blobs }
+            }
+            HistoryIssue::StoreUnlinked { root, store } => {
+                Finding::HistoryStoreUnlinked { root, store }
+            }
+            HistoryIssue::Unreadable { doc, error } => Finding::Unreadable { doc, error },
         }
     }
 }
@@ -877,7 +907,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // themselves rather than by this walk — descent is spanning-only, and the
         // store is reached through the one-way `history` pointer. See
         // [`history_findings`](Workspace::history_findings).
-        findings.extend(self.history_findings(start).await?);
+        findings.extend(
+            self.history_findings(start)
+                .await?
+                .into_iter()
+                .map(Finding::from),
+        );
         Ok(findings)
     }
 

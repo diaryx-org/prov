@@ -32,6 +32,10 @@ prov-config = { path = "../prov-config", version = "0.4.0", default-features = f
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { path = "../prov-transaction", version = "0.4.0", default-features = false }
 
+# History bounded context. `prov` retains forwarding methods for API
+# compatibility; history itself never depends back on this crate.
+prov-history = { path = "../prov-history", version = "0.4.0" }
+
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs
 # runs `zig build`). The value tree is prov's common currency. Which format
 # backends fig compiles in is governed by prov's features below.

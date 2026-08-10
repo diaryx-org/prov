@@ -133,7 +133,7 @@ pub(super) fn render_index(
 /// state the one branch that applies here.
 fn carrier_opening(embed: fig::EmbedType) -> String {
     use fig::EmbedType as E;
-    let name = crate::about::format_name(embed.inner_format());
+    let name = format_name(embed.inner_format());
     match embed {
         E::FrontmatterYaml => format!("between the `---` lines at the top, written in {name}"),
         E::FrontmatterJson => format!("between the `;;;` lines at the top, written in {name}"),
@@ -174,11 +174,11 @@ fn carrier_opening(embed: fig::EmbedType) -> String {
 /// hand-wrapped paragraph would be tidy for YAML and ragged for an HTML island.
 pub(super) fn store_prose(style: &Authoring) -> String {
     let paragraphs = [
-        crate::about::para(
+        para(
             "This directory is `prov`'s **history store**: a safety net for damage \
              an external sync transport can do to the workspace's structure.",
         ),
-        crate::about::para(&format!(
+        para(&format!(
             "Each capture writes one immutable document under \
              `{EVENTS_DIR}/<year>/<month>/`, recording the complete set of files \
              that existed at that moment. That record is its `files` list, {} — one \
@@ -186,14 +186,14 @@ pub(super) fn store_prose(style: &Authoring) -> String {
              when it has one.",
             carrier_opening(style.embed),
         )),
-        crate::about::para(&format!(
+        para(&format!(
             "The bytes themselves live under `{BLOBS_DIR}/`, named by content hash \
              and shared between captures, so identical content is stored once. A \
              hash of `sha256:abcdef…` is the file `{BLOBS_DIR}/ab/cdef…` — first \
              two hex characters for the directory, the remaining sixty-two for the \
              filename, and never the `sha256:` prefix itself.",
         )),
-        crate::about::para(
+        para(
             "**Recovering a file without prov.** A blob is the file: the exact \
              bytes, uncompressed and unencoded. Find the path in an event's `files` \
              list, take its hash, and copy that blob back over the file. \
@@ -201,18 +201,53 @@ pub(super) fn store_prose(style: &Authoring) -> String {
              stored under, so anything here can be checked against its own \
              filename with no other tool.",
         ),
-        crate::about::para(
+        para(
             "Nothing here is ever rewritten except these index files, which are a \
              cache: the event documents are the authority, and any index can be \
              rebuilt by listing the directory beneath it (`prov check` reports and \
              repairs a stale one).",
         ),
-        crate::about::para(
+        para(
             "Capture a new event with `prov history-capture`; list what is here \
              with `prov history-list`.",
         ),
     ];
     paragraphs.join("\n")
+}
+
+/// History's renderer owns its prose formatting. Keeping this small helper
+/// here avoids coupling the store format to the workspace's `about` page.
+fn para(text: &str) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::new();
+    let mut column = 0usize;
+    for word in text.split_whitespace() {
+        let len = word.chars().count();
+        if column == 0 {
+            out.push_str(word);
+            column = len;
+        } else if column + 1 + len <= 74 {
+            out.push(' ');
+            out.push_str(word);
+            column += 1 + len;
+        } else {
+            out.push('\n');
+            out.push_str(word);
+            column = len;
+        }
+    }
+    out.push('\n');
+    out
+}
+
+fn format_name(format: fig::Format) -> String {
+    match format {
+        fig::Format::Yaml => "YAML".into(),
+        fig::Format::Toml => "TOML".into(),
+        fig::Format::Json | fig::Format::Jsonc | fig::Format::Json5 => "JSON".into(),
+        fig::Format::Fig => "fig".into(),
+        other => prov_config::metadata_format_str(other).to_uppercase(),
+    }
 }
 
 /// The month-shard title an event's `part_of` label uses: `July 2026`.

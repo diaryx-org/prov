@@ -222,6 +222,14 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
 }
 
 impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
+    /// Construct the history service for this workspace.
+    ///
+    /// Existing verb methods remain available below as compatibility
+    /// forwarding methods while history moves behind this host boundary.
+    pub fn history_store(&self) -> crate::history::HistoryStore<'_, Self> {
+        crate::history::HistoryStore::new(self)
+    }
+
     /// The read core this workspace traverses through.
     ///
     /// Hand this to anything that only needs to *see* the workspace: it can

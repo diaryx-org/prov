@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::validate::Finding;
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
 use prov_graph::fs::Storage;
@@ -9,11 +8,11 @@ use prov_graph::index::IndexStore;
 
 use super::docs::*;
 use super::layout::*;
-use super::{BLOBS_DIR, EVENTS_DIR};
+use super::{BLOBS_DIR, EVENTS_DIR, HistoryIssue};
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Validate the history store: every index document against the directory it
-    /// describes, emitting one [`Finding::HistoryIndexStale`] per index that has
+    /// describes, emitting one [`HistoryIssue::IndexStale`] per index that has
     /// drifted.
     ///
     /// The store's interior needs its own pass rather than riding `check`'s
@@ -26,10 +25,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// the very staleness it is looking for.
     ///
     /// The pass also reports a store the root has stopped declaring
-    /// ([`Finding::HistoryStoreUnlinked`]) — the one failure that is otherwise
+    /// ([`HistoryIssue::StoreUnlinked`]) — the one failure that is otherwise
     /// completely silent, since an undiscovered store is a subtree the walk never
     /// enters and so never reports anything about, orphans included.
-    pub async fn history_findings(&self, root_doc: &Path) -> Result<Vec<Finding>> {
+    pub async fn history_findings(&self, root_doc: &Path) -> Result<Vec<HistoryIssue>> {
         let (store_index, found) = self.history_store_index(root_doc).await?;
         if !found.exists() {
             return Ok(Vec::new());
@@ -47,7 +46,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // leftover directory is not a loss, and saying so would be prov objecting
         // to a directory the user is entitled to leave alone.
         if found == StoreLocation::Conventional && self.history().captures() {
-            findings.push(Finding::HistoryStoreUnlinked {
+            findings.push(HistoryIssue::StoreUnlinked {
                 root: root_doc.to_path_buf(),
                 store: store_index.clone(),
             });
@@ -101,12 +100,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// same reason. Bounded by event count × manifest size.
     ///
     /// An event-shaped file that fails to load or parse raises the store-format
-    /// doc's promised [`Finding::Unreadable`] (§7) — a plain, unchanged reuse of
+    /// doc's promised [`HistoryIssue::Unreadable`] (§7) — a plain, unchanged reuse of
     /// the finding the general walk already raises for any other document it
     /// cannot read, since an unreadable event is the same kind of problem. It
     /// does **not** get folded into `referenced`, so its potential blob
     /// references are simply unknown for the rest of this sweep.
-    async fn history_blob_findings(&self, store_index: &Path, ext: &str) -> Result<Vec<Finding>> {
+    async fn history_blob_findings(
+        &self,
+        store_index: &Path,
+        ext: &str,
+    ) -> Result<Vec<HistoryIssue>> {
         // hash → the captured paths that named it, across every event. A manifest
         // routinely names one blob from several paths, and one blob is one thing
         // to put back, so the report is keyed by hash rather than by event.
@@ -131,16 +134,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             None => BTreeSet::new(),
         };
 
-        let mut findings: Vec<Finding> = unreadable
+        let mut findings: Vec<HistoryIssue> = unreadable
             .iter()
-            .map(|(path, error)| Finding::Unreadable {
+            .map(|(path, error)| HistoryIssue::Unreadable {
                 doc: path.clone(),
                 error: error.clone(),
             })
             .collect();
         let mut promised: BTreeSet<PathBuf> = BTreeSet::new();
         for (hash, paths) in referenced {
-            let missing = Finding::HistoryBlobMissing {
+            let missing = HistoryIssue::BlobMissing {
                 store: store_index.to_path_buf(),
                 hash: hash.clone(),
                 paths: paths.into_iter().collect(),
@@ -183,7 +186,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .filter(|blob| !promised.contains(blob))
                 .collect();
             if !orphaned.is_empty() {
-                findings.push(Finding::HistoryBlobOrphaned {
+                findings.push(HistoryIssue::BlobOrphaned {
                     store: store_index.to_path_buf(),
                     blobs: orphaned,
                 });
@@ -194,7 +197,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
     /// Every file parked under `blobs/`, workspace-relative and sorted — the
     /// "sweep" half of the mark-and-sweep, shared by
-    /// [`Finding::HistoryBlobOrphaned`](crate::validate::Finding::HistoryBlobOrphaned) and by
+    /// [`HistoryIssue::BlobOrphaned`] and by
     /// [`history_prune`](Self::history_prune)'s collector, so what `check` calls
     /// an orphan and what `prune` collects are the same set by construction.
     ///
@@ -283,7 +286,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// genuinely missing or surplus entry is.
     async fn compare_index(
         &self,
-        findings: &mut Vec<Finding>,
+        findings: &mut Vec<HistoryIssue>,
         index: &Path,
         expected_text: &str,
     ) -> Result<()> {
@@ -302,7 +305,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let missing: Vec<PathBuf> = expected.difference(&actual).cloned().collect();
         let extra: Vec<PathBuf> = actual.difference(&expected).cloned().collect();
         if !missing.is_empty() || !extra.is_empty() {
-            findings.push(Finding::HistoryIndexStale {
+            findings.push(HistoryIssue::IndexStale {
                 index: index.to_path_buf(),
                 missing,
                 extra,
@@ -317,6 +320,7 @@ mod tests {
     use super::super::model::Captured;
     use super::super::support::*;
     use super::*;
+    use crate::validate::Finding;
     use prov_graph::exec::block_on;
 
     /// A shard index is titled `"{Month} {Year}"`, which in a journal is an

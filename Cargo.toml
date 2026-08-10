@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov-transaction", "prov-fixity", "prov-identity", "prov-config", "prov", "prov-cli"]
+members = ["prov-graph", "prov-transaction", "prov-fixity", "prov-identity", "prov-config", "prov-history", "prov", "prov-cli"]
 
 [workspace.package]
 version = "0.4.0"
@@ -73,3 +73,5 @@ prov-identity = { path = "prov-identity", version = "0.4.0", default-features = 
 prov-fixity = { path = "prov-fixity", version = "0.4.0" }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { path = "prov-transaction", version = "0.4.0" }
+# History bounded context: immutable events, blob storage, and history verbs.
+prov-history = { path = "prov-history", version = "0.4.0" }
