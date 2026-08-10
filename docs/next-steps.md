@@ -253,9 +253,21 @@ defaults. `link_format` precedence: config doc > root frontmatter (diaryx compat
 - **Route `rename`'s path rewrites through the link style too.** `create` and
   autofix now author via the style/id seam; rename's inbound path rewrites still
   emit relative. Fold them through `format_link` for full consistency.
-- **Builder threading smell.** Each new knob (`link_style`, `id_links`,
-  `default_embed_format`) is hand-threaded through `identity()`/`index()`.
-  Consider a shared inner `settings` struct the type-flipping methods carry whole.
+- ✅ **Builder threading smell — fixed by `Settings`.** Each knob (`link_style`,
+  `id_links`, `default_embed_format`, …) had been hand-threaded through four
+  field lists that all had to agree: `WorkspaceBuilder::identity`, `::index`,
+  `::build`, and `Workspace`'s hand-written `Clone`. Ten of them now live in a
+  `Settings` struct the type-flipping methods carry whole, so those four sites
+  no longer mention any knob and `Workspace` went from 17 fields to 8. Note what
+  the risk actually was: an *omitted* field was always a compile error, so the
+  hazard was a line reading `workspace_id: String::new()` where it meant
+  `self.workspace_id` — same type, no error, one knob silently defaulted for
+  whoever called that method. `every_setting_survives_the_builder_type_flips`
+  pins it. `Settings::from(&WorkspaceConfig)` is the payoff: the CLI's workspace
+  construction went from ten builder calls to one, and a knob added to the config
+  now reaches the workspace without touching `prov-cli`. It lives in
+  `workspace.rs` because `workspace` already depends on `config`, and the reverse
+  edge would be a cycle for no gain.
 - **Custom registration combos.** `identity` serializes as `off`/`lazy`/`eager`;
   a non-preset trigger set falls back to `lazy` on write. Represent as a
   sub-mapping if custom combos ever matter.

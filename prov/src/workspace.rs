@@ -41,28 +41,121 @@ use crate::meta::Value;
 use crate::relation::RelationSet;
 use crate::title::{self, TitleIndex};
 
-/// A composed workspace: a filesystem, a relation vocabulary, an identity
-/// policy, an index store, and the link style it authors in.
-#[derive(Debug)]
-pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
-    fs: FS,
-    root: PathBuf,
-    relations: RelationSet,
-    identity: Id,
-    index: Ix,
-    link_style: LinkStyle,
-    id_links: bool,
-    reference_style: Option<ReferenceStyle>,
-    default_embed_format: fig::Format,
-    embed_style: EmbedStyle,
-    fixity: Fixity,
-    history: History,
-    id_storage: IdStorage,
+/// The workspace's **policy knobs**, as one value.
+///
+/// Every field here answers "how does this workspace author and read
+/// documents?" — the vocabulary, the reference style, where ids live, how far
+/// checksums go. What is *not* here is as deliberate: the filesystem and root
+/// are a location rather than a policy; the identity policy and index store are
+/// type parameters, because [`Workspace`]'s whole "identity is a bolt-on"
+/// design is that they can be compiled out; and the [`FixityCache`] is
+/// device-local memory the workspace is handed, not something it declares.
+///
+/// It exists as a struct because it was previously ten loose fields, and every
+/// one of them had to be hand-copied through
+/// [`identity`](WorkspaceBuilder::identity), [`index`](WorkspaceBuilder::index),
+/// [`build`](WorkspaceBuilder::build), and [`Workspace`]'s `Clone` — four lists
+/// that had to agree, with nothing but review to make them. Carried whole,
+/// those four sites stop mentioning the knobs at all, so adding one is a field
+/// and its accessor rather than a field and four transcriptions.
+///
+/// [`Default`] is the paths-only workspace [`Workspace::builder`] starts from.
+/// Note `id_storage` defaults to [`IdStorage::Registry`] rather than
+/// [`WorkspaceConfig`](crate::config::WorkspaceConfig)'s `both`: a hand-built
+/// workspace keeps writing id-free documents until it opts in, where one built
+/// *from a config* gets what the config declares — that is what the
+/// `From<&WorkspaceConfig>` impl below is for.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    /// The relation vocabulary — see [`Workspace::relations`].
+    pub relations: RelationSet,
+    /// The path style links are authored in — see [`Workspace::link_style`].
+    pub link_style: LinkStyle,
+    /// The legacy "author links by id" axis, superseded by an explicit
+    /// `reference_style` — see [`Workspace::reference_style`].
+    pub id_links: bool,
+    /// The workspace-default reference style, overriding the `link_style` /
+    /// `id_links` pair when set — see [`Workspace::reference_style`].
+    pub reference_style: Option<ReferenceStyle>,
+    /// The metadata format a new document gets when it inherits no parent block
+    /// — see [`Workspace::default_embed_format`].
+    pub default_embed_format: fig::Format,
+    /// How that metadata is embedded — see [`Workspace::embed_style`].
+    pub embed_style: EmbedStyle,
+    /// How far content checksums are recorded — see [`Workspace::fixity`].
+    pub fixity: Fixity,
+    /// Whether a history store is kept, and on what trigger — see
+    /// [`Workspace::history`].
+    pub history: History,
+    /// Where a document's stable id is persisted — see
+    /// [`Workspace::id_storage`].
+    pub id_storage: IdStorage,
     /// What this workspace calls itself — the qualifier a cross-workspace
     /// reference names it by. Empty means anonymous, so no `id:<ws>/<id>`
     /// reference can ever be recognized as pointing back here. See
     /// [`WorkspaceConfig::workspace_id`](crate::config::WorkspaceConfig::workspace_id).
-    workspace_id: String,
+    pub workspace_id: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            relations: RelationSet::diaryx(),
+            link_style: LinkStyle::default(),
+            id_links: false,
+            reference_style: None,
+            default_embed_format: fig::Format::Yaml,
+            embed_style: EmbedStyle::Delimited,
+            fixity: Fixity::Payloads,
+            history: History::Off,
+            id_storage: IdStorage::Registry,
+            workspace_id: String::new(),
+        }
+    }
+}
+
+/// The settings a [`WorkspaceConfig`] declares — the whole of what a workspace
+/// says about itself in its own config document, in the form the builder takes.
+///
+/// This is the conversion the CLI used to spell out as ten builder calls. It
+/// lives here rather than in [`config`](crate::config) because `workspace`
+/// already depends on `config` (for [`Fixity`], [`History`], [`IdStorage`]) and
+/// the reverse edge would be a cycle for no gain.
+///
+/// Two fields are deliberately not read. `identity` is a
+/// [`Registration`](crate::identity::Registration), which the caller turns into
+/// a policy *type* (`Minter::with(config.identity, seed)`) — it cannot be a
+/// setting without giving up the bolt-on design. And `id_links` stays at its
+/// default, because a config always yields an explicit `reference_style`, which
+/// supersedes that legacy axis entirely.
+///
+/// [`WorkspaceConfig`]: crate::config::WorkspaceConfig
+impl From<&crate::config::WorkspaceConfig> for Settings {
+    fn from(config: &crate::config::WorkspaceConfig) -> Self {
+        Self {
+            relations: config.relation_set(),
+            link_style: config.link_format(),
+            reference_style: Some(config.reference_style()),
+            default_embed_format: config.default_embed_format,
+            embed_style: config.embed_style,
+            fixity: config.fixity,
+            history: config.history,
+            id_storage: config.id_storage,
+            workspace_id: config.workspace_id.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+/// A composed workspace: a filesystem, an identity policy, an index store, and
+/// the [`Settings`] that say how it authors and reads documents.
+#[derive(Debug)]
+pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
+    fs: FS,
+    root: PathBuf,
+    identity: Id,
+    index: Ix,
+    settings: Settings,
     /// Documents that earned an id this operation and, under a stamping mode,
     /// still need it written into their own frontmatter. Drained by
     /// [`commit`](Workspace::commit) into the operation's change set, so a
@@ -101,18 +194,9 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
         Self {
             fs: self.fs.clone(),
             root: self.root.clone(),
-            relations: self.relations.clone(),
             identity: self.identity.clone(),
             index: self.index.clone(),
-            link_style: self.link_style,
-            id_links: self.id_links,
-            reference_style: self.reference_style,
-            default_embed_format: self.default_embed_format,
-            embed_style: self.embed_style,
-            fixity: self.fixity,
-            history: self.history,
-            id_storage: self.id_storage,
-            workspace_id: self.workspace_id.clone(),
+            settings: self.settings.clone(),
             pending_stamps: self.pending_stamps.clone(),
             memo: Mutex::default(),
             fixity_cache: Mutex::new(lock(&self.fixity_cache).clone()),
@@ -121,31 +205,23 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
 }
 
 impl<FS> Workspace<FS, NoIdentity, NoIndex> {
-    /// Start building a paths-only workspace over `fs`. Defaults: root `"."`,
-    /// the [`RelationSet::diaryx`] vocabulary, identity off, and the default
-    /// [`LinkStyle`] (`MarkdownRoot`, matching diaryx).
-    ///
-    /// Identity storage defaults to [`IdStorage::Registry`] — *not*
-    /// [`WorkspaceConfig`](crate::config::WorkspaceConfig)'s `both` default — so a
+    /// Start building a paths-only workspace over `fs`: root `"."`, identity
+    /// off, and [`Settings::default`] — the [`RelationSet::diaryx`] vocabulary,
+    /// the default [`LinkStyle`] (`MarkdownRoot`, matching diaryx), and
+    /// [`IdStorage::Registry`], which is *not*
+    /// [`WorkspaceConfig`](crate::config::WorkspaceConfig)'s `both` default, so a
     /// hand-built workspace keeps writing id-free documents unless it opts in.
-    /// Consumers that drive the builder from a config (the normal path) pass
-    /// [`id_storage`](WorkspaceBuilder::id_storage) and get the declared mode.
+    ///
+    /// Consumers driving the builder from a config (the normal path) hand it the
+    /// declared modes whole, with
+    /// [`settings`](WorkspaceBuilder::settings)`(Settings::from(&config))`.
     pub fn builder(fs: FS) -> WorkspaceBuilder<FS, NoIdentity, NoIndex> {
         WorkspaceBuilder {
             fs,
             root: PathBuf::from("."),
-            relations: RelationSet::diaryx(),
             identity: NoIdentity,
             index: NoIndex,
-            link_style: LinkStyle::default(),
-            id_links: false,
-            reference_style: None,
-            default_embed_format: fig::Format::Yaml,
-            embed_style: EmbedStyle::Delimited,
-            fixity: Fixity::Payloads,
-            history: History::Off,
-            id_storage: IdStorage::Registry,
-            workspace_id: String::new(),
+            settings: Settings::default(),
             fixity_cache: None,
         }
     }
@@ -173,7 +249,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
 
     /// The configured relation vocabulary.
     pub fn relations(&self) -> &RelationSet {
-        &self.relations
+        &self.settings.relations
     }
 
     /// Open a **read scope**: for as long as the returned guard is held, a
@@ -302,7 +378,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The link style this workspace authors in (read from the root's
     /// `link_format`, or the default).
     pub fn link_style(&self) -> LinkStyle {
-        self.link_style
+        self.settings.link_style
     }
 
     /// Whether this workspace authors durable structural links by id
@@ -317,7 +393,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// that *record* a hash (`attach`, `edit`); `check` honors any hash already
     /// recorded regardless.
     pub fn fixity(&self) -> Fixity {
-        self.fixity
+        self.settings.fixity
     }
 
     /// Whether this workspace keeps a history store, and on what trigger.
@@ -330,7 +406,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// With the axis off there is nothing to be missing, and the pass stays
     /// silent.
     pub fn history(&self) -> History {
-        self.history
+        self.settings.history
     }
 
     /// How this workspace embeds metadata — the family (`delimited`,
@@ -338,7 +414,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// [`default_embed_format`](Self::default_embed_format), resolves to the
     /// concrete carrier a document prov authors gets.
     pub fn embed_style(&self) -> EmbedStyle {
-        self.embed_style
+        self.settings.embed_style
     }
 
     /// Where this workspace persists document ids (DESIGN §5). Consulted by the
@@ -346,7 +422,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// own `id` — and by `check`, which reconciles the two homes against each
     /// other.
     pub fn id_storage(&self) -> IdStorage {
-        self.id_storage
+        self.settings.id_storage
     }
 
     /// What this workspace calls itself — the qualifier a cross-workspace
@@ -357,7 +433,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// local reference that resolves through the registry, which is what lets a
     /// document keep working after being copied here from somewhere else.
     pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
+        &self.settings.workspace_id
     }
 
     /// The workspace-default reference style — the fallback for any relation
@@ -365,22 +441,23 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// value wins; otherwise it is derived from the legacy `link_style`/`id_links`
     /// builder inputs so existing configurations behave exactly as before.
     pub fn reference_style(&self) -> ReferenceStyle {
-        self.reference_style.unwrap_or(ReferenceStyle {
+        self.settings.reference_style.unwrap_or(ReferenceStyle {
             wrapper: Wrapper::Markdown,
-            addressing: if self.id_links {
+            addressing: if self.settings.id_links {
                 Addressing::Id
             } else {
                 Addressing::Path
             },
             label: false,
-            path_style: self.link_style,
+            path_style: self.settings.link_style,
         })
     }
 
     /// The reference style prov authors `relation`'s links in: the
     /// relation's own override if it declares one, else the workspace default.
     pub fn reference_style_for(&self, relation: &str) -> ReferenceStyle {
-        self.relations
+        self.settings
+            .relations
             .style_for(relation)
             .unwrap_or_else(|| self.reference_style())
     }
@@ -389,7 +466,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// — a *default* for authoring, not a workspace constraint (existing
     /// documents keep their own format on write, §7).
     pub fn default_embed_format(&self) -> fig::Format {
-        self.default_embed_format
+        self.settings.default_embed_format
     }
 
     /// Mutable access to the index store (e.g. to persist it after mutations).
@@ -1151,7 +1228,7 @@ impl<FS: Storage, Id: IdentityPolicy, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// in the document (DESIGN §5) — under registry-only storage a document never
     /// learns its own id.
     fn queue_stamp(&mut self, path: &Path, id: &crate::identity::Id) {
-        if self.id_storage.stamps_frontmatter() {
+        if self.settings.id_storage.stamps_frontmatter() {
             self.pending_stamps.push((path.to_path_buf(), id.clone()));
         }
     }
@@ -1374,18 +1451,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 pub struct WorkspaceBuilder<FS, Id, Ix> {
     fs: FS,
     root: PathBuf,
-    relations: RelationSet,
     identity: Id,
     index: Ix,
-    link_style: LinkStyle,
-    id_links: bool,
-    reference_style: Option<ReferenceStyle>,
-    default_embed_format: fig::Format,
-    embed_style: EmbedStyle,
-    fixity: Fixity,
-    history: History,
-    id_storage: IdStorage,
-    workspace_id: String,
+    settings: Settings,
     fixity_cache: Option<FixityCache>,
 }
 
@@ -1409,14 +1477,14 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
 
     /// Set the relation vocabulary.
     pub fn relations(mut self, relations: RelationSet) -> Self {
-        self.relations = relations;
+        self.settings.relations = relations;
         self
     }
 
     /// Set the link style this workspace authors in (typically read from the
     /// root's `link_format`).
     pub fn link_style(mut self, link_style: LinkStyle) -> Self {
-        self.link_style = link_style;
+        self.settings.link_style = link_style;
         self
     }
 
@@ -1424,13 +1492,13 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// A convenience over [`reference_style`](Self::reference_style); effective
     /// only when identity registers on a link.
     pub fn id_links(mut self, id_links: bool) -> Self {
-        self.id_links = id_links;
+        self.settings.id_links = id_links;
         self
     }
 
     /// Set how far content checksums are recorded (attachments only by default).
     pub fn fixity(mut self, fixity: Fixity) -> Self {
-        self.fixity = fixity;
+        self.settings.fixity = fixity;
         self
     }
 
@@ -1438,7 +1506,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// [`Workspace::history`] for what the library does with it (it does not gate
     /// capture — that is the caller's call).
     pub fn history(mut self, history: History) -> Self {
-        self.history = history;
+        self.settings.history = history;
         self
     }
 
@@ -1446,7 +1514,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// resolves to a concrete carrier. Defaults to
     /// [`EmbedStyle::Delimited`], matching the config default.
     pub fn embed_style(mut self, embed_style: EmbedStyle) -> Self {
-        self.embed_style = embed_style;
+        self.settings.embed_style = embed_style;
         self
     }
 
@@ -1456,7 +1524,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// file and the registry becomes a rebuildable cache rather than the sole
     /// authority.
     pub fn id_storage(mut self, id_storage: IdStorage) -> Self {
-        self.id_storage = id_storage;
+        self.settings.id_storage = id_storage;
         self
     }
 
@@ -1465,7 +1533,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// workspace anonymous: it can hold foreign references, but a reference
     /// written *to* it can never be recognized here as local.
     pub fn workspace_id(mut self, name: impl Into<String>) -> Self {
-        self.workspace_id = name.into();
+        self.settings.workspace_id = name.into();
         self
     }
 
@@ -1473,14 +1541,25 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// without their own override. Supersedes the `link_style`/`id_links`
     /// convenience inputs when set.
     pub fn reference_style(mut self, style: ReferenceStyle) -> Self {
-        self.reference_style = Some(style);
+        self.settings.reference_style = Some(style);
         self
     }
 
     /// Set the metadata format new documents get when they inherit no parent
     /// block (a default, not a constraint).
     pub fn default_embed_format(mut self, format: fig::Format) -> Self {
-        self.default_embed_format = format;
+        self.settings.default_embed_format = format;
+        self
+    }
+
+    /// Set every policy knob at once, from a [`Settings`] built elsewhere —
+    /// typically `Settings::from(&config)`, which is the whole of what a
+    /// workspace's config document declares.
+    ///
+    /// Supersedes anything the individual setters put there, so call it first if
+    /// you mean to override one knob afterwards.
+    pub fn settings(mut self, settings: Settings) -> Self {
+        self.settings = settings;
         self
     }
 
@@ -1489,18 +1568,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         WorkspaceBuilder {
             fs: self.fs,
             root: self.root,
-            relations: self.relations,
             identity,
             index: self.index,
-            link_style: self.link_style,
-            id_links: self.id_links,
-            reference_style: self.reference_style,
-            default_embed_format: self.default_embed_format,
-            embed_style: self.embed_style,
-            fixity: self.fixity,
-            history: self.history,
-            id_storage: self.id_storage,
-            workspace_id: self.workspace_id,
+            settings: self.settings,
             fixity_cache: self.fixity_cache,
         }
     }
@@ -1510,18 +1580,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         WorkspaceBuilder {
             fs: self.fs,
             root: self.root,
-            relations: self.relations,
             identity: self.identity,
             index,
-            link_style: self.link_style,
-            id_links: self.id_links,
-            reference_style: self.reference_style,
-            default_embed_format: self.default_embed_format,
-            embed_style: self.embed_style,
-            fixity: self.fixity,
-            history: self.history,
-            id_storage: self.id_storage,
-            workspace_id: self.workspace_id,
+            settings: self.settings,
             fixity_cache: self.fixity_cache,
         }
     }
@@ -1531,18 +1592,9 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         Workspace {
             fs: self.fs,
             root: self.root,
-            relations: self.relations,
             identity: self.identity,
             index: self.index,
-            link_style: self.link_style,
-            id_links: self.id_links,
-            reference_style: self.reference_style,
-            default_embed_format: self.default_embed_format,
-            embed_style: self.embed_style,
-            fixity: self.fixity,
-            history: self.history,
-            id_storage: self.id_storage,
-            workspace_id: self.workspace_id,
+            settings: self.settings,
             pending_stamps: Vec::new(),
             memo: Mutex::default(),
             fixity_cache: Mutex::new(self.fixity_cache),
@@ -1587,5 +1639,90 @@ mod tests {
             .build();
         assert!(ws.identity().registration().on_link);
         assert!(ws.index().is_empty());
+    }
+
+    /// Every knob, set away from its default, then carried across *both*
+    /// type-parameter flips and out the other side.
+    ///
+    /// This is the property the [`Settings`] struct exists to make true by
+    /// construction. It used to be four hand-copied field lists — `identity`,
+    /// `index`, `build`, and `Clone`. An *omitted* field was always a compile
+    /// error, so that was never the risk; the risk was a field written
+    /// `workspace_id: String::new()` where it meant `self.workspace_id`, which
+    /// type-checks, and which would revert one knob to its default for exactly
+    /// the workspaces that called that one method. Nothing here can fail while
+    /// the settings move whole — that is the point — so this test's real job is
+    /// the day someone unpacks them again.
+    #[test]
+    fn every_setting_survives_the_builder_type_flips() {
+        let settings = Settings {
+            relations: RelationSet::diaryx(),
+            link_style: LinkStyle::PlainRelative,
+            id_links: true,
+            reference_style: None,
+            default_embed_format: fig::Format::Json,
+            embed_style: EmbedStyle::CodeBlock,
+            fixity: Fixity::Off,
+            history: History::Manual,
+            id_storage: IdStorage::Frontmatter,
+            workspace_id: "notes".into(),
+        };
+        let ws = Workspace::builder(DummyFs)
+            .root("vault")
+            .settings(settings)
+            // The two flips: each rebuilds the builder at a new type.
+            .identity(Minter::lazy(1))
+            .index(InMemoryIndex::new())
+            .build();
+
+        assert_eq!(ws.link_style(), LinkStyle::PlainRelative);
+        assert_eq!(ws.default_embed_format(), fig::Format::Json);
+        assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
+        assert_eq!(ws.fixity(), Fixity::Off);
+        assert_eq!(ws.history(), History::Manual);
+        assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
+        assert_eq!(ws.workspace_id(), "notes");
+        assert_eq!(ws.relations().spanning_relation(), Some("contents"));
+        // `id_links` has no field of its own on the far side — it is read back
+        // through the reference style it feeds, which is the whole of what it
+        // means.
+        assert!(ws.id_links());
+        assert_eq!(ws.reference_style().addressing, Addressing::Id);
+
+        // And a clone is the same workspace, by the same mechanism.
+        let copy = ws.clone();
+        assert_eq!(copy.id_storage(), IdStorage::Frontmatter);
+        assert_eq!(copy.workspace_id(), "notes");
+    }
+
+    /// A config document declares the workspace's policy, and all of it arrives.
+    /// The CLI's whole workspace construction is this conversion plus a root, an
+    /// identity policy, and an index.
+    #[test]
+    fn a_config_becomes_the_workspaces_settings() {
+        let config = crate::config::WorkspaceConfig {
+            id_storage: IdStorage::Frontmatter,
+            history: History::Manual,
+            fixity: Fixity::Off,
+            embed_style: EmbedStyle::CodeBlock,
+            default_embed_format: fig::Format::Json,
+            workspace_id: "notes".into(),
+            ..Default::default()
+        };
+
+        let ws = Workspace::builder(DummyFs)
+            .root("vault")
+            .settings(Settings::from(&config))
+            .build();
+
+        assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
+        assert_eq!(ws.history(), History::Manual);
+        assert_eq!(ws.fixity(), Fixity::Off);
+        assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
+        assert_eq!(ws.default_embed_format(), fig::Format::Json);
+        assert_eq!(ws.workspace_id(), "notes");
+        // A config always yields an explicit reference style, which is why the
+        // legacy `id_links` axis stays at its default and is never consulted.
+        assert_eq!(ws.reference_style(), config.reference_style());
     }
 }

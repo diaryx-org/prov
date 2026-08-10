@@ -128,4 +128,4 @@ pub use route::{Layout, RoutePlan};
 pub use title::{TitleIndex, TitleMatch};
 pub use validate::{CheckDiff, Finding};
 pub use vocabulary::{Term, Vocabulary};
-pub use workspace::{Workspace, WorkspaceBuilder};
+pub use workspace::{Settings, Workspace, WorkspaceBuilder};

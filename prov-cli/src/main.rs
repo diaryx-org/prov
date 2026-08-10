@@ -30,8 +30,8 @@ use prov::document::MetaCarrier;
 use prov::{
     Addressing, Adoption, ChangeSet, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id,
     IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind, Notation, PathStyle,
-    RelationSet, RoutePlan, StdFs, StructurePlan, SynthNode, Target, Trigger, Value, Workspace,
-    WorkspaceConfig, block_on, edit, link, meta,
+    RelationSet, RoutePlan, Settings, StdFs, StructurePlan, SynthNode, Target, Trigger, Value,
+    Workspace, WorkspaceConfig, block_on, edit, link, meta,
 };
 
 mod backup;
@@ -371,37 +371,21 @@ fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError>
             None => FileIndex::new(ctx.config.default_embed_format),
         }
     };
-    // The relation vocabulary is derived from the config: its declared
-    // definitions + spanning (or the diaryx preset when none are declared),
-    // with per-relation `style` overrides (up≠down) overlaid.
-    let relations = ctx.config.relation_set();
+    // Every policy knob comes from the config, whole: the relation vocabulary
+    // (declared definitions + spanning, or the diaryx preset, with per-relation
+    // `style` overrides overlaid), the reference style, the embedding pair the
+    // store's own documents are authored through, the fixity and history axes,
+    // the identity-storage mode, and what this workspace calls itself. Threading
+    // them one at a time is what `Settings` exists to stop; a knob added to the
+    // config now reaches the workspace without touching this function.
+    //
+    // The one thing that cannot come across is `identity`: it is a policy *type*
+    // here, not a value, which is what lets identity be compiled out entirely.
     Ok(Workspace::builder(StdFs)
         .root(&ctx.root_dir)
-        .relations(relations)
+        .settings(Settings::from(&ctx.config))
         .identity(Minter::with(ctx.config.identity, entropy_seed()))
         .index(index)
-        .link_style(ctx.config.link_format())
-        // `reference_style` is explicit here, so it supersedes the builder's
-        // `id_links` fallback entirely — the CLI never sets that legacy axis.
-        .reference_style(ctx.config.reference_style())
-        .default_embed_format(ctx.config.default_embed_format)
-        // The store's own documents are authored through this pair, so a fig or
-        // HTML workspace's history reads like the rest of it rather than falling
-        // back to a `;;;` fence the workspace never uses.
-        .embed_style(ctx.config.embed_style)
-        .fixity(ctx.config.fixity)
-        // Not a capture gate (that stays in `cmd_history_capture`) — it is what
-        // lets `check` tell "no store yet" from "the root stopped pointing at the
-        // store that is sitting right there".
-        .history(ctx.config.history)
-        // Honor the declared identity-storage mode: under `both` (the config
-        // default) every document prov authors carries its own `id`, and `check`
-        // reports any that does not.
-        .id_storage(ctx.config.id_storage)
-        // What this workspace calls itself — the one thing the library needs in
-        // order to tell a reference that points *back here* from one that points
-        // somewhere it cannot see.
-        .workspace_id(ctx.config.workspace_id.clone())
         .build())
 }
 
