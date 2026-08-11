@@ -226,7 +226,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     ///
     /// Existing verb methods remain available below as compatibility
     /// forwarding methods while history moves behind this host boundary.
-    pub fn history_store(&self) -> crate::history::HistoryStore<'_, Self> {
+    pub fn history_store(&self) -> crate::history::HistoryStore<&Self> {
         crate::history::HistoryStore::new(self)
     }
 

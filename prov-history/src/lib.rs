@@ -66,17 +66,23 @@ pub enum HistoryIssue {
 }
 
 /// Service handle for history operations hosted by another crate.
+///
+/// Generic over the host *value*, not a fixed reference, so a caller chooses
+/// its own capability: `HistoryStore::new(&workspace)` for reads and
+/// planning, `HistoryStore::new(&mut workspace)` once a verb needs to write.
+/// The verbs that will live behind this (capture, restore, prune, forget) all
+/// need to mutate their host, which a fixed `&'a H` cannot express.
 #[derive(Debug, Clone, Copy)]
-pub struct HistoryStore<'a, H: ?Sized> {
-    host: &'a H,
+pub struct HistoryStore<H> {
+    host: H,
 }
 
-impl<'a, H: ?Sized> HistoryStore<'a, H> {
-    pub fn new(host: &'a H) -> Self {
+impl<H> HistoryStore<H> {
+    pub fn new(host: H) -> Self {
         Self { host }
     }
 
-    pub fn host(&self) -> &'a H {
-        self.host
+    pub fn host(&self) -> &H {
+        &self.host
     }
 }
