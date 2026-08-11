@@ -5,14 +5,14 @@
 
 use std::path::{Path, PathBuf};
 
-use super::*;
-use crate::workspace::Workspace;
+use prov_graph::exec::block_on;
+use prov_history::*;
 
-// Re-exported so each verb's `mod tests` can pull the whole fixture surface —
-// helpers and the concrete workspace types they hand back — from one glob.
+// Re-exported so each verb's file can pull the whole fixture surface — helpers
+// and the concrete workspace types they hand back — from one glob.
 pub(super) use crate::fs_faults::CountingFs;
 pub(super) use crate::identity::{Id, Minter};
-pub(super) use prov_graph::exec::block_on;
+pub(super) use crate::workspace::Workspace;
 pub(super) use prov_graph::fs::StdFs;
 pub(super) use prov_graph::index::FileIndex;
 
