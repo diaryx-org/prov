@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use super::support::*;
 use crate::*;
 use prov_graph::exec::block_on;
-use prov_graph::index::IndexStore;
+use prov_store::index::IndexStore;
 
 /// The summary's whole contract: the same answer `list` gives, for the price of
 /// a listing. A store with no events at all is the boundary case a cadence

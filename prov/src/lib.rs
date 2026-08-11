@@ -76,22 +76,34 @@ pub mod workspace;
 /// only traverses can depend on `prov-graph` directly and link none of the
 /// mutation, history, or config machinery.
 pub use prov_graph;
-pub use prov_graph::{
-    Addressing, Backlink, BodyLink, Capabilities, Cardinality, CensusEntry, Collision,
-    ContentFormat, DirEntry, Document, Durability, Edge, EmbedStyle, EmbedType, Error, ExtKind,
-    FileIndex, FileType, Format, Graph, Id, IdIndex, IdStorage, InMemoryFs, InMemoryIndex,
-    IndexStore, Link, LinkSite, LinkStyle, Mapping, MetaCarrier, Metadata, NoIndex, Node, NodeKind,
-    Notation, PathStyle, ReadScope, ReadSettings, ReadStorage, Rebase, ReferenceStyle, Relation,
-    RelationSet, Resolution, Result, StdFs, Storage, StructuralFact, SyncGuarantee, Target,
-    TitleIndex, TitleMatch, TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans,
-    embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title,
-    reachable_set, render_html, require_whole_file,
-};
+pub use prov_graph::{Addressing, Backlink, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat, DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id, IdIndex, IdStorage, Link, LinkSite, LinkStyle, Mapping, MetaCarrier, Metadata, NoIndex, Node, NodeKind, Notation, PathStyle, ReadScope, ReadSettings, ReadStorage, ReferenceStyle, Relation, RelationSet, Resolution, Result, StdFs, StructuralFact, Target, TitleIndex, TitleMatch, TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans, embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title, reachable_set, render_html, require_whole_file};
+pub use prov_store::{Capabilities, Durability, FileIndex, InMemoryFs, InMemoryIndex, IndexStore, Rebase, Storage, SyncGuarantee};
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.
-pub use prov_graph::{
-    content, document, edit, error, exec, fs, graph, index, link, memo, meta, relation, title,
-};
+pub use prov_graph::{content, document, error, exec, graph, link, memo, meta, relation, title};
+/// Metadata editing, at the path it had before the write surface moved out of
+/// the read core into `prov-store`.
+pub use prov_store::edit;
+
+/// The filesystem port — both halves.
+///
+/// The read surface ([`ReadStorage`](prov_graph::fs::ReadStorage) and the types
+/// it answers with) is `prov-graph`'s; the write surface
+/// ([`Storage`](prov_store::fs::Storage) and the durability vocabulary) is
+/// `prov-store`'s. They live in separate crates so a read-only consumer can
+/// depend on the first without linking the second, and are rejoined here
+/// because `prov` is the layer that does both.
+pub mod fs {
+    pub use prov_graph::fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
+    pub use prov_store::fs::{Capabilities, Durability, InMemoryFs, Storage, SyncGuarantee, memory};
+}
+
+/// The ID index — both halves, split across two crates for the same reason
+/// [`fs`] is.
+pub mod index {
+    pub use prov_graph::index::{Collision, IdIndex, NoIndex};
+    pub use prov_store::index::{FileIndex, IndexStore, InMemoryIndex, Rebase};
+}
 
 pub use about::AboutContext;
 /// Transaction primitives, retained at their original paths for compatibility.

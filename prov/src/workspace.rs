@@ -32,9 +32,11 @@ use crate::fixity::FixityCache;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use prov_graph::document::EmbedStyle;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::{ReadStorage, Storage};
+use prov_graph::fs::{ReadStorage};
+use prov_store::fs::{Storage};
 use prov_graph::graph::Target;
-use prov_graph::index::{Collision, IdIndex, IndexStore, NoIndex};
+use prov_graph::index::{Collision, IdIndex, NoIndex};
+use prov_store::index::{IndexStore};
 use prov_graph::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
 use prov_graph::memo::{ReadScope, lock};
 use prov_graph::meta::Value;
@@ -1090,7 +1092,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             if doc.meta.get("id").and_then(Value::as_str) == Some(id.0.as_str()) {
                 continue;
             }
-            let updated = prov_graph::edit::set_in_text(
+            let updated = prov_store::edit::set_in_text(
                 &text,
                 doc.carrier,
                 "id",
@@ -1133,11 +1135,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // sits beside the root, which is the convention). Set it comment- and
         // format-preservingly, like any other metadata edit.
         let (text, doc) = self.load(root_doc).await?;
-        let updated = prov_graph::edit::set_in_text(
+        let updated = prov_store::edit::set_in_text(
             &text,
             doc.carrier,
             pointer,
-            prov_graph::edit::infer_scalar(&sidecar.to_string_lossy()),
+            prov_store::edit::infer_scalar(&sidecar.to_string_lossy()),
         )?;
         cs.write(root_doc, updated);
         cs.apply(self.graph.fs(), self.graph.root()).await?;
@@ -1480,7 +1482,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
 mod tests {
     use super::*;
     use crate::identity::{IdentityPolicy, Minter};
-    use prov_graph::index::InMemoryIndex;
+    use prov_store::index::InMemoryIndex;
 
     // A stand-in filesystem — the seam is exercised without a real backend.
     #[derive(Clone)]

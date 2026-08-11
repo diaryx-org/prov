@@ -11,10 +11,13 @@ license.workspace = true
 
 [dependencies]
 prov-graph = { workspace = true, default-features = false }
+# The write halves of prov-graph's ports — the `Storage` the journal drives and
+# the `Rebase` seam a change set answers through.
+prov-store = { workspace = true, default-features = false }
 
 [features]
 default = ["yaml"]
-yaml = ["prov-graph/yaml"]
-json = ["prov-graph/json"]
-toml = ["prov-graph/toml"]
-fig-lang = ["prov-graph/fig-lang"]
+yaml = ["prov-graph/yaml", "prov-store/yaml"]
+json = ["prov-graph/json", "prov-store/json"]
+toml = ["prov-graph/toml", "prov-store/toml"]
+fig-lang = ["prov-graph/fig-lang", "prov-store/fig-lang"]

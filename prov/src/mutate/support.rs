@@ -16,8 +16,8 @@ pub(super) use crate::fs_faults::FailAtWrite;
 pub(super) use crate::identity::Minter;
 pub(super) use prov_graph::exec::block_on;
 pub(super) use prov_graph::fs::StdFs;
-use prov_graph::fs::Storage;
-pub(super) use prov_graph::index::FileIndex;
+use prov_store::fs::Storage;
+pub(super) use prov_store::index::FileIndex;
 
 pub(super) fn write(dir: &Path, rel: &str, text: &str) {
     let p = dir.join(rel);

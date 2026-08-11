@@ -474,6 +474,7 @@ dependencies = [
  "prov-graph",
  "prov-history",
  "prov-identity",
+ "prov-store",
  "prov-transaction",
  "thiserror",
  "twig-doc",
@@ -530,6 +531,7 @@ dependencies = [
  "prov-config",
  "prov-fixity",
  "prov-graph",
+ "prov-store",
  "prov-transaction",
 ]
 
@@ -543,10 +545,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "prov-store"
+version = "0.4.0"
+dependencies = [
+ "fig",
+ "proptest",
+ "prov-graph",
+]
+
+[[package]]
 name = "prov-transaction"
 version = "0.4.0"
 dependencies = [
  "prov-graph",
+ "prov-store",
 ]
 
 [[package]]

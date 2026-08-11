@@ -89,8 +89,8 @@ use std::path::{Path, PathBuf};
 
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
-use prov_graph::fs::Storage;
-use prov_graph::index::IndexStore;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 pub use prov_history::{
     BLOBS_DIR, Captured, Conflict, Disposition, EVENTS_DIR, Event, FORGOTTEN_STEM, FileEntry,

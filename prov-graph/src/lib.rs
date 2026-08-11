@@ -13,17 +13,20 @@
 //!
 //! Everything here reads. The filesystem port it asks for
 //! ([`fs::ReadStorage`]) has no method that writes a byte; the id index it asks
-//! for ([`index::IdIndex`]) has no method that changes a registration. So a
-//! consumer that must not modify a workspace — a language server, a static
-//! renderer, a browser viewer — can depend on this crate and be *unable* to,
-//! rather than merely intending not to. That is the whole reason the split
-//! exists.
+//! for ([`index::IdIndex`]) has no method that changes a registration. Nor is
+//! the vocabulary for writing merely unused — it is *absent*, declared a layer
+//! up in `prov-store` instead. So a consumer that must not modify a workspace —
+//! a language server, a static renderer, a browser viewer — can depend on this
+//! crate and be *unable* to, rather than merely intending not to. That is the
+//! whole reason the split exists, and it is why the write halves are not here
+//! behind a feature flag someone could leave switched on.
 //!
-//! The verbs live in `prov`: creating, renaming, deleting, attaching, the
-//! change/journal machinery that makes a mutation crash-atomic, the version
-//! history, the config layer, the validation and repair passes. `prov` owns one
-//! [`Graph`] and forwards every read to it, so the two are the same traversal —
-//! not a reimplementation that can drift.
+//! The write surface is `prov-store`: `Storage`, the metadata editor, and the
+//! `IndexStore` registries. The verbs are `prov`: creating, renaming, deleting,
+//! attaching, the change/journal machinery that makes a mutation crash-atomic,
+//! the version history, the config layer, the validation and repair passes.
+//! `prov` owns one [`Graph`] and forwards every read to it, so the two are the
+//! same traversal — not a reimplementation that can drift.
 //!
 //! ## The shape of it
 //!
@@ -60,7 +63,6 @@ compile_error!(
 
 pub mod content;
 pub mod document;
-pub mod edit;
 pub mod error;
 pub mod exec;
 pub mod fs;
@@ -82,16 +84,13 @@ pub use error::{Error, Result};
 pub use exec::block_on;
 pub use fig::ExtKind;
 pub use fig::Format;
-pub use fs::{
-    Capabilities, DirEntry, Durability, FileType, InMemoryFs, Metadata, ReadStorage, StdFs,
-    Storage, SyncGuarantee,
-};
+pub use fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
 pub use graph::{
     Backlink, CensusEntry, Graph, LinkSite, Node, NodeKind, ReadSettings, Resolution,
     StructuralFact, Target, TreeOptions, Walk, reachable_set,
 };
 pub use identity::{Id, IdStorage};
-pub use index::{Collision, FileIndex, IdIndex, InMemoryIndex, IndexStore, NoIndex, Rebase};
+pub use index::{Collision, IdIndex, NoIndex};
 pub use link::{
     Addressing, BodyLink, Link, LinkStyle, Notation, PathStyle, ReferenceStyle, Wikilink, Wrapper,
     escapes_root, format_link, path_to_title,

@@ -38,7 +38,7 @@ use proptest::prelude::*;
 use crate::validate::{CheckDiff, Finding};
 use crate::workspace::Workspace;
 use prov_graph::exec::block_on;
-use prov_graph::fs::InMemoryFs;
+use prov_store::fs::InMemoryFs;
 use prov_graph::relation::RelationSet;
 
 /// The workspace root, and the start `check` is asked from. No generated op

@@ -43,11 +43,13 @@ use fig::Segment;
 use crate::identity::{IdentityPolicy, Trigger};
 use crate::workspace::Workspace;
 use prov_graph::document::{is_opaque_payload, whole_file_extension};
-use prov_graph::edit::MetaEditor;
+use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::{ReadStorage, Storage};
+use prov_graph::fs::{ReadStorage};
+use prov_store::fs::{Storage};
 use prov_graph::graph::sidecar_candidates;
-use prov_graph::index::{IdIndex, IndexStore};
+use prov_graph::index::{IdIndex};
+use prov_store::index::{IndexStore};
 use prov_graph::link;
 use prov_graph::meta::{Mapping, Value};
 

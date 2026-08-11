@@ -6,8 +6,8 @@
 //! errors are unwound in memory.
 //!
 //! This crate deliberately knows nothing about a workspace, its graph, or its
-//! mutation policy. It only needs the [`prov_graph::fs::Storage`] port and the
-//! [`prov_graph::index::Rebase`] seam used by persistent indexes to inspect a
+//! mutation policy. It only needs the [`prov_store::fs::Storage`] port and the
+//! [`prov_store::index::Rebase`] seam used by persistent indexes to inspect a
 //! pending set.
 
 pub mod change;

@@ -17,7 +17,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use prov_graph::fs::{Capabilities, DirEntry, Durability, Metadata, ReadStorage, StdFs, Storage};
+use prov_graph::fs::{DirEntry, Metadata, ReadStorage, StdFs};
+use prov_store::fs::{Capabilities, Durability, Storage};
 
 #[derive(Clone, Default, Debug)]
 pub(super) struct CountingFs {

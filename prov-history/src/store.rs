@@ -93,11 +93,11 @@ impl<H: HistoryReadHost> HistoryStore<H> {
             .to_string();
         let root_dir = root_doc.parent().unwrap_or(Path::new(""));
         let pointer = link::relative(root_dir, store_index);
-        prov_graph::edit::set_in_text(
+        prov_store::edit::set_in_text(
             text,
             carrier,
             &relation,
-            prov_graph::edit::infer_scalar(&pointer),
+            prov_store::edit::infer_scalar(&pointer),
         )
     }
 

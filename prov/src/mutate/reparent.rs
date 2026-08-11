@@ -13,11 +13,11 @@ use fig::Segment;
 
 use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
-use prov_graph::edit::MetaEditor;
+use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 use prov_graph::graph::Target;
-use prov_graph::index::IndexStore;
+use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
 use prov_graph::meta::Value;
 
@@ -126,7 +126,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let up = self
             .authored_target(&inverse, &child, &parent, &parent_title, true)
             .await?;
-        let updated = prov_graph::edit::set_in_text(
+        let updated = prov_store::edit::set_in_text(
             &child_text,
             child_doc.carrier,
             &inverse,

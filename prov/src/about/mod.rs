@@ -1080,7 +1080,7 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     // A blank line between the block and the `# ` heading — the body is prose in
     // the workspace's content format, and prose starts after the block, not
     // wedged against its closing fence.
-    prov_graph::edit::reformat_block(&format!("\n{body}"), &mapping, kind)
+    prov_store::edit::reformat_block(&format!("\n{body}"), &mapping, kind)
 }
 
 // ─── prose helpers ───────────────────────────────────────────────────────────

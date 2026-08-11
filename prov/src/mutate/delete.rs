@@ -12,11 +12,11 @@ use fig::Segment;
 use crate::identity::IdentityPolicy;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
-use prov_graph::edit::MetaEditor;
+use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 use prov_graph::graph::{LinkSite, Resolution};
-use prov_graph::index::IndexStore;
+use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
 
 use super::maintain::content_target;
@@ -283,7 +283,7 @@ mod tests {
         let id = block_on(w.register(Path::new("a.md"), Trigger::Link)).unwrap();
         let text = read(&dir, "index.md");
         let carrier = Document::parse("index.md", &text).unwrap().carrier;
-        let updated = prov_graph::edit::set_in_text(
+        let updated = prov_store::edit::set_in_text(
             &text,
             carrier,
             "contents.0",
@@ -298,7 +298,7 @@ mod tests {
         // to simulate the out-of-band case.
         let text = read(&dir, "index.md");
         let carrier = Document::parse("index.md", &text).unwrap().carrier;
-        let updated = prov_graph::edit::set_in_text(
+        let updated = prov_store::edit::set_in_text(
             &text,
             carrier,
             "contents",

@@ -58,7 +58,7 @@
 use std::path::{Path, PathBuf};
 
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 
 /// One staged filesystem operation. Paths are **workspace-relative** — the root
 /// is joined on at [`apply`](ChangeSet::apply) time, so a set is portable
@@ -145,8 +145,8 @@ pub struct ChangeSet {
 /// it. Implementing the narrow trait rather than being passed whole is what
 /// keeps a store implementor free of the mutation engine.
 ///
-/// [`IndexStore`]: prov_graph::index::IndexStore
-impl prov_graph::index::Rebase for ChangeSet {
+/// [`IndexStore`]: prov_store::index::IndexStore
+impl prov_store::index::Rebase for ChangeSet {
     fn renamed_to(&self, path: &Path) -> Option<PathBuf> {
         ChangeSet::renamed_to(self, path)
     }
@@ -918,9 +918,9 @@ mod tests {
             fs.events(),
             vec![
                 FsEvent::Write(temp.clone()),
-                FsEvent::Sync(temp.clone(), prov_graph::fs::Durability::Ordered),
+                FsEvent::Sync(temp.clone(), prov_store::fs::Durability::Ordered),
                 FsEvent::Rename(temp, target),
-                FsEvent::Sync(root.clone(), prov_graph::fs::Durability::Durable),
+                FsEvent::Sync(root.clone(), prov_store::fs::Durability::Durable),
             ],
             "a set of one must cost exactly one atomic write and nothing else"
         );

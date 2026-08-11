@@ -82,6 +82,7 @@ jobs:
       with: { version: "0.16.0" }
     - uses: Swatinem/rust-cache@v2
     - run: cargo check -p prov-graph
+    - run: cargo check -p prov-store
     - run: cargo check -p prov-identity
     - run: cargo check -p prov-fixity
     - run: cargo check -p prov-transaction

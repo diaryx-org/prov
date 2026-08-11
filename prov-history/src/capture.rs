@@ -253,7 +253,7 @@ impl<H: HistoryWriteHost> HistoryStore<H> {
             .describe()
         );
         let event_text =
-            prov_graph::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
+            prov_store::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
 
         drop(scope);
         let mut cs = self.host_mut().change();

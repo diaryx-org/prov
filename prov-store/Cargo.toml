@@ -1,0 +1,34 @@
+[package]
+name = "prov-store"
+description = "The write surface over a prov workspace: the storage port, metadata editing, and the ID registry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+# The read core. Everything here is the *other half* of a port this crate's
+# dependency declares: `Storage` completes `prov_graph::fs::ReadStorage`,
+# `IndexStore` completes `prov_graph::index::IdIndex`. Nothing flows the other
+# way — that one-directional edge is the point of the split.
+prov-graph = { workspace = true, default-features = false }
+
+# Embedded-metadata backend. `edit` splices a value back through fig's
+# comment-preserving editor; which format backends are compiled in is governed
+# by this crate's features below, which `prov` forwards to.
+fig.workspace = true
+
+[dev-dependencies]
+# Property-based testing. The id↔path bijection the registries maintain is a
+# law, and an example test can only witness one input of it.
+proptest = "1"
+
+[features]
+default = ["yaml"]
+yaml = ["fig/yaml", "prov-graph/yaml"]
+json = ["fig/json", "prov-graph/json"]
+toml = ["fig/toml", "prov-graph/toml"]
+fig-lang = ["fig/fig", "prov-graph/fig-lang"]

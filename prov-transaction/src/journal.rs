@@ -67,7 +67,7 @@ use std::path::{Path, PathBuf};
 
 use crate::change::FileOp;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 
 /// The workspace-root-relative name of the journal file. A single transient
 /// dotfile: it exists only between a change set's commit point and its

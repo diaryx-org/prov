@@ -17,9 +17,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use prov_graph::fs::{
-    Capabilities, DirEntry, Durability, Metadata, ReadStorage, StdFs, Storage, SyncGuarantee,
-};
+use prov_graph::fs::{DirEntry, Metadata, ReadStorage, StdFs};
+use prov_store::fs::{Capabilities, Durability, Storage, SyncGuarantee};
 
 /// [`Storage`] over `std::fs` that fails the *n*th write, for testing that a
 /// [`ChangeSet`](crate::change::ChangeSet) unwinds.

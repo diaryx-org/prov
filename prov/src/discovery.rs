@@ -23,7 +23,7 @@ use crate::workspace::Workspace;
 use prov_graph::content::ContentFormat;
 use prov_graph::document::{self, Document};
 use prov_graph::error::Result;
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 
 /// A located workspace: where the root directory is, which document in it is the
 /// root, the registry that root declares (if any), and the effective config

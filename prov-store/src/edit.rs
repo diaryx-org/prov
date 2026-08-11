@@ -12,9 +12,9 @@
 
 use fig::{Embed, EmbedType, Segment};
 
-use crate::document::MetaCarrier;
-use crate::error::{Error, Result};
-use crate::meta::Mapping;
+use prov_graph::document::MetaCarrier;
+use prov_graph::meta::Mapping;
+use prov_graph::{Error, Result};
 
 /// The frontmatter archetype used to synthesize a metadata block for a document
 /// that has none. YAML (`---`) is the convention when compiled in; otherwise the
@@ -211,7 +211,7 @@ pub fn set_in_text(
     editor.render()
 }
 
-/// Upsert `dotted` to a full [`Value`](crate::meta::Value) — the mapping-valued
+/// Upsert `dotted` to a full [`Value`](prov_graph::meta::Value) — the mapping-valued
 /// counterpart to [`set_in_text`], which takes only a `fig::Value` scalar. Lets a
 /// caller set a whole nested block (e.g. the root's `prov:` policy block) without
 /// naming `fig`, converting through the crate's `Value → fig::Value` bridge.
@@ -243,7 +243,7 @@ pub fn set_meta_in_text(
     text: &str,
     carrier: Option<MetaCarrier>,
     dotted: &str,
-    value: &crate::meta::Value,
+    value: &prov_graph::meta::Value,
 ) -> Result<String> {
     set_in_text(text, carrier, dotted, fig::Value::from(value))
 }
@@ -251,7 +251,7 @@ pub fn set_meta_in_text(
 /// The value at a dotted path in `meta`, or `None`. Mapping keys only — a
 /// sequence index along the way reads as absent.
 #[cfg(test)]
-fn value_at<'a>(meta: &'a crate::meta::Value, dotted: &str) -> Option<&'a crate::meta::Value> {
+fn value_at<'a>(meta: &'a prov_graph::meta::Value, dotted: &str) -> Option<&'a prov_graph::meta::Value> {
     let mut current = meta;
     for part in dotted.split('.') {
         current = current.as_mapping()?.get(part)?;
@@ -286,14 +286,14 @@ pub fn unset_in_text(text: &str, carrier: Option<MetaCarrier>, dotted: &str) -> 
 /// its content slot.
 ///
 /// The content is spliced verbatim — the same bytes prov's reader
-/// ([`Document::parse`](crate::Document::parse), via [`fig::split`]) hands back to
+/// ([`Document::parse`](prov_graph::Document::parse), via [`fig::split`]) hands back to
 /// the format parser, which does not HTML-decode a `<pre><code>` island. Writing
 /// what that reader expects keeps a converted value round-tripping through
 /// `prov get`/`check` rather than acquiring stray `&lt;` entities.
 ///
-/// [`serialize_mapping`]: crate::meta::serialize_mapping
+/// [`serialize_mapping`]: prov_graph::meta::serialize_mapping
 pub fn reformat_block(body: &str, mapping: &Mapping, target: EmbedType) -> Result<String> {
-    let mut inner = crate::meta::serialize_mapping(mapping, target.inner_format())?;
+    let mut inner = prov_graph::meta::serialize_mapping(mapping, target.inner_format())?;
     // The content slot sits between the opening fence's trailing newline and the
     // closing fence, so the content must end in exactly one newline for the close
     // fence to land on its own line.
@@ -319,7 +319,7 @@ mod tests {
     use super::*;
 
     fn carrier_of(path: &str, text: &str) -> Option<MetaCarrier> {
-        crate::document::Document::parse(path, text)
+        prov_graph::document::Document::parse(path, text)
             .unwrap()
             .carrier
     }
@@ -347,9 +347,9 @@ mod tests {
             fig::Value::Str("0123456".into()),
         )
         .unwrap();
-        let back = crate::document::Document::parse("x.md", &out).unwrap();
+        let back = prov_graph::document::Document::parse("x.md", &out).unwrap();
         assert_eq!(
-            back.meta.get("id").and_then(crate::Value::as_str),
+            back.meta.get("id").and_then(prov_graph::Value::as_str),
             Some("0123456"),
             "{out}"
         );
@@ -509,27 +509,27 @@ mod tests {
     fn a_mapping_lands_at_a_path_whose_ancestors_do_not_exist_yet() {
         let text = "title: prov config\nspec: 1\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut view = crate::meta::Mapping::new();
-        view.insert("group".into(), crate::meta::Value::String("date".into()));
-        view.insert("by".into(), crate::meta::Value::String("year".into()));
+        let mut view = prov_graph::meta::Mapping::new();
+        view.insert("group".into(), prov_graph::meta::Value::String("date".into()));
+        view.insert("by".into(), prov_graph::meta::Value::String("year".into()));
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "diaryx.views.daily",
-            &crate::meta::Value::Mapping(view),
+            &prov_graph::meta::Value::Mapping(view),
         )
         .expect("a three-deep mapping into a document with no `diaryx` key");
 
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         let daily = value_at(&doc.meta, "diaryx.views.daily").expect("the block reads back");
         let map = daily.as_mapping().expect("a mapping");
         assert_eq!(
-            map.get("group").and_then(crate::meta::Value::as_str),
+            map.get("group").and_then(prov_graph::meta::Value::as_str),
             Some("date")
         );
         assert_eq!(
-            map.get("by").and_then(crate::meta::Value::as_str),
+            map.get("by").and_then(prov_graph::meta::Value::as_str),
             Some("year")
         );
         assert!(
@@ -546,23 +546,23 @@ mod tests {
     fn replacing_a_mapping_drops_the_keys_it_no_longer_declares() {
         let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n      under: '[Daily](id:abc)'\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut view = crate::meta::Mapping::new();
-        view.insert("group".into(), crate::meta::Value::String("date".into()));
+        let mut view = prov_graph::meta::Mapping::new();
+        view.insert("group".into(), prov_graph::meta::Value::String("date".into()));
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "diaryx.views.daily",
-            &crate::meta::Value::Mapping(view),
+            &prov_graph::meta::Value::Mapping(view),
         )
         .expect("replace");
 
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         let map = value_at(&doc.meta, "diaryx.views.daily")
-            .and_then(crate::meta::Value::as_mapping)
+            .and_then(prov_graph::meta::Value::as_mapping)
             .expect("still a mapping");
         assert_eq!(
-            map.get("group").and_then(crate::meta::Value::as_str),
+            map.get("group").and_then(prov_graph::meta::Value::as_str),
             Some("date")
         );
         assert!(
@@ -578,25 +578,25 @@ mod tests {
     fn a_sibling_mapping_survives_the_write() {
         let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut view = crate::meta::Mapping::new();
-        view.insert("group".into(), crate::meta::Value::String("people".into()));
+        let mut view = prov_graph::meta::Mapping::new();
+        view.insert("group".into(), prov_graph::meta::Value::String("people".into()));
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "diaryx.views.folks",
-            &crate::meta::Value::Mapping(view),
+            &prov_graph::meta::Value::Mapping(view),
         )
         .expect("a second view");
 
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         assert_eq!(
-            value_at(&doc.meta, "diaryx.views.daily.group").and_then(crate::meta::Value::as_str),
+            value_at(&doc.meta, "diaryx.views.daily.group").and_then(prov_graph::meta::Value::as_str),
             Some("date"),
             "the first view survived: {out}"
         );
         assert_eq!(
-            value_at(&doc.meta, "diaryx.views.folks.group").and_then(crate::meta::Value::as_str),
+            value_at(&doc.meta, "diaryx.views.folks.group").and_then(prov_graph::meta::Value::as_str),
             Some("people")
         );
     }
@@ -607,22 +607,22 @@ mod tests {
     fn nested_mappings_flatten_all_the_way_down() {
         let text = "title: t\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut inner = crate::meta::Mapping::new();
-        inner.insert("closed".into(), crate::meta::Value::Bool(true));
-        let mut outer = crate::meta::Mapping::new();
-        outer.insert("audience".into(), crate::meta::Value::Mapping(inner));
+        let mut inner = prov_graph::meta::Mapping::new();
+        inner.insert("closed".into(), prov_graph::meta::Value::Bool(true));
+        let mut outer = prov_graph::meta::Mapping::new();
+        outer.insert("audience".into(), prov_graph::meta::Value::Mapping(inner));
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "a.b",
-            &crate::meta::Value::Mapping(outer),
+            &prov_graph::meta::Value::Mapping(outer),
         )
         .expect("nested write");
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         assert_eq!(
             value_at(&doc.meta, "a.b.audience.closed"),
-            Some(&crate::meta::Value::Bool(true)),
+            Some(&prov_graph::meta::Value::Bool(true)),
             "{out}"
         );
     }
@@ -634,27 +634,27 @@ mod tests {
     fn a_sequence_lands_under_a_parent_that_already_exists() {
         let text = "title: t\nvocab:\n  audience:\n    closed: true\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut inner = crate::meta::Mapping::new();
+        let mut inner = prov_graph::meta::Mapping::new();
         inner.insert(
             "terms".into(),
-            crate::meta::Value::Sequence(vec![
-                crate::meta::Value::String("public".into()),
-                crate::meta::Value::String("private".into()),
+            prov_graph::meta::Value::Sequence(vec![
+                prov_graph::meta::Value::String("public".into()),
+                prov_graph::meta::Value::String("private".into()),
             ]),
         );
-        let mut outer = crate::meta::Mapping::new();
-        outer.insert("audience".into(), crate::meta::Value::Mapping(inner));
+        let mut outer = prov_graph::meta::Mapping::new();
+        outer.insert("audience".into(), prov_graph::meta::Value::Mapping(inner));
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "vocab",
-            &crate::meta::Value::Mapping(outer),
+            &prov_graph::meta::Value::Mapping(outer),
         )
         .expect("a sequence under an existing block");
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         let terms = value_at(&doc.meta, "vocab.audience.terms")
-            .and_then(crate::meta::Value::as_sequence)
+            .and_then(prov_graph::meta::Value::as_sequence)
             .expect("the sequence reads back as a sequence");
         assert_eq!(terms.len(), 2, "{out}");
     }
@@ -670,22 +670,22 @@ mod tests {
     fn a_sequence_lands_as_a_sequence_at_a_path_with_no_parent_block() {
         let text = "title: t\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut outer = crate::meta::Mapping::new();
+        let mut outer = prov_graph::meta::Mapping::new();
         outer.insert(
             "terms".into(),
-            crate::meta::Value::Sequence(vec![crate::meta::Value::String("public".into())]),
+            prov_graph::meta::Value::Sequence(vec![prov_graph::meta::Value::String("public".into())]),
         );
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "deep.nested",
-            &crate::meta::Value::Mapping(outer),
+            &prov_graph::meta::Value::Mapping(outer),
         )
         .expect("a list with no parent block now lands");
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         let terms = value_at(&doc.meta, "deep.nested.terms")
-            .and_then(crate::meta::Value::as_sequence)
+            .and_then(prov_graph::meta::Value::as_sequence)
             .unwrap_or_else(|| panic!("the list must read back as a list: {out}"));
         assert_eq!(terms.len(), 1, "{out}");
         assert_eq!(terms[0].as_str(), Some("public"), "{out}");
@@ -700,19 +700,19 @@ mod tests {
     fn writing_a_mapping_replaces_the_subtree_rather_than_merging_into_it() {
         let text = "title: t\na:\n  keep: 1\n  stale: 9\n  gone:\n    deeper: 2\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
-        let mut fresh = crate::meta::Mapping::new();
-        fresh.insert("keep".into(), crate::meta::Value::String("new".into()));
+        let mut fresh = prov_graph::meta::Mapping::new();
+        fresh.insert("keep".into(), prov_graph::meta::Value::String("new".into()));
 
         let out = set_meta_in_text(
             text,
             Some(carrier),
             "a",
-            &crate::meta::Value::Mapping(fresh),
+            &prov_graph::meta::Value::Mapping(fresh),
         )
         .expect("replace an existing block");
-        let doc = crate::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
+        let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         assert_eq!(
-            value_at(&doc.meta, "a.keep").and_then(crate::meta::Value::as_str),
+            value_at(&doc.meta, "a.keep").and_then(prov_graph::meta::Value::as_str),
             Some("new"),
             "{out}"
         );
@@ -720,7 +720,7 @@ mod tests {
         assert!(value_at(&doc.meta, "a.gone").is_none(), "{out}");
         // and the document around it is untouched
         assert_eq!(
-            value_at(&doc.meta, "title").and_then(crate::meta::Value::as_str),
+            value_at(&doc.meta, "title").and_then(prov_graph::meta::Value::as_str),
             Some("t"),
             "{out}"
         );

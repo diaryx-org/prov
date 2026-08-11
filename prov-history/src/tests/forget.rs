@@ -4,7 +4,7 @@ use super::support::*;
 use crate::*;
 use prov_graph::error::Result;
 use prov_graph::exec::block_on;
-use prov_graph::index::IndexStore;
+use prov_store::index::IndexStore;
 
 fn forget(dir: &Path, subject: &Subject, now: &str, force: bool) -> Result<Forgotten> {
     block_on(store(dir).forget(Path::new("index.md"), subject, now, force))

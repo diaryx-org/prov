@@ -4,7 +4,8 @@ use super::support::*;
 use crate::*;
 use prov_graph::error::{Error, Result};
 use prov_graph::exec::block_on;
-use prov_graph::index::{Collision, IndexStore};
+use prov_graph::index::{Collision};
+use prov_store::index::{IndexStore};
 
 #[test]
 fn a_captured_workspace_goes_back_from_its_blobs_without_a_journal_its_size() {

@@ -89,7 +89,7 @@ pub struct TreeOptions {
 pub struct Node {
     /// Workspace-relative, normalized path — relative to [`Graph::root`],
     /// *not* fs-readable as-is. Join it onto the root with
-    /// [`Graph::fs_path`] before handing it to a [`Storage`](crate::fs::Storage)
+    /// [`Graph::fs_path`] before handing it to a [`crate::fs::ReadStorage`]
     /// read; the raw form here is what makes a [`Node`] stable across a
     /// workspace re-rooted to a different directory.
     pub path: PathBuf,

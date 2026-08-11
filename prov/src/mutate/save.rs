@@ -12,8 +12,8 @@ use std::path::Path;
 
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
-use prov_graph::fs::Storage;
-use prov_graph::index::IndexStore;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 use prov_graph::link;
 use prov_graph::meta::Value;
 
@@ -132,7 +132,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut text = text.to_string();
         let mut stamped = false;
         if let Some(hash) = new_hash {
-            text = prov_graph::edit::set_in_text(
+            text = prov_store::edit::set_in_text(
                 &text,
                 doc.carrier,
                 "content_hash",
@@ -143,7 +143,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let Some((field, at)) = updated
             && !field.is_empty()
         {
-            text = prov_graph::edit::set_in_text(
+            text = prov_store::edit::set_in_text(
                 &text,
                 doc.carrier,
                 field,

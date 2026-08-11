@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov-transaction", "prov-fixity", "prov-identity", "prov-config", "prov-history", "prov", "prov-cli"]
+members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-config", "prov-history", "prov", "prov-cli"]
 
 [workspace.package]
 version = "0.4.0"
@@ -67,6 +67,8 @@ moid = "1.0.0"
 prov = { path = "prov", version = "0.4.0" }
 # Read-only graph and storage ports.
 prov-graph = { path = "prov-graph", version = "0.4.0", default-features = false }
+# The write halves of those ports: `Storage`, the metadata editor, the ID registries.
+prov-store = { path = "prov-store", version = "0.4.0", default-features = false }
 # Identity registration policies and ID minting.
 prov-identity = { path = "prov-identity", version = "0.4.0", default-features = false }
 # Content fixity policy, digests, and the device-local cache.

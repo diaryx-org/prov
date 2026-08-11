@@ -125,19 +125,34 @@ mod tests {
 
     use super::*;
     use crate::graph::ReadSettings;
-    use crate::index::{InMemoryIndex, IndexStore};
+    use crate::index::IdIndex;
 
     #[derive(Clone)]
     struct DummyFs;
 
+    /// A registry holding exactly one registration. The concrete stores live in
+    /// `prov-store`, on the write side of the port — what resolution needs from
+    /// an index is only the two lookups below, so the fixture supplies only
+    /// those rather than reaching across the split for a store it would then
+    /// have to mutate to populate.
+    struct OneEntry(identity::Id, PathBuf);
+
+    impl IdIndex for OneEntry {
+        fn resolve(&self, id: &identity::Id) -> Option<PathBuf> {
+            (*id == self.0).then(|| self.1.clone())
+        }
+
+        fn id_for_path(&self, path: &Path) -> Option<identity::Id> {
+            (path == self.1).then(|| self.0.clone())
+        }
+    }
+
     /// A graph named `notes` whose registry resolves `ajp7eq`.
-    fn named_ws(name: &str) -> Graph<DummyFs, InMemoryIndex> {
-        let mut index = InMemoryIndex::new();
-        index.register(&identity::Id("ajp7eq".into()), Path::new("note.md"));
+    fn named_ws(name: &str) -> Graph<DummyFs, OneEntry> {
         Graph::new(
             DummyFs,
             "vault",
-            index,
+            OneEntry(identity::Id("ajp7eq".into()), PathBuf::from("note.md")),
             ReadSettings {
                 workspace_id: name.to_string(),
                 ..ReadSettings::default()

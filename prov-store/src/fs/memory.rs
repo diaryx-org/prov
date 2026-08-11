@@ -11,7 +11,9 @@ use std::io::{self, Error, ErrorKind};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use super::{Capabilities, DirEntry, FileType, Metadata, ReadStorage, Storage};
+use prov_graph::fs::{DirEntry, FileType, Metadata, ReadStorage};
+
+use super::{Capabilities, Storage};
 
 /// An in-memory, clone-shared [`Storage`] backend.
 ///
@@ -517,7 +519,7 @@ impl InMemoryFs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec::block_on;
+    use prov_graph::exec::block_on;
 
     #[test]
     fn read_write_roundtrip() {

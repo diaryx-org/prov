@@ -14,8 +14,8 @@ use crate::change::ChangeSet;
 use crate::config::WorkspaceConfig;
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
-use prov_graph::fs::Storage;
-use prov_graph::index::IndexStore;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 use super::AboutContext;
 
@@ -52,11 +52,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             && let Some(pointer) = self.relations().about_relation()
         {
             let (text, doc) = self.load(root_doc).await?;
-            let updated = prov_graph::edit::set_in_text(
+            let updated = prov_store::edit::set_in_text(
                 &text,
                 doc.carrier,
                 pointer,
-                prov_graph::edit::infer_scalar(&path.to_string_lossy()),
+                prov_store::edit::infer_scalar(&path.to_string_lossy()),
             )?;
             cs.write(root_doc, updated);
         }
@@ -84,7 +84,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         if let Some(pointer) = self.relations().about_relation() {
             let (text, doc) = self.load(root_doc).await?;
-            let updated = prov_graph::edit::unset_in_text(&text, doc.carrier, pointer)?;
+            let updated = prov_store::edit::unset_in_text(&text, doc.carrier, pointer)?;
             cs.write(root_doc, updated);
         }
         cs.apply(self.fs(), self.root()).await?;

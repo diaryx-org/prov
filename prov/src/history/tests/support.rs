@@ -7,7 +7,7 @@ use prov_history::*;
 
 pub(super) use crate::workspace::Workspace;
 pub(super) use prov_graph::fs::StdFs;
-pub(super) use prov_graph::index::FileIndex;
+pub(super) use prov_store::index::FileIndex;
 
 pub(super) fn tempdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("prov-history-{tag}-{}", std::process::id()));

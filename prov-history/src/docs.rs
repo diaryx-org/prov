@@ -120,7 +120,7 @@ pub fn render_index(
         ),
     );
     let body = transcode(&format!("# {title}\n\n{prose}\n"), style.content)?;
-    prov_graph::edit::reformat_block(&body, &map, style.embed)
+    prov_store::edit::reformat_block(&body, &map, style.embed)
 }
 
 /// How a document in this store opens, in one clause a reader can act on —

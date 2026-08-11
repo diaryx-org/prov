@@ -16,11 +16,11 @@ use crate::identity::IdentityPolicy;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
 use prov_graph::document::Document;
-use prov_graph::edit::MetaEditor;
+use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 use prov_graph::graph::{LinkSite, Resolution, Target};
-use prov_graph::index::IndexStore;
+use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
 use prov_graph::meta::Value;
 
@@ -319,11 +319,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .to_string();
             let root_dir = root.parent().unwrap_or(Path::new(""));
             let pointer = link::relative(root_dir, &bin_index);
-            root_text = Some(prov_graph::edit::set_in_text(
+            root_text = Some(prov_store::edit::set_in_text(
                 &base,
                 root_doc.carrier,
                 &relation,
-                prov_graph::edit::infer_scalar(&pointer),
+                prov_store::edit::infer_scalar(&pointer),
             )?);
         }
         if let Some(text) = root_text {

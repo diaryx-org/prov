@@ -16,7 +16,7 @@
 //! against the index — including its tombstones, so a deleted document's ID is
 //! never reissued. An ID may contain, and begin with, a digit; anything
 //! stamping one into metadata must keep it a *string* (see
-//! [`prov_graph::edit::infer_scalar`]). The alphabet, check-character arithmetic,
+//! `prov-store`'s `edit::infer_scalar`). The alphabet, check-character arithmetic,
 //! and seeded PRNG all live in [`moid`].
 
 use std::path::Path;

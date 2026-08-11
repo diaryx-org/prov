@@ -1,6 +1,6 @@
 //! A dependency-free executor for backends whose futures are already ready.
 //!
-//! [`crate::fs::Storage`] is async so genuinely async backends fit, but the
+//! [`crate::fs::ReadStorage`] is async so genuinely async backends fit, but the
 //! common native case — [`crate::fs::StdFs`] — produces futures that complete
 //! on the first poll. [`block_on`] drives such a future without pulling in a
 //! runtime: a no-op waker and a poll loop. It works for any future that makes

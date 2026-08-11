@@ -30,10 +30,12 @@ use std::path::{Path, PathBuf};
 
 use prov_graph::document::EmbedStyle;
 use prov_graph::error::Result;
-use prov_graph::fs::{Metadata, ReadStorage, Storage};
+use prov_graph::fs::{Metadata, ReadStorage};
+use prov_store::fs::{Storage};
 use prov_graph::graph::Graph;
 use prov_graph::identity::Id;
-use prov_graph::index::{Collision, IndexStore};
+use prov_graph::index::{Collision};
+use prov_store::index::{IndexStore};
 use prov_transaction::ChangeSet;
 
 mod capture;

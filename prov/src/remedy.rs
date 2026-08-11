@@ -39,9 +39,9 @@ use crate::mutate::maintain;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
-use prov_graph::fs::Storage;
+use prov_store::fs::Storage;
 use prov_graph::graph::{LinkSite, Target};
-use prov_graph::index::IndexStore;
+use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
 use prov_graph::meta::Value;
 
@@ -1256,7 +1256,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .authored_target(relation, doc, parent, title, true)
                     .await?;
                 let (text, parsed) = self.load(doc).await?;
-                let updated = prov_graph::edit::set_in_text(
+                let updated = prov_store::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     relation,
@@ -1278,7 +1278,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // Trust the registry: overwrite the document's `id` frontmatter.
             Fix::SetId { doc, id } => {
                 let (text, parsed) = self.load(doc).await?;
-                let updated = prov_graph::edit::set_in_text(
+                let updated = prov_store::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     "id",
@@ -1295,7 +1295,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // bytes' hash (comment-/format-preservingly, like `SetId`).
             Fix::RestampFixity { doc, hash } => {
                 let (text, parsed) = self.load(doc).await?;
-                let updated = prov_graph::edit::set_in_text(
+                let updated = prov_store::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     "content_hash",
@@ -1402,7 +1402,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         store.display()
                     )));
                 };
-                let mut editor = prov_graph::edit::MetaEditor::open(&text, carrier)?;
+                let mut editor = prov_store::edit::MetaEditor::open(&text, carrier)?;
                 editor.set_value(
                     &[fig::Segment::Key("terms"), fig::Segment::Key(term)],
                     fig::Value::Null,
@@ -1415,7 +1415,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Fix::SetConfigKey { doc, from, to } => {
                 let (text, parsed) = self.load(doc).await?;
                 let leaf = to.rsplit('.').next().unwrap_or(to);
-                let mut editor = prov_graph::edit::MetaEditor::open(
+                let mut editor = prov_store::edit::MetaEditor::open(
                     &text,
                     parsed.carrier.ok_or_else(|| {
                         prov_graph::error::Error::Structure(format!(
@@ -1424,12 +1424,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         ))
                     })?,
                 )?;
-                editor.replace_key(&prov_graph::edit::key_path(from), leaf)?;
+                editor.replace_key(&prov_store::edit::key_path(from), leaf)?;
                 cs.write(doc, editor.render()?);
             }
             Fix::SetConfigValue { doc, key, value } => {
                 let (text, parsed) = self.load(doc).await?;
-                let updated = prov_graph::edit::set_in_text(
+                let updated = prov_store::edit::set_in_text(
                     &text,
                     parsed.carrier,
                     key,
@@ -1452,7 +1452,7 @@ mod tests {
     use crate::identity::Minter;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
-    use prov_graph::index::FileIndex;
+    use prov_store::index::FileIndex;
     use prov_graph::index::IdIndex;
     use prov_graph::link::LinkStyle;
 
