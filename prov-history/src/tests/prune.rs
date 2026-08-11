@@ -1,16 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use super::support::*;
-use crate::validate::Finding;
+use crate::*;
 use prov_graph::exec::block_on;
-use prov_history::*;
 
 /// Plan and run a prune, the sequence the CLI performs.
 fn prune(dir: &Path, retention: &Retention) -> Pruned {
-    let mut w = ws(dir);
+    let mut store = store(dir);
     let root = Path::new("index.md");
-    let plan = block_on(w.history_prune_plan(root, retention)).unwrap();
-    block_on(w.history_prune(root, &plan)).unwrap();
+    let plan = block_on(store.prune_plan(root, retention)).unwrap();
+    block_on(store.prune(root, &plan)).unwrap();
     plan
 }
 
@@ -23,16 +22,8 @@ fn a_prune_drops_the_oldest_and_collects_only_what_nothing_still_references() {
 
     // The blob only the dropped events name, and one every event names — the
     // whole correctness question a GC has to get right.
-    let dropped_bytes = blob_path(
-        Path::new("history/index.md"),
-        &crate::fixity::digest(b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n"),
-    )
-    .unwrap();
-    let shared_bytes = blob_path(
-        Path::new("history/index.md"),
-        &crate::fixity::digest(b"JPEGBYTES"),
-    )
-    .unwrap();
+    let dropped_bytes = blob_of(b"---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n");
+    let shared_bytes = blob_of(b"JPEGBYTES");
     assert!(dir.join(&dropped_bytes).exists() && dir.join(&shared_bytes).exists());
 
     let plan = prune(&dir, &Retention::Keep(1));
@@ -51,18 +42,15 @@ fn a_prune_drops_the_oldest_and_collects_only_what_nothing_still_references() {
 
     // The store is valid, and the surviving event is still a complete
     // recovery point — which is the property that makes prune safe at all.
-    assert_eq!(
-        block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
-        vec![]
-    );
-    let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+    assert_eq!(findings(&dir), vec![]);
+    let events = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
     assert_eq!(
         events.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
         vec![third.as_str()]
     );
     let survivor = &events[0];
     assert!(
-        block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), survivor))
+        block_on(store(&dir).missing_blobs(Path::new("index.md"), survivor))
             .unwrap()
             .is_empty(),
         "every row of a surviving event must still have its bytes"
@@ -71,17 +59,17 @@ fn a_prune_drops_the_oldest_and_collects_only_what_nothing_still_references() {
 
 #[test]
 fn a_prune_also_collects_the_orphans_that_were_already_there() {
-    // `HistoryBlobOrphaned` points at this verb, so the two have to agree on
-    // what an orphan is. They share the sweep, and this is the assertion that
-    // says so.
+    // `HistoryIssue::BlobOrphaned` points at this verb, so the two have to
+    // agree on what an orphan is. They share the sweep, and this is the
+    // assertion that says so.
     let dir = seed("prune-orphans");
     capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
     write(&dir, "history/blobs/ab/sync-conflict-20260731", "junk");
 
-    let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+    let issues = findings(&dir);
     assert!(matches!(
-        findings.as_slice(),
-        [Finding::HistoryBlobOrphaned { blobs, .. }]
+        issues.as_slice(),
+        [HistoryIssue::BlobOrphaned { blobs, .. }]
             if blobs == &[PathBuf::from("history/blobs/ab/sync-conflict-20260731")]
     ));
 
@@ -93,10 +81,7 @@ fn a_prune_also_collects_the_orphans_that_were_already_there() {
         plan.blobs,
         vec![PathBuf::from("history/blobs/ab/sync-conflict-20260731")]
     );
-    assert_eq!(
-        block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
-        vec![]
-    );
+    assert_eq!(findings(&dir), vec![]);
 }
 
 #[test]
@@ -112,10 +97,7 @@ fn an_emptied_shard_leaves_no_index_and_no_finding() {
     assert!(!dir.join("history/events/2026/07/index.md").exists());
     assert!(dir.join("history/events/2026/index.md").exists());
     assert!(dir.join("history/events/2026/08/index.md").exists());
-    assert_eq!(
-        block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
-        vec![]
-    );
+    assert_eq!(findings(&dir), vec![]);
 
     // Now the year, too. A change set removes files rather than directories,
     // so `2026/07/` is still sitting there — and must be invisible, not a
@@ -127,17 +109,14 @@ fn an_emptied_shard_leaves_no_index_and_no_finding() {
         "the empty directory is expected to linger"
     );
     assert_eq!(
-        block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
+        findings(&dir),
         vec![],
         "an event-less directory is not a shard"
     );
 
     // …and the store still works: a later capture rebuilds the tree around it.
     capture_edited(&dir, "2026-09-01T09:00:00.000000Z", "after", "delta");
-    assert_eq!(
-        block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
-        vec![]
-    );
+    assert_eq!(findings(&dir), vec![]);
 }
 
 #[test]
@@ -150,8 +129,8 @@ fn a_date_cutoff_keeps_the_day_it_names_and_a_typo_drops_nothing() {
     // "before 2026-08-01" means before that day *started*: a bare date is a
     // prefix of every timestamp in its day, which is what makes the boundary
     // read the way a person means it without parsing a calendar.
-    let w = ws(&dir);
-    let plan = block_on(w.history_prune_plan(
+    let store = store(&dir);
+    let plan = block_on(store.prune_plan(
         Path::new("index.md"),
         &Retention::Before("2026-08-01".into()),
     ))
@@ -160,7 +139,7 @@ fn a_date_cutoff_keeps_the_day_it_names_and_a_typo_drops_nothing() {
     assert!(!plan.events.contains(&boundary) && !plan.events.contains(&later));
 
     // A cutoff that is not a date deletes nothing rather than everything.
-    let typo = block_on(w.history_prune_plan(
+    let typo = block_on(store.prune_plan(
         Path::new("index.md"),
         &Retention::Before("yesterday".into()),
     ));
@@ -203,9 +182,8 @@ fn a_prune_refuses_while_any_event_is_unreadable() {
     let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
     tear(&dir, torn.to_str().unwrap());
 
-    let w = ws(&dir);
-    let err =
-        block_on(w.history_prune_plan(Path::new("index.md"), &Retention::Keep(1))).unwrap_err();
+    let store = store(&dir);
+    let err = block_on(store.prune_plan(Path::new("index.md"), &Retention::Keep(1))).unwrap_err();
     assert!(
         err.to_string().contains(torn.to_str().unwrap()),
         "the refusal has to name the file that could not be read: {err}"

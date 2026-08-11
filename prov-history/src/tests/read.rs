@@ -1,20 +1,19 @@
 use std::path::{Path, PathBuf};
 
 use super::support::*;
+use crate::*;
 use prov_graph::exec::block_on;
 use prov_graph::index::IndexStore;
-use prov_history::*;
 
-/// The summary's whole contract: the same answer `history_list` gives, for
-/// the price of a listing. A store with no events at all is the boundary
-/// case a cadence check meets first, on the vault where history was just
-/// switched on.
+/// The summary's whole contract: the same answer `list` gives, for the price of
+/// a listing. A store with no events at all is the boundary case a cadence
+/// check meets first, on the vault where history was just switched on.
 #[test]
 fn a_summary_names_the_event_history_list_would_have_named() {
     let dir = seed("summary-agrees");
 
     // Before any capture: no store, and nothing to be newest.
-    let empty = block_on(ws(&dir).history_summary(Path::new("index.md"))).unwrap();
+    let empty = block_on(store(&dir).summary(Path::new("index.md"))).unwrap();
     assert_eq!(empty, Summary::default());
     assert!(!empty.store_exists);
 
@@ -22,8 +21,8 @@ fn a_summary_names_the_event_history_list_would_have_named() {
     capture_edited(&dir, "2026-08-02T11:04:07.000000Z", "two", "beta");
     let newest = capture_edited(&dir, "2026-08-02T11:59:00.000000Z", "three", "gamma");
 
-    let summary = block_on(ws(&dir).history_summary(Path::new("index.md"))).unwrap();
-    let listed = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+    let summary = block_on(store(&dir).summary(Path::new("index.md"))).unwrap();
+    let listed = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
     let latest = summary
         .latest
         .expect("a store with three events has a newest");
@@ -62,11 +61,11 @@ fn a_summary_settles_a_minute_two_captures_share() {
         "and pointless unless a raw comparison would get it backwards"
     );
 
-    let latest = block_on(ws(&dir).history_summary(Path::new("index.md")))
+    let latest = block_on(store(&dir).summary(Path::new("index.md")))
         .unwrap()
         .latest
         .expect("two events have a newest");
-    let listed = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+    let listed = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
 
     assert_eq!(latest.id, newer);
     assert_eq!(latest.id, listed.last().unwrap().id);
@@ -84,7 +83,7 @@ fn a_summary_counts_a_torn_slot_and_looks_past_it_for_the_newest() {
     let torn = capture_edited(&dir, "2026-08-01T10:00:00.000000Z", "torn", "beta");
     tear(&dir, &format!("history/events/2026/08/{torn}.md"));
 
-    let summary = block_on(ws(&dir).history_summary(Path::new("index.md"))).unwrap();
+    let summary = block_on(store(&dir).summary(Path::new("index.md"))).unwrap();
     let latest = summary.latest.expect("the intact event is still there");
 
     assert_eq!(
@@ -94,12 +93,12 @@ fn a_summary_counts_a_torn_slot_and_looks_past_it_for_the_newest() {
     assert_eq!(latest.id, readable);
     assert_eq!(
         latest.id,
-        block_on(ws(&dir).history_list(Path::new("index.md")))
+        block_on(store(&dir).list(Path::new("index.md")))
             .unwrap()
             .last()
             .unwrap()
             .id,
-        "`history_list` skips the torn document too, so the two still agree"
+        "`list` skips the torn document too, so the two still agree"
     );
 }
 
@@ -110,13 +109,13 @@ fn a_summary_counts_a_torn_slot_and_looks_past_it_for_the_newest() {
 fn store_bytes_totals_the_store_and_answers_zero_when_there_is_none() {
     let dir = seed("summary-bytes");
     assert_eq!(
-        block_on(ws(&dir).history_store_bytes(Path::new("index.md"))).unwrap(),
+        block_on(store(&dir).store_bytes(Path::new("index.md"))).unwrap(),
         0,
         "no store is zero bytes, not an error"
     );
 
     capture_edited(&dir, "2026-07-31T09:15:22.000000Z", "one", "alpha");
-    let first = block_on(ws(&dir).history_store_bytes(Path::new("index.md"))).unwrap();
+    let first = block_on(store(&dir).store_bytes(Path::new("index.md"))).unwrap();
     assert!(first > 0);
 
     // A second capture parks the changed document's new bytes and writes
@@ -124,7 +123,7 @@ fn store_bytes_totals_the_store_and_answers_zero_when_there_is_none() {
     // sharing the blobs they already parked.
     capture_edited(&dir, "2026-08-01T10:00:00.000000Z", "two", "beta");
     assert!(
-        block_on(ws(&dir).history_store_bytes(Path::new("index.md"))).unwrap() > first,
+        block_on(store(&dir).store_bytes(Path::new("index.md"))).unwrap() > first,
         "a second event and its blobs are more bytes than one"
     );
 }
@@ -159,13 +158,12 @@ fn a_store_at_the_conventional_path_is_read_with_no_pointer_declaring_it() {
         before,
         "an undeclared store is still a store"
     );
-    let (store, found) =
-        block_on(ws(&dir).history_store().store_index(Path::new("index.md"))).unwrap();
+    let (index, found) = block_on(store(&dir).store_index(Path::new("index.md"))).unwrap();
     assert_eq!(found, StoreLocation::Conventional);
-    assert_eq!(store, PathBuf::from("history/index.md"));
+    assert_eq!(index, PathBuf::from("history/index.md"));
     // And the event is restorable, which is the whole point of still finding it.
     assert!(
-        block_on(ws(&dir).history_event(Path::new("index.md"), &before[0]))
+        block_on(store(&dir).event(Path::new("index.md"), &before[0]))
             .unwrap()
             .is_some()
     );
@@ -186,7 +184,7 @@ fn discovery_probes_the_conventional_path_and_nowhere_else() {
         "---\ntitle: Home\ncontents:\n- notes/a.md\n- notes/photo.jpg.yaml\n---\nroot\n",
     );
 
-    let (_, found) = block_on(ws(&dir).history_store().store_index(Path::new("index.md"))).unwrap();
+    let (_, found) = block_on(store(&dir).store_index(Path::new("index.md"))).unwrap();
     assert_eq!(
         found,
         StoreLocation::Absent,
@@ -211,7 +209,7 @@ fn an_event_resolves_by_id_with_every_index_destroyed() {
     ] {
         std::fs::remove_file(dir.join(index)).unwrap();
     }
-    let event = block_on(ws(&dir).history_event(Path::new("index.md"), &id))
+    let event = block_on(store(&dir).event(Path::new("index.md"), &id))
         .unwrap()
         .expect("the event must resolve without any index");
     assert_eq!(event.id, id);
@@ -221,11 +219,11 @@ fn an_event_resolves_by_id_with_every_index_destroyed() {
     // An id that names nothing is absence, not an error; a string that is not
     // an event id at all is an error.
     assert!(
-        block_on(ws(&dir).history_event(Path::new("index.md"), "2026-07-31-0000-deadbeef"))
+        block_on(store(&dir).event(Path::new("index.md"), "2026-07-31-0000-deadbeef"))
             .unwrap()
             .is_none()
     );
-    assert!(block_on(ws(&dir).history_event(Path::new("index.md"), "yesterday")).is_err());
+    assert!(block_on(store(&dir).event(Path::new("index.md"), "yesterday")).is_err());
 }
 
 #[test]
@@ -234,21 +232,21 @@ fn missing_blobs_name_the_paths_a_restore_could_not_recover() {
     let Captured::Written { id, .. } = capture(&dir, "2026-07-31T09:15:22Z", None) else {
         panic!("the first capture must write an event");
     };
-    let event = block_on(ws(&dir).history_event(Path::new("index.md"), &id))
+    let event = block_on(store(&dir).event(Path::new("index.md"), &id))
         .unwrap()
         .unwrap();
     assert!(
-        block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), &event))
+        block_on(store(&dir).missing_blobs(Path::new("index.md"), &event))
             .unwrap()
             .is_empty(),
         "a capture parks every file's bytes"
     );
 
     // The half-synced case: the event document arrived, one blob did not.
-    let payload = crate::fixity::digest(b"JPEGBYTES");
+    let payload = digest(b"JPEGBYTES");
     let blob = blob_path(Path::new("history/index.md"), &payload).unwrap();
     std::fs::remove_file(dir.join(&blob)).unwrap();
-    let missing = block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), &event)).unwrap();
+    let missing = block_on(store(&dir).missing_blobs(Path::new("index.md"), &event)).unwrap();
     assert_eq!(
         missing.into_iter().collect::<Vec<_>>(),
         vec![PathBuf::from("notes/photo.jpg")],
@@ -266,7 +264,7 @@ fn missing_blobs_name_the_paths_a_restore_could_not_recover() {
         ..event
     };
     assert_eq!(
-        block_on(ws(&dir).history_missing_blobs(Path::new("index.md"), &foreign))
+        block_on(store(&dir).missing_blobs(Path::new("index.md"), &foreign))
             .unwrap()
             .len(),
         1
@@ -275,17 +273,17 @@ fn missing_blobs_name_the_paths_a_restore_could_not_recover() {
 
 #[test]
 fn read_only_verbs_keep_degrading_gracefully_around_an_unreadable_event() {
-    // §7's flip side, restated as a test: the destructive verbs and `check`
-    // must refuse or report, but `history-list` (and anything built on it)
-    // has always been allowed to skip what it cannot read — that is
-    // graceful degradation, not the destruction this fix guards against.
+    // §7's flip side, restated as a test: the destructive verbs and the
+    // store's own `findings` must refuse or report, but `list` (and anything
+    // built on it) has always been allowed to skip what it cannot read — that
+    // is graceful degradation, not the destruction this fix guards against.
     let dir = seed("list-torn");
     let first = capture_edited(&dir, "2026-07-31T09:00:00.000000Z", "one", "alpha");
     let second = capture_edited(&dir, "2026-07-31T10:00:00.000000Z", "two", "beta");
     let torn = event_path(Path::new("history/index.md"), &first, "md").unwrap();
     tear(&dir, torn.to_str().unwrap());
 
-    let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+    let events = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
     assert_eq!(
         events.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
         vec![second.as_str()],
@@ -293,28 +291,16 @@ fn read_only_verbs_keep_degrading_gracefully_around_an_unreadable_event() {
     );
 }
 
-/// Re-point the root at `contents`, so a rename is visible to the reachable
-/// walk the capture set is taken from.
-fn relink(dir: &Path, contents: &[&str]) {
-    let list = contents
-        .iter()
-        .map(|c| format!("- {c}\n"))
-        .collect::<String>();
-    write(
-        dir,
-        "index.md",
-        &format!("---\ntitle: Home\ncontents:\n{list}---\nroot\n"),
-    );
-}
-
 #[test]
 fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
     let dir = seed("log-rename");
-    let mut w = ws(&dir);
+    let mut w = store(&dir);
     let id = Id("b7k2m".into());
-    w.index_mut().register(&id, Path::new("notes/a.md"));
-    let take = |w: &mut Workspace<StdFs, Minter, FileIndex>, now: &str| {
-        block_on(w.history_capture(Path::new("index.md"), now, None)).unwrap()
+    w.host_mut()
+        .index_mut()
+        .register(&id, Path::new("notes/a.md"));
+    let take = |w: &mut HistoryStore<TestHost>, now: &str| {
+        block_on(w.capture(Path::new("index.md"), now, None)).unwrap()
     };
     take(&mut w, "2026-07-31T09:00:00Z");
 
@@ -322,7 +308,9 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
     // lineages here; the id column shows one document that moved.
     std::fs::rename(dir.join("notes/a.md"), dir.join("notes/b.md")).unwrap();
     relink(&dir, &["notes/b.md", "notes/photo.jpg.yaml"]);
-    w.index_mut().set_path(&id, Path::new("notes/b.md"));
+    w.host_mut()
+        .index_mut()
+        .set_path(&id, Path::new("notes/b.md"));
     take(&mut w, "2026-07-31T10:00:00Z");
 
     // An edit at the new path.
@@ -338,7 +326,7 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
     write(&dir, "notes/photo.jpg", "OTHERBYTES");
     take(&mut w, "2026-07-31T12:00:00Z");
 
-    let log = block_on(w.history_log(Path::new("index.md"), &Subject::Id(id.clone()))).unwrap();
+    let log = block_on(w.log(Path::new("index.md"), &Subject::Id(id.clone()))).unwrap();
     let paths: Vec<&Path> = log
         .iter()
         .map(|v| match &v.state {
@@ -368,7 +356,7 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
     // the move, which is the nature of a path key. But the row it does find
     // still remembers the id — which is what lets the weaker query hand the
     // caller the stronger one instead of quietly under-reporting.
-    let by_path = block_on(w.history_log(
+    let by_path = block_on(w.log(
         Path::new("index.md"),
         &Subject::Path(PathBuf::from("notes/a.md")),
     ))
@@ -387,11 +375,13 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
 #[test]
 fn a_lineage_records_a_deletion_and_a_return() {
     let dir = seed("log-gone");
-    let mut w = ws(&dir);
+    let mut w = store(&dir);
     let id = Id("b7k2m".into());
-    w.index_mut().register(&id, Path::new("notes/a.md"));
-    let take = |w: &mut Workspace<StdFs, Minter, FileIndex>, now: &str| {
-        block_on(w.history_capture(Path::new("index.md"), now, None)).unwrap()
+    w.host_mut()
+        .index_mut()
+        .register(&id, Path::new("notes/a.md"));
+    let take = |w: &mut HistoryStore<TestHost>, now: &str| {
+        block_on(w.capture(Path::new("index.md"), now, None)).unwrap()
     };
     take(&mut w, "2026-07-31T09:00:00Z");
 
@@ -409,7 +399,7 @@ fn a_lineage_records_a_deletion_and_a_return() {
     relink(&dir, &["notes/a.md", "notes/photo.jpg.yaml"]);
     take(&mut w, "2026-07-31T11:00:00Z");
 
-    let log = block_on(w.history_log(Path::new("index.md"), &Subject::Id(id))).unwrap();
+    let log = block_on(w.log(Path::new("index.md"), &Subject::Id(id))).unwrap();
     assert_eq!(log.len(), 3);
     assert!(matches!(log[0].state, Presence::At { .. }));
     // Omission *is* deletion: there is no removal list to have consulted.
@@ -428,7 +418,7 @@ fn an_id_less_document_still_has_a_lineage_by_path() {
     write(&dir, "notes/photo.jpg", "OTHERBYTES");
     capture(&dir, "2026-07-31T10:00:00Z", None);
 
-    let log = block_on(ws(&dir).history_log(
+    let log = block_on(store(&dir).log(
         Path::new("index.md"),
         &Subject::Path(PathBuf::from("notes/photo.jpg")),
     ))
@@ -437,11 +427,11 @@ fn an_id_less_document_still_has_a_lineage_by_path() {
     let Presence::At { hash, .. } = &log[1].state else {
         panic!("the payload should be present in the second event");
     };
-    assert_eq!(*hash, crate::fixity::digest(b"OTHERBYTES"));
+    assert_eq!(*hash, digest(b"OTHERBYTES"));
 
     // A subject no event ever captured has an empty lineage, not an error.
     assert!(
-        block_on(ws(&dir).history_log(
+        block_on(store(&dir).log(
             Path::new("index.md"),
             &Subject::Path(PathBuf::from("notes/never.md")),
         ))

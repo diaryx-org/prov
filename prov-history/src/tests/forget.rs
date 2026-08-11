@@ -1,14 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use super::support::*;
-use crate::validate::Finding;
+use crate::*;
 use prov_graph::error::Result;
 use prov_graph::exec::block_on;
 use prov_graph::index::IndexStore;
-use prov_history::*;
 
 fn forget(dir: &Path, subject: &Subject, now: &str, force: bool) -> Result<Forgotten> {
-    block_on(ws(dir).history_forget(Path::new("index.md"), subject, now, force))
+    block_on(store(dir).forget(Path::new("index.md"), subject, now, force))
 }
 
 #[test]
@@ -72,7 +71,7 @@ fn a_forget_destroys_only_the_bytes_nothing_else_names() {
 
     // The record of *what was captured* survives the destruction of the bytes.
     // That is the bargain, and it has to be visible in the store.
-    let events = block_on(ws(&dir).history_list(Path::new("index.md"))).unwrap();
+    let events = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
     assert!(
         events
             .iter()
@@ -81,14 +80,11 @@ fn a_forget_destroys_only_the_bytes_nothing_else_names() {
     );
 
     // Tombstoned, reachable, and clean — the record must not itself be an
-    // orphan, and a deliberate destruction must not leave `check` failing.
+    // orphan, and a deliberate destruction must not leave the store reporting.
     let tombstone = read(&dir, "history/forgotten.yaml");
     assert!(tombstone.contains("notes/twin.md") && tombstone.contains("2026-08-01T12:00:00"));
     assert!(read(&dir, "history/index.md").contains("forgotten.yaml"));
-    assert_eq!(
-        block_on(ws(&dir).check(Path::new("index.md"))).unwrap(),
-        vec![]
-    );
+    assert_eq!(findings(&dir), vec![]);
 }
 
 #[test]
@@ -105,15 +101,14 @@ fn a_tombstoned_hash_is_accounted_for_where_a_lost_one_is_not() {
         false,
     )
     .unwrap();
-    assert!(
-        block_on(ws(&dir).check(Path::new("index.md")))
-            .unwrap()
-            .is_empty(),
+    assert_eq!(
+        findings(&dir),
+        vec![],
         "a recorded destruction is not a finding — a `check` that never came \
          back to clean would teach the user to stop reading it"
     );
     assert_eq!(
-        block_on(ws(&dir).history_forgotten(Path::new("index.md")))
+        block_on(store(&dir).forgotten(Path::new("index.md")))
             .unwrap()
             .len(),
         1
@@ -122,11 +117,11 @@ fn a_tombstoned_hash_is_accounted_for_where_a_lost_one_is_not() {
     // …and the suppression is precise, not blanket: bytes that went missing
     // without a record still say so.
     std::fs::remove_file(dir.join(blob_of(b"JPEGBYTES"))).unwrap();
-    let findings = block_on(ws(&dir).check(Path::new("index.md"))).unwrap();
+    let issues = findings(&dir);
     assert!(
-        matches!(findings.as_slice(), [Finding::HistoryBlobMissing { paths, .. }]
+        matches!(issues.as_slice(), [HistoryIssue::BlobMissing { paths, .. }]
             if paths == &[PathBuf::from("notes/photo.jpg")]),
-        "{findings:?}"
+        "{issues:?}"
     );
 }
 
@@ -158,11 +153,12 @@ fn a_forget_refuses_a_document_the_next_capture_would_park_again() {
 #[test]
 fn forgetting_by_id_reaches_the_versions_a_path_key_would_miss() {
     let dir = seed("forget-id");
-    let mut w = ws(&dir);
+    let mut w = store(&dir);
     let id = Id("b7k2m".into());
-    w.index_mut().register(&id, Path::new("notes/a.md"));
-    block_on(w.history_capture(Path::new("index.md"), "2026-07-31T09:00:00.000000Z", None))
-        .unwrap();
+    w.host_mut()
+        .index_mut()
+        .register(&id, Path::new("notes/a.md"));
+    block_on(w.capture(Path::new("index.md"), "2026-07-31T09:00:00.000000Z", None)).unwrap();
 
     // The move: the same document, a second path, and a hash a path-keyed
     // forget would leave behind.
@@ -173,16 +169,17 @@ fn forgetting_by_id_reaches_the_versions_a_path_key_would_miss() {
         "---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n",
     );
     relink_live(&dir, &["notes/b.md", "notes/photo.jpg.yaml"]);
-    w.index_mut().set_path(&id, Path::new("notes/b.md"));
-    block_on(w.history_capture(Path::new("index.md"), "2026-07-31T10:00:00.000000Z", None))
-        .unwrap();
+    w.host_mut()
+        .index_mut()
+        .set_path(&id, Path::new("notes/b.md"));
+    block_on(w.capture(Path::new("index.md"), "2026-07-31T10:00:00.000000Z", None)).unwrap();
 
     // Out of the workspace, so the guard is not what is under test.
     std::fs::remove_file(dir.join("notes/b.md")).unwrap();
     relink_live(&dir, &["notes/photo.jpg.yaml"]);
-    w.index_mut().unregister(&id);
+    w.host_mut().index_mut().unregister(&id);
 
-    let out = block_on(w.history_forget(
+    let out = block_on(w.forget(
         Path::new("index.md"),
         &Subject::Id(id),
         "2026-08-01T12:00:00.000000Z",

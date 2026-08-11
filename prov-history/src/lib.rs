@@ -49,6 +49,9 @@ mod read;
 mod restore;
 mod store;
 
+#[cfg(all(test, feature = "yaml"))]
+mod tests;
+
 pub use docs::*;
 pub use event_id::*;
 pub use layout::*;

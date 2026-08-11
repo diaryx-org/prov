@@ -72,11 +72,17 @@
 //!   configuration, which is what the host traits' `history_exclusions`,
 //!   `history_captures` and `registration_conflict` carry across the boundary.
 //!
-//! The tests stay here too, and deliberately: they are integration tests over a
-//! real workspace — they run `check`, apply a [`Fix`](crate::Fix), warm a
-//! [`FixityCache`](crate::FixityCache), recycle a document — so they exercise
-//! the moved logic through exactly the composition it has to survive. The
-//! fixtures they share are in `support`.
+//! The tests follow that same line. Everything about the *store* — capture,
+//! restore, prune, forget, the reads, and the [`HistoryIssue`]s it reports —
+//! is tested in [`prov_history`], against a host built to its two traits and
+//! nothing more, so those tests cannot come to depend on anything history is
+//! defined not to know. What stays here is what only exists here: the
+//! `HistoryIssue` → [`Finding`](crate::Finding) mapping and its
+//! [`Fix`](crate::Fix)es, the claim that each verb leaves the whole *workspace*
+//! `check`-clean, and the answers this crate gives to the host traits — the
+//! recycle bin's items kept out of a capture set, the store's interior kept out
+//! of the title index, the [`FixityCache`](crate::FixityCache) a capture reads
+//! through. See `tests` for the entry condition stated as a rule.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

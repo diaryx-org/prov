@@ -136,40 +136,27 @@ pub(crate) struct RecordingFs {
     caps: Capabilities,
 }
 
-/// A real filesystem that counts what it was asked to read, per path.
+/// A real filesystem that counts the documents it was asked to read, per path.
 ///
-/// The observable both the read memo and the fixity cache exist to move: a pass
-/// that does not read a file is the whole point, and "did not read it" is not
-/// visible in any result the pass returns. Delegates everything to [`StdFs`], so
-/// timestamps, atomic writes and durability all behave like the real thing.
+/// The observable the read memo exists to move: a pass that does not read a
+/// file is the whole point, and "did not read it" is not visible in any result
+/// the pass returns. Delegates everything to [`StdFs`], so timestamps, atomic
+/// writes and durability all behave like the real thing.
+///
+/// Documents only — `prov-history` keeps its own copy that also tallies raw
+/// byte reads, which is what a capture spends and what its fixity-cache tests
+/// watch. The two are separate because sharing one would mean a crate exporting
+/// a test double from its public surface.
 #[derive(Clone, Default, Debug)]
 pub(crate) struct CountingFs {
-    /// `read` — raw bytes. What the capture manifest loop spends.
-    bytes: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>>,
     /// `read_to_string` — documents. What the traversal passes spend.
     docs: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>>,
 }
 
 impl CountingFs {
-    /// How many times the file at workspace-relative `rel` had its bytes read.
-    pub(crate) fn byte_reads(&self, dir: &Path, rel: &str) -> usize {
-        count(&self.bytes, &dir.join(rel))
-    }
-
     /// How many times the document at workspace-relative `rel` was read.
     pub(crate) fn doc_reads(&self, dir: &Path, rel: &str) -> usize {
         count(&self.docs, &dir.join(rel))
-    }
-
-    /// Total byte reads under `dir` — for asserting that a whole pass read
-    /// nothing at all.
-    pub(crate) fn total_byte_reads(&self) -> usize {
-        self.bytes.lock().unwrap().values().sum()
-    }
-
-    pub(crate) fn reset(&self) {
-        self.bytes.lock().unwrap().clear();
-        self.docs.lock().unwrap().clear();
     }
 }
 
@@ -190,7 +177,6 @@ fn tally(counter: &std::sync::Mutex<std::collections::BTreeMap<PathBuf, usize>>,
 
 impl ReadStorage for CountingFs {
     async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        tally(&self.bytes, path);
         StdFs.read(path).await
     }
     async fn read_to_string(&self, path: &Path) -> io::Result<String> {

@@ -1,26 +1,25 @@
-//! History's tests — **integration** tests, which is why they are here rather
-//! than in `prov-history`.
+//! History's **integration** tests — what `prov` adds around the store.
 //!
-//! Almost none of them can be written against the store alone. They seed a real
-//! [`Workspace`](crate::Workspace) over a real filesystem and then ask what the
-//! rest of prov makes of what history did: whether [`check`](crate::Workspace::check)
-//! comes back clean, whether the [`Fix`](crate::Fix) it suggests actually retires
-//! the finding, whether a warmed [`FixityCache`](crate::FixityCache) removes the
-//! reads, whether a recycled document stops answering to its title. That
-//! composition *is* the thing under test, and it only exists at this layer.
+//! The store's own behaviour is tested in `prov-history`, against a host built
+//! to nothing but its two traits. Everything here needs the rest of this crate
+//! to even be phrased, and that is the entry condition: a test belongs in this
+//! module only if removing `prov` from it would remove its subject.
 //!
-//! The pure-logic tests — manifest ordering, id minting, blob paths, index
-//! rendering — travelled with their code and live in `prov-history` beside it.
+//! Two of those, one file each:
 //!
-//! One file per verb, mirroring the modules in `prov-history`. The fixtures
-//! they share — a seeded workspace, a capture, a torn event — are in
-//! [`support`], which no sibling could own without every other one reaching
-//! across for it.
+//! - [`findings`] — [`HistoryIssue`](prov_history::HistoryIssue) →
+//!   [`Finding`](crate::Finding), its prose and its ordering, the
+//!   [`Fix`](crate::Fix) that retires it, and the claim no store-level check
+//!   can make: that a history verb leaves the whole *workspace*
+//!   [`check`](crate::Workspace::check)-clean.
+//! - [`composition`] — the answers this crate supplies to the host traits, and
+//!   what else in the workspace depends on them: the recycle bin's items
+//!   excluded from a capture set, the store's interior excluded from the title
+//!   index, and the [`FixityCache`](crate::FixityCache) a capture reads through.
+//!
+//! If a test here stops needing `check`, a `Fix`, the bin, the title index or
+//! the cache, it has become a test of the store and should move.
 
-mod capture;
-mod check;
-mod forget;
-mod prune;
-mod read;
-mod restore;
+mod composition;
+mod findings;
 mod support;
