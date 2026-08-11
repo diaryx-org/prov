@@ -15,7 +15,7 @@ use super::{BLOBS_DIR, EVENTS_DIR, HISTORY_DIR};
 /// must never be gated behind repairing the thing that broke, so the read verbs
 /// take [`Conventional`](StoreLocation::Conventional) as a found store — and
 /// `check` reports the missing pointer
-/// ([`Finding::HistoryStoreUnlinked`](crate::validate::Finding::HistoryStoreUnlinked)) so it is
+/// (`Finding::HistoryStoreUnlinked`) so it is
 /// re-declared rather than silently depended upon.
 ///
 /// **Only the conventional path is probed**, never a search. A store the root
@@ -95,7 +95,7 @@ pub fn store_dir(store_index: &Path) -> PathBuf {
 }
 
 /// The `<year>`/`<month>` pair of a shard path, or an error when it is not one.
-pub(super) fn shard_parts(shard: &Path) -> Result<(String, String)> {
+pub fn shard_parts(shard: &Path) -> Result<(String, String)> {
     let parts: Vec<String> = shard
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -116,7 +116,7 @@ pub(super) fn shard_parts(shard: &Path) -> Result<(String, String)> {
 /// digits rather than eight hex characters, so it is litter beside the store
 /// rather than a phantom event — which matters, because an index rebuilt to
 /// *include* the conflict copy would enshrine the damage it is repairing.
-pub(super) fn is_event_id(stem: &str) -> bool {
+pub fn is_event_id(stem: &str) -> bool {
     let parts: Vec<&str> = stem.split('-').collect();
     let [year, month, day, time, rest @ ..] = parts.as_slice() else {
         return false;
@@ -139,8 +139,8 @@ pub(super) fn is_event_id(stem: &str) -> bool {
 /// [`FRACTION_DIGITS`](super::event_id::FRACTION_DIGITS) places, and the id's
 /// trailing digest is content-derived rather than ordered. So this narrows a
 /// search for the newest event; it does not settle one. See
-/// [`history_summary`](crate::Workspace::history_summary).
-pub(super) fn id_stamp_of(stem: &str) -> Option<String> {
+/// `history_summary`.
+pub fn id_stamp_of(stem: &str) -> Option<String> {
     if !is_event_id(stem) {
         return None;
     }
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn a_blob_path_is_bare_hex_never_the_scheme_prefix() {
-        let hash = crate::fixity::digest(b"hello");
+        let hash = prov_fixity::digest(b"hello");
         let path = blob_path(Path::new("history/index.md"), &hash).unwrap();
         let spelled = path.to_string_lossy();
         assert!(

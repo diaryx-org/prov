@@ -7,11 +7,8 @@ use prov_graph::error::{Error, Result};
 use prov_graph::fs::Storage;
 use prov_graph::index::IndexStore;
 
-use super::docs::*;
-use super::event_id::*;
-use super::layout::*;
-use super::model::*;
-use super::paths::*;
+use prov_history::*;
+
 use super::{EVENTS_DIR, HISTORY_DIR};
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
@@ -185,8 +182,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// no history at all; `events` still counts the torn slots, because the file
     /// is evidence a capture happened even when its contents are not.
     ///
-    /// [`mint_id`]: super::event_id::mint_id
-    /// [`FRACTION_DIGITS`]: super::event_id::FRACTION_DIGITS
+    /// [`mint_id`]: prov_history::mint_id
+    /// [`FRACTION_DIGITS`]: prov_history::FRACTION_DIGITS
     pub async fn history_summary(&self, root_doc: &Path) -> Result<Summary> {
         let (store_index, found) = self.history_store_index(root_doc).await?;
         if !found.exists() {

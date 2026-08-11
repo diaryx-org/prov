@@ -7,9 +7,7 @@ use prov_graph::fs::Storage;
 use prov_graph::index::{Collision, IndexStore};
 use prov_graph::link;
 
-use super::layout::*;
-use super::model::*;
-use super::paths::*;
+use prov_history::*;
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// What restoring `event` would do, computed **before a byte moves** — the

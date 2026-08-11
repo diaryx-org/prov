@@ -18,9 +18,9 @@ use super::{BLOBS_DIR, EVENTS_DIR, FORGOTTEN_STEM, TRIGGER_MANUAL};
 ///
 /// One value rather than three parameters, because they are one decision and
 /// separating them is how a `.html` store came to hold Markdown bodies.
-/// Resolved by [`history_authoring`](crate::Workspace::history_authoring).
+/// Resolved by `history_authoring`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Authoring {
+pub struct Authoring {
     /// The file extension every document in the store gets.
     ///
     /// Owned rather than `&'static str` because the index-rebuild repair reads it
@@ -37,7 +37,7 @@ pub(super) struct Authoring {
 
 /// Parse an event document's frontmatter into an [`Event`], or `None` when it is
 /// not one (no `files` manifest, or no `created`).
-pub(super) fn parse_event(path: &Path, id: &str, meta: &Value) -> Option<Event> {
+pub fn parse_event(path: &Path, id: &str, meta: &Value) -> Option<Event> {
     let created = meta.get("created").and_then(Value::as_str)?.to_string();
     let rows = meta.get("files").and_then(Value::as_sequence)?;
     let mut files = Vec::with_capacity(rows.len());
@@ -95,7 +95,7 @@ pub(super) fn parse_event(path: &Path, id: &str, meta: &Value) -> Option<Event> 
 /// register every event in the registry, which would make each capture rewrite
 /// `registry.<ext>` — reintroducing the merge conflict on a *more* load-bearing
 /// file than the one the append-only design exists to eliminate.
-pub(super) fn render_index(
+pub fn render_index(
     title: &str,
     up: Option<(&str, &str)>,
     entries: &[(String, String)],
@@ -129,7 +129,7 @@ pub(super) fn render_index(
 /// The store index is where someone who opened `history/` uninvited starts, and
 /// "the manifest is in the frontmatter" is only useful to a reader who already
 /// knows which of six carriers this workspace writes. Specialized rather than
-/// enumerated, the same move [`crate::about`] makes for the workspace at large:
+/// enumerated, the same move `crate::about` makes for the workspace at large:
 /// state the one branch that applies here.
 fn carrier_opening(embed: fig::EmbedType) -> String {
     use fig::EmbedType as E;
@@ -169,10 +169,10 @@ fn carrier_opening(embed: fig::EmbedType) -> String {
 /// well-documented somewhere else — the reader who most needs it is the one
 /// whose workspace is broken, and telling them to run a verb is telling them to
 /// trust the thing that just failed them.
-/// Wrapped after interpolation, through [`crate::about`]'s helper: the carrier
+/// Wrapped after interpolation, through `crate::about`'s helper: the carrier
 /// clause varies in length by a factor of three across the archetypes, so a
 /// hand-wrapped paragraph would be tidy for YAML and ragged for an HTML island.
-pub(super) fn store_prose(style: &Authoring) -> String {
+pub fn store_prose(style: &Authoring) -> String {
     let paragraphs = [
         para(
             "This directory is `prov`'s **history store**: a safety net for damage \
@@ -251,7 +251,7 @@ fn format_name(format: fig::Format) -> String {
 }
 
 /// The month-shard title an event's `part_of` label uses: `July 2026`.
-pub(super) fn shard_title(id: &str) -> String {
+pub fn shard_title(id: &str) -> String {
     match shard_of(id).ok().as_deref().map(shard_parts) {
         Some(Ok((year, month))) => format!("{} {year}", month_name(&month)),
         _ => "History".to_string(),
@@ -260,7 +260,7 @@ pub(super) fn shard_title(id: &str) -> String {
 
 /// The English month name for a two-digit month, or the digits themselves when
 /// they are not a month (a hand-made directory prov did not write).
-pub(super) fn month_name(month: &str) -> &str {
+pub fn month_name(month: &str) -> &str {
     match month {
         "01" => "January",
         "02" => "February",
@@ -281,7 +281,7 @@ pub(super) fn month_name(month: &str) -> &str {
 /// The workspace-relative paths an index document's `contents` links resolve to.
 /// Compared as a link *set* rather than as text, so hand-edited prose or a
 /// reordered block is not "stale" — only a genuinely missing or surplus entry is.
-pub(super) fn index_entries(index: &Path, meta: &Value) -> Vec<PathBuf> {
+pub fn index_entries(index: &Path, meta: &Value) -> Vec<PathBuf> {
     meta.get("contents")
         .map(Value::link_strings)
         .unwrap_or_default()
@@ -293,7 +293,7 @@ pub(super) fn index_entries(index: &Path, meta: &Value) -> Vec<PathBuf> {
 /// The store index. `forgotten` is the tombstone list's path when the store has
 /// one — linked here because it is the only document above it, and an unlinked
 /// record of what was destroyed would be reported as an orphan.
-pub(super) fn render_store_index(
+pub fn render_store_index(
     years: &BTreeSet<String>,
     forgotten: Option<&Path>,
     style: &Authoring,
@@ -312,7 +312,7 @@ pub(super) fn render_store_index(
 }
 
 /// The hashes a tombstone document records.
-pub(super) fn forgotten_hashes(meta: &Value) -> BTreeSet<String> {
+pub fn forgotten_hashes(meta: &Value) -> BTreeSet<String> {
     meta.get(FORGOTTEN_STEM)
         .and_then(Value::as_sequence)
         .map(|rows| {
@@ -331,7 +331,7 @@ pub(super) fn forgotten_hashes(meta: &Value) -> BTreeSet<String> {
 /// every manifest still names that path or id beside that hash, because events
 /// are immutable — and without it the list cannot answer why anything on it is
 /// there.
-pub(super) fn render_forgotten(
+pub fn render_forgotten(
     existing: Option<&Value>,
     hashes: &BTreeSet<String>,
     subject: &Subject,
@@ -372,14 +372,14 @@ pub(super) fn render_forgotten(
 }
 
 /// Whether a manifest row is one the subject names.
-pub(super) fn subject_matches(subject: &Subject, file: &FileEntry) -> bool {
+pub fn subject_matches(subject: &Subject, file: &FileEntry) -> bool {
     match subject {
         Subject::Id(id) => file.id.as_ref() == Some(id),
         Subject::Path(path) => file.path == *path,
     }
 }
 
-pub(super) fn render_year_index(
+pub fn render_year_index(
     year: &str,
     months: &BTreeSet<String>,
     style: &Authoring,
@@ -403,7 +403,7 @@ pub(super) fn render_year_index(
     )
 }
 
-pub(super) fn render_month_index(
+pub fn render_month_index(
     year: &str,
     month: &str,
     ids: &BTreeSet<String>,

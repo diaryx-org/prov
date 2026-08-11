@@ -6,8 +6,8 @@ use prov_graph::error::Result;
 use prov_graph::fs::Storage;
 use prov_graph::index::IndexStore;
 
-use super::docs::*;
-use super::layout::*;
+use prov_history::*;
+
 use super::{BLOBS_DIR, EVENTS_DIR, HistoryIssue};
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
@@ -317,7 +317,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
-    use super::super::model::Captured;
+    use prov_history::Captured;
+
     use super::super::support::*;
     use super::*;
     use crate::validate::Finding;

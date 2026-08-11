@@ -8,7 +8,7 @@ use super::model::*;
 /// A path spelled with `/` separators regardless of host platform — what goes
 /// into a manifest and into the canonical form, so an event minted on Windows and
 /// one minted on Linux describe the same state identically.
-pub(super) fn slash_path(path: &Path) -> String {
+pub fn slash_path(path: &Path) -> String {
     path.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -25,7 +25,7 @@ pub(super) fn slash_path(path: &Path) -> String {
 /// first, backwards from the joined string it will end up serialized as. Row
 /// order feeds `canonical_bytes` (§4.1), so this is the one sort in the store
 /// two independent implementations have to agree on bit-for-bit.
-pub(super) fn path_sort_key(path: &Path) -> String {
+pub fn path_sort_key(path: &Path) -> String {
     slash_path(path)
 }
 
@@ -38,7 +38,7 @@ pub(super) fn path_sort_key(path: &Path) -> String {
 /// re-derived) while every manifest computed from here on is sorted per §3.1.
 /// `Vec<FileEntry>`'s derived `PartialEq` is row-order-sensitive and is the
 /// wrong tool for this comparison.
-pub(super) fn manifest_of(files: &[FileEntry]) -> BTreeMap<&Path, (&Option<Id>, &str)> {
+pub fn manifest_of(files: &[FileEntry]) -> BTreeMap<&Path, (&Option<Id>, &str)> {
     files
         .iter()
         .map(|f| (f.path.as_path(), (&f.id, f.hash.as_str())))
@@ -47,7 +47,7 @@ pub(super) fn manifest_of(files: &[FileEntry]) -> BTreeMap<&Path, (&Option<Id>, 
 
 /// Whether `path` sits inside `dir` (or *is* it) — the capture-set exclusion
 /// test, applied to normalized workspace-relative paths.
-pub(super) fn under(path: &Path, dir: &Path) -> bool {
+pub fn under(path: &Path, dir: &Path) -> bool {
     dir.as_os_str().is_empty() || path == dir || path.starts_with(dir)
 }
 
@@ -58,7 +58,7 @@ pub(super) fn under(path: &Path, dir: &Path) -> bool {
 /// lands on the file the first row's write just created, silently discarding
 /// it. Order is the manifest's own (paths are captured pre-sorted), so the
 /// pair reported is deterministic.
-pub(super) fn case_fold_collision<'a>(
+pub fn case_fold_collision<'a>(
     paths: impl Iterator<Item = &'a Path>,
 ) -> Option<(PathBuf, PathBuf)> {
     let mut seen: BTreeMap<String, &Path> = BTreeMap::new();
@@ -78,8 +78,18 @@ pub(super) fn case_fold_collision<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::support::entry;
     use super::*;
+
+    /// Minimal manifest-row fixture — `support::entry` does not follow this
+    /// module across the crate boundary, so each moved test module carries its
+    /// own copy of this one-liner rather than reaching back into `prov`.
+    fn entry(path: &str, hash_of: &[u8]) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(path),
+            id: None,
+            hash: prov_fixity::digest(hash_of),
+        }
+    }
 
     #[test]
     fn manifest_order_is_byte_wise_on_the_joined_string_not_path_component_order() {

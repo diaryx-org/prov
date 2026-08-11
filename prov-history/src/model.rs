@@ -19,13 +19,13 @@ pub struct FileEntry {
     pub path: PathBuf,
     /// The document's registered id, or `None` when it carries none.
     pub id: Option<Id>,
-    /// The content digest, spelled `sha256:<hex>` as [`crate::fixity::digest`]
+    /// The content digest, spelled `sha256:<hex>` as [`prov_fixity::digest`]
     /// produces it.
     pub hash: String,
 }
 
 /// One capture: a full manifest of the capture set at a moment, plus the display
-/// metadata that lets [`history_list`](crate::Workspace::history_list) narrate it.
+/// metadata that lets `history_list` narrate it.
 ///
 /// Immutable once written. Everything a restore needs is here plus the blobs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +123,7 @@ pub enum Captured {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     /// Every row in the manifest. The only scope
-    /// [`exact`](crate::Workspace::history_restore_plan) accepts.
+    /// `exact` accepts.
     Whole,
     /// Only the rows at — or under — these paths, so naming a directory restores
     /// the subtree the capture held beneath it.
@@ -168,7 +168,7 @@ impl Disposition {
     /// Sort order for a plan: what is written, then what was already right, then
     /// what cannot be, then what goes away. Read top to bottom, a plan reads as a
     /// sentence about the restore.
-    pub(super) fn rank(self) -> u8 {
+    pub fn rank(self) -> u8 {
         match self {
             Disposition::Create => 0,
             Disposition::Overwrite => 1,
@@ -182,7 +182,7 @@ impl Disposition {
 
 /// One path a restore touches, and what it will do to it — the unit a
 /// [`RestorePlan`] is a sequence of, on the same footing as the
-/// [`FileOp`](crate::change::FileOp)s it becomes.
+/// `FileOp`s it becomes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreOp {
     /// The workspace-relative path.
@@ -201,7 +201,7 @@ pub struct RestoreOp {
     /// [`CaseOnly`](Disposition::CaseOnly) rows a case-insensitive filesystem
     /// resolved to a differently-spelled entry, `None` for everything else
     /// (including every row on a filesystem that does not fold case, where this
-    /// cannot arise). [`history_restore`](crate::Workspace::history_restore) renames it
+    /// cannot arise). `history_restore` renames it
     /// to `path` before writing, so the workspace ends up holding the exact
     /// spelling the manifest recorded rather than silently keeping the old one.
     pub rename_from: Option<PathBuf>,
@@ -212,7 +212,7 @@ pub struct RestoreOp {
 ///
 /// Refused rather than resolved: two documents claim one id and only their author
 /// knows which should keep it. See
-/// [`registration_conflict`](crate::Workspace::registration_conflict).
+/// `registration_conflict`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     /// The path being restored.
@@ -225,7 +225,7 @@ pub struct Conflict {
 ///
 /// A snapshot, not a promise: it compares the manifest against the tree as it was
 /// when the plan was built, so build it, show it, and hand *that* plan to
-/// [`history_restore`](crate::Workspace::history_restore) rather than recomputing — a
+/// `history_restore` rather than recomputing — a
 /// user who confirmed a removal list is entitled to have that list be the one
 /// that runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,7 +290,7 @@ pub enum Retention {
 /// What a prune would drop — computed before anything is deleted.
 ///
 /// A snapshot, like [`RestorePlan`]: build it, show it, and hand *that* to
-/// [`history_prune`](crate::Workspace::history_prune), so what runs is what the user
+/// `history_prune`, so what runs is what the user
 /// was asked about.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pruned {
@@ -300,7 +300,7 @@ pub struct Pruned {
     /// The blob files to collect: everything under `blobs/` that no surviving
     /// manifest names, workspace-relative and sorted.
     ///
-    /// This is the same sweep [`Finding::HistoryBlobOrphaned`](crate::validate::Finding::HistoryBlobOrphaned) reports, taken
+    /// This is the same sweep `Finding::HistoryBlobOrphaned` reports, taken
     /// against the survivors — so a prune also collects orphans that were already
     /// there, which is exactly what that finding promises.
     pub blobs: Vec<PathBuf>,
@@ -317,7 +317,7 @@ impl Pruned {
     }
 }
 
-/// What a [`history_forget`](crate::Workspace::history_forget) destroyed.
+/// What a `history_forget` destroyed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Forgotten {
     /// The hashes whose bytes were destroyed and tombstoned.
@@ -391,17 +391,17 @@ pub struct Latest {
 /// contents — the shape of the store, not the history in it.
 ///
 /// The question this exists for is "is a capture due?", which a host asks on
-/// every open and which [`history_list`](crate::Workspace::history_list) is the
+/// every open and which `history_list` is the
 /// wrong way to answer: that parses **every** event document, and each holds one
 /// row per file in the workspace, so asking routinely costs O(events × files).
 /// This walks the shard tree and reads at most one document — see
-/// [`history_summary`](crate::Workspace::history_summary) for which one, and why
+/// `history_summary` for which one, and why
 /// one is enough.
 ///
 /// Deliberately *not* carrying the store's size on disk. A [`DirEntry`] names no
 /// length, so totalling bytes means one `metadata` call per blob — precisely the
 /// per-file cost over a file-provider backend that this type exists to avoid.
-/// [`history_store_bytes`](crate::Workspace::history_store_bytes) answers that
+/// `history_store_bytes` answers that
 /// separately, and says in its own name that it is the expensive one.
 ///
 /// [`DirEntry`]: prov_graph::fs::DirEntry
@@ -441,8 +441,18 @@ pub enum Subject {
 #[cfg(test)]
 mod tests {
     use super::super::TRIGGER_MANUAL;
-    use super::super::support::entry;
     use super::*;
+
+    /// Minimal manifest-row fixture — `support::entry` does not follow this
+    /// module across the crate boundary, so each moved test module carries its
+    /// own copy of this one-liner rather than reaching back into `prov`.
+    fn entry(path: &str, hash_of: &[u8]) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(path),
+            id: None,
+            hash: prov_fixity::digest(hash_of),
+        }
+    }
 
     #[test]
     fn diff_counts_changed_and_removed_against_the_previous_manifest() {

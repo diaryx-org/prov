@@ -58,16 +58,20 @@
 //!
 //! The module is split by *what a reader is after*, not by type:
 //!
-//! - `model` — the vocabulary every operation is spelled in: an [`Event`] and
-//!   its manifest rows, and the outcome of each verb.
-//! - `layout` — the store's shape on disk: id ⇄ shard, hash → blob.
-//! - `event_id` — the canonical form an event's id is a digest of, and the
-//!   timestamp arithmetic that keeps ids orderable across precisions.
-//! - `paths` — the path and manifest helpers the canonical form is built from.
-//! - `docs` — the store's own documents: parsing an event's frontmatter, and
-//!   rendering the rebuildable index and tombstone caches.
+//! - `prov_history::model` — the vocabulary every operation is spelled in: an
+//!   [`Event`] and its manifest rows, and the outcome of each verb.
+//! - `prov_history::layout` — the store's shape on disk: id ⇄ shard, hash →
+//!   blob.
+//! - `prov_history::event_id` — the canonical form an event's id is a digest
+//!   of, and the timestamp arithmetic that keeps ids orderable across
+//!   precisions.
+//! - `prov_history::paths` — the path and manifest helpers the canonical form
+//!   is built from.
+//! - `prov_history::docs` — the store's own documents: parsing an event's
+//!   frontmatter, and rendering the rebuildable index and tombstone caches.
 //! - `read`, `capture`, `restore`, `prune`, `forget`, `check` — one module per
-//!   verb, each an `impl Workspace` block.
+//!   verb, each an `impl Workspace` block, still hosted here pending a later
+//!   extraction phase.
 //! - `store` — the plumbing those verbs share: staging an index write, the
 //!   root's `history` pointer, walking shards.
 //!
@@ -78,48 +82,18 @@
 
 mod capture;
 mod check;
-mod docs;
-mod event_id;
 mod forget;
-mod layout;
-mod model;
-mod paths;
 mod prune;
 mod read;
 mod restore;
 mod store;
 
-pub use prov_history::{HistoryIssue, HistoryStore};
-
-pub use layout::{StoreLocation, blob_path, event_path, shard_of, store_dir};
-pub use model::{
-    Captured, Conflict, Disposition, Event, FileEntry, Forgotten, Latest, Presence, Pruned,
-    RestoreOp, RestorePlan, Retention, Scope, Subject, Summary, Version,
+pub use prov_history::{
+    BLOBS_DIR, Captured, Conflict, Disposition, EVENTS_DIR, Event, FORGOTTEN_STEM, FileEntry,
+    Forgotten, HISTORY_DIR, HistoryIssue, HistoryStore, Latest, Presence, Pruned, RestoreOp,
+    RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, TRIGGER_MANUAL, Version,
+    blob_path, event_path, shard_of, store_dir,
 };
-
-/// The directory the first capture bootstraps the store into, relative to the
-/// workspace root. Only a *default*: the store's real location is whatever the
-/// root's `history` pointer names, and every path below it is derived from that.
-pub const HISTORY_DIR: &str = "history";
-
-/// The subdirectory of the store holding date-sharded event documents.
-pub const EVENTS_DIR: &str = "events";
-
-/// The subdirectory of the store holding content-addressed pre-image bytes.
-/// Deliberately **unreached** — nothing links into it, so §8's orphan check
-/// ignores it exactly as it already ignores `recyclebin/items/`.
-pub const BLOBS_DIR: &str = "blobs";
-
-/// The `trigger` recorded by a capture the user asked for. The only Phase 0
-/// value: prov does not run the sync, so there is no event for it to hook.
-pub const TRIGGER_MANUAL: &str = "manual";
-
-/// The file stem of the store's tombstone list, beside the store index. A
-/// **whole-file** record store (`forgotten.yaml`, `.json`, `.fig`), because it is
-/// a mutable record store prov edits in place — the `MalformedStore` rule the
-/// registry and the bin index live under, and which an immutable event document
-/// deliberately does not.
-pub const FORGOTTEN_STEM: &str = "forgotten";
 
 #[cfg(test)]
 mod support;

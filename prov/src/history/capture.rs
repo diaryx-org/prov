@@ -9,11 +9,8 @@ use prov_graph::index::IndexStore;
 use prov_graph::link;
 use prov_graph::meta::{Mapping, Value};
 
-use super::docs::*;
-use super::event_id::*;
-use super::layout::*;
-use super::model::*;
-use super::paths::*;
+use prov_history::*;
+
 use super::{EVENTS_DIR, TRIGGER_MANUAL};
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {

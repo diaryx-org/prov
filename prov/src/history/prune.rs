@@ -7,11 +7,9 @@ use prov_graph::fs::Storage;
 use prov_graph::index::IndexStore;
 use prov_graph::link;
 
+use prov_history::*;
+
 use super::EVENTS_DIR;
-use super::docs::*;
-use super::event_id::*;
-use super::layout::*;
-use super::model::*;
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// What pruning to `retention` would drop: the events, and the blobs no

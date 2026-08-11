@@ -7,10 +7,8 @@ use prov_graph::fs::Storage;
 use prov_graph::index::IndexStore;
 use prov_graph::link;
 
-use super::docs::*;
-use super::layout::*;
-use super::model::*;
-use super::paths::*;
+use prov_history::*;
+
 use super::{EVENTS_DIR, FORGOTTEN_STEM};
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {

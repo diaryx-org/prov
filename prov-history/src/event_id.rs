@@ -14,9 +14,9 @@ use super::paths::*;
 /// than sorting here, so this stays a pure function of "the manifest, in the
 /// order it will be serialized" for a reader reconstructing an id from an
 /// event already on disk. The one caller that *mints* an id ([`mint_id`], from
-/// [`Workspace::history_capture`](crate::Workspace::history_capture)) is what owes it §3.1 order — see
+/// `Workspace::history_capture`) is what owes it §3.1 order — see
 /// [`path_sort_key`].
-pub(super) fn canonical_bytes(
+pub fn canonical_bytes(
     created: &str,
     trigger: &str,
     label: Option<&str>,
@@ -51,7 +51,7 @@ pub(super) fn canonical_bytes(
 /// collisions *benign*: two devices producing byte-identical events yield the
 /// same filename holding the same content, which is convergence rather than
 /// conflict.
-pub(super) fn mint_id(
+pub fn mint_id(
     created: &str,
     trigger: &str,
     label: Option<&str>,
@@ -59,7 +59,7 @@ pub(super) fn mint_id(
     files: &[FileEntry],
 ) -> Result<String> {
     let stamp = id_stamp(created)?;
-    let digest = crate::fixity::digest(&canonical_bytes(created, trigger, label, parent, files));
+    let digest = prov_fixity::digest(&canonical_bytes(created, trigger, label, parent, files));
     let short = &digest["sha256:".len().."sha256:".len() + 8];
     Ok(match label.map(link::slug) {
         Some(slug) => format!("{stamp}-{slug}-{short}"),
@@ -69,7 +69,7 @@ pub(super) fn mint_id(
 
 /// How many fractional digits a `created` written by this version carries. Fixed,
 /// never trimmed — see [`comparable`].
-pub(super) const FRACTION_DIGITS: usize = 6;
+pub const FRACTION_DIGITS: usize = 6;
 
 /// A `created` value in the form two events can be **ordered** by, whatever
 /// precision each was written at.
@@ -89,7 +89,7 @@ pub(super) const FRACTION_DIGITS: usize = 6;
 /// A stamp not in `…Z` form is returned untouched. prov only ever writes `Z`, and
 /// an offset form is already outside the order a string comparison can give;
 /// mangling it here would only hide that.
-pub(super) fn comparable(created: &str) -> std::borrow::Cow<'_, str> {
+pub fn comparable(created: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
     let Some(rest) = created.strip_suffix('Z') else {
         return Cow::Borrowed(created);
@@ -116,7 +116,7 @@ pub(super) fn comparable(created: &str) -> std::borrow::Cow<'_, str> {
 /// against a normalized `created` ([`comparable`]), where a bare date is a prefix
 /// of every timestamp in its day — which is what makes "before 2026-06-01" mean
 /// "before that day started" without parsing a calendar.
-pub(super) fn check_cutoff(cutoff: &str) -> Result<()> {
+pub fn check_cutoff(cutoff: &str) -> Result<()> {
     let ok = cutoff.len() >= 10
         && cutoff.as_bytes()[4] == b'-'
         && cutoff.as_bytes()[7] == b'-'
@@ -139,7 +139,7 @@ pub(super) fn check_cutoff(cutoff: &str) -> Result<()> {
 /// Reads only the calendar head, so a fractional-second suffix passes through
 /// untouched: event ids stay minute-granular (§4 — they are for humans), and the
 /// eight-hex content digest is what tells two captures in one minute apart.
-pub(super) fn id_stamp(created: &str) -> Result<String> {
+pub fn id_stamp(created: &str) -> Result<String> {
     let bad = || Error::Structure(format!("`{created}` is not an RFC 3339 UTC timestamp"));
     let bytes = created.as_bytes();
     if bytes.len() < 16 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[13] != b':' {
@@ -163,7 +163,7 @@ pub(super) fn id_stamp(created: &str) -> Result<String> {
 
 /// `2026-07-31 09:15` read back out of an event id — the display form of the
 /// stamp `id_stamp` encoded.
-pub(super) fn display_stamp(id: &str) -> String {
+pub fn display_stamp(id: &str) -> String {
     let parts: Vec<&str> = id.splitn(5, '-').collect();
     match parts.as_slice() {
         [y, m, d, hm, ..] if hm.len() == 4 => format!("{y}-{m}-{d} {}:{}", &hm[..2], &hm[2..]),
@@ -175,7 +175,7 @@ pub(super) fn display_stamp(id: &str) -> String {
 /// digest suffix. Lets an index document label its entries without opening every
 /// event, which matters because two captures in the same minute would otherwise
 /// read identically.
-pub(super) fn label_slug(id: &str) -> Option<String> {
+pub fn label_slug(id: &str) -> Option<String> {
     let parts: Vec<&str> = id.split('-').collect();
     let [_, _, _, _, rest @ ..] = parts.as_slice() else {
         return None;
@@ -189,7 +189,7 @@ pub(super) fn label_slug(id: &str) -> Option<String> {
 
 /// How an index document names one event: its timestamp, plus the label slug
 /// when it has one.
-pub(super) fn display_entry(id: &str) -> String {
+pub fn display_entry(id: &str) -> String {
     match label_slug(id) {
         Some(slug) => format!("{} ({slug})", display_stamp(id)),
         None => display_stamp(id),
@@ -198,10 +198,22 @@ pub(super) fn display_entry(id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::super::TRIGGER_MANUAL;
     use super::super::layout::shard_of;
-    use super::super::support::entry;
     use super::*;
+
+    /// Minimal manifest-row fixture — `support::entry` does not follow this
+    /// module across the crate boundary, so each moved test module carries its
+    /// own copy of this one-liner rather than reaching back into `prov`.
+    fn entry(path: &str, hash_of: &[u8]) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(path),
+            id: None,
+            hash: prov_fixity::digest(hash_of),
+        }
+    }
 
     /// The canonical form (§4.1) is a **published contract**: a third party can
     /// mint a conforming event id, which is a stronger property than being able
@@ -267,7 +279,7 @@ mod tests {
         // this crate:
         //
         //   printf 'created\t…\n…' | shasum -a 256 | cut -c1-8
-        let digest = crate::fixity::digest(by_hand.as_bytes());
+        let digest = prov_fixity::digest(by_hand.as_bytes());
         assert_eq!(
             &digest["sha256:".len().."sha256:".len() + 8],
             "21ae2ca1",

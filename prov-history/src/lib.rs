@@ -6,6 +6,42 @@
 
 use std::path::PathBuf;
 
+mod docs;
+mod event_id;
+mod layout;
+mod model;
+mod paths;
+
+pub use docs::*;
+pub use event_id::*;
+pub use layout::*;
+pub use model::*;
+pub use paths::*;
+
+/// The directory the first capture bootstraps the store into, relative to the
+/// workspace root. Only a *default*: the store's real location is whatever the
+/// root's `history` pointer names, and every path below it is derived from that.
+pub const HISTORY_DIR: &str = "history";
+
+/// The subdirectory of the store holding date-sharded event documents.
+pub const EVENTS_DIR: &str = "events";
+
+/// The subdirectory of the store holding content-addressed pre-image bytes.
+/// Deliberately **unreached** — nothing links into it, so §8's orphan check
+/// ignores it exactly as it already ignores `recyclebin/items/`.
+pub const BLOBS_DIR: &str = "blobs";
+
+/// The `trigger` recorded by a capture the user asked for. The only Phase 0
+/// value: prov does not run the sync, so there is no event for it to hook.
+pub const TRIGGER_MANUAL: &str = "manual";
+
+/// The file stem of the store's tombstone list, beside the store index. A
+/// **whole-file** record store (`forgotten.yaml`, `.json`, `.fig`), because it is
+/// a mutable record store prov edits in place — the `MalformedStore` rule the
+/// registry and the bin index live under, and which an immutable event document
+/// deliberately does not.
+pub const FORGOTTEN_STEM: &str = "forgotten";
+
 /// Diagnostics produced by the history store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryIssue {
