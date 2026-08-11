@@ -67,6 +67,32 @@ jobs:
     - run: cargo build -p prov-cli
     - run: ci/check-getting-started.sh
 
+  # Workspace feature unification means `cargo check --workspace` can pass even
+  # when a crate can't compile on its own — some other member's feature
+  # selection quietly fills the gap. These checks build each crate in
+  # isolation (or with a single explicit format feature) to catch that before
+  # it becomes a publish-time surprise.
+  package-isolation:
+    name: Package isolation
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: mlugg/setup-zig@v2
+      with: { version: "0.16.0" }
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo check -p prov-graph
+    - run: cargo check -p prov-identity
+    - run: cargo check -p prov-fixity
+    - run: cargo check -p prov-transaction
+    - run: cargo check -p prov-config
+    - run: cargo check -p prov-history
+    - run: cargo check -p prov-cli
+    - run: cargo check -p prov --no-default-features --features yaml
+    - run: cargo check -p prov --no-default-features --features json
+    - run: cargo check -p prov --no-default-features --features toml
+    - run: cargo check -p prov --no-default-features --features fig-lang
+
   # Build on the crate's declared minimum supported Rust version. A build, not a
   # test run: MSRV is a promise about who can *compile* prov, and the
   # dev-dependencies/test tooling need not hold to it. The version is read from

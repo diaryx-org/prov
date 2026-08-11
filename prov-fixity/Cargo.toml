@@ -16,3 +16,10 @@ prov-graph = { workspace = true, default-features = false }
 
 [dev-dependencies]
 proptest = "1"
+
+[features]
+default = ["yaml"]
+yaml = ["prov-graph/yaml"]
+json = ["prov-graph/json"]
+toml = ["prov-graph/toml"]
+fig-lang = ["prov-graph/fig-lang"]

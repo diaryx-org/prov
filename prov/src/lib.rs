@@ -37,12 +37,17 @@
 
 // At least one embedded-metadata format backend must be compiled in, otherwise
 // prov can neither parse nor serialize any metadata. The format features
-// (`yaml`, `json`, `fig-lang`) forward to the matching `fig` parser — see
-// `Cargo.toml`.
-#[cfg(not(any(feature = "yaml", feature = "json", feature = "fig-lang")))]
+// (`yaml`, `json`, `toml`, `fig-lang`) forward to the matching `fig` parser —
+// see `Cargo.toml`.
+#[cfg(not(any(
+    feature = "yaml",
+    feature = "json",
+    feature = "toml",
+    feature = "fig-lang"
+)))]
 compile_error!(
     "prov needs at least one metadata-format feature enabled: \
-     `yaml` (the default), `json`, or `fig-lang`. \
+     `yaml` (the default), `json`, `toml`, or `fig-lang`. \
      You have disabled the default feature without selecting a replacement."
 );
 

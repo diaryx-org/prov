@@ -14,3 +14,26 @@ prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = fal
 prov-transaction = { path = "../prov-transaction", version = "0.4.0", default-features = false }
 prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
 prov-config = { path = "../prov-config", version = "0.4.0", default-features = false }
+
+[features]
+default = ["yaml"]
+yaml = [
+    "prov-graph/yaml",
+    "prov-config/yaml",
+    "prov-transaction/yaml",
+]
+json = [
+    "prov-graph/json",
+    "prov-config/json",
+    "prov-transaction/json",
+]
+toml = [
+    "prov-graph/toml",
+    "prov-config/toml",
+    "prov-transaction/toml",
+]
+fig-lang = [
+    "prov-graph/fig-lang",
+    "prov-config/fig-lang",
+    "prov-transaction/fig-lang",
+]

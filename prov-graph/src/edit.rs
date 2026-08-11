@@ -25,7 +25,14 @@ fn default_embed_type() -> EmbedType {
     return EmbedType::FrontmatterYaml;
     #[cfg(all(not(feature = "yaml"), feature = "json"))]
     return EmbedType::FrontmatterJson;
-    #[cfg(all(not(feature = "yaml"), not(feature = "json"), feature = "fig-lang"))]
+    #[cfg(all(not(feature = "yaml"), not(feature = "json"), feature = "toml"))]
+    return EmbedType::PlusToml;
+    #[cfg(all(
+        not(feature = "yaml"),
+        not(feature = "json"),
+        not(feature = "toml"),
+        feature = "fig-lang"
+    ))]
     return EmbedType::FrontmatterFig;
 }
 

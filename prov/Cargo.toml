@@ -34,7 +34,7 @@ prov-transaction = { path = "../prov-transaction", version = "0.4.0", default-fe
 
 # History bounded context. `prov` retains forwarding methods for API
 # compatibility; history itself never depends back on this crate.
-prov-history = { path = "../prov-history", version = "0.4.0" }
+prov-history = { path = "../prov-history", version = "0.4.0", default-features = false }
 
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs
 # runs `zig build`). The value tree is prov's common currency. Which format
@@ -73,9 +73,9 @@ default = ["yaml"]
 # format off, its Zig parser is left out of `libfig.a` *and* prov stops
 # recognizing that format (see `whole_file_format`). At least one must be on —
 # `lib.rs` enforces this with a `compile_error!`.
-yaml = ["fig/yaml", "prov-config/yaml", "prov-graph/yaml", "prov-identity/yaml", "prov-transaction/yaml"]
-json = ["fig/json", "prov-config/json", "prov-graph/json", "prov-identity/json", "prov-transaction/json"]
-toml = ["fig/toml", "prov-config/toml", "prov-graph/toml", "prov-identity/toml", "prov-transaction/toml"]
+yaml = ["fig/yaml", "prov-config/yaml", "prov-graph/yaml", "prov-history/yaml", "prov-identity/yaml", "prov-transaction/yaml"]
+json = ["fig/json", "prov-config/json", "prov-graph/json", "prov-history/json", "prov-identity/json", "prov-transaction/json"]
+toml = ["fig/toml", "prov-config/toml", "prov-graph/toml", "prov-history/toml", "prov-identity/toml", "prov-transaction/toml"]
 # `fig` is the dependency name, so the native-dialect feature is spelled
 # `fig-lang` (a feature and a dependency may not share a name unambiguously).
-fig-lang = ["fig/fig", "prov-config/fig-lang", "prov-graph/fig-lang", "prov-identity/fig-lang", "prov-transaction/fig-lang"]
+fig-lang = ["fig/fig", "prov-config/fig-lang", "prov-graph/fig-lang", "prov-history/fig-lang", "prov-identity/fig-lang", "prov-transaction/fig-lang"]

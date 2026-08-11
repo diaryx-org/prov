@@ -45,11 +45,16 @@
 
 // At least one embedded-metadata format backend must be compiled in, otherwise
 // nothing here can parse a document at all. The format features (`yaml`,
-// `json`, `fig-lang`) forward to the matching `fig` parser.
-#[cfg(not(any(feature = "yaml", feature = "json", feature = "fig-lang")))]
+// `json`, `toml`, `fig-lang`) forward to the matching `fig` parser.
+#[cfg(not(any(
+    feature = "yaml",
+    feature = "json",
+    feature = "toml",
+    feature = "fig-lang"
+)))]
 compile_error!(
     "prov-graph needs at least one metadata-format feature enabled: \
-     `yaml` (the default), `json`, or `fig-lang`. \
+     `yaml` (the default), `json`, `toml`, or `fig-lang`. \
      You have disabled the default feature without selecting a replacement."
 );
 
