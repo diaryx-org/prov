@@ -229,6 +229,12 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     pub fn history_store(&self) -> crate::history::HistoryStore<&Self> {
         crate::history::HistoryStore::new(self)
     }
+
+    /// The history service over a *mutable* borrow — what the four mutating
+    /// verbs need, since landing a change set is a mutation of the workspace.
+    pub fn history_store_mut(&mut self) -> crate::history::HistoryStore<&mut Self> {
+        crate::history::HistoryStore::new(self)
+    }
 }
 
 impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryReadHost for Workspace<FS, Id, Ix> {
@@ -251,8 +257,56 @@ impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryReadHost for Workspac
         self.history().captures()
     }
 
+    fn history_relation(&self) -> Option<&str> {
+        self.relations().history_relation()
+    }
+
     async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
         self.history_path(root_doc).await
+    }
+
+    async fn reachable_files(&self, root_doc: &Path) -> Result<BTreeSet<PathBuf>> {
+        self.reachable_files(root_doc).await
+    }
+
+    async fn history_exclusions(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
+        // The two the store cannot know about: where the bin parks the bytes a
+        // user has already consigned, and which page prov derives rather than the
+        // author writing. Both are prefixes; a file names only itself.
+        let mut excluded = Vec::new();
+        if let Some(index) = self.recycle_bin_path(root_doc).await? {
+            excluded.push(crate::history::store_dir(&index).join("items"));
+        }
+        if let Some(about) = self.about_path(root_doc).await? {
+            excluded.push(about);
+        }
+        Ok(excluded)
+    }
+
+    fn registration_conflict(
+        &self,
+        id: &prov_graph::identity::Id,
+        path: &Path,
+    ) -> Option<Collision> {
+        self.registration_conflict(id, path)
+    }
+}
+
+impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryWriteHost for Workspace<FS, Id, Ix> {
+    fn change(&mut self) -> ChangeSet {
+        self.change()
+    }
+
+    async fn commit(&mut self, cs: ChangeSet) -> Result<()> {
+        self.commit(cs).await
+    }
+
+    fn fixity_cached(&self, path: &Path, meta: &Metadata) -> Option<String> {
+        self.fixity_cached(path, meta)
+    }
+
+    fn fixity_remember(&self, path: &Path, meta: &Metadata, hash: &str) {
+        self.fixity_remember(path, meta, hash)
     }
 }
 

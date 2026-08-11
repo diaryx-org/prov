@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::workspace::Workspace;
@@ -6,34 +5,14 @@ use prov_graph::error::Result;
 use prov_graph::fs::Storage;
 use prov_graph::index::IndexStore;
 
-use prov_history::*;
+use prov_history::HistoryIssue;
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Validate the history store: every index document against the directory it
-    /// describes, emitting one [`HistoryIssue::IndexStale`] per index that has
-    /// drifted. See `prov_history::HistoryStore::findings`.
+    /// describes, plus the blob mark-and-sweep. See
+    /// `prov_history::HistoryStore::findings`.
     pub async fn history_findings(&self, root_doc: &Path) -> Result<Vec<HistoryIssue>> {
         self.history_store().findings(root_doc).await
-    }
-
-    /// The months under `year_dir` that actually hold an event. See
-    /// `prov_history::HistoryStore::event_months`.
-    pub(super) async fn event_months(
-        &self,
-        year_dir: &Path,
-        ext: &str,
-    ) -> Result<BTreeSet<String>> {
-        self.history_store().event_months(year_dir, ext).await
-    }
-
-    /// The years under the store's `events/` that hold at least one month that
-    /// holds at least one event. See `prov_history::HistoryStore::event_years`.
-    pub(super) async fn event_years(
-        &self,
-        events_root: &Path,
-        ext: &str,
-    ) -> Result<BTreeSet<String>> {
-        self.history_store().event_years(events_root, ext).await
     }
 }
 
@@ -41,12 +20,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use std::path::PathBuf;
 
-    use prov_history::Captured;
-
     use super::super::support::*;
     use super::*;
     use crate::validate::Finding;
     use prov_graph::exec::block_on;
+    use prov_history::*;
 
     /// A shard index is titled `"{Month} {Year}"`, which in a journal is an
     /// entirely ordinary thing for a person to have called a note. Before the

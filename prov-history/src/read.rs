@@ -9,6 +9,7 @@ use super::docs::Authoring;
 use super::event_id::comparable;
 use super::layout::{StoreLocation, blob_path, event_path, id_stamp_of, store_dir};
 use super::model::{Event, Latest, Presence, Subject, Summary, Version};
+use super::paths::{path_sort_key, under};
 use super::{EVENTS_DIR, HISTORY_DIR, HistoryReadHost, HistoryStore};
 
 impl<H: HistoryReadHost> HistoryStore<H> {
@@ -85,6 +86,65 @@ impl<H: HistoryReadHost> HistoryStore<H> {
             false => StoreLocation::Absent,
         };
         Ok((conventional, found))
+    }
+
+    /// The **capture set**: the live graph, minus prov's two byte-parking stores
+    /// and its one derived page.
+    ///
+    /// [`reachable_files`](HistoryReadHost::reachable_files) — §8's bounded walk,
+    /// the same population `check` validates — with **three** exclusions, each
+    /// load-bearing:
+    ///
+    /// - **The store itself.** It is reachable off the root, so a naive "capture
+    ///   everything reachable" would capture the store inside the store: no
+    ///   capture could ever be empty, and an exact restore of an old event would
+    ///   delete every event newer than it, destroying the recovery points
+    ///   themselves. The store is the one subtree the mechanism is deliberately
+    ///   blind to, and the one exclusion history applies for itself.
+    /// - **The recycle bin's `items/`.** Already unreached, and excluded even so,
+    ///   on purpose: bytes the user has consigned to the bin should not be
+    ///   *newly* retained by a routine capture.
+    /// - **The generated about page.** It is *derived* — a pure function of the
+    ///   configuration, which this same manifest captures — so parking its bytes
+    ///   stores nothing that cannot be reproduced, and a new blob would be parked
+    ///   on every config change for no recovery value. Restoring an event
+    ///   restores the config that determines the page, and `check` reports the
+    ///   page as stale until it is rewritten from that config, which is the same
+    ///   repair by a shorter route. Excluding it also removes an ordering hazard:
+    ///   the first capture *bootstraps* the store, which changes what the page
+    ///   says about this workspace, so a captured page would be one the capture
+    ///   itself invalidated.
+    ///
+    /// The last two are the host's to name
+    /// ([`history_exclusions`](HistoryReadHost::history_exclusions)) — where the
+    /// bin parks and which page is derived are facts about the workspace, not
+    /// about the store.
+    ///
+    /// Everything else structural stays in — the registry, the config document,
+    /// and the recycle bin's *index*. Capturing the bin index keeps the common
+    /// case correct: a document live at capture time comes back live, and the bin
+    /// index reverts to a state that does not list it.
+    ///
+    /// Returned in **manifest order** — [`path_sort_key`], byte-wise ascending on
+    /// the joined path string (§3.1) — not the component-wise order a
+    /// `BTreeSet<PathBuf>` iterates in. The two agree almost everywhere and
+    /// disagree exactly where a file and a same-named directory are siblings
+    /// (`notes.md` next to `notes/`), which is precisely the case a real
+    /// workspace produces and a `Path`-ordered manifest would get wrong.
+    pub async fn capture_set(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
+        let (store_index, _) = self.store_index(root_doc).await?;
+        let store = store_dir(&store_index);
+        let excluded = self.host().history_exclusions(root_doc).await?;
+        let mut files: Vec<PathBuf> = self
+            .host()
+            .reachable_files(root_doc)
+            .await?
+            .into_iter()
+            .filter(|p| !under(p, &store))
+            .filter(|p| !excluded.iter().any(|dir| under(p, dir)))
+            .collect();
+        files.sort_by_key(|p| path_sort_key(p));
+        Ok(files)
     }
 
     /// What the store holds, without reading the history in it — the cheap

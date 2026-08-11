@@ -97,8 +97,6 @@ pub use about::AboutContext;
 /// Transaction primitives, retained at their original paths for compatibility.
 pub mod change {
     pub use prov_transaction::change::{ChangeSet, FileOp};
-
-    pub(crate) use prov_transaction::change::{discard_file, write_blob_atomic, write_probe};
 }
 /// Journal recovery, retained at its original path for compatibility.
 pub mod journal {

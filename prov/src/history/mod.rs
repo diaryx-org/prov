@@ -56,29 +56,27 @@
 //!
 //! ## Where the code lives
 //!
-//! The module is split by *what a reader is after*, not by type:
+//! **The feature itself is [`prov_history`]** — the model, the store's layout,
+//! and every verb. It reaches this workspace through two host traits
+//! (`HistoryReadHost`, `HistoryWriteHost`), which [`Workspace`](crate::Workspace)
+//! implements; nothing in that crate names `prov`.
 //!
-//! - `prov_history::model` — the vocabulary every operation is spelled in: an
-//!   [`Event`] and its manifest rows, and the outcome of each verb.
-//! - `prov_history::layout` — the store's shape on disk: id ⇄ shard, hash →
-//!   blob.
-//! - `prov_history::event_id` — the canonical form an event's id is a digest
-//!   of, and the timestamp arithmetic that keeps ids orderable across
-//!   precisions.
-//! - `prov_history::paths` — the path and manifest helpers the canonical form
-//!   is built from.
-//! - `prov_history::docs` — the store's own documents: parsing an event's
-//!   frontmatter, and rendering the rebuildable index and tombstone caches.
-//! - `read`, `capture`, `restore`, `prune`, `forget`, `check` — one module per
-//!   verb, each an `impl Workspace` block, still hosted here pending a later
-//!   extraction phase.
-//! - `store` — the plumbing those verbs share: staging an index write, the
-//!   root's `history` pointer, walking shards.
+//! What is left here is the integration:
 //!
-//! Tests sit in each file's own `mod tests`, as elsewhere in the crate. The
-//! fixtures they share — a seeded workspace, a capture, a torn event — are in
-//! `support`, which no sibling could own without every other one reaching
-//! across for it.
+//! - the [`Workspace`](crate::Workspace) methods below, each a one-line forward
+//!   through [`history_store`](crate::Workspace::history_store) (or
+//!   `history_store_mut`), kept so existing call sites are unchanged;
+//! - `HistoryIssue` → [`Finding`](crate::validate::Finding), and the remedies
+//!   in [`crate::remedy`];
+//! - the composition with the recycle bin, the generated about page and the
+//!   configuration, which is what the host traits' `history_exclusions`,
+//!   `history_captures` and `registration_conflict` carry across the boundary.
+//!
+//! The tests stay here too, and deliberately: they are integration tests over a
+//! real workspace — they run `check`, apply a [`Fix`](crate::Fix), warm a
+//! [`FixityCache`](crate::FixityCache), recycle a document — so they exercise
+//! the moved logic through exactly the composition it has to survive. The
+//! fixtures they share are in `support`.
 
 mod capture;
 mod check;
