@@ -9,66 +9,29 @@ use prov_graph::link;
 
 use prov_history::*;
 
-use super::{EVENTS_DIR, FORGOTTEN_STEM};
+use super::EVENTS_DIR;
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
-    /// Where the store's tombstone list lives, and whether it is there.
-    ///
-    /// Located by **stem**, not by the workspace's current metadata format: a
-    /// workspace that switched formats after a forget must not lose track of what
-    /// it destroyed, and a record of destruction is the last thing that should go
-    /// quiet because a setting changed.
+    /// Where the store's tombstone list lives, and whether it is there. See
+    /// `prov_history::HistoryStore::forgotten_path`.
     async fn history_forgotten_path(&self, store_index: &Path) -> Result<(PathBuf, bool)> {
-        let dir = store_dir(store_index);
-        if let Ok(entries) = self.listing(&dir).await {
-            for entry in entries {
-                let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                if entry.file_type().is_file()
-                    && Path::new(name).file_stem().and_then(|s| s.to_str()) == Some(FORGOTTEN_STEM)
-                {
-                    return Ok((dir.join(name), true));
-                }
-            }
-        }
-        let ext = prov_graph::document::whole_file_extension(self.default_embed_format());
-        Ok((dir.join(format!("{FORGOTTEN_STEM}.{ext}")), false))
+        self.history_store().forgotten_path(store_index).await
     }
 
     /// The tombstone list's path when the store has one — what a store index has
-    /// to link so the record of what was destroyed is not itself an orphan.
+    /// to link so the record of what was destroyed is not itself an orphan. See
+    /// `prov_history::HistoryStore::forgotten_link`.
     pub(super) async fn history_forgotten_link(
         &self,
         store_index: &Path,
     ) -> Result<Option<PathBuf>> {
-        let (path, present) = self.history_forgotten_path(store_index).await?;
-        Ok(present.then_some(path))
+        self.history_store().forgotten_link(store_index).await
     }
 
-    /// The hashes this store has deliberately destroyed.
-    ///
-    /// The tombstone is what turns "these bytes are missing" into "these bytes are
-    /// accounted for": [`Finding::HistoryBlobMissing`](crate::validate::Finding::HistoryBlobMissing) skips a hash on this list,
-    /// and the read verbs label its rows *forgotten* rather than lost. Events stay
-    /// immutable — nothing rewrites a manifest — so the record of **what was
-    /// captured** survives the destruction of the bytes, which is the honest
-    /// bargain and has to be stated as one.
-    ///
-    /// Empty when there is no store, or nothing has been forgotten.
+    /// The hashes this store has deliberately destroyed. See
+    /// `prov_history::HistoryStore::forgotten`.
     pub async fn history_forgotten(&self, root_doc: &Path) -> Result<BTreeSet<String>> {
-        let (store_index, found) = self.history_store_index(root_doc).await?;
-        if !found.exists() {
-            return Ok(BTreeSet::new());
-        }
-        let (path, present) = self.history_forgotten_path(&store_index).await?;
-        if !present {
-            return Ok(BTreeSet::new());
-        }
-        let Ok((_, doc)) = self.load(&path).await else {
-            return Ok(BTreeSet::new());
-        };
-        Ok(forgotten_hashes(&doc.meta))
+        self.history_store().forgotten(root_doc).await
     }
 
     /// Destroy the captured bytes of one document, and record that it was

@@ -229,7 +229,34 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     pub fn history_store(&self) -> crate::history::HistoryStore<&Self> {
         crate::history::HistoryStore::new(self)
     }
+}
 
+impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryReadHost for Workspace<FS, Id, Ix> {
+    type Fs = FS;
+    type Ix = Ix;
+
+    fn graph(&self) -> &Graph<Self::Fs, Self::Ix> {
+        self.graph()
+    }
+
+    fn embed_style(&self) -> EmbedStyle {
+        self.embed_style()
+    }
+
+    fn default_embed_format(&self) -> fig::Format {
+        self.default_embed_format()
+    }
+
+    fn history_captures(&self) -> bool {
+        self.history().captures()
+    }
+
+    async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        self.history_path(root_doc).await
+    }
+}
+
+impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The read core this workspace traverses through.
     ///
     /// Hand this to anything that only needs to *see* the workspace: it can

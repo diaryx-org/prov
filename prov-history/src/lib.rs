@@ -4,19 +4,81 @@
 //! verbs are being moved here in compatible slices; `prov` currently supplies
 //! the forwarding surface while this crate stays independent of `prov`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use prov_graph::document::EmbedStyle;
+use prov_graph::error::Result;
+use prov_graph::fs::ReadStorage;
+use prov_graph::graph::Graph;
+use prov_graph::index::IndexStore;
+
+mod check;
 mod docs;
 mod event_id;
+mod forget;
 mod layout;
 mod model;
 mod paths;
+mod prune;
+mod read;
+mod store;
 
 pub use docs::*;
 pub use event_id::*;
 pub use layout::*;
 pub use model::*;
 pub use paths::*;
+pub use read::describe_unreadable;
+
+/// Read capabilities a host must supply for `HistoryStore`'s read-side verbs.
+///
+/// Deliberately narrow: "capabilities, not mirrored methods". Everything a
+/// moved verb needs beyond these four is reached through
+/// [`graph`](Self::graph) — `load`, `exists`, `read_bytes`, `listing`, `stat` —
+/// rather than being re-declared here one by one.
+pub trait HistoryReadHost {
+    /// The filesystem backend the host's [`Graph`] reads through.
+    type Fs: ReadStorage;
+    /// The index store the host's [`Graph`] resolves ids through.
+    type Ix: IndexStore;
+
+    /// The read core: document loads, raw existence/listing/stat probes.
+    fn graph(&self) -> &Graph<Self::Fs, Self::Ix>;
+
+    /// How this workspace embeds metadata (family) and which format it defaults to.
+    fn embed_style(&self) -> EmbedStyle;
+    /// The metadata format a new document gets when it inherits no parent block.
+    fn default_embed_format(&self) -> fig::Format;
+
+    /// Whether this workspace's `history` axis is on at all (gates `StoreUnlinked`).
+    fn history_captures(&self) -> bool;
+
+    /// The history-store index document this root declares via its pointer
+    /// relation, if any. `None` when there is no relation configured or the
+    /// root declares none.
+    fn history_path(&self, root_doc: &Path) -> impl Future<Output = Result<Option<PathBuf>>>;
+}
+
+impl<T: HistoryReadHost + ?Sized> HistoryReadHost for &T {
+    type Fs = T::Fs;
+    type Ix = T::Ix;
+
+    fn graph(&self) -> &Graph<Self::Fs, Self::Ix> {
+        (**self).graph()
+    }
+    fn embed_style(&self) -> EmbedStyle {
+        (**self).embed_style()
+    }
+    fn default_embed_format(&self) -> fig::Format {
+        (**self).default_embed_format()
+    }
+    fn history_captures(&self) -> bool {
+        (**self).history_captures()
+    }
+    async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        (**self).history_path(root_doc).await
+    }
+}
 
 /// The directory the first capture bootstraps the store into, relative to the
 /// workspace root. Only a *default*: the store's real location is whatever the

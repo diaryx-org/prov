@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::workspace::Workspace;
-use prov_graph::error::{Error, Result};
+use prov_graph::error::Result;
 use prov_graph::fs::Storage;
 use prov_graph::index::IndexStore;
 use prov_graph::link;
@@ -40,70 +40,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         root_doc: &Path,
         retention: &Retention,
     ) -> Result<Pruned> {
-        let root_doc = link::normalize(root_doc);
-        let (store_index, found) = self.history_store_index(&root_doc).await?;
-        if !found.exists() {
-            return Ok(Pruned::default());
-        }
-        let (events, unreadable) = self
-            .history_events_in(&store_index, self.history_ext(&root_doc))
-            .await?;
-        if !unreadable.is_empty() {
-            return Err(Error::Structure(format!(
-                "history-prune refuses: {} event document(s) could not be read, so the \
-                 blobs they might reference cannot be told apart from orphans: {}. Repair \
-                 or restore them (or let the transport finish syncing) before pruning.",
-                unreadable.len(),
-                Self::describe_unreadable(&unreadable)
-            )));
-        }
-
-        // Events arrive oldest first, so both axes cut a prefix — but `Before`
-        // states its own predicate rather than trusting that, since a store that
-        // mixes timestamp precisions is exactly where an assumed sort order goes
-        // wrong quietly.
-        let (dropped, kept): (Vec<&Event>, Vec<&Event>) = match retention {
-            Retention::Keep(n) => {
-                let cut = events.len().saturating_sub(*n);
-                (
-                    events[..cut].iter().collect(),
-                    events[cut..].iter().collect(),
-                )
-            }
-            Retention::Before(cutoff) => {
-                check_cutoff(cutoff)?;
-                events
-                    .iter()
-                    .partition(|event| comparable(&event.created) < comparable(cutoff))
-            }
-        };
-
-        let referenced: BTreeSet<PathBuf> = kept
-            .iter()
-            .flat_map(|event| event.files.iter())
-            .filter_map(|file| blob_path(&store_index, &file.hash).ok())
-            .collect();
-        let mut blobs = Vec::new();
-        let mut bytes = 0u64;
-        for blob in self.history_blob_files(&store_index).await? {
-            if referenced.contains(&blob) {
-                continue;
-            }
-            // A size that cannot be read is not worth failing a prune over; the
-            // total is a report, not a decision.
-            bytes += match self.stat(&blob).await {
-                Ok(meta) => meta.len(),
-                Err(_) => 0,
-            };
-            blobs.push(blob);
-        }
-
-        Ok(Pruned {
-            events: dropped.iter().map(|event| event.id.clone()).collect(),
-            blobs,
-            bytes,
-            keeping: kept.len(),
-        })
+        self.history_store().prune_plan(root_doc, retention).await
     }
 
     /// Execute a [`Pruned`] plan: drop the events, rebuild the indexes the drop
@@ -212,6 +149,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
+    use std::path::PathBuf;
+
     use super::super::support::*;
     use super::*;
     use crate::validate::Finding;
