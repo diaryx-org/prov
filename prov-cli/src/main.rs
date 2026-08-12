@@ -901,8 +901,16 @@ fn cmd_views(name: Option<&str>) -> CmdResult {
                 Some(grain) => format!(" by {}", grain.as_config_str()),
                 None => String::new(),
             };
+            // The condition is flagged, not rendered: a nested `where:` does
+            // not fit a listing line, and what a reader needs from a list is
+            // that this view does not show everything it reaches.
+            let filtered = if view.filter.is_some() {
+                " [filtered]"
+            } else {
+                ""
+            };
             println!(
-                "{}  {} — group: {}{by}{scope}",
+                "{}  {} — group: {}{by}{scope}{filtered}",
                 view.name,
                 view.display_label(),
                 view.group.keys.join(" → "),
@@ -925,7 +933,8 @@ fn cmd_views(name: Option<&str>) -> CmdResult {
     };
 
     let ws = workspace(&ctx)?;
-    let rows = block_on(prov::views::execute(ws.graph(), view, &ctx.root_doc))?;
+    let selection = block_on(prov::views::select(ws.graph(), view, &ctx.root_doc))?;
+    let rows = prov::views::group(&selection, &view.group);
     for group in &rows.groups {
         println!("{} ({})", group.key, group.rows.len());
         for row in &group.rows {
@@ -941,15 +950,20 @@ fn cmd_views(name: Option<&str>) -> CmdResult {
             print_view_row(row);
         }
     }
-    if rows.is_empty() {
-        println!("no documents in scope");
+    // The document count, not the row count: a document under two of a
+    // multi-valued field's groups is one document in two places, and a total
+    // that counted it twice would claim the view covers more than the
+    // workspace holds.
+    match selection.len() {
+        0 => println!("no documents in scope"),
+        n => println!("\n{n} document(s), {} row(s)", rows.placements()),
     }
     Ok(ExitCode::SUCCESS)
 }
 
 /// One row of a view: `  path — title`.
 fn print_view_row(row: &prov::views::Row) {
-    match &row.title {
+    match row.title() {
         Some(title) => println!("  {} — {title}", row.path.display()),
         None => println!("  {}", row.path.display()),
     }

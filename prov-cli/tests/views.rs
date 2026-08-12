@@ -126,6 +126,73 @@ fn an_unscoped_view_covers_everything_and_repeats_multi_valued_rows() {
     );
 }
 
+/// The count a reader is given is **documents**, not rows. `letter.md` is under
+/// both `Ada` and `Grace`; a total that counted it twice would have the view
+/// claiming more entries than the workspace holds.
+#[test]
+fn the_summary_counts_documents_separately_from_rows() {
+    let dir = vault("counts", "[Daily](daily.md)");
+    let (ok, out) = run(&dir, &["views", "who"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("6 document(s), 7 row(s)"), "{out}");
+}
+
+/// `where:` narrows what scope reached — and a condition matching nothing is an
+/// ordinary empty answer, not the error a broken anchor is.
+#[test]
+fn a_where_condition_narrows_a_view() {
+    let dir = vault("filter", "[Daily](daily.md)");
+    let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
+    std::fs::write(
+        dir.join("index.md"),
+        text.replace(
+            "      by: month\n",
+            "      by: month\n      where:\n        not:\n          has: draft\n",
+        ),
+    )
+    .unwrap();
+    // Mark one entry a draft; it should leave the view without leaving the vault.
+    let entry = dir.join("daily/07-24.md");
+    let marked = std::fs::read_to_string(&entry)
+        .unwrap()
+        .replace("date_of_document:", "draft: true\ndate_of_document:");
+    std::fs::write(&entry, marked).unwrap();
+
+    let (ok, out) = run(&dir, &["views", "daily"]);
+    assert!(ok, "{out}");
+    assert!(
+        !out.contains("07-24.md"),
+        "the draft is filtered out: {out}"
+    );
+    assert!(out.contains("2026-08 (1)"), "{out}");
+
+    // The listing flags that this view no longer shows everything it reaches.
+    let (_, out) = run(&dir, &["views"]);
+    assert!(out.contains("[filtered]"), "{out}");
+}
+
+/// A `where:` nobody can read is a config finding, not a silent "select
+/// everything" or "select nothing".
+#[test]
+fn an_unreadable_where_is_reported_by_check() {
+    let dir = vault("badwhere", "[Daily](daily.md)");
+    let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
+    std::fs::write(
+        dir.join("index.md"),
+        text.replace(
+            "      by: month\n",
+            "      by: month\n      where: audience == public\n",
+        ),
+    )
+    .unwrap();
+
+    let (_, out) = run(&dir, &["check"]);
+    assert!(
+        out.contains("views.daily.where") && out.contains("has, equals"),
+        "{out}"
+    );
+}
+
 /// An anchor that names nothing must not read as an archive with nothing in it.
 #[test]
 fn a_dead_anchor_fails_loudly_rather_than_printing_an_empty_view() {

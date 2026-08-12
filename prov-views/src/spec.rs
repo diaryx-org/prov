@@ -6,12 +6,13 @@
 //! it files things by `people`, so a frontend groups by `people`. That covers a
 //! lens whose groups *are* one field's values, over the whole corpus.
 //!
-//! It cannot express the three things a real archive needs. **Scope**: a lens
+//! It cannot express the four things a real archive needs. **Scope**: a lens
 //! over every file in the workspace buries the entries among the notes, drafts
 //! and READMEs that happen to carry the same field. **Grain**: "by year" is a
 //! rule about how a value becomes a group, and a field declaration has nowhere
 //! to put it. **Fallback**: the value worth grouping on is often the first of
-//! several fields that is filled in.
+//! several fields that is filled in. **Conditions**: not everything in scope
+//! belongs in every lens (see [`crate::filter`]).
 //!
 //! So a view is its own declaration:
 //!
@@ -23,6 +24,8 @@
 //!     group: [date_of_document, created, updated]
 //!     by: month
 //!     under: '[Daily](/Daily/daily_index.md)'
+//!     where:
+//!       not: { has: draft }
 //!     nest: month
 //! ```
 //!
@@ -77,18 +80,20 @@
 //! for all descendants". §201.2.4 then allows a class applied directly to a
 //! child to break that chain, which is what keeps aggregations from having to
 //! be homogeneous. That override is a document-level concern and is not part of
-//! this struct; the scope walk in [`crate::exec`] is the inheritance half.
+//! this struct; the scope walk in [`crate::select`] is the inheritance half.
 //!
 //! [MoReq2010]: https://moreq.info/files/moreq2010_vol1_v1_1_en.pdf
 
 use prov_graph::meta::{Mapping, Value};
+
+use crate::filter::Condition;
 
 /// The config block views are declared in — a top-level axis, so every prov
 /// tool reads the same views rather than each app namespacing its own.
 pub const VIEWS_KEY: &str = "views";
 
 /// The keys valid inside one `views.<name>` entry.
-pub const VIEW_KEYS: &[&str] = &["label", "icon", "group", "by", "under", "nest"];
+pub const VIEW_KEYS: &[&str] = &["label", "icon", "group", "by", "under", "nest", "where"];
 
 /// How finely a value is cut into groups.
 ///
@@ -268,7 +273,7 @@ impl Grouping {
 /// rendered rather than skipped — a `rating: 5` groups under `5`. A mapping has
 /// no single text and is not groupable; a nested sequence is not flattened,
 /// because a list of lists is a shape no frontmatter field means to declare.
-fn scalar_texts(value: &Value) -> Vec<String> {
+pub(crate) fn scalar_texts(value: &Value) -> Vec<String> {
     match value {
         Value::Sequence(items) => items.iter().filter_map(scalar_text).collect(),
         other => scalar_text(other).into_iter().collect(),
@@ -305,6 +310,16 @@ pub struct ViewSpec {
     /// (`'[Daily](id:abc1234)'`). `None` scopes the view to the whole
     /// workspace.
     pub under: Option<String>,
+    /// The `where:` conditions a document in scope must also meet. `None`
+    /// takes everything scope reaches.
+    ///
+    /// Named `filter` because `where` is a Rust keyword; the config spelling is
+    /// `where`, which is what a reader of the format sees.
+    ///
+    /// Separate from [`under`](Self::under) because the two fail differently:
+    /// an anchor that names nothing is a broken view, while a condition that
+    /// matches nothing is an ordinary empty answer.
+    pub filter: Option<Condition>,
     /// Materialization: when set, filing a new record through this view nests
     /// it under an index at this grain below [`under`](Self::under), creating
     /// the index if the calendar has turned. `None` files flat.
@@ -336,6 +351,7 @@ impl ViewSpec {
                     .and_then(Grain::from_config_str),
             },
             under: non_empty(map.get("under")),
+            filter: map.get("where").and_then(Condition::parse),
             nest: map
                 .get("nest")
                 .and_then(Value::as_str)
@@ -360,6 +376,9 @@ impl ViewSpec {
         }
         if let Some(under) = &self.under {
             map.insert("under".into(), Value::String(under.clone()));
+        }
+        if let Some(filter) = &self.filter {
+            map.insert("where".into(), filter.to_value());
         }
         if let Some(nest) = self.nest {
             map.insert("nest".into(), Value::String(nest.as_config_str().into()));
@@ -605,6 +624,7 @@ mod tests {
                 icon: Some("calendar".into()),
                 group,
                 under: Some("[Daily](id:abc1234)".into()),
+                filter: Some(Condition::Not(Box::new(Condition::Has("draft".into())))),
                 nest: Some(Grain::Year),
             };
             let back =
@@ -622,6 +642,7 @@ mod tests {
             icon: None,
             group: Grouping::field("people"),
             under: None,
+            filter: None,
             nest: None,
         };
         assert_eq!(

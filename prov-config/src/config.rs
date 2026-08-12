@@ -1525,6 +1525,15 @@ fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
                         expected: expected(),
                     },
                 }),
+                ViewIssueKind::NoCondition => issues.push(ConfigIssue {
+                    key: dotted,
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: spec
+                            .get("where")
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        expected: expected(),
+                    },
+                }),
                 // Unlike a stray *top-level* key — which may be a user-owned
                 // field prov never reads (DESIGN §2) — a stray key inside a
                 // `views.<name>` entry is inside a block prov defines
@@ -1876,6 +1885,10 @@ mod tests {
                         by: Some(prov_views::Grain::Month),
                     },
                     under: Some("[Daily](id:abc1234)".to_string()),
+                    // A condition too, so the round trip covers `where:`.
+                    filter: Some(prov_views::Condition::Not(Box::new(
+                        prov_views::Condition::Has("draft".to_string()),
+                    ))),
                     nest: Some(prov_views::Grain::Year),
                 },
                 // …and the minimal one, which must not gain keys on the way
@@ -1886,6 +1899,7 @@ mod tests {
                     icon: None,
                     group: prov_views::Grouping::field("people"),
                     under: None,
+                    filter: None,
                     nest: None,
                 },
             ],

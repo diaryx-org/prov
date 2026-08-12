@@ -138,8 +138,9 @@ pub use config::{
     metadata_format_str, spec_ahead,
 };
 pub use discovery::{Discovered, Discovery, discover};
-/// Declarative views over the workspace — the `views:` config axis, and the
-/// traversal that executes one into a grouped row set.
+/// Declarative views over the workspace — the `views:` config axis, the
+/// traversal that selects the documents one covers, and the pure grouping over
+/// what it selected.
 ///
 /// Re-exported at prov's own path so a consumer that already depends on prov
 /// need not add a second crate to read the views its config carries, and so the
@@ -148,8 +149,9 @@ pub use discovery::{Discovered, Discovery, discover};
 /// `prov-views` directly instead: it reaches nothing that can write.
 pub mod views {
     pub use prov_views::{
-        Error, Grain, Group, Grouping, Row, RowSet, VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind,
-        ViewSpec, diagnose_view, diagnose_views, execute, views_from,
+        CONDITION_KEYS, Condition, Error, Grain, Group, Grouping, Row, RowSet, Selection,
+        VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind, ViewSpec, diagnose_view, diagnose_views,
+        group, select, views_from,
     };
 }
 /// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,

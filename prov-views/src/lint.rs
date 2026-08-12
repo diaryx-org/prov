@@ -19,6 +19,7 @@
 
 use prov_graph::meta::Value;
 
+use crate::filter::{CONDITION_KEYS, Condition};
 use crate::spec::{GRAINS, Grain, VIEW_KEYS, ViewSpec};
 
 /// Something wrong with one `views.<name>` entry.
@@ -48,6 +49,14 @@ pub enum ViewIssueKind {
         /// The value as written.
         value: String,
     },
+    /// A `where:` that yields no condition — not a mapping, empty, or naming
+    /// only predicates this format does not define.
+    ///
+    /// Reported rather than treated as "no filter", because the two readings of
+    /// a broken `where:` are *select everything* and *select nothing*, and
+    /// picking either silently is how a typo publishes a workspace or hides
+    /// one.
+    NoCondition,
 }
 
 impl ViewIssueKind {
@@ -62,6 +71,7 @@ impl ViewIssueKind {
         match self {
             ViewIssueKind::UnknownKey => VIEW_KEYS,
             ViewIssueKind::BadGrain { .. } => GRAINS,
+            ViewIssueKind::NoCondition => CONDITION_KEYS,
             _ => &[],
         }
     }
@@ -84,6 +94,11 @@ pub fn diagnose_view(name: &str, value: &Value) -> Vec<ViewIssue> {
     for (key, value) in map {
         match key.as_str() {
             "label" | "icon" | "under" | "group" => {}
+            "where" => {
+                if Condition::parse(value).is_none() {
+                    issues.push(issue(key, ViewIssueKind::NoCondition));
+                }
+            }
             "by" | "nest" => {
                 // `ViewSpec::parse` reads an unparseable grain as *no grain* —
                 // it will not invent a cut the config did not ask for, and the
@@ -176,6 +191,49 @@ mod tests {
                 }]
             );
         }
+    }
+
+    /// A `where:` nobody can read has two possible silent readings — select
+    /// everything, or select nothing — and both are wrong. It is reported
+    /// instead.
+    #[test]
+    fn a_where_that_yields_no_condition_is_reported() {
+        for broken in [
+            Value::String("audience == public".into()),
+            Value::Mapping(Mapping::new()),
+            view(&[("hasnt", "draft")]),
+        ] {
+            let mut entry = Mapping::new();
+            entry.insert("group".into(), Value::String("created".into()));
+            entry.insert("where".into(), broken.clone());
+            let issues = diagnose_view("daily", &Value::Mapping(entry));
+            assert_eq!(
+                issues,
+                vec![ViewIssue {
+                    view: "daily".into(),
+                    key: "where".into(),
+                    kind: ViewIssueKind::NoCondition,
+                }],
+                "for {broken:?}"
+            );
+            assert_eq!(issues[0].kind.expected(), CONDITION_KEYS);
+        }
+    }
+
+    /// …and a `where:` that reads is silent, including the combinators.
+    #[test]
+    fn a_readable_where_reports_nothing() {
+        let mut entry = Mapping::new();
+        entry.insert("group".into(), Value::String("created".into()));
+        entry.insert(
+            "where".into(),
+            Value::Mapping({
+                let mut w = Mapping::new();
+                w.insert("not".into(), view(&[("has", "draft")]));
+                w
+            }),
+        );
+        assert!(diagnose_view("daily", &Value::Mapping(entry)).is_empty());
     }
 
     #[test]

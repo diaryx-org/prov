@@ -55,14 +55,29 @@
 //! draws, and what the [ungrouped](RowSet::ungrouped) bucket is called, are
 //! decisions for the frontend that has a screen.
 //!
-//! ## Executing one
+//! ## Two halves: select, then group
+//!
+//! [`select`] answers *which documents does this view cover?* — scope, then
+//! conditions — and returns a flat, deduplicated [`Selection`] in path order.
+//! [`group`] projects that into a [`RowSet`], and is a **pure function**: no
+//! I/O, no workspace, nothing to mock.
+//!
+//! The split is not tidiness. A [`Selection`] is the honest answer to "how many
+//! documents is this view about", which a grouped result cannot give — a
+//! document under two of a multi-valued field's groups is one document in two
+//! places. It also means one selection can be grouped several ways at once,
+//! which is what a frontend's view switcher does, and that every grouping
+//! question is testable without a filesystem.
 //!
 //! ```no_run
 //! use prov_graph::exec::block_on;
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # let graph: prov_graph::Graph<prov_graph::fs::StdFs, prov_graph::index::NoIndex> = todo!();
 //! # let spec: prov_views::ViewSpec = todo!();
-//! let rows = block_on(prov_views::execute(&graph, &spec, "index.md"))?;
+//! let selection = block_on(prov_views::select(&graph, &spec, "index.md"))?;
+//! println!("{} documents", selection.len());
+//!
+//! let rows = prov_views::group(&selection, &spec.group);
 //! for group in &rows.groups {
 //!     println!("{} ({})", group.key, group.rows.len());
 //! }
@@ -71,11 +86,15 @@
 //! ```
 
 pub mod error;
-pub mod exec;
+pub mod filter;
+pub mod group;
 pub mod lint;
+pub mod select;
 pub mod spec;
 
 pub use error::{Error, Result};
-pub use exec::{Group, Row, RowSet, execute};
+pub use filter::{CONDITION_KEYS, Condition};
+pub use group::{Group, RowSet, group};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};
+pub use select::{Row, Selection, select};
 pub use spec::{GRAINS, Grain, Grouping, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize, views_from};

@@ -1,4 +1,13 @@
-//! Executing a [`ViewSpec`] against a workspace: scope, then group, then order.
+//! Selecting the documents a view covers: scope, then conditions.
+//!
+//! This is the half that touches the workspace. It answers one question — *which
+//! documents does this view cover?* — and answers it as a flat, deduplicated set
+//! in path order. How those documents become groups is [`crate::group`], which
+//! is a pure function over what this returns.
+//!
+//! The split is what makes a [`Selection`] worth having as a value: one
+//! selection can be grouped several ways, and every grouping question is
+//! testable without a filesystem.
 //!
 //! # Scope is a traversal, not a path filter
 //!
@@ -13,80 +22,67 @@
 //!
 //! The scope is the whole subtree below the anchor, not its direct children —
 //! see the inheritance note in [`crate::spec`].
-//!
-//! # Ordering
-//!
-//! Groups sort ascending by key, and rows within a group sort by path. Both are
-//! lexical and both are total, so a view executed twice over an unchanged
-//! workspace produces the identical row set.
-//!
-//! Ascending is the honest default rather than the convenient one: it is right
-//! for `people` and `tags`, and wrong for a date view, where a reader wants the
-//! newest first. There is deliberately no `sort:` axis yet — ordering, like
-//! formulas, is a place the format grows teeth, and a consumer that wants
-//! newest-first reverses a `Vec` it already has.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use prov_graph::fs::ReadStorage;
 use prov_graph::graph::{Graph, NodeKind, Target, TreeOptions};
 use prov_graph::index::IdIndex;
 use prov_graph::link::Link;
+use prov_graph::meta::Value;
 
 use crate::error::{Error, Result};
 use crate::spec::ViewSpec;
 
-/// One document in a view's result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One document a view covers.
+///
+/// Carries the document's whole metadata block, which is what lets grouping and
+/// filtering be pure functions over a selection rather than passes that have to
+/// go back to disk.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     /// Workspace-relative, normalized path — join it onto the root with
     /// [`Graph::fs_path`] before reading.
     pub path: PathBuf,
-    /// The document's `title`, when it declares one.
-    pub title: Option<String>,
+    /// The document's parsed metadata block.
+    pub meta: Value,
 }
 
-/// One group of a view's result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Group {
-    /// The group key — a field value, or a value cut at the view's grain.
-    pub key: String,
-    /// The documents under this key, ordered by path.
+impl Row {
+    /// The document's `title`, when it declares one.
+    pub fn title(&self) -> Option<&str> {
+        self.meta.get("title").and_then(Value::as_str)
+    }
+}
+
+/// The documents a view covers: in scope, past its conditions, deduplicated,
+/// ordered by path.
+///
+/// Each document appears **once**, however many groups it will later fall into.
+/// That is the difference between this and a [`RowSet`](crate::RowSet), and it
+/// is why "how many documents does this view cover" is a question only this type
+/// can answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    /// The name of the view that produced this.
+    pub view: String,
+    /// The documents, ordered by path.
     pub rows: Vec<Row>,
 }
 
-/// A view's result: what the workspace says when the view is asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RowSet {
-    /// The name of the view that produced this.
-    pub view: String,
-    /// Groups, ascending by key.
-    pub groups: Vec<Group>,
-    /// Documents in scope that no field in the grouping chain gave a usable
-    /// value for.
-    ///
-    /// Reported rather than dropped: a view whose entries have all quietly
-    /// stopped grouping looks exactly like an empty archive, and the difference
-    /// is the whole diagnosis. A frontend labels this bucket ("Undated",
-    /// "Untagged"); which words to use is a presentation decision this crate
-    /// does not make.
-    pub ungrouped: Vec<Row>,
-}
-
-impl RowSet {
-    /// Every row, grouped or not — the view's scope as it was actually read.
+impl Selection {
+    /// How many documents the view covers.
     pub fn len(&self) -> usize {
-        self.groups.iter().map(|g| g.rows.len()).sum::<usize>() + self.ungrouped.len()
+        self.rows.len()
     }
 
-    /// Whether the view selected nothing at all.
+    /// Whether the view covers nothing.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.rows.is_empty()
     }
 }
 
-/// Execute `spec` against `graph`, walking from `root_doc`.
+/// Select the documents `spec` covers, walking from `root_doc`.
 ///
 /// `root_doc` is the workspace's root document: the spanning start for a view
 /// that declares no anchor, and the document an `under:` link resolves relative
@@ -99,14 +95,14 @@ impl RowSet {
 /// things: one is an archive with nothing in it yet, the other is a
 /// misconfigured lens, and swallowing the second is how a broken view gets read
 /// as an empty one for a year.
-pub async fn execute<FS: ReadStorage, Ix: IdIndex>(
+pub async fn select<FS: ReadStorage, Ix: IdIndex>(
     graph: &Graph<FS, Ix>,
     spec: &ViewSpec,
     root_doc: impl AsRef<Path>,
-) -> Result<RowSet> {
+) -> Result<Selection> {
     let root_doc = root_doc.as_ref();
-    // One scope for the whole execution: the spanning walk reads every document
-    // in scope, and so does the grouping pass immediately after. Without this
+    // One scope for the whole selection: the spanning walk reads every document
+    // in scope, and so does the metadata pass immediately after. Without this
     // they are two reads of every file for one view.
     let _scope = graph.read_scope();
 
@@ -144,44 +140,28 @@ pub async fn execute<FS: ReadStorage, Ix: IdIndex>(
 
     let mut scope: Vec<PathBuf> = Vec::new();
     collect(&tree, spec.under.is_some(), &mut scope);
+    // A spanning tree reaches each document once, so this only matters for a
+    // workspace that has already broken the single-parent invariant — where a
+    // view listing a document twice would be a second, confusing symptom of a
+    // fault `check` already reports properly.
+    scope.sort();
+    scope.dedup();
 
-    let mut grouped: BTreeMap<String, Vec<Row>> = BTreeMap::new();
-    let mut ungrouped: Vec<Row> = Vec::new();
+    let mut rows = Vec::with_capacity(scope.len());
     for path in scope {
         let doc = graph.document(&path).await?;
         let row = Row {
-            title: doc
-                .meta
-                .get("title")
-                .and_then(prov_graph::meta::Value::as_str)
-                .map(str::to_string),
             path,
+            meta: doc.meta,
         };
-        let keys = spec.group.keys_of(&doc.meta);
-        if keys.is_empty() {
-            ungrouped.push(row);
-            continue;
-        }
-        for key in keys {
-            grouped.entry(key).or_default().push(row.clone());
+        if spec.filter.as_ref().is_none_or(|c| c.matches(&row.meta)) {
+            rows.push(row);
         }
     }
 
-    let mut groups: Vec<Group> = grouped
-        .into_iter()
-        .map(|(key, mut rows)| {
-            rows.sort_by(|a, b| a.path.cmp(&b.path));
-            Group { key, rows }
-        })
-        .collect();
-    // `BTreeMap` already ordered the keys; sorting the rows is what is left.
-    groups.iter_mut().for_each(|g| g.rows.dedup());
-    ungrouped.sort_by(|a, b| a.path.cmp(&b.path));
-
-    Ok(RowSet {
+    Ok(Selection {
         view: spec.name.clone(),
-        groups,
-        ungrouped,
+        rows,
     })
 }
 
@@ -260,7 +240,8 @@ fn collect(node: &prov_graph::graph::Node, skip_root: bool, out: &mut Vec<PathBu
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::spec::{Grain, Grouping};
+    use crate::filter::Condition;
+    use crate::spec::Grouping;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
     use prov_graph::graph::ReadSettings;
@@ -273,15 +254,15 @@ mod tests {
     }
 
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-views-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("prov-select-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// A journal: a `Daily/` index with two years of entries under it, plus a
-    /// README beside them that carries a `created` stamp and is *not* a daily
-    /// entry. The README is the reason a view needs scope at all.
+    /// A journal: a `Daily/` index with entries under it, plus a README beside
+    /// them that carries a `created` stamp and is *not* a daily entry. The
+    /// README is the reason a view needs scope at all.
     fn journal(tag: &str) -> PathBuf {
         let dir = tempdir(tag);
         write(
@@ -307,7 +288,7 @@ mod tests {
         write(
             &dir,
             "daily/07-24.md",
-            "---\ntitle: July 24\npart_of: 2026.md\ndate_of_document: 2026-07-24\n---\n",
+            "---\ntitle: July 24\npart_of: 2026.md\ndate_of_document: 2026-07-24\ndraft: true\n---\n",
         );
         write(
             &dir,
@@ -321,83 +302,75 @@ mod tests {
         Graph::new(StdFs, dir, NoIndex, ReadSettings::default())
     }
 
-    fn spec(under: Option<&str>, keys: &[&str], by: Option<Grain>) -> ViewSpec {
+    fn spec(under: Option<&str>, filter: Option<Condition>) -> ViewSpec {
         ViewSpec {
             name: "daily".into(),
             label: None,
             icon: None,
             group: Grouping {
-                keys: keys.iter().map(|k| (*k).to_string()).collect(),
-                by,
+                keys: vec!["date_of_document".into(), "created".into()],
+                by: None,
             },
             under: under.map(str::to_string),
+            filter,
             nest: None,
         }
     }
 
+    fn paths(selection: &Selection) -> Vec<String> {
+        selection
+            .rows
+            .iter()
+            .map(|r| r.path.display().to_string())
+            .collect()
+    }
+
     /// The whole point of `under:`: the README carries a `created` date and is
-    /// still not in the Daily view, because it is not under `Daily`.
+    /// still not selected, because it is not under `Daily`. And the anchor
+    /// itself is what the records hang under, not one of them.
     #[test]
-    fn an_anchor_scopes_the_view_to_its_subtree() {
+    fn an_anchor_scopes_the_selection_to_its_subtree_and_excludes_itself() {
         let dir = journal("scope");
-        let spec = spec(
-            Some("daily.md"),
-            &["date_of_document", "created"],
-            Some(Grain::Month),
-        );
-        let rows = block_on(execute(&graph(&dir), &spec, "index.md")).unwrap();
-
+        let selection = block_on(select(
+            &graph(&dir),
+            &spec(Some("daily.md"), None),
+            "index.md",
+        ))
+        .expect("a selection");
         assert_eq!(
-            rows.groups
-                .iter()
-                .map(|g| g.key.as_str())
-                .collect::<Vec<_>>(),
-            ["2026-07", "2026-08"]
-        );
-        assert_eq!(rows.groups[0].rows[0].path, PathBuf::from("daily/07-24.md"));
-        assert_eq!(rows.groups[0].rows[0].title.as_deref(), Some("July 24"));
-        assert!(
-            !rows.ungrouped.iter().any(|r| r.path.ends_with("readme.md")),
-            "the README is out of scope, not merely ungrouped"
+            paths(&selection),
+            ["daily/07-24.md", "daily/08-01.md", "daily/2026.md"]
         );
     }
 
-    /// The anchor is what the records hang under, not one of them — and the
-    /// year index between them has no date, so it is the ungrouped bucket's.
-    #[test]
-    fn the_anchor_is_excluded_and_undated_indexes_are_ungrouped() {
-        let dir = journal("anchor");
-        let spec = spec(Some("daily.md"), &["date_of_document", "created"], None);
-        let rows = block_on(execute(&graph(&dir), &spec, "index.md")).unwrap();
-
-        let paths: Vec<_> = rows.ungrouped.iter().map(|r| &r.path).collect();
-        assert_eq!(paths, [&PathBuf::from("daily/2026.md")]);
-        assert_eq!(rows.len(), 3);
-    }
-
-    /// Without an anchor the view is the whole workspace, so the README joins —
-    /// the difference the previous test isolated, in the other direction.
+    /// Without an anchor the view is the whole workspace — the difference the
+    /// previous test isolated, in the other direction.
+    ///
+    /// The order is `Path`'s, which compares **component-wise**, not by bytes:
+    /// the component `daily` sorts before `daily.md`, so the directory's
+    /// contents precede the file beside it. Spelled out because it reads like a
+    /// bug otherwise.
     #[test]
     fn an_unscoped_view_covers_the_whole_workspace() {
         let dir = journal("unscoped");
-        let spec = spec(None, &["date_of_document", "created"], Some(Grain::Year));
-        let rows = block_on(execute(&graph(&dir), &spec, "index.md")).unwrap();
-
-        assert_eq!(rows.groups.len(), 1, "one year");
-        let paths: Vec<_> = rows.groups[0].rows.iter().map(|r| &r.path).collect();
+        let selection =
+            block_on(select(&graph(&dir), &spec(None, None), "index.md")).expect("a selection");
         assert_eq!(
-            paths,
+            paths(&selection),
             [
-                &PathBuf::from("daily/07-24.md"),
-                &PathBuf::from("daily/08-01.md"),
-                &PathBuf::from("readme.md"),
+                "daily/07-24.md",
+                "daily/08-01.md",
+                "daily/2026.md",
+                "daily.md",
+                "index.md",
+                "readme.md",
             ]
         );
     }
 
     /// Scope follows the spanning links, so moving the whole subtree to a new
     /// directory changes nothing. A `path starts-with "Daily/"` filter would
-    /// have returned an empty view here.
+    /// have returned an empty selection here.
     #[test]
     fn scope_survives_moving_the_subtree() {
         let dir = journal("moved");
@@ -413,72 +386,80 @@ mod tests {
             "---\ntitle: '2026'\npart_of: ../daily.md\ncontents:\n- 07-24.md\n- 08-01.md\n---\n",
         );
 
-        let spec = spec(
-            Some("daily.md"),
-            &["date_of_document", "created"],
-            Some(Grain::Month),
-        );
-        let rows = block_on(execute(&graph(&dir), &spec, "index.md")).unwrap();
-        assert_eq!(
-            rows.groups
-                .iter()
-                .map(|g| g.key.as_str())
-                .collect::<Vec<_>>(),
-            ["2026-07", "2026-08"]
-        );
-        assert_eq!(
-            rows.groups[0].rows[0].path,
-            PathBuf::from("archive/07-24.md")
-        );
-    }
-
-    /// One document, two groups — and the row appears whole in each, so a
-    /// consumer never has to join anything back together.
-    #[test]
-    fn a_multi_valued_field_files_one_document_under_every_value() {
-        let dir = tempdir("people");
-        write(
-            &dir,
+        let selection = block_on(select(
+            &graph(&dir),
+            &spec(Some("daily.md"), None),
             "index.md",
-            "---\ntitle: Home\ncontents:\n- letter.md\n---\n",
-        );
-        write(
-            &dir,
-            "letter.md",
-            "---\ntitle: A letter\npart_of: index.md\npeople:\n- Ada\n- Grace\n---\n",
-        );
-
-        let spec = spec(None, &["people"], None);
-        let rows = block_on(execute(&graph(&dir), &spec, "index.md")).unwrap();
+        ))
+        .expect("a selection");
         assert_eq!(
-            rows.groups
-                .iter()
-                .map(|g| g.key.as_str())
-                .collect::<Vec<_>>(),
-            ["Ada", "Grace"]
+            paths(&selection),
+            ["archive/07-24.md", "archive/08-01.md", "archive/2026.md"]
         );
-        for group in &rows.groups {
-            assert_eq!(group.rows[0].path, PathBuf::from("letter.md"));
-        }
     }
 
-    /// An anchor that names nothing is an error, not an empty view. The two
+    /// `where:` narrows what scope reached — and, unlike a broken anchor,
+    /// matching nothing is an ordinary answer rather than an error.
+    #[test]
+    fn a_where_condition_narrows_the_selection() {
+        let dir = journal("filter");
+        let no_drafts = Condition::Not(Box::new(Condition::Has("draft".into())));
+        let selection = block_on(select(
+            &graph(&dir),
+            &spec(Some("daily.md"), Some(no_drafts)),
+            "index.md",
+        ))
+        .expect("a selection");
+        assert_eq!(paths(&selection), ["daily/08-01.md", "daily/2026.md"]);
+
+        let matches_nothing = Condition::Has("nonexistent".into());
+        let empty = block_on(select(
+            &graph(&dir),
+            &spec(Some("daily.md"), Some(matches_nothing)),
+            "index.md",
+        ))
+        .expect("an empty selection is not an error");
+        assert!(empty.is_empty());
+    }
+
+    /// Rows carry their metadata, which is what lets grouping be a pure
+    /// function rather than a second pass over the disk.
+    #[test]
+    fn rows_carry_metadata_so_grouping_needs_no_second_read() {
+        let dir = journal("meta");
+        let spec = spec(Some("daily.md"), None);
+        let selection = block_on(select(&graph(&dir), &spec, "index.md")).expect("a selection");
+
+        let entry = selection
+            .rows
+            .iter()
+            .find(|r| r.path.ends_with("07-24.md"))
+            .expect("the entry");
+        assert_eq!(entry.title(), Some("July 24"));
+
+        // No graph, no filesystem, no async.
+        let rows = crate::group(&selection, &spec.group);
+        assert_eq!(rows.len(), 3, "documents, not placements");
+        assert_eq!(rows.groups.len(), 2);
+    }
+
+    /// An anchor that names nothing is an error, not an empty result. The two
     /// look identical to a reader and mean opposite things.
     #[test]
-    fn an_unresolvable_anchor_is_an_error_not_an_empty_result() {
+    fn an_unresolvable_anchor_is_an_error_not_an_empty_selection() {
         let dir = journal("dead-anchor");
         // A path anchor always *resolves* — a path is a path — so this one is
         // only caught by the walk failing to arrive.
-        let by_path = spec(Some("[Gone](nowhere.md)"), &["created"], None);
-        let err = block_on(execute(&graph(&dir), &by_path, "index.md")).unwrap_err();
+        let by_path = spec(Some("[Gone](nowhere.md)"), None);
+        let err = block_on(select(&graph(&dir), &by_path, "index.md")).unwrap_err();
         let Error::AnchorUnresolved { under, why, .. } = &err else {
             panic!("got {err:?}");
         };
         assert_eq!(under, "[Gone](nowhere.md)");
         assert_eq!(why, "no document exists there");
 
-        let by_id = spec(Some("[Gone](id:abcd123)"), &["created"], None);
-        let err = block_on(execute(&graph(&dir), &by_id, "index.md")).unwrap_err();
+        let by_id = spec(Some("[Gone](id:abcd123)"), None);
+        let err = block_on(select(&graph(&dir), &by_id, "index.md")).unwrap_err();
         let Error::AnchorUnresolved { view, under, .. } = &err else {
             panic!("got {err:?}");
         };
@@ -487,19 +468,15 @@ mod tests {
         assert!(err.to_string().contains("is registered under the id"));
     }
 
-    /// Executing the same view twice over an unchanged workspace produces the
-    /// identical row set — the property that lets a consumer diff two runs.
+    /// Selecting twice over an unchanged workspace produces the identical set —
+    /// the property that lets a consumer diff two runs.
     #[test]
-    fn execution_is_deterministic() {
+    fn selection_is_deterministic() {
         let dir = journal("stable");
-        let spec = spec(
-            Some("daily.md"),
-            &["date_of_document", "created"],
-            Some(Grain::Year),
-        );
+        let spec = spec(Some("daily.md"), None);
         let g = graph(&dir);
-        let first = block_on(execute(&g, &spec, "index.md")).unwrap();
-        let second = block_on(execute(&g, &spec, "index.md")).unwrap();
+        let first = block_on(select(&g, &spec, "index.md")).unwrap();
+        let second = block_on(select(&g, &spec, "index.md")).unwrap();
         assert_eq!(first, second);
     }
 }
