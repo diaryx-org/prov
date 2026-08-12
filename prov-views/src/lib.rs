@@ -21,6 +21,8 @@
 //!     group: [date_of_document, created, updated]
 //!     by: month
 //!     under: '[Daily](/Daily/daily_index.md)'
+//!     where:
+//!       not: { has: draft }
 //!     nest: month
 //! ```
 //!
@@ -57,9 +59,9 @@
 //!
 //! ## Two halves: select, then group
 //!
-//! [`select`] answers *which documents does this view cover?* — scope, then
+//! [`select`](fn@select) answers *which documents does this view cover?* — scope, then
 //! conditions — and returns a flat, deduplicated [`Selection`] in path order.
-//! [`group`] projects that into a [`RowSet`], and is a **pure function**: no
+//! [`group`](fn@group) projects that into a [`RowSet`], and is a **pure function**: no
 //! I/O, no workspace, nothing to mock.
 //!
 //! The split is not tidiness. A [`Selection`] is the honest answer to "how many

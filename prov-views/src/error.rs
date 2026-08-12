@@ -13,7 +13,7 @@ pub enum Error {
     /// The view's `under:` names nothing this workspace can resolve.
     ///
     /// Deliberately not folded into an empty result — see
-    /// [`execute`](crate::execute).
+    /// [`select`](fn@crate::select).
     AnchorUnresolved {
         /// The view that declared it.
         view: String,

@@ -80,7 +80,7 @@
 //! for all descendants". §201.2.4 then allows a class applied directly to a
 //! child to break that chain, which is what keeps aggregations from having to
 //! be homogeneous. That override is a document-level concern and is not part of
-//! this struct; the scope walk in [`crate::select`] is the inheritance half.
+//! this struct; the scope walk in [`select`](fn@crate::select) is the inheritance half.
 //!
 //! [MoReq2010]: https://moreq.info/files/moreq2010_vol1_v1_1_en.pdf
 

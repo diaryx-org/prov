@@ -2,7 +2,7 @@
 //!
 //! This is the half that touches the workspace. It answers one question — *which
 //! documents does this view cover?* — and answers it as a flat, deduplicated set
-//! in path order. How those documents become groups is [`crate::group`], which
+//! in path order. How those documents become groups is [`group`](fn@crate::group), which
 //! is a pure function over what this returns.
 //!
 //! The split is what makes a [`Selection`] worth having as a value: one
