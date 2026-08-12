@@ -577,10 +577,30 @@ pub(crate) enum Command {
     /// Registers it in the workspace's registry document (bootstrapping
     /// registry.yaml + the root's `registry` pointer on first use) — link that
     /// target from any document and it survives moves.
+    ///
+    /// With `--workspace`, names the *workspace* instead of a document: the
+    /// `workspace_id` other archives reference this one by (`id:<name>/<id>`).
     Id {
         /// Path to a document.
-        #[arg(value_name = "TARGET")]
-        file: String,
+        #[arg(value_name = "TARGET", required_unless_present = "workspace")]
+        file: Option<String>,
+        /// Name this workspace rather than a document, so another workspace can
+        /// reference it (`id:<NAME>/<id>`). Pass a NAME to choose one; pass the
+        /// flag bare to have prov mint an opaque global one. Either way it is
+        /// written to config and printed.
+        ///
+        /// Idempotent and never destructive: if the workspace is already named,
+        /// that name is printed and nothing is written — a name is what other
+        /// archives have already written their references with, so *changing*
+        /// one is a deliberate `prov config workspace_id <name>`, not a rerun of
+        /// this.
+        #[arg(
+            long = "workspace",
+            value_name = "NAME",
+            num_args = 0..=1,
+            conflicts_with = "file"
+        )]
+        workspace: Option<Option<String>>,
     },
     /// Resolve a stable ID (with or without the `prov:` prefix) to its
     /// current path.

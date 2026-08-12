@@ -127,6 +127,38 @@ back at it. The name may not be empty or contain `/`, `:` or whitespace, because
 it has to survive being written in the position above; a value that cannot is
 reported (`MalformedWorkspaceId`) and ignored rather than half-honored.
 
+### Choosing the name — or not choosing it
+
+```
+$ prov id --workspace notes     # the name is yours
+notes
+$ prov id --workspace           # …or prov's, if you have none to give
+v903dmbjz6dgm
+```
+
+`prov id --workspace` is the same verb as `prov id <document>`, one level up:
+that one gives a document an identity *within* a workspace, this one gives the
+workspace an identity *among* workspaces. With a NAME it writes that name; bare,
+it mints an opaque one — a `moid` blade over the same alphabet as a document id
+but twice as wide (29¹² ≈ 3.5 × 10¹⁷). The width is the whole argument: a
+document id is unique by *rejection* against a registry the minter can see, and
+nothing can see the other workspaces in the world, so a workspace name can only
+buy uniqueness with size. That is the choice being offered — a readable name you
+are asserting is yours (`notes`), or an unreadable one nobody has to arbitrate.
+
+Two properties are deliberate. It is **manual**: nothing in prov ever mints a
+workspace name on its own, because a name is a commitment — every reference
+another archive writes is spelled with it — and an anonymous workspace is fully
+functional in the meantime. And it is **idempotent, never a rename**: re-running
+prints the existing name and writes nothing, even when a different NAME is
+passed, since by then the old name is out in references this workspace cannot
+see and could not fix. Renaming is available and stays deliberate: `prov config
+workspace_id <name>`.
+
+(Nothing about this consults `identity`. That axis decides whether *documents*
+earn ids; a path-addressed workspace can be named just as well as an
+id-addressed one.)
+
 ### What prov does, and where it stops
 
 prov owns the **grammar**; it does not own **resolution**. A qualified reference
@@ -224,5 +256,10 @@ design refuses.
   self-qualification resolving locally in both resolvers; the five rewrite sites
   in `mutate` filtering on `is_path_target`; and the CLI's device-local peer map
   (`prov peer list|add|remove|resolve`, `peer.rs`).
+- ✅ **Naming the workspace** (§ "Choosing the name — or not choosing it"): `prov
+  id --workspace [NAME]` — manual, idempotent, never a rename — over
+  `prov_identity::mint_workspace_id` (a double-width blade, since a workspace
+  name has no arbiter to be rejected by). `prov init --workspace-id` and `prov
+  config workspace_id` remain the other two ways in.
 - ⏳ **Staged:** `StaleLabel` finding + label refresh in `validate.rs`.
   Body-prose reference restyle during the `mutate` port.

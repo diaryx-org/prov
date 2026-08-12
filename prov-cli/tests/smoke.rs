@@ -90,6 +90,10 @@ fn every_command_runs_end_to_end() {
         .to_string();
     assert_eq!(ok(&dir, &["resolve", &id]).trim(), "rust.md");
 
+    // ── name the workspace itself (the same verb, one level up) ──
+    ok(&dir, &["id", "--workspace", "smoke-notes"]);
+    assert_eq!(ok(&dir, &["config", "workspace_id"]).trim(), "smoke-notes");
+
     // ── attach a non-document file ──
     std::fs::write(dir.join("logo.png"), b"\x89PNGfake").unwrap();
     ok(&dir, &["attach", "logo.png"]);

@@ -182,7 +182,11 @@ fn main() -> ExitCode {
             value,
             recursive,
         } => resolve_target(&file).and_then(|f| cmd_convert(&f, &axis, &value, recursive)),
-        Command::Id { file } => resolve_target(&file).and_then(|f| cmd_id(&f)),
+        Command::Id { file, workspace } => match workspace {
+            Some(name) => cmd_id_workspace(name.as_deref()),
+            // `required_unless_present` makes this unreachable without the flag.
+            None => resolve_target(&file.unwrap_or_default()).and_then(|f| cmd_id(&f)),
+        },
         Command::Resolve { id } => cmd_resolve(&id),
         Command::Backlinks { file } => resolve_target(&file).and_then(|f| cmd_backlinks(&f)),
         Command::Config {
@@ -3021,6 +3025,75 @@ fn cmd_id(file: &Path) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `prov id --workspace [NAME]` — ensure the *workspace* has a name, and print
+/// it. The counterpart of [`cmd_id`] one level up: that gives a document an
+/// identity within this workspace, this gives the workspace an identity among
+/// others, so that `id:<name>/<id>` can point back here.
+///
+/// Deliberately **manual**. Nothing in prov mints a workspace name on its own,
+/// and nothing needs one to work — an anonymous workspace is fully functional
+/// and merely unaddressable from outside. The name is a commitment, since every
+/// reference another archive writes is spelled with it, and prov does not make
+/// commitments on the user's behalf. So it is minted here and nowhere else: this
+/// command, or `prov init --workspace-id`, or a hand-written config key.
+///
+/// Also deliberately **idempotent, never a rename**. Re-running prints the name
+/// already in config and writes nothing, even when a different NAME is passed —
+/// because by then the old name is out in the world, in references this
+/// workspace cannot see and could not fix. Renaming is available and stays
+/// explicit: `prov config workspace_id <name>`.
+///
+/// Unlike [`cmd_id`] this does not consult `identity`: that axis decides whether
+/// *documents* earn IDs, and a workspace can perfectly well be named while its
+/// documents are addressed purely by path (a foreign reference into it would
+/// then just carry that path's id-space, or nothing).
+fn cmd_id_workspace(requested: Option<&str>) -> CmdResult {
+    let mut ctx = find_root()?;
+    let current = ctx.config.workspace_id.clone();
+    if !current.is_empty() {
+        if let Some(requested) = requested
+            && requested != current
+        {
+            return Err(format!(
+                "this workspace is already named `{current}` — references \
+                 elsewhere are written with it, so renaming it to \
+                 `{requested}` is `prov config workspace_id {requested}`"
+            )
+            .into());
+        }
+        eprintln!("already named (unchanged)");
+        println!("{current}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let name = match requested {
+        Some(name) => {
+            if !prov::is_valid_workspace_id(name) {
+                return Err(format!(
+                    "`{name}` is not a valid workspace name — it cannot be \
+                     empty or contain `/`, `:` or whitespace (it has to survive \
+                     being written as the qualifier of `id:<name>/<id>`)"
+                )
+                .into());
+            }
+            name.to_string()
+        }
+        // No name offered: mint an opaque global one. Wider than a document ID
+        // by design — nothing can check a workspace name against the other
+        // workspaces in the world, so width is the only uniqueness there is.
+        None => prov::mint_workspace_id(entropy_seed()),
+    };
+    // Written as a *string* scalar rather than through `infer_scalar`: the mint
+    // draws from an alphabet that includes the digits, so a name can look like a
+    // number, and a `workspace_id: 123456789012` that read back as an integer
+    // would be diagnosed malformed and ignored — the workspace would silently
+    // stay anonymous right after being told it was named.
+    let config_doc = write_config_setting(&mut ctx, "workspace_id", Value::String(name.clone()))?;
+    eprintln!("named this workspace {name} in {}", config_doc.display());
+    refresh_about(&ctx.root_dir)?;
+    println!("{name}");
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Look up a dotted key (`references.notation`) in a nested config mapping,
 /// descending one mapping per segment.
 fn lookup_dotted<'a>(map: &'a Mapping, dotted: &str) -> Option<&'a Value> {
@@ -3346,14 +3419,28 @@ fn cmd_config(
         // Key + value: materialize/link the config document if needed, then set.
         (Some(key), Some(value)) => {
             let mut ctx = ctx;
-            let inferred = edit::infer_scalar(value);
+            // The scalar the text implies (`true` → a bool, `12` → an int),
+            // carried as prov's own value from here on — what `diagnose` reads
+            // and what the write emits, so the setting that is judged is exactly
+            // the setting that lands.
+            //
+            // `workspace_id` is exempt because it is a *name*, and a name that
+            // happens to be spelled with digits is still a name. The mint's
+            // alphabet includes the digits (`prov id --workspace` can hand back
+            // `123456789012`), so inferring an int here would have prov refuse
+            // to set a name it had just minted itself.
+            let inferred: Value = if key == "workspace_id" {
+                Value::String(value.to_string())
+            } else {
+                edit::infer_scalar(value).into()
+            };
             // Refuse to write a setting prov would silently ignore — the same
             // conditions `check` flags (a key that resembles a real axis but
             // isn't, or a recognized axis with an unrecognized value). Running the
             // shared diagnostic over a one-key probe keeps set-time and check-time
             // judgments identical. A truly novel key (resembling no axis) is left
             // to pass — it may be a user field or a forward-compatible key.
-            let probe = nest_probe(key, inferred.clone().into());
+            let probe = nest_probe(key, inferred.clone());
             if let Some(issue) = prov::diagnose(&probe).into_iter().next() {
                 match issue.kind {
                     prov::ConfigIssueKind::UnknownKey { suggestion } => {
@@ -3389,12 +3476,7 @@ fn cmd_config(
                 }
                 return Ok(ExitCode::FAILURE);
             }
-            let config_doc = ensure_config(&mut ctx)?;
-            let full = ctx.root_dir.join(&config_doc);
-            let text = std::fs::read_to_string(&full)?;
-            let doc = Document::parse(&config_doc, &text)?;
-            let updated = edit::set_in_text(&text, doc.carrier, key, inferred)?;
-            std::fs::write(&full, updated)?;
+            let config_doc = write_config_setting(&mut ctx, key, inferred)?;
             eprintln!("set {key} = {value} in {}", config_doc.display());
             refresh_about(&ctx.root_dir)?;
             // Echo the value now in effect, so `v=$(prov config set …)` round-trips
@@ -3457,6 +3539,26 @@ fn refresh_about(root_dir: &Path) -> Result<(), AnyError> {
 /// [`ensure_registry`], including its change set: a config document the root does
 /// not point at is one nothing will ever read. Like the registry, it carries no
 /// `part_of` — machinery is reached one-way through the root's pointer (DESIGN §5).
+/// Write one setting into the workspace's config document, bootstrapping and
+/// linking it first if the workspace declares none. Returns the config
+/// document's path relative to the root, for the caller to narrate.
+///
+/// The write half of `prov config <key> <value>`, factored out so anything that
+/// sets a single axis on the user's behalf (`prov id --workspace`) lands in the
+/// same file, through the same editor, as if they had set it by hand. The
+/// *validation* half stays with `config`: this takes a [`Value`] already decided
+/// on, so a caller that knows the exact scalar it wants (a minted workspace
+/// name, which must stay a string) is not forced back through scalar inference.
+fn write_config_setting(ctx: &mut Ctx, key: &str, value: Value) -> Result<PathBuf, AnyError> {
+    let config_doc = ensure_config(ctx)?;
+    let full = ctx.root_dir.join(&config_doc);
+    let text = std::fs::read_to_string(&full)?;
+    let doc = Document::parse(&config_doc, &text)?;
+    let updated = edit::set_in_text(&text, doc.carrier, key, (&value).into())?;
+    std::fs::write(&full, updated)?;
+    Ok(config_doc)
+}
+
 fn ensure_config(ctx: &mut Ctx) -> Result<PathBuf, AnyError> {
     let probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&ctx.root_dir).build();
     if let Some(existing) = block_on(probe.config_path(&ctx.root_doc))? {

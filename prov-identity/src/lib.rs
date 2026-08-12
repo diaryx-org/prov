@@ -30,6 +30,46 @@ fn canonical_minter() -> moid::Minter {
     moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
 }
 
+/// Random characters in a *minted* workspace name — twice a document blade's
+/// [`BLADE_RANDOM_LEN`], for a different uniqueness problem.
+///
+/// A document ID is unique by *rejection*: the minter can see the registry, so a
+/// collision is caught and re-rolled, and six characters (29⁶ ≈ 595M) is ample.
+/// A workspace name has no such arbiter — nothing can see the other workspaces
+/// in the world, which is exactly why `prov_config::is_valid_workspace_id`
+/// refuses to promise uniqueness. So the only defense a minted name has is its
+/// width: at 29¹² ≈ 3.5 × 10¹⁷, a million independently minted names collide
+/// with probability ~10⁻⁶. That is what makes an unaudited mint honest to call
+/// globally unique.
+pub const WORKSPACE_NAME_RANDOM_LEN: usize = 12;
+
+/// Total length of a minted workspace name: [`WORKSPACE_NAME_RANDOM_LEN`] plus
+/// the check character every [`moid`] blade ends with.
+pub const WORKSPACE_NAME_LEN: usize = WORKSPACE_NAME_RANDOM_LEN + 1;
+
+/// Mint an opaque global name for a *workspace*, randomizing from `seed`.
+///
+/// The name a workspace calls itself is normally the user's to choose — it is
+/// read by humans, in `id:<workspace>/<id>` references. This is the escape hatch
+/// for when there is no good choice to make: a workspace that must be nameable
+/// from anywhere, whose owner has no naming authority to lean on and would
+/// rather not gamble that `notes` is theirs alone. So this is offered, never
+/// applied: nothing in prov mints a workspace name on its own, because a name is
+/// a *commitment* (every reference written elsewhere is spelled with it), and
+/// prov does not make commitments on a user's behalf.
+///
+/// The result is a [`moid`] blade over the same NOID extended-digit alphabet as
+/// a document ID, and so is always well-formed by
+/// `prov_config::is_valid_workspace_id`: no vowels (nothing accidentally spells
+/// a word), and no `/`, `:` or whitespace to break the qualifier position it
+/// gets written in. It is deliberately *not* prefixed or otherwise marked as
+/// minted — a reader of a reference has no business caring whether the name was
+/// chosen or rolled.
+pub fn mint_workspace_id(seed: u64) -> String {
+    moid::Minter::new(Alphabet::noid_xdigit(), WORKSPACE_NAME_RANDOM_LEN)
+        .mint_seeded(&mut SeededRng::new(seed))
+}
+
 /// Which events cause a document to be assigned (registered) an ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Registration {
@@ -207,6 +247,40 @@ mod tests {
         let a = Minter::lazy(7).mint(Path::new("x"));
         let b = Minter::lazy(7).mint(Path::new("y"));
         assert_eq!(a, b, "path does not participate in the mint");
+    }
+
+    #[test]
+    fn mints_wide_opaque_workspace_names() {
+        let a = mint_workspace_id(42);
+        let b = mint_workspace_id(43);
+        assert_ne!(a, b);
+        for name in [&a, &b] {
+            assert_eq!(name.chars().count(), WORKSPACE_NAME_LEN);
+            // Every constraint the qualifier position imposes, checked here
+            // rather than through `prov-config` (which this crate cannot see):
+            // non-empty, and none of the three characters that would break
+            // `id:<workspace>/<id>` apart.
+            assert!(!name.is_empty());
+            assert!(
+                !name
+                    .chars()
+                    .any(|c| c == '/' || c == ':' || c.is_whitespace()),
+                "{name} cannot be written as a reference qualifier"
+            );
+        }
+    }
+
+    /// A minted workspace name is *wider* than a document ID, and that width is
+    /// the entire uniqueness argument — nothing rejects a colliding one, because
+    /// nothing can see the other workspaces it might collide with. Asserted at
+    /// compile time, since narrowing the constant is the way this would be lost.
+    const _: () = assert!(WORKSPACE_NAME_LEN > BLADE_LEN);
+
+    #[test]
+    fn a_workspace_name_is_wider_than_a_document_id() {
+        assert!(
+            mint_workspace_id(1).chars().count() > Minter::lazy(1).mint(Path::new("x")).0.len()
+        );
     }
 
     #[test]

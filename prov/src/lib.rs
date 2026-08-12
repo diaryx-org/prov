@@ -165,7 +165,10 @@ pub use history::{
     Latest, Presence, Pruned, RestoreOp, RestorePlan, Retention, Scope, StoreLocation, Subject,
     Summary, Version,
 };
-pub use identity::{IdentityPolicy, Minter, NoIdentity, Registration, Trigger};
+pub use identity::{
+    IdentityPolicy, Minter, NoIdentity, Registration, Trigger, WORKSPACE_NAME_LEN,
+    mint_workspace_id,
+};
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use mutate::Created;
 pub use prov_transaction::{ChangeSet, FileOp};

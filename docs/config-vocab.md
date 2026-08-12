@@ -124,7 +124,7 @@ prov:
       nest: year              # how deep a *new* entry is filed, independent of `by`
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
-  workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous)
+  workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
 
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
   identity: lazy              # none (a.k.a. off) | lazy | eager
