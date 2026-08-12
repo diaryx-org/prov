@@ -18,6 +18,11 @@ prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
 # it — one definition of what a view is, rather than a config-side copy that
 # can disagree with the reader.
 prov-views = { path = "../prov-views", version = "0.4.0", default-features = false }
+# The export format, for the same reason as `prov-views` above: the `exports:`
+# axis is declared here because every config axis is, but what an export *is* —
+# and the fail-closed judgment of a malformed one — belongs with the crate that
+# plans one.
+prov-exports = { path = "../prov-exports", version = "0.4.0", default-features = false }
 fig.workspace = true
 fig-schema.workspace = true
 indexmap.workspace = true
@@ -25,14 +30,33 @@ thiserror.workspace = true
 
 [features]
 default = ["yaml"]
-yaml = ["fig/yaml", "prov-graph/yaml", "prov-identity/yaml", "prov-views/yaml"]
-json = ["fig/json", "prov-graph/json", "prov-identity/json", "prov-views/json"]
-toml = ["fig/toml", "prov-graph/toml", "prov-identity/toml", "prov-views/toml"]
+yaml = [
+    "fig/yaml",
+    "prov-graph/yaml",
+    "prov-identity/yaml",
+    "prov-views/yaml",
+    "prov-exports/yaml",
+]
+json = [
+    "fig/json",
+    "prov-graph/json",
+    "prov-identity/json",
+    "prov-views/json",
+    "prov-exports/json",
+]
+toml = [
+    "fig/toml",
+    "prov-graph/toml",
+    "prov-identity/toml",
+    "prov-views/toml",
+    "prov-exports/toml",
+]
 fig-lang = [
     "fig/fig",
     "prov-graph/fig-lang",
     "prov-identity/fig-lang",
     "prov-views/fig-lang",
+    "prov-exports/fig-lang",
 ]
 
 [dev-dependencies]

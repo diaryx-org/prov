@@ -154,6 +154,21 @@ pub mod views {
         group, select, views_from,
     };
 }
+/// Named, closed-by-default document sets that may leave the workspace — the
+/// `exports:` config axis, and the plan that composes a gate with a view.
+///
+/// Re-exported at prov's own path for the same reasons [`views`] is. prov
+/// itself never consumes a plan: what an [`ExportPlan`](exports::ExportPlan)
+/// feeds — a publish step, a copy-out, an OCFL export — lives downstream, and
+/// the invariant (an export is a subset of what its gate admits) lives in
+/// `prov-exports` with the planner.
+pub mod exports {
+    pub use prov_exports::{
+        EXPORT_KEYS, EXPORTS_KEY, Error, ExportDoc, ExportIssue, ExportIssueKind, ExportPlan,
+        ExportSpec, GATE_KEYS, Gate, Withheld, compose, diagnose_export, diagnose_exports,
+        exports_from, plan,
+    };
+}
 /// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
 /// re-exported so a consumer can name types without depending on `fig-schema`
 /// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
@@ -173,6 +188,7 @@ pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use mutate::Created;
 pub use prov_transaction::{ChangeSet, FileOp};
 pub use prov_transaction::{Recovered, recover};
+pub use prov_exports::ExportSpec;
 pub use prov_views::ViewSpec;
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};

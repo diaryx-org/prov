@@ -36,6 +36,7 @@ use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyl
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
 use prov_identity::{Registration, Trigger};
+use prov_exports::{ExportIssueKind, ExportSpec};
 use prov_views::{ViewIssueKind, ViewSpec};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because
@@ -406,6 +407,17 @@ pub struct WorkspaceConfig {
     /// than each app namespacing its own block and agreeing by convention.
     /// Executing one is `prov-views`.
     pub views: Vec<ViewSpec>,
+    /// The exports the workspace declares, in declaration order — the named,
+    /// closed-by-default sets that may *leave* it, each bounded by a gate and
+    /// optionally arranged by one of [`views`](Self::views). Empty means
+    /// nothing is declared exportable, which is the default state of a
+    /// workspace and of every document in it.
+    ///
+    /// Carried here for the same reason `views` is — one axis every tool
+    /// reads — but unlike a view an export *has* an invariant, and it lives
+    /// with the planner in `prov-exports`: a plan's entries are a subset of
+    /// what the gate admits, whatever the named view says.
+    pub exports: Vec<ExportSpec>,
     /// Where a document's stable ID is persisted — registry, frontmatter shadow,
     /// or both (DESIGN §5). Independent of the `identity` trigger.
     pub id_storage: IdStorage,
@@ -502,6 +514,7 @@ impl Default for WorkspaceConfig {
             relation_defs: BTreeMap::new(),
             fields: BTreeMap::new(),
             views: Vec::new(),
+            exports: Vec::new(),
             id_storage: IdStorage::Frontmatter,
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
@@ -835,6 +848,26 @@ impl WorkspaceConfig {
                 }
             }
         }
+        // Export declarations: `exports: { <name>: { gate, view, … } }`.
+        // Merged per entry like `views` — and replacement is whole for a
+        // sharper reason than key interlock: an export half-merged across two
+        // surfaces would bound what leaves with a gate neither surface wrote.
+        // An entry `parse` cannot make a gate of is dropped (fail closed — it
+        // exports nothing) and `diagnose` is where the reason surfaces.
+        if let Some(exports) = meta
+            .get(prov_exports::EXPORTS_KEY)
+            .and_then(Value::as_mapping)
+        {
+            for (name, value) in exports {
+                let Some(spec) = ExportSpec::parse(name, value) else {
+                    continue;
+                };
+                match self.exports.iter_mut().find(|e| e.name == spec.name) {
+                    Some(existing) => *existing = spec,
+                    None => self.exports.push(spec),
+                }
+            }
+        }
         if let Some(v) = meta
             .get("id_storage")
             .and_then(Value::as_str)
@@ -1006,6 +1039,14 @@ impl WorkspaceConfig {
             map.insert(prov_views::VIEWS_KEY.into(), Value::Mapping(views));
         }
 
+        if !self.exports.is_empty() {
+            let mut exports = Mapping::new();
+            for spec in &self.exports {
+                exports.insert(spec.name.clone(), Value::Mapping(spec.to_mapping()));
+            }
+            map.insert(prov_exports::EXPORTS_KEY.into(), Value::Mapping(exports));
+        }
+
         map.insert(
             "id_storage".into(),
             Value::String(self.id_storage.as_config_str().into()),
@@ -1104,6 +1145,7 @@ const TOP_KEYS: &[&str] = &[
     "spanning",
     "fields",
     "views",
+    "exports",
     "id_storage",
     "updated",
     "workspace_id",
@@ -1247,6 +1289,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
             "relations" => diagnose_relations(&mut issues, value),
             "fields" => diagnose_fields(&mut issues, value),
             "views" => diagnose_views(&mut issues, value, map),
+            "exports" => diagnose_exports(&mut issues, value, map),
             other => {
                 if let Some(suggestion) = nearest(other, TOP_KEYS) {
                     issues.push(unknown(key.clone(), suggestion));
@@ -1619,6 +1662,101 @@ fn diagnose_nest_is_fileable(
     }
 }
 
+/// Diagnose the `exports:` block — a mapping of export name to an export
+/// declaration.
+///
+/// The judgment is `prov-exports`' (one definition of what an export is,
+/// shared with the crate that plans one); this is the translation into
+/// config-issue vocabulary, plus the near-miss suggestion. The stakes of the
+/// translation are asymmetric here: a dropped export publishes *nothing*, so
+/// every fatal issue below is a declaration someone wrote that silently does
+/// not exist until this report says so.
+fn diagnose_exports(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mapping) {
+    let Some(map) = value.as_mapping() else {
+        return block_shape_issue(issues, "exports", value);
+    };
+    for (name, spec) in map {
+        let prefix = format!("exports.{name}");
+        diagnose_export_view_is_declared(issues, &prefix, spec, surface);
+        for issue in prov_exports::diagnose_export(name, spec) {
+            match &issue.kind {
+                ExportIssueKind::NotAMapping => block_shape_issue(issues, &prefix, spec),
+                ExportIssueKind::NoGate => issues.push(ConfigIssue {
+                    key: format!("{prefix}.gate"),
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: spec
+                            .get("gate")
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        expected: vec![
+                            "a mapping with `field` and `value` — the field a document \
+                             declares its membership in, and the value that admits it"
+                                .into(),
+                        ],
+                    },
+                }),
+                // A stray key inside an `exports.<name>` entry (or its gate)
+                // is inside a block prov defines completely, so a near-miss is
+                // the only thing it can be — same reasoning as `views`.
+                ExportIssueKind::UnknownKey => {
+                    if let Some(sug) = nearest(&issue.key, prov_exports::EXPORT_KEYS) {
+                        issues.push(unknown(
+                            format!("{prefix}.{}", issue.key),
+                            format!("{prefix}.{sug}"),
+                        ));
+                    }
+                }
+                ExportIssueKind::GateUnknownKey => {
+                    if let Some(sug) = nearest(&issue.key, prov_exports::GATE_KEYS) {
+                        issues.push(unknown(
+                            format!("{prefix}.gate.{}", issue.key),
+                            format!("{prefix}.gate.{sug}"),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Flag an export arranged by a view its own surface does not declare.
+///
+/// The runtime refuses such an export outright (`prov-exports` fails closed
+/// rather than falling back to the gate's whole set), so this is the
+/// author-time half: reported here, the typo is fixed before the first
+/// preview; unreported, it surfaces as a refusal at the moment someone tries
+/// to publish, which is the worst time.
+///
+/// Only fires when `views` and `exports` are declared in the **same config
+/// surface** — `diagnose` lints one surface at a time, the same bound every
+/// other cross-key check here has.
+fn diagnose_export_view_is_declared(
+    issues: &mut Vec<ConfigIssue>,
+    prefix: &str,
+    spec: &Value,
+    surface: &Mapping,
+) {
+    let Some(named) = spec.get("view").and_then(Value::as_str).map(str::trim) else {
+        return;
+    };
+    let Some(views) = surface
+        .get(prov_views::VIEWS_KEY)
+        .and_then(Value::as_mapping)
+    else {
+        return;
+    };
+    if named.is_empty() || views.contains_key(named) {
+        return;
+    }
+    let declared: Vec<String> = views.keys().cloned().collect();
+    issues.push(ConfigIssue {
+        key: format!("{prefix}.view"),
+        kind: ConfigIssueKind::InvalidValue {
+            value: named.to_string(),
+            expected: declared,
+        },
+    });
+}
+
 /// Flag a block key whose value is not a mapping (e.g. `references: markdown`).
 fn block_shape_issue(issues: &mut Vec<ConfigIssue>, key: &str, value: &Value) {
     issues.push(ConfigIssue {
@@ -1972,6 +2110,28 @@ mod tests {
                     under: None,
                     filter: None,
                     nest: None,
+                },
+            ],
+            exports: vec![
+                // Every optional key populated, and the minimal form, for the
+                // same reason as the two views above.
+                ExportSpec {
+                    name: "letters".to_string(),
+                    label: Some("Letters home".to_string()),
+                    gate: prov_exports::Gate {
+                        field: "audience".to_string(),
+                        value: "family".to_string(),
+                    },
+                    view: Some("daily".to_string()),
+                },
+                ExportSpec {
+                    name: "notes".to_string(),
+                    label: None,
+                    gate: prov_exports::Gate {
+                        field: "audience".to_string(),
+                        value: "public".to_string(),
+                    },
+                    view: None,
                 },
             ],
             id_storage: IdStorage::Frontmatter,
@@ -2436,6 +2596,169 @@ mod tests {
                     }),
             "{issues:?}"
         );
+    }
+
+    /// An `exports:` block, as a config surface writes it.
+    fn exports_block(entries: &[(&str, &[(&str, Value)])]) -> Value {
+        let mut exports = Mapping::new();
+        for (name, keys) in entries {
+            let mut entry = Mapping::new();
+            for (k, v) in *keys {
+                entry.insert((*k).into(), v.clone());
+            }
+            exports.insert((*name).into(), Value::Mapping(entry));
+        }
+        let mut top = Mapping::new();
+        top.insert("exports".into(), Value::Mapping(exports));
+        Value::Mapping(top)
+    }
+
+    fn gate_value(field: &str, value: &str) -> Value {
+        let mut gate = Mapping::new();
+        gate.insert("field".into(), str_value(field));
+        gate.insert("value".into(), str_value(value));
+        Value::Mapping(gate)
+    }
+
+    #[test]
+    fn exports_apply_and_round_trip() {
+        let config = WorkspaceConfig::from_meta(&exports_block(&[
+            (
+                "letters",
+                &[
+                    ("gate", gate_value("audience", "family")),
+                    ("view", str_value("daily")),
+                ],
+            ),
+            ("notes", &[("gate", gate_value("audience", "public"))]),
+        ]));
+        assert_eq!(
+            config
+                .exports
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["letters", "notes"]
+        );
+        assert_eq!(config.exports[0].gate.field, "audience");
+        assert_eq!(config.exports[0].view.as_deref(), Some("daily"));
+
+        let written = config.to_mapping();
+        let reread = WorkspaceConfig::from_meta(&Value::Mapping(written));
+        assert_eq!(reread.exports, config.exports);
+    }
+
+    /// The same whole-entry replacement `views` has, for a sharper reason: an
+    /// export half-merged across two surfaces would bound what leaves with a
+    /// gate neither surface wrote.
+    #[test]
+    fn a_later_surface_replaces_one_export_whole() {
+        let mut config = WorkspaceConfig::from_meta(&exports_block(&[(
+            "letters",
+            &[
+                ("gate", gate_value("audience", "family")),
+                ("view", str_value("daily")),
+            ],
+        )]));
+        config.apply(&exports_block(&[(
+            "letters",
+            &[("gate", gate_value("audience", "friends"))],
+        )]));
+
+        assert_eq!(config.exports.len(), 1);
+        assert_eq!(config.exports[0].gate.value, "friends");
+        assert_eq!(
+            config.exports[0].view, None,
+            "replaced whole, not merged key-wise"
+        );
+    }
+
+    /// A dropped export publishes nothing, silently — the report is the only
+    /// thing that ever says the declaration does not exist.
+    #[test]
+    fn an_export_without_a_gate_is_not_recorded_and_is_diagnosed() {
+        let meta = exports_block(&[("letters", &[("view", str_value("daily"))])]);
+        assert!(WorkspaceConfig::from_meta(&meta).exports.is_empty());
+
+        let issues = diagnose(&meta);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "exports.letters.gate");
+        assert!(matches!(
+            &issues[0].kind,
+            ConfigIssueKind::InvalidValue { value, .. } if value == "(absent)"
+        ));
+    }
+
+    #[test]
+    fn diagnose_flags_misspelled_export_keys_at_both_levels() {
+        let mut gate = Mapping::new();
+        gate.insert("field".into(), str_value("audience"));
+        gate.insert("valeu".into(), str_value("family"));
+        let issues = diagnose(&exports_block(&[(
+            "letters",
+            &[("gate", Value::Mapping(gate)), ("veiw", str_value("daily"))],
+        )]));
+        assert!(
+            issues.iter().any(|i| i.kind
+                == ConfigIssueKind::UnknownKey {
+                    suggestion: "exports.letters.view".into()
+                }),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.kind
+                == ConfigIssueKind::UnknownKey {
+                    suggestion: "exports.letters.gate.value".into()
+                }),
+            "{issues:?}"
+        );
+    }
+
+    /// The runtime refuses an export whose view nobody declares (fail closed);
+    /// this is the author-time half, so the typo is fixed before the first
+    /// preview rather than at the moment someone tries to publish.
+    #[test]
+    fn diagnose_flags_an_export_arranged_by_an_undeclared_view() {
+        let mut top = Mapping::new();
+        let Value::Mapping(views) = views_block(&[("daily", &[("group", str_value("created"))])])
+        else {
+            unreachable!()
+        };
+        let Value::Mapping(exports) = exports_block(&[(
+            "letters",
+            &[
+                ("gate", gate_value("audience", "family")),
+                ("view", str_value("dialy")),
+            ],
+        )]) else {
+            unreachable!()
+        };
+        for (k, v) in views.iter().chain(exports.iter()) {
+            top.insert(k.clone(), v.clone());
+        }
+
+        let issues = diagnose(&Value::Mapping(top));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "exports.letters.view");
+        assert!(
+            matches!(
+                &issues[0].kind,
+                ConfigIssueKind::InvalidValue { value, expected }
+                    if value == "dialy" && expected == &vec!["daily".to_string()]
+            ),
+            "{issues:?}"
+        );
+
+        // And the same export beside no `views:` block is silent — one
+        // surface at a time, the bound every cross-key check here has.
+        let issues = diagnose(&exports_block(&[(
+            "letters",
+            &[
+                ("gate", gate_value("audience", "family")),
+                ("view", str_value("dialy")),
+            ],
+        )]));
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     /// `nest` files into the single-parent spine, so a document with two values
