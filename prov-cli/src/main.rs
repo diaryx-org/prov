@@ -115,6 +115,7 @@ fn main() -> ExitCode {
         }
         Command::Unset { file, key } => resolve_target(&file).and_then(|f| cmd_unset(&f, &key)),
         Command::Views { name } => cmd_views(name.as_deref()),
+        Command::Exports { name } => cmd_exports(name.as_deref()),
         Command::Tree { root } => root
             .map(|r| resolve_target(&r))
             .transpose()
@@ -982,6 +983,94 @@ fn print_view_row(row: &prov::views::Row) {
         Some(title) => println!("  {} — {title}", row.path.display()),
         None => println!("  {}", row.path.display()),
     }
+}
+
+/// `prov exports [NAME]` — list the declared exports, or preview one's plan.
+///
+/// Listing is the no-argument form for the same reason `views` lists: the
+/// first question about an export is whether the workspace agrees it exists,
+/// and an `exports:` entry that went unread (misspelled gate, stray key) is
+/// invisible everywhere else *by design* — parse dropping it is the
+/// fail-closed direction, and this listing plus the config lint are where the
+/// silence is broken.
+///
+/// A preview moves nothing. It prints all three sides of the boundary — what
+/// leaves, what the gate held back, what the view scoped out — because the
+/// question a preview answers is "why isn't this file in the export?", and
+/// the answer differs by which side the file is on.
+fn cmd_exports(name: Option<&str>) -> CmdResult {
+    let ctx = find_root()?;
+    let exports = &ctx.config.exports;
+    let Some(name) = name else {
+        if exports.is_empty() {
+            println!("this workspace declares no exports");
+            return Ok(ExitCode::SUCCESS);
+        }
+        for export in exports {
+            let view = match &export.view {
+                Some(view) => format!(", arranged by {view}"),
+                None => String::new(),
+            };
+            println!(
+                "{}  {} — gate: {}: {}{view}",
+                export.name,
+                export.display_label(),
+                export.gate.field,
+                export.gate.value,
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    let Some(export) = exports.iter().find(|e| e.name == name) else {
+        let declared: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
+        return Err(format!(
+            "no export named `{name}` — this workspace declares {}",
+            if declared.is_empty() {
+                "none".to_string()
+            } else {
+                declared.join(", ")
+            }
+        )
+        .into());
+    };
+
+    let ws = workspace(&ctx)?;
+    let plan = block_on(prov::exports::plan(
+        ws.graph(),
+        export,
+        &ctx.config.views,
+        &ctx.root_doc,
+    ))?;
+
+    for doc in &plan.entries {
+        match &doc.title {
+            Some(title) => println!("  {} — {title}", doc.path.display()),
+            None => println!("  {}", doc.path.display()),
+        }
+    }
+    // Named because it is the difference between the export and its gate:
+    // "I tagged it and it isn't in the export" is unexplainable from the
+    // file alone, and this list is the explanation.
+    if !plan.outside_view.is_empty() {
+        println!(
+            "(admitted by the gate, outside the view) ({})",
+            plan.outside_view.len()
+        );
+        for path in &plan.outside_view {
+            println!("  {}", path.display());
+        }
+    }
+    println!(
+        "\n{} document(s) leave, {} held back by the gate{}",
+        plan.entries.len(),
+        plan.withheld.len(),
+        match plan.outside_view.len() {
+            0 => String::new(),
+            n => format!(", {n} outside the view"),
+        }
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_tree(root: Option<&Path>) -> CmdResult {

@@ -328,6 +328,19 @@ pub(crate) enum Command {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
+    /// List the exports this workspace declares, or preview one.
+    ///
+    /// An export is a named, closed-by-default set of documents that may leave
+    /// the workspace: a document is in it only if it itself declares the
+    /// export's gate value, and a document that declares nothing leaves in
+    /// nothing. With no NAME, print what the workspace declares; with one,
+    /// print the plan — what leaves, what the gate held back, what the view
+    /// scoped out. A preview moves nothing.
+    Exports {
+        /// The export to preview (default: list every declared export).
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+    },
     /// Print the containment tree that unfolds from a root document.
     Tree {
         /// The document to discover from (default: the workspace root).

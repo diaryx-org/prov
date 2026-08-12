@@ -860,6 +860,10 @@ pub(crate) fn cmd_init(
         // reading a corpus, and at `init` there is no corpus yet to have
         // learned anything about.
         views: Vec::new(),
+        // No exports either, for the stronger form of the same reason: an
+        // export says what may *leave*, and the only right default for a
+        // workspace that has not said anything is that nothing does.
+        exports: Vec::new(),
         id_storage: id_storage.into(),
         default_embed_format: meta.into(),
         embed_style: embed,
