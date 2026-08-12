@@ -126,10 +126,10 @@ pub mod change {
 }
 /// Journal recovery, retained at its original path for compatibility.
 pub mod journal {
-    pub use prov_transaction::journal::{Recovered, recover};
+    pub use prov_transaction::journal::{JOURNAL_NAME, Recovered, recover};
 
     #[allow(unused_imports)]
-    pub(crate) use prov_transaction::journal::{JOURNAL_NAME, decode, encode, is_journal_path};
+    pub(crate) use prov_transaction::journal::{decode, encode, is_journal_path};
 }
 pub use config::{
     About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, OpenClosed,
