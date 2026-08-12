@@ -650,6 +650,12 @@ impl fmt::Display for Finding {
                     "{}: config `workspace_id` is `{value}` — a workspace name cannot be empty or contain `/`, `:` or whitespace (ignored; the workspace stays anonymous)",
                     doc.display(),
                 ),
+                crate::config::ConfigIssueKind::NestNotSingleValued { field } => write!(
+                    f,
+                    "{}: config `{}` nests by `{field}`, which is declared `type: seq` — a document with several values has several homes, and containment allows one (the view still groups; drop `nest`)",
+                    doc.display(),
+                    issue.key,
+                ),
             },
             Finding::ConfigSpecAhead { doc, declared } => write!(
                 f,

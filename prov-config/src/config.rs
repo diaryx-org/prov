@@ -1068,6 +1068,14 @@ pub enum ConfigIssueKind {
     /// tree the spanning relation requires (DESIGN §3). `key` is `spanning`;
     /// `inverse` is the offending child→parent relation.
     SpanningNotSingleParent { inverse: String },
+    /// A view declares `nest:` but groups by a field the workspace declares
+    /// multi-valued (`fields.<field>.type: seq`).
+    ///
+    /// Nesting files a record into the single-parent spanning relation, so a
+    /// document carrying two values for `field` has two homes and nothing can
+    /// choose between them. The *grouping* is fine — one document under several
+    /// groups is what a view is for — so only the filing half is reported.
+    NestNotSingleValued { field: String },
     /// `workspace_id` holds a name that cannot be written as the qualifier of an
     /// `id:<workspace>/<id>` reference — it contains `/`, `:` or whitespace, or
     /// is not a string at all. `apply` ignored it, so the workspace stayed
@@ -1234,7 +1242,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
             "references" => diagnose_reference_block(&mut issues, "references", value),
             "relations" => diagnose_relations(&mut issues, value),
             "fields" => diagnose_fields(&mut issues, value),
-            "views" => diagnose_views(&mut issues, value),
+            "views" => diagnose_views(&mut issues, value, map),
             other => {
                 if let Some(suggestion) = nearest(other, TOP_KEYS) {
                     issues.push(unknown(key.clone(), suggestion));
@@ -1493,12 +1501,13 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
 /// the crate that executes one); this is the translation into config-issue
 /// vocabulary, plus the near-miss suggestion, which needs the edit distance
 /// every other config near-miss already uses.
-fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
+fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mapping) {
     let Some(map) = value.as_mapping() else {
         return block_shape_issue(issues, "views", value);
     };
     for (name, spec) in map {
         let prefix = format!("views.{name}");
+        diagnose_nest_is_fileable(issues, &prefix, spec, surface);
         for issue in prov_views::diagnose_view(name, spec) {
             let dotted = match issue.key.as_str() {
                 "" => prefix.clone(),
@@ -1518,10 +1527,12 @@ fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
                         ],
                     },
                 }),
-                ViewIssueKind::BadGrain { value } => issues.push(ConfigIssue {
-                    key: dotted,
+                ViewIssueKind::BadGrain => issues.push(ConfigIssue {
+                    key: dotted.clone(),
                     kind: ConfigIssueKind::InvalidValue {
-                        value: value.clone(),
+                        value: spec
+                            .get(&issue.key)
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
                         expected: expected(),
                     },
                 }),
@@ -1545,6 +1556,62 @@ fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
                 }
             }
         }
+    }
+}
+
+/// Flag a `nest:` on a view that groups by a field the workspace declares
+/// **multi-valued** (`fields.<name>.type: seq`).
+///
+/// `nest` files a record into the spanning relation, which is single-parent, so
+/// a document with two values for the grouping field has two homes and no way
+/// to choose between them. Grouping by such a field is perfectly good — that is
+/// the whole point of a view — so this flags only the *filing* half.
+///
+/// Reported rather than left to bite later because `nest:` is a description a
+/// frontend acts on, so the failure surfaces at the moment someone creates a
+/// document, which is the worst time to discover it. `ViewSpec::nest_route`
+/// returns `None` for the same case at runtime, so the two agree.
+///
+/// Only fires when `fields` and `views` are declared in the **same config
+/// surface**: `diagnose` lints one surface at a time and cannot see the merged
+/// config, which is the same bound every other cross-key check here has.
+fn diagnose_nest_is_fileable(
+    issues: &mut Vec<ConfigIssue>,
+    prefix: &str,
+    spec: &Value,
+    surface: &Mapping,
+) {
+    if spec.get("nest").is_none() {
+        return;
+    }
+    let Some(fields) = surface.get("fields").and_then(Value::as_mapping) else {
+        return;
+    };
+    let Some(view) = prov_views::ViewSpec::parse("", spec) else {
+        return;
+    };
+    // Any key in the chain being multi-valued is enough: the chain picks
+    // whichever is filled in, so a document could reach the `seq` one.
+    let multi: Vec<&String> = view
+        .group
+        .keys
+        .iter()
+        .filter(|key| {
+            fields
+                .get(*key)
+                .and_then(|f| f.get("type"))
+                .and_then(Value::as_str)
+                .and_then(field_type_from_config_str)
+                == Some(FieldType::Seq)
+        })
+        .collect();
+    if let Some(field) = multi.first() {
+        issues.push(ConfigIssue {
+            key: format!("{prefix}.nest"),
+            kind: ConfigIssueKind::NestNotSingleValued {
+                field: (*field).clone(),
+            },
+        });
     }
 }
 
@@ -2364,6 +2431,69 @@ mod tests {
                         suggestion: "views.daily.label".into()
                     }),
             "{issues:?}"
+        );
+    }
+
+    /// `nest` files into the single-parent spine, so a document with two values
+    /// for the grouping field has two homes. Grouping by it is fine — only the
+    /// filing half is reported.
+    #[test]
+    fn diagnose_flags_a_nest_on_a_multi_valued_field() {
+        let block = |view: &[(&str, Value)]| {
+            let mut fields = Mapping::new();
+            let mut people = Mapping::new();
+            people.insert("type".into(), str_value("seq"));
+            fields.insert("people".into(), Value::Mapping(people));
+
+            let mut views = Mapping::new();
+            let mut entry = Mapping::new();
+            for (k, v) in view {
+                entry.insert((*k).into(), v.clone());
+            }
+            views.insert("who".into(), Value::Mapping(entry));
+
+            let mut top = Mapping::new();
+            top.insert("fields".into(), Value::Mapping(fields));
+            top.insert("views".into(), Value::Mapping(views));
+            Value::Mapping(top)
+        };
+
+        let issues = diagnose(&block(&[
+            ("group", str_value("people")),
+            ("nest", str_value("initial")),
+        ]));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "views.who.nest");
+        assert_eq!(
+            issues[0].kind,
+            ConfigIssueKind::NestNotSingleValued {
+                field: "people".into()
+            }
+        );
+
+        // The same view without `nest:` is clean — one document under several
+        // groups is what a view is *for*.
+        assert!(
+            diagnose(&block(&[("group", str_value("people"))])).is_empty(),
+            "grouping by a multi-valued field is not the problem"
+        );
+    }
+
+    /// The bound worth knowing: `diagnose` lints one surface at a time, so the
+    /// cross-key check is silent when `fields` and `views` are declared apart.
+    #[test]
+    fn the_nest_check_is_silent_across_two_config_surfaces() {
+        let mut views = Mapping::new();
+        let mut entry = Mapping::new();
+        entry.insert("group".into(), str_value("people"));
+        entry.insert("nest".into(), str_value("initial"));
+        views.insert("who".into(), Value::Mapping(entry));
+        let mut top = Mapping::new();
+        top.insert("views".into(), Value::Mapping(views));
+
+        assert!(
+            diagnose(&Value::Mapping(top)).is_empty(),
+            "no `fields` in this surface to contradict it"
         );
     }
 

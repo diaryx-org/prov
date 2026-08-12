@@ -1124,6 +1124,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // and picking a name for them would put it in every reference
                 // that ever points here. Diagnosis only.
                 crate::config::ConfigIssueKind::MalformedWorkspaceId { .. } => Ok(Vec::new()),
+                // Two defensible repairs — drop the `nest`, or stop declaring
+                // the field a `seq` — and they mean different things about the
+                // workspace: one says this lens does not file, the other says
+                // the field never held more than one value. Offering either
+                // would be guessing which the author meant, and the second
+                // silently changes how every *other* consumer reads that field.
+                crate::config::ConfigIssueKind::NestNotSingleValued { .. } => Ok(Vec::new()),
             },
             _ => Ok(Vec::new()),
         }

@@ -193,6 +193,86 @@ fn an_unreadable_where_is_reported_by_check() {
     );
 }
 
+/// The generalization end to end: the same `by:` key, no calendar involved.
+/// `hopper` lower-cased still lands under `H`, and `Ålesund` cuts by character
+/// rather than byte.
+#[test]
+fn an_initial_grain_builds_an_a_to_z_index() {
+    let dir = std::env::temp_dir().join(format!("prov-views-cli-az-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  views:\n    surnames:\n      group: surname\n      \
+         by: initial\n      nest: { initial: 2 }\ncontents:\n- a.md\n- b.md\n- c.md\n---\n",
+    );
+    write(
+        &dir,
+        "a.md",
+        "---\ntitle: Ada\npart_of: index.md\nsurname: Lovelace\n---\n",
+    );
+    write(
+        &dir,
+        "b.md",
+        "---\ntitle: Grace\npart_of: index.md\nsurname: hopper\n---\n",
+    );
+    write(
+        &dir,
+        "c.md",
+        "---\ntitle: Someone\npart_of: index.md\nsurname: Ålesund\n---\n",
+    );
+
+    let (ok, out) = run(&dir, &["views", "surnames"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("H (1)"),
+        "lower-case still files under H: {out}"
+    );
+    assert!(out.contains("L (1)"), "{out}");
+    assert!(out.contains("Å (1)"), "cut by character, not byte: {out}");
+
+    // The listing reports the filing grain, since `nest` is the half that
+    // writes.
+    let (_, out) = run(&dir, &["views"]);
+    assert!(out.contains("by initial"), "{out}");
+    assert!(out.contains("files by initial 2"), "{out}");
+}
+
+/// `nest` on a multi-valued field is a finding, not a runtime surprise — the
+/// spine is single-parent, so a document with two values has two homes. The
+/// view still groups.
+#[test]
+fn nesting_by_a_multi_valued_field_is_reported() {
+    let dir = std::env::temp_dir().join(format!("prov-views-cli-nest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  fields:\n    people:\n      type: seq\n  views:\n    who:\n      \
+         group: people\n      nest: initial\ncontents:\n- a.md\n---\n",
+    );
+    write(
+        &dir,
+        "a.md",
+        "---\ntitle: A letter\npart_of: index.md\npeople:\n- Ada\n- Grace\n---\n",
+    );
+
+    let (_, out) = run(&dir, &["check"]);
+    assert!(
+        out.contains("views.who.nest") && out.contains("several homes"),
+        "{out}"
+    );
+
+    let (ok, out) = run(&dir, &["views", "who"]);
+    assert!(ok, "the view still groups: {out}");
+    assert!(
+        out.contains("Ada (1)") && out.contains("Grace (1)"),
+        "{out}"
+    );
+}
+
 /// An anchor that names nothing must not read as an archive with nothing in it.
 #[test]
 fn a_dead_anchor_fails_loudly_rather_than_printing_an_empty_view() {

@@ -45,10 +45,12 @@ pub enum ViewIssueKind {
     /// a near-miss suggestion is the caller's to add.
     UnknownKey,
     /// A `by:` or `nest:` whose value is not a grain.
-    BadGrain {
-        /// The value as written.
-        value: String,
-    },
+    ///
+    /// Carries no rendering of the offending value: the key names it, and how a
+    /// value is summarized for a human is the caller's vocabulary, not this
+    /// crate's — the same division that leaves near-miss suggestions to
+    /// `prov-config`.
+    BadGrain,
     /// A `where:` that yields no condition — not a mapping, empty, or naming
     /// only predicates this format does not define.
     ///
@@ -70,7 +72,7 @@ impl ViewIssueKind {
     pub fn expected(&self) -> &'static [&'static str] {
         match self {
             ViewIssueKind::UnknownKey => VIEW_KEYS,
-            ViewIssueKind::BadGrain { .. } => GRAINS,
+            ViewIssueKind::BadGrain => GRAINS,
             ViewIssueKind::NoCondition => CONDITION_KEYS,
             _ => &[],
         }
@@ -105,12 +107,8 @@ pub fn diagnose_view(name: &str, value: &Value) -> Vec<ViewIssue> {
                 // view stays usable by grouping on the raw values. That is the
                 // right fallback and it is also completely silent, so this is
                 // the only place a `by: yearr` is ever heard from.
-                let text = match value {
-                    Value::String(s) => s.clone(),
-                    other => format!("{other:?}"),
-                };
-                if value.as_str().and_then(Grain::from_config_str).is_none() {
-                    issues.push(issue(key, ViewIssueKind::BadGrain { value: text }));
+                if Grain::parse(value).is_none() {
+                    issues.push(issue(key, ViewIssueKind::BadGrain));
                 }
             }
             _ => issues.push(issue(key, ViewIssueKind::UnknownKey)),
@@ -185,9 +183,7 @@ mod tests {
                 vec![ViewIssue {
                     view: "daily".into(),
                     key: key.into(),
-                    kind: ViewIssueKind::BadGrain {
-                        value: "yearr".into()
-                    },
+                    kind: ViewIssueKind::BadGrain,
                 }]
             );
         }

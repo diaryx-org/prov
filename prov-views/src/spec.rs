@@ -43,11 +43,13 @@
 //! what makes it reviewable, diffable, and different for a workspace that files
 //! by `taken_on` or `received`.
 //!
-//! The grain applies to any value, not to a declared type: it is a prefix cut
-//! over ISO-8601 text (see [`Grain::cut`]), so it works on the `2026-07-24`
-//! that YAML hands back as a string without this crate having to resolve the
-//! workspace's `fields.<name>.type` declarations. A value that is not
-//! ISO-shaped does not group at that grain rather than grouping wrongly.
+//! A [`Grain`] is not a calendar either — it is any coarsening (see
+//! [`Grain::cut`]), and the date grains are one family beside
+//! [`Initial`](Grain::Initial)'s A–Z index. It applies to a *value*, never to a
+//! declared type, so it works on the `2026-07-24` that YAML hands back as a
+//! string without this crate resolving the workspace's `fields.<name>.type`
+//! declarations. A value the grain cannot cut does not group at all, rather
+//! than grouping wrongly.
 //!
 //! # Classification is not aggregation
 //!
@@ -95,11 +97,41 @@ pub const VIEWS_KEY: &str = "views";
 /// The keys valid inside one `views.<name>` entry.
 pub const VIEW_KEYS: &[&str] = &["label", "icon", "group", "by", "under", "nest", "where"];
 
-/// How finely a value is cut into groups.
+/// A **coarsening**: how finely a value is cut into groups.
 ///
-/// Deliberately stops at the day. An hour is an instant, not a grain anyone
-/// files by, and the moment a group holds one document each the view has
-/// stopped grouping.
+/// Not a date vocabulary. A grain is any many-to-one function from a value to a
+/// group key, and the calendar grains are one family of them — `year` is
+/// "the first four characters, if they are a year", and [`Initial`](Self::Initial)
+/// is "the first *n* characters" with no such condition. What makes something a
+/// grain is the two properties below, not what it is about.
+///
+/// # Two properties, and what each one licenses
+///
+/// - [`cut`](Self::cut) — value → key. This is all [`by`](Grouping::by) needs,
+///   because grouping is a *reading* operation with no invariant to keep.
+/// - [`chain`](Self::chain) — the coarser grains this one refines, coarsest
+///   first. This is what [`nest`](ViewSpec::nest) needs, and it is a strictly
+///   stronger requirement: nesting builds a hierarchy of index documents, so
+///   each level's key must be determined by the finer level's
+///   (`2026-07-24` → `2026-07` → `2026`, `Ada` → `Ad` → `A`). A coarsening
+///   with no such chain can group but cannot nest.
+///
+/// The second constraint is prov's, not taste. `nest` files a record into the
+/// **spanning relation**, which is single-parent, so a nest chain must also be
+/// *single-valued* per document — see [`ViewSpec::nest_route`], which returns
+/// `None` rather than guessing which of a multi-valued field's values a
+/// document should be filed under.
+///
+/// # Adding a grain
+///
+/// The rule is the one [`crate::filter`] uses for predicates: a **concrete lens
+/// that cannot otherwise be said**, not a shape that seems likely to be wanted.
+/// `initial` earns its place as the A–Z index every list of names and places
+/// eventually wants. A numeric `bucket` (ratings by tens) is the obvious next
+/// one and is deliberately *not* here: nobody has asked for it, and it would
+/// arrive with a problem the calendar grains do not have — its keys sort
+/// lexically as `0, 10, 100, 20`, so it needs group ordering to become
+/// grain-aware, which is really the deferred `sort:` axis wearing a disguise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Grain {
     /// `2026` — the default, and what a lifetime of entries wants.
@@ -109,73 +141,155 @@ pub enum Grain {
     Month,
     /// `2026-07-25`.
     Day,
+    /// The first *n* characters, upper-cased — the A–Z index.
+    ///
+    /// Upper-casing is a deliberate normalization rather than a faithful cut:
+    /// an alphabetical index that files `ada` apart from `Ada` is not an index.
+    /// It is the same kind of choice a date cut makes when it reports `2026`
+    /// for a value that says `2026-07-24`; a group key describes a bucket, not
+    /// a value that appears in the data.
+    Initial(usize),
 }
 
-/// Every spelling, in coarsest-first order — the set a diagnostic offers and a
-/// picker lists.
-pub const GRAINS: &[&str] = &["year", "month", "day"];
+/// The grain spellings that are a bare word — what a near-miss diagnostic
+/// offers. [`Grain::Initial`] also takes a parameterized form
+/// (`{ initial: 2 }`) that is not a spelling to suggest.
+pub const GRAINS: &[&str] = &["year", "month", "day", "initial"];
 
 impl Grain {
-    /// The config spelling.
-    pub fn as_config_str(self) -> &'static str {
-        match self {
+    /// The config spelling, when this grain has a bare-word one.
+    ///
+    /// `None` for a parameterized grain that is not at its default — write
+    /// [`to_value`](Self::to_value) instead, which always round-trips.
+    pub fn as_config_str(self) -> Option<&'static str> {
+        Some(match self {
             Grain::Year => "year",
             Grain::Month => "month",
             Grain::Day => "day",
-        }
+            Grain::Initial(1) => "initial",
+            Grain::Initial(_) => return None,
+        })
     }
 
-    /// Parse a config spelling. Unknown text is **not** silently defaulted — a
-    /// `by: yearr` that quietly grouped by year would look applied and be
-    /// wrong, which is the failure a config linter exists to prevent.
+    /// Parse a bare-word config spelling. Unknown text is **not** silently
+    /// defaulted — a `by: yearr` that quietly grouped by year would look
+    /// applied and be wrong, which is the failure a config linter exists to
+    /// prevent.
     pub fn from_config_str(text: &str) -> Option<Self> {
         match text.trim() {
             "year" => Some(Grain::Year),
             "month" => Some(Grain::Month),
             "day" => Some(Grain::Day),
+            // The bare word is the useful case; `{ initial: n }` says the rest.
+            "initial" => Some(Grain::Initial(1)),
             _ => None,
         }
     }
 
-    /// How many characters of an ISO-8601 date this grain keeps: `2026-07-25`
-    /// cut to 4, 7 or 10.
+    /// Read a `by:`/`nest:` value: a bare word, or a one-key mapping naming a
+    /// parameterized grain (`{ initial: 2 }`).
+    ///
+    /// A parameter of zero is rejected rather than clamped: `{ initial: 0 }`
+    /// would put every document in one group called "", which is a view that
+    /// has stopped being one.
+    pub fn parse(value: &Value) -> Option<Self> {
+        match value {
+            Value::String(text) => Grain::from_config_str(text),
+            Value::Mapping(map) => match map.iter().next() {
+                Some((key, arg)) if map.len() == 1 && key == "initial" => {
+                    let n = match arg {
+                        Value::Int(n) => *n,
+                        Value::String(s) => s.trim().parse().ok()?,
+                        _ => return None,
+                    };
+                    (n > 0).then_some(Grain::Initial(n as usize))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The value this grain writes back as — a bare word where it has one, a
+    /// one-key mapping otherwise.
+    pub fn to_value(self) -> Value {
+        match self.as_config_str() {
+            Some(word) => Value::String(word.into()),
+            None => {
+                let Grain::Initial(n) = self else {
+                    unreachable!("every non-parameterized grain has a bare spelling")
+                };
+                let mut map = Mapping::new();
+                map.insert("initial".into(), Value::Int(n as i64));
+                Value::Mapping(map)
+            }
+        }
+    }
+
+    /// How this grain reads in a listing (`month`, `initial 2`).
+    pub fn display(self) -> String {
+        match self {
+            Grain::Initial(n) if n > 1 => format!("initial {n}"),
+            other => other.as_config_str().unwrap_or("initial").to_string(),
+        }
+    }
+
+    /// The grains to nest through to reach `self`, coarsest first.
+    ///
+    /// Filing at month grain means a year index and then a month index inside
+    /// it: a month index that is not inside its year is not where anyone looks
+    /// for it. The alphabetical case is the same shape — filing at `initial 2`
+    /// means an `A` index holding an `Ad` index.
+    ///
+    /// Each step must be *determined* by the one after it, which is what makes
+    /// the hierarchy well defined. That is why this is a property of the grain
+    /// rather than something a caller can assemble: an arbitrary sequence of
+    /// coarsenings is not a nest.
+    pub fn chain(self) -> Vec<Grain> {
+        match self {
+            Grain::Year => vec![Grain::Year],
+            Grain::Month => vec![Grain::Year, Grain::Month],
+            Grain::Day => vec![Grain::Year, Grain::Month, Grain::Day],
+            Grain::Initial(n) => (1..=n).map(Grain::Initial).collect(),
+        }
+    }
+
+    /// How many characters of an ISO-8601 date a calendar grain keeps:
+    /// `2026-07-25` cut to 4, 7 or 10.
     ///
     /// The group key is a *prefix* because an ISO date sorts lexically, so the
     /// group order falls out of the string with no calendar arithmetic and no
     /// time zone to get wrong.
-    pub fn prefix_len(self) -> usize {
+    fn prefix_len(self) -> usize {
         match self {
             Grain::Year => 4,
             Grain::Month => 7,
             Grain::Day => 10,
+            Grain::Initial(n) => n,
         }
     }
 
-    /// The grains to nest through to reach `self`, coarsest first: filing at
-    /// month grain means a year index and then a month index inside it. A month
-    /// index that is not inside its year is not where anyone looks for it.
-    pub fn chain(self) -> &'static [Grain] {
-        match self {
-            Grain::Year => &[Grain::Year],
-            Grain::Month => &[Grain::Year, Grain::Month],
-            Grain::Day => &[Grain::Year, Grain::Month, Grain::Day],
-        }
-    }
-
-    /// Cut `value` to this grain, or `None` if it is not ISO-8601-shaped that
-    /// far.
+    /// Cut `value` to this grain, or `None` if the value does not reach it.
     ///
-    /// Validating rather than taking a blind prefix is what keeps `by:` usable
-    /// on a view whose field is *usually* a date: `banana` cut to a year would
-    /// otherwise group under `bana`, a group key that looks like data. A value
-    /// this rejects falls to the ungrouped bucket, where it is visible as
-    /// something that did not sort.
+    /// The calendar grains *validate* rather than taking a blind prefix, which
+    /// is what keeps `by:` usable on a view whose field is only usually a date:
+    /// `banana` cut to a year would otherwise group under `bana`, a group key
+    /// that looks like data. A value this rejects falls to the ungrouped
+    /// bucket, where it is visible as something that did not sort.
     ///
     /// Anything after the cut is ignored, so an RFC 3339 instant
     /// (`2026-07-24T07:32:00Z` — what a machine-maintained `updated` field
     /// carries) cuts exactly like the plain date it starts with.
     pub fn cut(self, value: &str) -> Option<String> {
         let text = value.trim();
+        if let Grain::Initial(n) = self {
+            // By *character*, not byte: a name may begin with any of them, and
+            // slicing `Ålesund` at byte 1 is a panic. A value shorter than the
+            // cut is taken whole rather than rejected — `Bo` under a two-letter
+            // index belongs at `BO`, and there is no coarser truth to wait for.
+            let cut: String = text.chars().take(n).flat_map(char::to_uppercase).collect();
+            return (!cut.is_empty()).then_some(cut);
+        }
         let bytes = text.as_bytes();
         if bytes.len() < self.prefix_len() {
             return None;
@@ -185,7 +299,6 @@ impl Grain {
         // the prefix is a character boundary by construction.
         let shape_ok = bytes[..4].iter().all(u8::is_ascii_digit)
             && match self {
-                Grain::Year => true,
                 Grain::Month => bytes[4] == b'-' && bytes[5..7].iter().all(u8::is_ascii_digit),
                 Grain::Day => {
                     bytes[4] == b'-'
@@ -193,6 +306,7 @@ impl Grain {
                         && bytes[7] == b'-'
                         && bytes[8..10].iter().all(u8::is_ascii_digit)
                 }
+                _ => true,
             };
         // A year cut must not swallow the head of a longer number: `20264` is
         // not the year 2026. Every other grain is already delimited by its `-`.
@@ -345,17 +459,11 @@ impl ViewSpec {
             icon: non_empty(map.get("icon")),
             group: Grouping {
                 keys,
-                by: map
-                    .get("by")
-                    .and_then(Value::as_str)
-                    .and_then(Grain::from_config_str),
+                by: map.get("by").and_then(Grain::parse),
             },
             under: non_empty(map.get("under")),
             filter: map.get("where").and_then(Condition::parse),
-            nest: map
-                .get("nest")
-                .and_then(Value::as_str)
-                .and_then(Grain::from_config_str),
+            nest: map.get("nest").and_then(Grain::parse),
         })
     }
 
@@ -372,7 +480,7 @@ impl ViewSpec {
         }
         map.insert("group".into(), self.group.to_value());
         if let Some(by) = self.group.by {
-            map.insert("by".into(), Value::String(by.as_config_str().into()));
+            map.insert("by".into(), by.to_value());
         }
         if let Some(under) = &self.under {
             map.insert("under".into(), Value::String(under.clone()));
@@ -381,9 +489,53 @@ impl ViewSpec {
             map.insert("where".into(), filter.to_value());
         }
         if let Some(nest) = self.nest {
-            map.insert("nest".into(), Value::String(nest.as_config_str().into()));
+            map.insert("nest".into(), nest.to_value());
         }
         map
+    }
+
+    /// The index titles a new record nests under, coarsest first — or `None`
+    /// when this view does not nest, or `meta` cannot be filed.
+    ///
+    /// For a date view at month grain this is `["2026", "2026-07"]`; for an
+    /// alphabetical one at `initial 2`, `["A", "AD"]`. Those are *titles*, which
+    /// is exactly what prov's route addressing takes (`prov new --under
+    /// "Daily/2026/2026-07" -p`), so a frontend that materializes a view hands
+    /// this straight to `plan_route` and never assembles a path itself.
+    ///
+    /// `None` in three cases, all of which mean *this record has no single home
+    /// under this view* rather than *nowhere*:
+    ///
+    /// - the view declares no [`nest`](Self::nest);
+    /// - no field in the grouping chain carries a usable value, so there is
+    ///   nothing to file by;
+    /// - the value is **multi-valued**. This is the constraint prov's spanning
+    ///   relation imposes: a document with two people cannot hang under two
+    ///   parents, and picking one would be inventing an answer the workspace
+    ///   did not give. Such a view groups perfectly well — it just cannot be
+    ///   materialized, which is why `nest` on a multi-valued field is a config
+    ///   finding rather than a runtime surprise.
+    pub fn nest_route(&self, meta: &Value) -> Option<Vec<String>> {
+        let nest = self.nest?;
+        // Read the chain *uncut*: `by:` is how this view reads, and reading must
+        // not decide where a file lands (the whole point of keeping the two
+        // keys apart). The value is then cut at each nesting grain instead.
+        let raw = Grouping {
+            keys: self.group.keys.clone(),
+            by: None,
+        };
+        let values = raw.keys_of(meta);
+        let [value] = values.as_slice() else {
+            return None;
+        };
+        let route: Vec<String> = nest
+            .chain()
+            .into_iter()
+            .filter_map(|grain| grain.cut(value))
+            .collect();
+        // A partial chain would file a July entry under `2026` and call it
+        // done, which is a different place from the one the view describes.
+        (route.len() == nest.chain().len()).then_some(route)
     }
 
     /// What a person calls this view: its label, else its name humanized
@@ -468,6 +620,10 @@ mod tests {
             .map(|(k, v)| (*k, Value::String((*v).to_string())))
             .collect();
         mapping(&owned)
+    }
+
+    fn text_value(s: &str) -> Value {
+        Value::String(s.to_string())
     }
 
     fn seq(items: &[&str]) -> Value {
@@ -564,6 +720,78 @@ mod tests {
         assert_eq!(Grain::Year.cut("  2026-07-24  "), Some("2026".into()));
     }
 
+    /// The generalization, stated as a test: a grain is any coarsening, and the
+    /// A–Z index is one — same `by:` key, same `cut`, no calendar involved.
+    #[test]
+    fn an_initial_grain_cuts_the_alphabet_the_way_a_date_grain_cuts_a_year() {
+        assert_eq!(Grain::Initial(1).cut("Ada Lovelace"), Some("A".into()));
+        assert_eq!(Grain::Initial(2).cut("Ada Lovelace"), Some("AD".into()));
+        // Upper-cased on purpose: an index that files `ada` apart from `Ada` is
+        // not an index.
+        assert_eq!(Grain::Initial(1).cut("ada"), Some("A".into()));
+        // Shorter than the cut is taken whole — there is no coarser truth to
+        // wait for, unlike a half-written date.
+        assert_eq!(Grain::Initial(3).cut("Bo"), Some("BO".into()));
+        assert_eq!(Grain::Initial(1).cut("   "), None);
+    }
+
+    /// Cutting by character rather than byte: slicing a multi-byte name at
+    /// byte 1 would panic, and `Å` is one letter.
+    #[test]
+    fn an_initial_grain_cuts_characters_not_bytes() {
+        assert_eq!(Grain::Initial(1).cut("Ålesund"), Some("Å".into()));
+        assert_eq!(Grain::Initial(2).cut("Øland"), Some("ØL".into()));
+        assert_eq!(Grain::Initial(1).cut("東京"), Some("東".into()));
+    }
+
+    /// `chain` is what `nest` needs, and it generalizes with the grain: each
+    /// step must be determined by the one after it.
+    #[test]
+    fn every_grain_chains_coarsest_first() {
+        assert_eq!(Grain::Day.chain(), [Grain::Year, Grain::Month, Grain::Day]);
+        assert_eq!(Grain::Year.chain(), [Grain::Year]);
+        assert_eq!(
+            Grain::Initial(3).chain(),
+            [Grain::Initial(1), Grain::Initial(2), Grain::Initial(3)]
+        );
+    }
+
+    #[test]
+    fn a_parameterized_grain_parses_and_round_trips() {
+        let mut map = Mapping::new();
+        map.insert("initial".into(), Value::Int(2));
+        let parsed = Grain::parse(&Value::Mapping(map)).expect("a grain");
+        assert_eq!(parsed, Grain::Initial(2));
+        assert_eq!(Grain::parse(&parsed.to_value()), Some(parsed));
+
+        // The bare word is the one-character case, and writes back bare.
+        assert_eq!(
+            Grain::parse(&text_value("initial")),
+            Some(Grain::Initial(1))
+        );
+        assert_eq!(Grain::Initial(1).to_value(), text_value("initial"));
+        assert_eq!(Grain::parse(&text_value("month")), Some(Grain::Month));
+    }
+
+    /// A zero-width cut puts every document in one group called "", which is a
+    /// view that has stopped being one. Rejected rather than clamped, so the
+    /// linter reports it instead of it silently working.
+    #[test]
+    fn a_grain_with_a_useless_parameter_does_not_parse() {
+        let mut zero = Mapping::new();
+        zero.insert("initial".into(), Value::Int(0));
+        assert_eq!(Grain::parse(&Value::Mapping(zero)), None);
+
+        let mut unknown = Mapping::new();
+        unknown.insert("bucket".into(), Value::Int(10));
+        assert_eq!(Grain::parse(&Value::Mapping(unknown)), None);
+
+        let mut two = Mapping::new();
+        two.insert("initial".into(), Value::Int(1));
+        two.insert("month".into(), Value::Int(1));
+        assert_eq!(Grain::parse(&Value::Mapping(two)), None);
+    }
+
     /// The reason the cut validates instead of slicing: `banana` must not
     /// become the group `bana`, and `20264` must not become the year `2026`.
     #[test]
@@ -603,6 +831,112 @@ mod tests {
         assert!(ViewSpec::parse("x", &text(&[("group", "  ")])).is_none());
         assert!(ViewSpec::parse("x", &mapping(&[("group", seq(&[]))])).is_none());
         assert!(ViewSpec::parse("x", &Value::String("created".into())).is_none());
+    }
+
+    /// A view that nests hands a frontend the index *titles* to file under —
+    /// which is exactly what prov's route addressing takes, so nothing
+    /// assembles a path.
+    #[test]
+    fn nest_route_gives_the_index_titles_to_file_under() {
+        let spec = ViewSpec::parse(
+            "daily",
+            &text(&[("group", "created"), ("by", "day"), ("nest", "month")]),
+        )
+        .expect("a view");
+
+        let mut doc = Mapping::new();
+        doc.insert("created".into(), Value::String("2026-07-24".into()));
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(doc)),
+            Some(vec!["2026".to_string(), "2026-07".to_string()]),
+            "a month nest is a year index holding a month index"
+        );
+    }
+
+    /// The alphabetical case is the same machinery — the generalization, seen
+    /// from the filing side rather than the reading side.
+    #[test]
+    fn nest_route_generalizes_past_dates() {
+        let mut entry = Mapping::new();
+        entry.insert("group".into(), Value::String("surname".into()));
+        entry.insert("nest".into(), {
+            let mut g = Mapping::new();
+            g.insert("initial".into(), Value::Int(2));
+            Value::Mapping(g)
+        });
+        let spec = ViewSpec::parse("people", &Value::Mapping(entry)).expect("a view");
+
+        let mut doc = Mapping::new();
+        doc.insert("surname".into(), Value::String("Lovelace".into()));
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(doc)),
+            Some(vec!["L".to_string(), "LO".to_string()])
+        );
+    }
+
+    /// The constraint prov's spine imposes: a document with two people cannot
+    /// hang under two parents, so it has no single home and this says so rather
+    /// than picking one.
+    #[test]
+    fn a_multi_valued_document_has_no_nest_route() {
+        let spec = ViewSpec::parse("who", &text(&[("group", "people"), ("nest", "initial")]))
+            .expect("a view");
+
+        let mut one = Mapping::new();
+        one.insert("people".into(), Value::String("Ada".into()));
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(one)),
+            Some(vec!["A".to_string()]),
+            "one value files fine"
+        );
+
+        let mut two = Mapping::new();
+        two.insert("people".into(), seq(&["Ada", "Grace"]));
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(two)),
+            None,
+            "two values are two homes, and prov's spine allows one"
+        );
+    }
+
+    /// Reading must not decide where a file lands: a view that groups by year
+    /// still nests by month if that is what it says, and the route is cut from
+    /// the *uncut* value.
+    #[test]
+    fn nest_route_ignores_how_the_view_reads() {
+        let spec = ViewSpec::parse(
+            "daily",
+            &text(&[("group", "created"), ("by", "year"), ("nest", "month")]),
+        )
+        .expect("a view");
+
+        let mut doc = Mapping::new();
+        doc.insert("created".into(), Value::String("2026-07-24".into()));
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(doc)),
+            Some(vec!["2026".to_string(), "2026-07".to_string()]),
+            "grouped by year, filed by month — `by` never reaches the route"
+        );
+    }
+
+    #[test]
+    fn a_view_that_does_not_nest_or_cannot_file_has_no_route() {
+        let no_nest = ViewSpec::parse("daily", &text(&[("group", "created")])).expect("a view");
+        assert_eq!(no_nest.nest_route(&Value::Mapping(Mapping::new())), None);
+
+        let nests = ViewSpec::parse("daily", &text(&[("group", "created"), ("nest", "month")]))
+            .expect("a view");
+        assert_eq!(
+            nests.nest_route(&Value::Mapping(Mapping::new())),
+            None,
+            "nothing to file by"
+        );
+
+        // A value that reaches the year but not the month files nowhere rather
+        // than landing in `2026` and calling it done.
+        let mut partial = Mapping::new();
+        partial.insert("created".into(), Value::String("2026".into()));
+        assert_eq!(nests.nest_route(&Value::Mapping(partial)), None);
     }
 
     #[test]

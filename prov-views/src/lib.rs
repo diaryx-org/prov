@@ -29,12 +29,13 @@
 //! ## Nothing here knows what a date is
 //!
 //! This crate has no `date` grouping, no built-in field chain, and no calendar.
-//! `group:` is an ordered list of field keys and `by:` is a prefix cut over
-//! ISO-8601 text — so the three field names in the example above are a
-//! *declaration the workspace makes*, not a convention this crate blesses. A
-//! workspace that files by `taken_on` writes that instead, and every prov tool
-//! reading the same `views:` block agrees, rather than each one hardcoding a
-//! chain and hoping.
+//! `group:` is an ordered list of field keys and `by:` is a **coarsening** —
+//! `year`/`month`/`day` cut ISO-8601 text, `initial` cuts the first letters for
+//! an A–Z index, and both are the same kind of thing. So the three field names
+//! in the example above are a *declaration the workspace makes*, not a
+//! convention this crate blesses. A workspace that files by `taken_on` writes
+//! that instead, and every prov tool reading the same `views:` block agrees,
+//! rather than each one hardcoding a chain and hoping.
 //!
 //! The reasoning, and the MoReq2010 classification/aggregation split the format
 //! follows, are in [`spec`].

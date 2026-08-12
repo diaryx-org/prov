@@ -293,9 +293,13 @@ fn warn_config(ctx: &Ctx) {
             prov::config::SPEC_VERSION
         );
     }
+    // "Not taking effect" rather than "ignored": most of these *are* keys prov
+    // silently drops, but `views.<name>.nest` on a multi-valued field is read
+    // and simply cannot be acted on. One summary line covers both; `check` says
+    // which it is.
     if let Some(first) = issues.first() {
         eprintln!(
-            "prov: {} config setting(s) will be ignored (e.g. `{}`) — run `prov check` for details",
+            "prov: {} config setting(s) will not take effect (e.g. `{}`) — run `prov check` for details",
             issues.len(),
             first.key
         );
@@ -898,7 +902,7 @@ fn cmd_views(name: Option<&str>) -> CmdResult {
                 None => " (whole workspace)".to_string(),
             };
             let by = match view.group.by {
-                Some(grain) => format!(" by {}", grain.as_config_str()),
+                Some(grain) => format!(" by {}", grain.display()),
                 None => String::new(),
             };
             // The condition is flagged, not rendered: a nested `where:` does
@@ -909,8 +913,15 @@ fn cmd_views(name: Option<&str>) -> CmdResult {
             } else {
                 ""
             };
+            // Shown because `nest` is the half that *writes*: which lens files
+            // a new record, and how deep, is worth seeing without opening the
+            // config.
+            let nest = match view.nest {
+                Some(grain) => format!(", files by {}", grain.display()),
+                None => String::new(),
+            };
             println!(
-                "{}  {} — group: {}{by}{scope}{filtered}",
+                "{}  {} — group: {}{by}{scope}{filtered}{nest}",
                 view.name,
                 view.display_label(),
                 view.group.keys.join(" → "),
@@ -3364,6 +3375,15 @@ fn cmd_config(
                     prov::ConfigIssueKind::MalformedWorkspaceId { value } => {
                         eprintln!(
                             "prov: `{value}` is not a valid workspace name — it cannot be empty or contain `/`, `:` or whitespace"
+                        );
+                    }
+                    // Not reachable from a one-key probe (this needs a `fields`
+                    // declaration alongside the view), but spelled out rather
+                    // than wildcarded so a new issue kind arrives here as a
+                    // compile error.
+                    prov::ConfigIssueKind::NestNotSingleValued { field } => {
+                        eprintln!(
+                            "prov: cannot nest by `{field}` — it is declared `type: seq`, and a document with several values has several homes"
                         );
                     }
                 }

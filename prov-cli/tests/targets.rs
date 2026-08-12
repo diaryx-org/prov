@@ -269,7 +269,10 @@ fn a_command_warns_about_config_that_will_be_ignored_unless_quiet() {
     std::fs::write(dir.join("prov.yaml"), cfg).unwrap();
     let (ok, out) = run(&dir, &["tree"]);
     assert!(ok, "tree still succeeds: {out}");
-    assert!(out.contains("will be ignored"), "warns proactively: {out}");
+    assert!(
+        out.contains("will not take effect"),
+        "warns proactively: {out}"
+    );
     // PROV_QUIET silences the reminder.
     let quiet = Command::new(env!("CARGO_BIN_EXE_prov"))
         .current_dir(&dir)
