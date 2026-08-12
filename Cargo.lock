@@ -470,6 +470,7 @@ dependencies = [
  "indexmap",
  "proptest",
  "prov-config",
+ "prov-exports",
  "prov-fixity",
  "prov-graph",
  "prov-history",
@@ -498,11 +499,20 @@ dependencies = [
  "fig-schema",
  "indexmap",
  "proptest",
+ "prov-exports",
  "prov-fixity",
  "prov-graph",
  "prov-identity",
  "prov-views",
  "thiserror",
+]
+
+[[package]]
+name = "prov-exports"
+version = "0.4.0"
+dependencies = [
+ "prov-graph",
+ "prov-views",
 ]
 
 [[package]]
