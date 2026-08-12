@@ -317,6 +317,17 @@ pub(crate) enum Command {
         /// Dotted key path.
         key: String,
     },
+    /// List the views this workspace declares, or execute one.
+    ///
+    /// A view is the second way through the same documents the containment tree
+    /// already holds — "the entries under Daily, by month". With no NAME, print
+    /// what the workspace declares; with one, print its groups and the
+    /// documents under each.
+    Views {
+        /// The view to execute (default: list every declared view).
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+    },
     /// Print the containment tree that unfolds from a root document.
     Tree {
         /// The document to discover from (default: the workspace root).

@@ -114,6 +114,7 @@ fn main() -> ExitCode {
             resolve_target(&file).and_then(|f| cmd_set(&f, &key, &value))
         }
         Command::Unset { file, key } => resolve_target(&file).and_then(|f| cmd_unset(&f, &key)),
+        Command::Views { name } => cmd_views(name.as_deref()),
         Command::Tree { root } => root
             .map(|r| resolve_target(&r))
             .transpose()
@@ -874,6 +875,84 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
     (if month <= 2 { y + 1 } else { y }, month, day)
+}
+
+/// `prov views [NAME]` — list the declared views, or execute one.
+///
+/// Listing is deliberately the no-argument form. A view is a thing a workspace
+/// *says about itself*, and the first question about one is whether the
+/// workspace agrees it exists — which is also the fastest way to find out that
+/// a `views:` block went unread because a key was misspelled (the stderr
+/// warning `find_root` already prints covers the why).
+fn cmd_views(name: Option<&str>) -> CmdResult {
+    let ctx = find_root()?;
+    let views = &ctx.config.views;
+    let Some(name) = name else {
+        if views.is_empty() {
+            println!("this workspace declares no views");
+            return Ok(ExitCode::SUCCESS);
+        }
+        for view in views {
+            let scope = match &view.under {
+                Some(under) => format!(" under {under}"),
+                None => " (whole workspace)".to_string(),
+            };
+            let by = match view.group.by {
+                Some(grain) => format!(" by {}", grain.as_config_str()),
+                None => String::new(),
+            };
+            println!(
+                "{}  {} — group: {}{by}{scope}",
+                view.name,
+                view.display_label(),
+                view.group.keys.join(" → "),
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    let Some(view) = views.iter().find(|v| v.name == name) else {
+        let declared: Vec<&str> = views.iter().map(|v| v.name.as_str()).collect();
+        return Err(format!(
+            "no view named `{name}` — this workspace declares {}",
+            if declared.is_empty() {
+                "none".to_string()
+            } else {
+                declared.join(", ")
+            }
+        )
+        .into());
+    };
+
+    let ws = workspace(&ctx)?;
+    let rows = block_on(prov::views::execute(ws.graph(), view, &ctx.root_doc))?;
+    for group in &rows.groups {
+        println!("{} ({})", group.key, group.rows.len());
+        for row in &group.rows {
+            print_view_row(row);
+        }
+    }
+    // Named rather than silently omitted: a view whose entries have all stopped
+    // grouping looks exactly like an empty archive, and the difference is the
+    // whole diagnosis.
+    if !rows.ungrouped.is_empty() {
+        println!("(ungrouped) ({})", rows.ungrouped.len());
+        for row in &rows.ungrouped {
+            print_view_row(row);
+        }
+    }
+    if rows.is_empty() {
+        println!("no documents in scope");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One row of a view: `  path — title`.
+fn print_view_row(row: &prov::views::Row) {
+    match &row.title {
+        Some(title) => println!("  {} — {title}", row.path.display()),
+        None => println!("  {}", row.path.display()),
+    }
 }
 
 fn cmd_tree(root: Option<&Path>) -> CmdResult {
