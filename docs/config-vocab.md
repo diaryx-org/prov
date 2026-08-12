@@ -112,6 +112,14 @@ prov:
       reify: true             # each term is its own node (backlinks, prose, stable id)
     created:
       type: date              # a type alone is a complete declaration
+  views:                      # declared lenses — see "Views" below
+    daily:
+      label: Daily
+      icon: calendar          # a hint for a frontend; prov never interprets it
+      group: [date_of_document, created]  # field, or a chain (first non-empty wins)
+      by: month               # year | month | day — cut the value at this grain
+      under: '[Daily](id:abc1234)'        # scope: the subtree below this index
+      nest: year              # where a *new* entry is filed, independent of `by`
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous)
@@ -131,9 +139,55 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `fixity: attachments`, `recycle_bin: true`, `history: off`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
-ordinary carried content). The `spanning`, relation-definition
-(`cardinality`/`inverse`/`means`), and `fields` axes are the *self-description*
-layer — see [Spec](/docs/spec.md).
+ordinary carried content); absent `views` ⇒ the workspace declares no lenses.
+The `spanning`, relation-definition
+(`cardinality`/`inverse`/`means`), `fields` and `views` axes are the
+*self-description* layer — see [Spec](/docs/spec.md).
+
+### Views
+
+The spanning relation is one way through the workspace: a single-parent tree,
+every document in exactly one place. A **view** is a second way through the same
+documents — "the entries under `Daily`, by month", "everything, by tag" — and
+the same document may appear under several groups, which is precisely what the
+spine cannot do.
+
+| key      | means                                                                 |
+| -------- | --------------------------------------------------------------------- |
+| `group`  | a field name, or a list of field names tried in order (first non-empty wins). **Required** — an entry without one is not a view |
+| `by`     | `year` \| `month` \| `day` — cut the chosen value at this grain        |
+| `under`  | a link to an index; the view covers its whole spanning subtree. Absent = the whole workspace |
+| `nest`   | `year` \| `month` \| `day` — the grain a *new* entry is filed at       |
+| `label`  | what a person calls it (absent = the name, humanized)                 |
+| `icon`   | a glyph hint, uninterpreted                                           |
+
+Two things are load-bearing, and both are places an obvious shortcut is wrong.
+
+**There is no `date` grouping.** `group:` names fields and `by:` cuts values, so
+a date view is those two things pointed at date fields — the chain
+`[date_of_document, created]` above is a declaration *this workspace* makes, not
+a convention prov blesses. A workspace that files by `taken_on` writes that
+instead. `by:` is a prefix cut over ISO-8601 text (`2026-07-24T07:32:00Z` cuts
+the same as `2026-07-24`), so it needs no `fields.<name>.type` declaration to
+work; a value that is not ISO-shaped at that grain does not group, rather than
+grouping wrongly.
+
+**`under:` is a traversal, not a path filter.** The scope is resolved by walking
+the spanning relation below the anchor, so it survives a rename, a move and a
+retitle — where `path starts-with "Daily/"` would not, and where matching an
+index *titled* `2026` finds the one under `Trips/` just as happily.
+
+**`nest:` is independent of `by:`.** Grouping is a reading decision and filing is
+a writing one; a picker that reads like a display setting must not silently
+change where tomorrow's entry lands. A view may group finer than it files.
+
+prov reads views and never acts on one — a view has no invariant, so no `check`
+finding can come from a wrong one, and `nest:` describes where a frontend should
+file a record rather than something prov goes and does. They live in the config
+so that every tool over the workspace reads the same lenses instead of each app
+keeping its own block. `prov views` lists them; `prov views <name>` executes one.
+The format and its executor are the `prov-views` crate, which depends only on
+prov's read core and so cannot write to the workspace it reads.
 
 ### Field types
 

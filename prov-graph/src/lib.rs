@@ -28,6 +28,11 @@
 //! `prov` owns one [`Graph`] and forwards every read to it, so the two are the
 //! same traversal — not a reimplementation that can drift.
 //!
+//! `prov-views` is what that promise looks like taken up: a whole view engine —
+//! parse a declared view, resolve its scope by walking the spanning relation,
+//! group the documents it reaches — built on this crate and nothing else, and
+//! therefore unable to modify a byte of what it reads.
+//!
 //! ## The shape of it
 //!
 //! - [`Document`] — a plaintext file split into its embedded metadata block and

@@ -14,7 +14,7 @@
 //!
 //! Near-miss suggestions for a misspelled key are *not* computed here: the edit
 //! distance lives in `prov-config` alongside every other config near-miss, and
-//! [`VIEW_KEYS`](crate::VIEW_KEYS) is what this crate exports so it can be
+//! [`VIEW_KEYS`] is what this crate exports so it can be
 //! computed there. One copy of the rule, in the crate that already owns it.
 
 use prov_graph::meta::Value;
