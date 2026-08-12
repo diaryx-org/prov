@@ -122,6 +122,13 @@ prov:
       where:                  # conditions a document in scope must also meet
         not: { has: draft }
       nest: year              # how deep a *new* entry is filed, independent of `by`
+  exports:                    # what may *leave* — see "Exports" below
+    letters:
+      label: Letters home
+      gate:                   # the membership test, written in each document
+        field: audience       # a document is in this export only if…
+        value: family         # …its own `audience` declares `family`
+      view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
@@ -143,7 +150,9 @@ diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content); absent `views` ⇒ the workspace declares no lenses.
 The `spanning`, relation-definition
-(`cardinality`/`inverse`/`means`), `fields` and `views` axes are the
+Absent `exports` ⇒ nothing is declared exportable — the default state of a
+workspace and of every document in it. The `spanning`, relation-definition
+(`cardinality`/`inverse`/`means`), `fields`, `views` and `exports` axes are the
 *self-description* layer — see [Spec](/docs/spec.md).
 
 ### Views
@@ -280,6 +289,48 @@ deduplicated set; **group** projects that into groups and is a pure function.
 So the count of documents a view covers and the count of rows it draws are
 different numbers — a document under two of a multi-valued field's groups is one
 document in two places — and `prov views <name>` prints both.
+
+### Exports
+
+Everything above reads open by default — a view with no `under:` covers the
+whole workspace. An **export** is the boundary where that flips: a named,
+closed-by-default set of documents that may *leave* the workspace.
+
+```yaml
+exports:
+  letters:
+    label: Letters home
+    gate: { field: audience, value: family }
+    view: daily
+```
+
+The `gate` is the membership test, and it is exactly one field and one value: a
+document is in the export only if its **own** metadata declares that value under
+that field (`audience: family`, or a list containing it). A document that
+declares nothing leaves in nothing. Matching is exact after trimming —
+`audience: Family` does not pass a `value: family` gate; casing drift is what a
+closed vocabulary on the gate field (`fields.audience.vocabulary`) is for, so
+the typo is reported rather than forgiven. Deliberately not an any-of list and
+not a condition: what makes an export auditable is that *"does this document
+leave?"* is answerable by reading one field on that one document.
+
+`view` optionally arranges what leaves, and it obeys a one-way valve: **an
+export's set is a subset of what its gate admits, whatever the view says**. A
+view may narrow the set; it can never put back a document the gate held out.
+An export naming an unknown or broken view is an error, never a fall-back to
+the gate's whole set — the view was written down as a bound on what leaves,
+and a bound nobody can apply must fail closed. (`diagnose` also flags the
+unknown-view typo at author time, when `views:` and `exports:` share a
+surface.)
+
+There is no `index:` (front page) key: which page greets a reader is a
+rendering concern, declared by the publish layer that owns a render. prov only
+ever *plans* an export — `prov exports` lists them, `prov exports <name>`
+previews what leaves, what the gate held back, and what the view scoped out,
+and moves nothing. Publishing, copy-out, and OCFL export are downstream
+consumers of the same plan. The format and planner are the `prov-exports`
+crate, which depends only on the read core and `prov-views` and so cannot
+write to — or leak from — the workspace it judges.
 
 ### Field types
 
