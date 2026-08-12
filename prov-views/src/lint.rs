@@ -85,8 +85,10 @@ pub fn diagnose_view(name: &str, value: &Value) -> Vec<ViewIssue> {
         match key.as_str() {
             "label" | "icon" | "under" | "group" => {}
             "by" | "nest" => {
-                // A grain that does not parse is silently defaulted by
-                // `ViewSpec::parse` (a view must still be usable), so this is
+                // `ViewSpec::parse` reads an unparseable grain as *no grain* —
+                // it will not invent a cut the config did not ask for, and the
+                // view stays usable by grouping on the raw values. That is the
+                // right fallback and it is also completely silent, so this is
                 // the only place a `by: yearr` is ever heard from.
                 let text = match value {
                     Value::String(s) => s.clone(),
@@ -156,9 +158,9 @@ mod tests {
         assert!(issues.iter().any(|i| i.kind == ViewIssueKind::NoGrouping));
     }
 
-    /// The failure a silent default would hide: `ViewSpec::parse` falls back to
-    /// year so the view still works, so this is the only thing that ever says
-    /// the config was wrong.
+    /// The failure the fallback would otherwise hide: `ViewSpec::parse` reads an
+    /// unparseable grain as no grain, so the view still works and nothing else
+    /// ever says the config was wrong.
     #[test]
     fn a_misspelled_grain_is_reported_for_both_axes() {
         for key in ["by", "nest"] {

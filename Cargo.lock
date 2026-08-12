@@ -476,6 +476,7 @@ dependencies = [
  "prov-identity",
  "prov-store",
  "prov-transaction",
+ "prov-views",
  "thiserror",
  "twig-doc",
 ]
@@ -500,6 +501,7 @@ dependencies = [
  "prov-fixity",
  "prov-graph",
  "prov-identity",
+ "prov-views",
  "thiserror",
 ]
 

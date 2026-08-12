@@ -251,7 +251,10 @@ pub fn set_meta_in_text(
 /// The value at a dotted path in `meta`, or `None`. Mapping keys only — a
 /// sequence index along the way reads as absent.
 #[cfg(test)]
-fn value_at<'a>(meta: &'a prov_graph::meta::Value, dotted: &str) -> Option<&'a prov_graph::meta::Value> {
+fn value_at<'a>(
+    meta: &'a prov_graph::meta::Value,
+    dotted: &str,
+) -> Option<&'a prov_graph::meta::Value> {
     let mut current = meta;
     for part in dotted.split('.') {
         current = current.as_mapping()?.get(part)?;
@@ -510,7 +513,10 @@ mod tests {
         let text = "title: prov config\nspec: 1\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
         let mut view = prov_graph::meta::Mapping::new();
-        view.insert("group".into(), prov_graph::meta::Value::String("date".into()));
+        view.insert(
+            "group".into(),
+            prov_graph::meta::Value::String("date".into()),
+        );
         view.insert("by".into(), prov_graph::meta::Value::String("year".into()));
 
         let out = set_meta_in_text(
@@ -547,7 +553,10 @@ mod tests {
         let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n      under: '[Daily](id:abc)'\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
         let mut view = prov_graph::meta::Mapping::new();
-        view.insert("group".into(), prov_graph::meta::Value::String("date".into()));
+        view.insert(
+            "group".into(),
+            prov_graph::meta::Value::String("date".into()),
+        );
 
         let out = set_meta_in_text(
             text,
@@ -579,7 +588,10 @@ mod tests {
         let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n";
         let carrier = carrier_of("config.yaml", text).unwrap();
         let mut view = prov_graph::meta::Mapping::new();
-        view.insert("group".into(), prov_graph::meta::Value::String("people".into()));
+        view.insert(
+            "group".into(),
+            prov_graph::meta::Value::String("people".into()),
+        );
 
         let out = set_meta_in_text(
             text,
@@ -591,12 +603,14 @@ mod tests {
 
         let doc = prov_graph::Document::parse(std::path::Path::new("config.yaml"), &out).unwrap();
         assert_eq!(
-            value_at(&doc.meta, "diaryx.views.daily.group").and_then(prov_graph::meta::Value::as_str),
+            value_at(&doc.meta, "diaryx.views.daily.group")
+                .and_then(prov_graph::meta::Value::as_str),
             Some("date"),
             "the first view survived: {out}"
         );
         assert_eq!(
-            value_at(&doc.meta, "diaryx.views.folks.group").and_then(prov_graph::meta::Value::as_str),
+            value_at(&doc.meta, "diaryx.views.folks.group")
+                .and_then(prov_graph::meta::Value::as_str),
             Some("people")
         );
     }
@@ -673,7 +687,9 @@ mod tests {
         let mut outer = prov_graph::meta::Mapping::new();
         outer.insert(
             "terms".into(),
-            prov_graph::meta::Value::Sequence(vec![prov_graph::meta::Value::String("public".into())]),
+            prov_graph::meta::Value::Sequence(vec![prov_graph::meta::Value::String(
+                "public".into(),
+            )]),
         );
 
         let out = set_meta_in_text(

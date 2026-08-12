@@ -26,9 +26,9 @@ use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
 use prov_graph::document::MetaCarrier;
 use prov_graph::error::{Error, Result};
+use prov_graph::link;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
-use prov_graph::link;
 
 /// A plan to fold a directory tree into the containment tree — the `mirror`
 /// strategy from `docs/init-adoption.md`. Produced by [`Workspace::plan_mirror`]

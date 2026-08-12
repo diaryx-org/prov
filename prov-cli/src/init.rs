@@ -856,6 +856,10 @@ pub(crate) fn cmd_init(
         spanning: None,
         relation_defs: std::collections::BTreeMap::new(),
         fields: std::collections::BTreeMap::new(),
+        // No views, and deliberately not prompted for: a view is a way of
+        // reading a corpus, and at `init` there is no corpus yet to have
+        // learned anything about.
+        views: Vec::new(),
         id_storage: id_storage.into(),
         default_embed_format: meta.into(),
         embed_style: embed,

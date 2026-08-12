@@ -14,12 +14,12 @@ use fig::Segment;
 use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
 use prov_graph::document::MetaCarrier;
-use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
-use prov_store::index::IndexStore;
 use prov_graph::link;
 use prov_graph::meta::Value;
+use prov_store::edit::MetaEditor;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 use super::maintain::content_target;
 

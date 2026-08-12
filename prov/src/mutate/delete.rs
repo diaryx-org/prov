@@ -12,12 +12,12 @@ use fig::Segment;
 use crate::identity::IdentityPolicy;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
-use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
 use prov_graph::graph::{LinkSite, Resolution};
-use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
+use prov_store::edit::MetaEditor;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 use super::maintain::content_target;
 

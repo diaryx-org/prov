@@ -43,15 +43,15 @@ use fig::Segment;
 use crate::identity::{IdentityPolicy, Trigger};
 use crate::workspace::Workspace;
 use prov_graph::document::{is_opaque_payload, whole_file_extension};
-use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::{ReadStorage};
-use prov_store::fs::{Storage};
+use prov_graph::fs::ReadStorage;
 use prov_graph::graph::sidecar_candidates;
-use prov_graph::index::{IdIndex};
-use prov_store::index::{IndexStore};
+use prov_graph::index::IdIndex;
 use prov_graph::link;
 use prov_graph::meta::{Mapping, Value};
+use prov_store::edit::MetaEditor;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 /// The sidecar path for `payload` in metadata `format`: the payload's full name
 /// plus the format's whole-file extension, as a sibling (`sub/a.pdf` →

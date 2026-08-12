@@ -76,14 +76,26 @@ pub mod workspace;
 /// only traverses can depend on `prov-graph` directly and link none of the
 /// mutation, history, or config machinery.
 pub use prov_graph;
-pub use prov_graph::{Addressing, Backlink, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat, DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id, IdIndex, IdStorage, Link, LinkSite, LinkStyle, Mapping, MetaCarrier, Metadata, NoIndex, Node, NodeKind, Notation, PathStyle, ReadScope, ReadSettings, ReadStorage, ReferenceStyle, Relation, RelationSet, Resolution, Result, StdFs, StructuralFact, Target, TitleIndex, TitleMatch, TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans, embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title, reachable_set, render_html, require_whole_file};
-pub use prov_store::{Capabilities, Durability, FileIndex, InMemoryFs, InMemoryIndex, IndexStore, Rebase, Storage, SyncGuarantee};
+pub use prov_graph::{
+    Addressing, Backlink, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat, DirEntry,
+    Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id, IdIndex,
+    IdStorage, Link, LinkSite, LinkStyle, Mapping, MetaCarrier, Metadata, NoIndex, Node, NodeKind,
+    Notation, PathStyle, ReadScope, ReadSettings, ReadStorage, ReferenceStyle, Relation,
+    RelationSet, Resolution, Result, StdFs, StructuralFact, Target, TitleIndex, TitleMatch,
+    TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans, embed_carrier,
+    embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title, reachable_set,
+    render_html, require_whole_file,
+};
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.
 pub use prov_graph::{content, document, error, exec, graph, link, memo, meta, relation, title};
 /// Metadata editing, at the path it had before the write surface moved out of
 /// the read core into `prov-store`.
 pub use prov_store::edit;
+pub use prov_store::{
+    Capabilities, Durability, FileIndex, InMemoryFs, InMemoryIndex, IndexStore, Rebase, Storage,
+    SyncGuarantee,
+};
 
 /// The filesystem port — both halves.
 ///
@@ -95,14 +107,16 @@ pub use prov_store::edit;
 /// because `prov` is the layer that does both.
 pub mod fs {
     pub use prov_graph::fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
-    pub use prov_store::fs::{Capabilities, Durability, InMemoryFs, Storage, SyncGuarantee, memory};
+    pub use prov_store::fs::{
+        Capabilities, Durability, InMemoryFs, Storage, SyncGuarantee, memory,
+    };
 }
 
 /// The ID index — both halves, split across two crates for the same reason
 /// [`fs`] is.
 pub mod index {
     pub use prov_graph::index::{Collision, IdIndex, NoIndex};
-    pub use prov_store::index::{FileIndex, IndexStore, InMemoryIndex, Rebase};
+    pub use prov_store::index::{FileIndex, InMemoryIndex, IndexStore, Rebase};
 }
 
 pub use about::AboutContext;
@@ -124,6 +138,20 @@ pub use config::{
     metadata_format_str, spec_ahead,
 };
 pub use discovery::{Discovered, Discovery, discover};
+/// Declarative views over the workspace — the `views:` config axis, and the
+/// traversal that executes one into a grouped row set.
+///
+/// Re-exported at prov's own path so a consumer that already depends on prov
+/// need not add a second crate to read the views its config carries, and so the
+/// two cannot resolve to different versions of `ViewSpec`. A consumer that
+/// wants *only* views — a renderer, a browser view — should depend on
+/// `prov-views` directly instead: it reaches nothing that can write.
+pub mod views {
+    pub use prov_views::{
+        Error, Grain, Group, Grouping, Row, RowSet, VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind,
+        ViewSpec, diagnose_view, diagnose_views, execute, views_from,
+    };
+}
 /// The field-type vocabulary a `fields.<name>.type` declaration is spelled in,
 /// re-exported so a consumer can name types without depending on `fig-schema`
 /// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
@@ -140,6 +168,7 @@ pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use mutate::Created;
 pub use prov_transaction::{ChangeSet, FileOp};
 pub use prov_transaction::{Recovered, recover};
+pub use prov_views::ViewSpec;
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
 pub use validate::{CheckDiff, Finding};

@@ -43,12 +43,12 @@ use crate::history::HistoryIssue;
 use crate::workspace::Workspace;
 use prov_graph::content::ContentFormat;
 use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
 use prov_graph::graph::{CensusEntry, LinkSite, Resolution, StructuralFact, Walk, reachable_set};
 use prov_graph::identity::Id;
-use prov_store::index::IndexStore;
 use prov_graph::link;
 use prov_graph::meta::Value;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 /// The integrity finding a census entry represents when its target failed to
 /// resolve cleanly — `None` for a link that resolves.
@@ -1331,8 +1331,8 @@ mod tests {
     use crate::identity::Minter;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
-    use prov_store::index::FileIndex;
     use prov_graph::link::LinkStyle;
+    use prov_store::index::FileIndex;
     // The three id round-trips below assert that the repair *clears the
     // finding*, so they name a `Fix` from the module downstream of this one.
     use crate::remedy::Fix;

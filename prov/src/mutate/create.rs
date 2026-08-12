@@ -13,12 +13,12 @@ use fig::Segment;
 use crate::identity::{IdentityPolicy, Trigger};
 use crate::workspace::Workspace;
 use prov_graph::document::{MetaCarrier, whole_file_format};
-use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
-use prov_store::index::IndexStore;
 use prov_graph::link;
 use prov_graph::meta::Value;
+use prov_store::edit::MetaEditor;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 /// The files [`Workspace::create`] wrote. Under a combined parent this is just
 /// the one document; under a **separated** parent it is the pair — the metadata

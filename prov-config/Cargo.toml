@@ -13,6 +13,11 @@ description = "Workspace configuration policy, codecs, diagnostics, and vocabula
 prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
 prov-identity = { path = "../prov-identity", version = "0.4.0", default-features = false }
 prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
+# The view format. The `views:` axis is declared here because every config axis
+# is, but the vocabulary it is spelled in belongs with the crate that executes
+# it — one definition of what a view is, rather than a config-side copy that
+# can disagree with the reader.
+prov-views = { path = "../prov-views", version = "0.4.0", default-features = false }
 fig.workspace = true
 fig-schema.workspace = true
 indexmap.workspace = true
@@ -20,10 +25,15 @@ thiserror.workspace = true
 
 [features]
 default = ["yaml"]
-yaml = ["fig/yaml", "prov-graph/yaml", "prov-identity/yaml"]
-json = ["fig/json", "prov-graph/json", "prov-identity/json"]
-toml = ["fig/toml", "prov-graph/toml", "prov-identity/toml"]
-fig-lang = ["fig/fig", "prov-graph/fig-lang", "prov-identity/fig-lang"]
+yaml = ["fig/yaml", "prov-graph/yaml", "prov-identity/yaml", "prov-views/yaml"]
+json = ["fig/json", "prov-graph/json", "prov-identity/json", "prov-views/json"]
+toml = ["fig/toml", "prov-graph/toml", "prov-identity/toml", "prov-views/toml"]
+fig-lang = [
+    "fig/fig",
+    "prov-graph/fig-lang",
+    "prov-identity/fig-lang",
+    "prov-views/fig-lang",
+]
 
 [dev-dependencies]
 proptest = "1"

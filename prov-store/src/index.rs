@@ -17,11 +17,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use prov_graph::Result;
 use prov_graph::document::{Document, MetaCarrier, require_whole_file, whole_file_format};
 use prov_graph::identity::Id;
 use prov_graph::index::{IdIndex, NoIndex};
 use prov_graph::meta::{Mapping, Value};
-use prov_graph::Result;
 
 use crate::edit::MetaEditor;
 

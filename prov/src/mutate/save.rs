@@ -12,10 +12,10 @@ use std::path::Path;
 
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
-use prov_store::fs::Storage;
-use prov_store::index::IndexStore;
 use prov_graph::link;
 use prov_graph::meta::Value;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Record that a document's content just changed — the single seam for the

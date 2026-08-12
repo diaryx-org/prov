@@ -36,6 +36,7 @@ use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyl
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
 use prov_identity::{Registration, Trigger};
+use prov_views::{ViewIssueKind, ViewSpec};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because
 /// it is the one identity setting that changes what a link *resolves to* — a
@@ -392,6 +393,19 @@ pub struct WorkspaceConfig {
     /// (`tags`, `audience`). Empty means no field is controlled — every such
     /// field is ordinary carried content (DESIGN §2, tier 3).
     pub fields: BTreeMap<String, FieldSpec>,
+    /// The views the workspace declares, in declaration order — the second way
+    /// through the same documents the spine already holds ("the entries under
+    /// `Daily`, by month"). Empty means the workspace declares none, which is
+    /// not the same as having none to offer: a frontend is free to derive a
+    /// lens from a `fields` declaration, and a *declared* view is the workspace
+    /// overriding that.
+    ///
+    /// prov reads them and never acts on one. A view has no invariant to keep,
+    /// so nothing in `check` can be violated by a wrong one — it is carried
+    /// here so that every tool over the workspace reads the same views, rather
+    /// than each app namespacing its own block and agreeing by convention.
+    /// Executing one is `prov-views`.
+    pub views: Vec<ViewSpec>,
     /// Where a document's stable ID is persisted — registry, frontmatter shadow,
     /// or both (DESIGN §5). Independent of the `identity` trigger.
     pub id_storage: IdStorage,
@@ -483,6 +497,7 @@ impl Default for WorkspaceConfig {
             spanning: None,
             relation_defs: BTreeMap::new(),
             fields: BTreeMap::new(),
+            views: Vec::new(),
             id_storage: IdStorage::Frontmatter,
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
@@ -797,6 +812,25 @@ impl WorkspaceConfig {
                 );
             }
         }
+        // View declarations: `views: { <name>: { group, by, under, nest, … } }`.
+        //
+        // Merged per entry, exactly as `fields` is and for the same reason: a
+        // vault config that declares one view must not wipe the ones the app's
+        // defaults supplied. A later surface redeclaring a name replaces that
+        // view whole — a view is small and its keys interlock (`by` means
+        // nothing without `group`), so merging *within* one would produce
+        // hybrids no surface wrote.
+        if let Some(views) = meta.get(prov_views::VIEWS_KEY).and_then(Value::as_mapping) {
+            for (name, value) in views {
+                let Some(spec) = ViewSpec::parse(name, value) else {
+                    continue;
+                };
+                match self.views.iter_mut().find(|v| v.name == spec.name) {
+                    Some(existing) => *existing = spec,
+                    None => self.views.push(spec),
+                }
+            }
+        }
         if let Some(v) = meta
             .get("id_storage")
             .and_then(Value::as_str)
@@ -960,6 +994,14 @@ impl WorkspaceConfig {
             map.insert("fields".into(), Value::Mapping(fields));
         }
 
+        if !self.views.is_empty() {
+            let mut views = Mapping::new();
+            for spec in &self.views {
+                views.insert(spec.name.clone(), Value::Mapping(spec.to_mapping()));
+            }
+            map.insert(prov_views::VIEWS_KEY.into(), Value::Mapping(views));
+        }
+
         map.insert(
             "id_storage".into(),
             Value::String(self.id_storage.as_config_str().into()),
@@ -1049,6 +1091,7 @@ const TOP_KEYS: &[&str] = &[
     "relations",
     "spanning",
     "fields",
+    "views",
     "id_storage",
     "updated",
     "workspace_id",
@@ -1191,6 +1234,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
             "references" => diagnose_reference_block(&mut issues, "references", value),
             "relations" => diagnose_relations(&mut issues, value),
             "fields" => diagnose_fields(&mut issues, value),
+            "views" => diagnose_views(&mut issues, value),
             other => {
                 if let Some(suggestion) = nearest(other, TOP_KEYS) {
                     issues.push(unknown(key.clone(), suggestion));
@@ -1435,6 +1479,58 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
                 "reify" => bool_axis(issues, &dotted, v),
                 other => {
                     if let Some(sug) = nearest(other, FIELD_KEYS) {
+                        issues.push(unknown(dotted, format!("{prefix}.{sug}")));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Diagnose the `views:` block — a mapping of view name to a view declaration.
+///
+/// The judgment is `prov-views`' (one definition of what a view is, shared with
+/// the crate that executes one); this is the translation into config-issue
+/// vocabulary, plus the near-miss suggestion, which needs the edit distance
+/// every other config near-miss already uses.
+fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
+    let Some(map) = value.as_mapping() else {
+        return block_shape_issue(issues, "views", value);
+    };
+    for (name, spec) in map {
+        let prefix = format!("views.{name}");
+        for issue in prov_views::diagnose_view(name, spec) {
+            let dotted = match issue.key.as_str() {
+                "" => prefix.clone(),
+                key => format!("{prefix}.{key}"),
+            };
+            let expected = || issue.kind.expected().iter().map(|s| (*s).into()).collect();
+            match &issue.kind {
+                ViewIssueKind::NotAMapping => block_shape_issue(issues, &prefix, spec),
+                ViewIssueKind::NoGrouping => issues.push(ConfigIssue {
+                    key: dotted,
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: spec
+                            .get("group")
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        expected: vec![
+                            "a field name, or a list of field names to try in order".into(),
+                        ],
+                    },
+                }),
+                ViewIssueKind::BadGrain { value } => issues.push(ConfigIssue {
+                    key: dotted,
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: value.clone(),
+                        expected: expected(),
+                    },
+                }),
+                // Unlike a stray *top-level* key — which may be a user-owned
+                // field prov never reads (DESIGN §2) — a stray key inside a
+                // `views.<name>` entry is inside a block prov defines
+                // completely, so a near-miss is the only thing it can be.
+                ViewIssueKind::UnknownKey => {
+                    if let Some(sug) = nearest(&issue.key, prov_views::VIEW_KEYS) {
                         issues.push(unknown(dotted, format!("{prefix}.{sug}")));
                     }
                 }
@@ -1767,6 +1863,32 @@ mod tests {
                     },
                 ),
             ]),
+            views: vec![
+                // A scoped, materializing view with a fallback chain — every
+                // optional key populated, so nothing survives the round trip by
+                // being absent at both ends.
+                ViewSpec {
+                    name: "daily".to_string(),
+                    label: Some("Daily".to_string()),
+                    icon: Some("calendar".to_string()),
+                    group: prov_views::Grouping {
+                        keys: vec!["date_of_document".to_string(), "created".to_string()],
+                        by: Some(prov_views::Grain::Month),
+                    },
+                    under: Some("[Daily](id:abc1234)".to_string()),
+                    nest: Some(prov_views::Grain::Year),
+                },
+                // …and the minimal one, which must not gain keys on the way
+                // back.
+                ViewSpec {
+                    name: "who".to_string(),
+                    label: None,
+                    icon: None,
+                    group: prov_views::Grouping::field("people"),
+                    under: None,
+                    nest: None,
+                },
+            ],
             id_storage: IdStorage::Frontmatter,
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::CodeBlock,
@@ -2111,6 +2233,136 @@ mod tests {
 
         let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
         assert!(config.fields.is_empty(), "{:?}", config.fields);
+    }
+
+    /// A `views:` block, as a config surface writes it.
+    fn views_block(entries: &[(&str, &[(&str, Value)])]) -> Value {
+        let mut views = Mapping::new();
+        for (name, keys) in entries {
+            let mut entry = Mapping::new();
+            for (k, v) in *keys {
+                entry.insert((*k).into(), v.clone());
+            }
+            views.insert((*name).into(), Value::Mapping(entry));
+        }
+        let mut top = Mapping::new();
+        top.insert("views".into(), Value::Mapping(views));
+        Value::Mapping(top)
+    }
+
+    fn str_value(text: &str) -> Value {
+        Value::String(text.to_string())
+    }
+
+    #[test]
+    fn views_apply_in_declaration_order() {
+        let config = WorkspaceConfig::from_meta(&views_block(&[
+            ("daily", &[("group", str_value("created"))]),
+            ("who", &[("group", str_value("people"))]),
+        ]));
+        assert_eq!(
+            config
+                .views
+                .iter()
+                .map(|v| v.name.as_str())
+                .collect::<Vec<_>>(),
+            ["daily", "who"]
+        );
+    }
+
+    /// The same merge rule `fields` has, for the same reason: a vault config
+    /// declaring one view must not wipe the ones an app's defaults supplied.
+    /// Redeclaring a name replaces that view whole rather than merging into it —
+    /// `by` means nothing without `group`, so a key-wise merge would build a
+    /// view neither surface wrote.
+    #[test]
+    fn a_later_surface_replaces_one_view_and_leaves_the_others() {
+        let mut config = WorkspaceConfig::from_meta(&views_block(&[
+            (
+                "daily",
+                &[
+                    ("group", str_value("created")),
+                    ("by", str_value("month")),
+                    ("icon", str_value("calendar")),
+                ],
+            ),
+            ("who", &[("group", str_value("people"))]),
+        ]));
+        config.apply(&views_block(&[(
+            "daily",
+            &[("group", str_value("date_of_document"))],
+        )]));
+
+        assert_eq!(
+            config
+                .views
+                .iter()
+                .map(|v| v.name.as_str())
+                .collect::<Vec<_>>(),
+            ["daily", "who"],
+            "position is kept, and the untouched view survives"
+        );
+        let daily = &config.views[0];
+        assert_eq!(daily.group, prov_views::Grouping::field("date_of_document"));
+        assert_eq!(daily.group.by, None, "replaced whole, not merged key-wise");
+        assert_eq!(daily.icon, None);
+    }
+
+    /// An entry that says nothing about grouping is not a view — and, unlike a
+    /// silently dropped one, it is reported.
+    #[test]
+    fn a_view_without_a_grouping_is_not_recorded_and_is_diagnosed() {
+        let meta = views_block(&[("daily", &[("label", str_value("Daily"))])]);
+        assert!(WorkspaceConfig::from_meta(&meta).views.is_empty());
+
+        let issues = diagnose(&meta);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "views.daily.group");
+        assert!(matches!(
+            &issues[0].kind,
+            ConfigIssueKind::InvalidValue { value, .. } if value == "(absent)"
+        ));
+    }
+
+    /// `ViewSpec::parse` reads an unparseable grain as no grain — it will not
+    /// invent a cut the config did not ask for — so the view still works and
+    /// the linter is the only thing that ever says the config was wrong.
+    #[test]
+    fn diagnose_flags_a_misspelled_grain_and_a_misspelled_view_key() {
+        let issues = diagnose(&views_block(&[(
+            "daily",
+            &[
+                ("group", str_value("created")),
+                ("by", str_value("yearr")),
+                ("labl", str_value("Daily")),
+            ],
+        )]));
+        assert!(
+            issues.iter().any(|i| i.key == "views.daily.by"
+                && matches!(&i.kind, ConfigIssueKind::InvalidValue { value, expected }
+                    if value == "yearr" && expected.iter().any(|e| e == "year"))),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.key == "views.daily.labl"
+                && i.kind
+                    == ConfigIssueKind::UnknownKey {
+                        suggestion: "views.daily.label".into()
+                    }),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn diagnose_flags_a_views_block_that_is_not_a_block() {
+        let mut top = Mapping::new();
+        top.insert("views".into(), Value::String("daily".into()));
+        let issues = diagnose(&Value::Mapping(top));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].key, "views");
+
+        let issues = diagnose(&views_block(&[]));
+        assert!(issues.is_empty(), "an empty block is clean: {issues:?}");
     }
 
     #[test]

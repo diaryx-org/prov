@@ -13,12 +13,12 @@ use fig::Segment;
 use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
 use prov_graph::document::Document;
-use prov_store::edit::MetaEditor;
 use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
-use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
 use prov_graph::meta::Value;
+use prov_store::edit::MetaEditor;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 use super::maintain::{body_sibling, content_target, splice_body};
 

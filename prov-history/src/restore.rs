@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
 use prov_graph::index::{Collision, IdIndex};
 use prov_graph::link;
+use prov_store::fs::Storage;
 use prov_transaction::{discard_file, write_probe};
 
 use super::layout::blob_path;

@@ -43,6 +43,13 @@ pub struct Discovered {
 
 /// The outcome of a [`discover`] walk — one of the three answers "which workspace
 /// is this directory in?" genuinely has.
+// `Found` carries a whole `WorkspaceConfig` and so dwarfs the other two
+// variants — which is the shape this type is *for*: `discover` returns exactly
+// one of these, once, and every caller destructures it immediately. Boxing to
+// even the variants out would put an allocation in the signature of the
+// function every consumer starts with, to save a stack copy on a path taken
+// once per process.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Discovery {
     /// A single unambiguous root was found.

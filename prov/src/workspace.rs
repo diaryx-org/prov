@@ -32,16 +32,16 @@ use crate::fixity::FixityCache;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use prov_graph::document::EmbedStyle;
 use prov_graph::error::{Error, Result};
-use prov_graph::fs::{ReadStorage};
-use prov_store::fs::{Storage};
+use prov_graph::fs::ReadStorage;
 use prov_graph::graph::Target;
 use prov_graph::index::{Collision, IdIndex, NoIndex};
-use prov_store::index::{IndexStore};
 use prov_graph::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
 use prov_graph::memo::{ReadScope, lock};
 use prov_graph::meta::Value;
 use prov_graph::relation::RelationSet;
 use prov_graph::title::TitleIndex;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 /// The workspace's **policy knobs**, as one value.
 ///

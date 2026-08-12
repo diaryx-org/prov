@@ -57,4 +57,4 @@ pub mod index;
 
 pub use edit::MetaEditor;
 pub use fs::{Capabilities, Durability, InMemoryFs, Storage, SyncGuarantee};
-pub use index::{FileIndex, IndexStore, InMemoryIndex, Rebase};
+pub use index::{FileIndex, InMemoryIndex, IndexStore, Rebase};

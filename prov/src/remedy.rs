@@ -39,11 +39,11 @@ use crate::mutate::maintain;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
-use prov_store::fs::Storage;
 use prov_graph::graph::{LinkSite, Target};
-use prov_store::index::IndexStore;
 use prov_graph::link::{self, Link};
 use prov_graph::meta::Value;
+use prov_store::fs::Storage;
+use prov_store::index::IndexStore;
 
 /// A concrete repair for a finding — the fully-determined action
 /// [`apply_fix`](Workspace::apply_fix) takes, and what a [`Remedy`] commits to
@@ -1452,9 +1452,9 @@ mod tests {
     use crate::identity::Minter;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
-    use prov_store::index::FileIndex;
     use prov_graph::index::IdIndex;
     use prov_graph::link::LinkStyle;
+    use prov_store::index::FileIndex;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
