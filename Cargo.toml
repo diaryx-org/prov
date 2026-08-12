@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-config", "prov-history", "prov", "prov-cli"]
+members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-config", "prov-history", "prov", "prov-cli"]
 
 [workspace.package]
 version = "0.4.0"
@@ -77,3 +77,6 @@ prov-fixity = { path = "prov-fixity", version = "0.4.0" }
 prov-transaction = { path = "prov-transaction", version = "0.4.0" }
 # History bounded context: immutable events, blob storage, and history verbs.
 prov-history = { path = "prov-history", version = "0.4.0" }
+# The declarative view format and its executor. Depends on the read core only,
+# so a view engine cannot write to the workspace it reads.
+prov-views = { path = "prov-views", version = "0.4.0", default-features = false }

@@ -562,6 +562,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "prov-views"
+version = "0.4.0"
+dependencies = [
+ "prov-graph",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

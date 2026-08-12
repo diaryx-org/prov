@@ -1,0 +1,25 @@
+[package]
+name = "prov-views"
+description = "Declarative views over a prov workspace: the format, and the traversal that executes it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+# The read core, and the only dependency. A view selects, groups and orders
+# documents that already exist; it has no business creating or editing one, and
+# depending on `prov-graph` rather than `prov-store`/`prov` means it *cannot* —
+# the same structural guarantee the `prov-store` split bought, for the same
+# reason.
+prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
+
+[features]
+default = ["yaml"]
+yaml = ["prov-graph/yaml"]
+json = ["prov-graph/json"]
+toml = ["prov-graph/toml"]
+fig-lang = ["prov-graph/fig-lang"]
