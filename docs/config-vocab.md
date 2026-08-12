@@ -117,11 +117,11 @@ prov:
       label: Daily
       icon: calendar          # a hint for a frontend; prov never interprets it
       group: [date_of_document, created]  # field, or a chain (first non-empty wins)
-      by: month               # year | month | day — cut the value at this grain
+      by: month               # a grain — cut the value coarser (year/month/day/initial)
       under: '[Daily](id:abc1234)'        # scope: the subtree below this index
       where:                  # conditions a document in scope must also meet
         not: { has: draft }
-      nest: year              # where a *new* entry is filed, independent of `by`
+      nest: year              # how deep a *new* entry is filed, independent of `by`
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous)
@@ -157,10 +157,10 @@ spine cannot do.
 | key      | means                                                                 |
 | -------- | --------------------------------------------------------------------- |
 | `group`  | a field name, or a list of field names tried in order (first non-empty wins). **Required** — an entry without one is not a view |
-| `by`     | `year` \| `month` \| `day` — cut the chosen value at this grain        |
+| `by`     | a **grain** — cut the chosen value coarser before grouping (see below) |
 | `under`  | a link to an index; the view covers its whole spanning subtree. Absent = the whole workspace |
 | `where`  | conditions a document in scope must also meet. Absent = everything scope reaches |
-| `nest`   | `year` \| `month` \| `day` — the grain a *new* entry is filed at       |
+| `nest`   | a grain — how deep a *new* entry is filed. Only grains that chain, and only single-valued fields |
 | `label`  | what a person calls it (absent = the name, humanized)                 |
 | `icon`   | a glyph hint, uninterpreted                                           |
 
@@ -211,10 +211,51 @@ Three things are load-bearing, and each is a place an obvious shortcut is wrong.
 a date view is those two things pointed at date fields — the chain
 `[date_of_document, created]` above is a declaration *this workspace* makes, not
 a convention prov blesses. A workspace that files by `taken_on` writes that
-instead. `by:` is a prefix cut over ISO-8601 text (`2026-07-24T07:32:00Z` cuts
-the same as `2026-07-24`), so it needs no `fields.<name>.type` declaration to
-work; a value that is not ISO-shaped at that grain does not group, rather than
-grouping wrongly.
+instead. A grain applies to a *value*, never to a declared type, so it needs no
+`fields.<name>.type` declaration to work; a value a grain cannot cut does not
+group, rather than grouping wrongly.
+
+#### Grains
+
+A grain is a **coarsening** — any many-to-one function from a value to a group
+key. The calendar is one family of them, not the subject:
+
+| `by:` / `nest:`  | groups                                       |
+| ---------------- | -------------------------------------------- |
+| `year`           | `2026-07-24` → `2026`                        |
+| `month`          | `2026-07-24` → `2026-07`                     |
+| `day`            | `2026-07-24` → `2026-07-24`                  |
+| `initial`        | `Lovelace` → `L` — the A–Z index             |
+| `{ initial: 2 }` | `Lovelace` → `LO`                            |
+
+The date grains **validate** rather than slicing, so `banana` at year grain is
+not the group `bana` and `20264` is not the year `2026`; anything after the cut
+is ignored, so an RFC 3339 instant cuts like the plain date it starts with.
+`initial` cuts by *character* (`Ålesund` → `Å`) and upper-cases, deliberately:
+an index that files `ada` apart from `Ada` is not an index.
+
+New grains are added by one rule — a concrete lens that cannot otherwise be
+said, not a shape that seems likely to be wanted. A numeric `bucket` is the
+obvious candidate and is deliberately absent: nobody has asked for one, and its
+keys would sort lexically as `0, 10, 100, 20`, needing group ordering to become
+grain-aware, which is the deferred `sort:` axis under another name.
+
+#### What `nest:` can and cannot file
+
+`nest:` takes the same grains, but not every grain and not every field, because
+it **writes**. Filing builds a hierarchy of index documents, so a grain may nest
+only if its coarser steps are *determined* by its finer ones — `2026-07-24` →
+`2026-07` → `2026`, `Ada` → `Ad` → `A`. Every grain above chains; an arbitrary
+sequence of coarsenings would not.
+
+The second limit is prov's spine, not taste. `nest:` files into the spanning
+relation, which is single-parent, so the grouping field must be **single-valued**
+for the document being filed. A document listing two people has two homes and
+nothing can choose between them — so `nest:` on a field declared `type: seq` is
+a `check` finding, and a document that turns out multi-valued at filing time
+simply has no route. Grouping by such a field stays perfectly good; one document
+under several groups is the whole point of a view. Only the filing half is
+constrained.
 
 **`under:` is a traversal, not a path filter.** The scope is resolved by walking
 the spanning relation below the anchor, so it survives a rename, a move and a
