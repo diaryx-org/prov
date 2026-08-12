@@ -15,7 +15,7 @@ license.workspace = true
 # depending on `prov-graph` rather than `prov-store`/`prov` means it *cannot* —
 # the same structural guarantee the `prov-store` split bought, for the same
 # reason.
-prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
+prov-graph = { workspace = true, default-features = false }
 
 [features]
 default = ["yaml"]

@@ -10,11 +10,11 @@ license.workspace = true
 description = "History bounded context for prov workspaces"
 
 [dependencies]
-prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
-prov-store = { path = "../prov-store", version = "0.4.0", default-features = false }
-prov-transaction = { path = "../prov-transaction", version = "0.4.0", default-features = false }
-prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
-prov-config = { path = "../prov-config", version = "0.4.0", default-features = false }
+prov-graph = { workspace = true, default-features = false }
+prov-store = { workspace = true, default-features = false }
+prov-transaction = { workspace = true, default-features = false }
+prov-fixity.workspace = true
+prov-config = { workspace = true, default-features = false }
 fig.workspace = true
 
 [features]

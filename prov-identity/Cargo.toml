@@ -10,7 +10,7 @@ readme.workspace = true
 license.workspace = true
 
 [dependencies]
-prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
+prov-graph = { workspace = true, default-features = false }
 moid.workspace = true
 
 [dev-dependencies]

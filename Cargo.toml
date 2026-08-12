@@ -74,9 +74,13 @@ prov-identity = { path = "prov-identity", version = "0.4.0", default-features = 
 # Content fixity policy, digests, and the device-local cache.
 prov-fixity = { path = "prov-fixity", version = "0.4.0" }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
-prov-transaction = { path = "prov-transaction", version = "0.4.0" }
+prov-transaction = { path = "prov-transaction", version = "0.4.0", default-features = false }
 # History bounded context: immutable events, blob storage, and history verbs.
-prov-history = { path = "prov-history", version = "0.4.0" }
+prov-history = { path = "prov-history", version = "0.4.0", default-features = false }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
 prov-views = { path = "prov-views", version = "0.4.0", default-features = false }
+# Gated egress sets: a view composed with a gate, judged as an export plan.
+prov-exports = { path = "prov-exports", version = "0.4.0", default-features = false }
+# Workspace configuration policy, codecs, diagnostics, and vocabularies.
+prov-config = { path = "prov-config", version = "0.4.0", default-features = false }

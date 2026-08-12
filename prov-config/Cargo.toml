@@ -10,19 +10,19 @@ license.workspace = true
 description = "Workspace configuration policy, codecs, diagnostics, and vocabularies"
 
 [dependencies]
-prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
-prov-identity = { path = "../prov-identity", version = "0.4.0", default-features = false }
-prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
+prov-graph = { workspace = true, default-features = false }
+prov-identity = { workspace = true, default-features = false }
+prov-fixity.workspace = true
 # The view format. The `views:` axis is declared here because every config axis
 # is, but the vocabulary it is spelled in belongs with the crate that executes
 # it — one definition of what a view is, rather than a config-side copy that
 # can disagree with the reader.
-prov-views = { path = "../prov-views", version = "0.4.0", default-features = false }
+prov-views = { workspace = true, default-features = false }
 # The export format, for the same reason as `prov-views` above: the `exports:`
 # axis is declared here because every config axis is, but what an export *is* —
 # and the fail-closed judgment of a malformed one — belongs with the crate that
 # plans one.
-prov-exports = { path = "../prov-exports", version = "0.4.0", default-features = false }
+prov-exports = { workspace = true, default-features = false }
 fig.workspace = true
 fig-schema.workspace = true
 indexmap.workspace = true

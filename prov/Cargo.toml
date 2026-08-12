@@ -18,33 +18,33 @@ publish = true
 # same traversal rather than a reimplementation that can drift. prov re-exports
 # the whole of its public surface, so a consumer that needs both depends only on
 # prov.
-prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
-prov-store = { path = "../prov-store", version = "0.4.0", default-features = false }
+prov-graph = { workspace = true, default-features = false }
+prov-store = { workspace = true, default-features = false }
 
 # Identity registration policies and opaque ID minting.
-prov-identity = { path = "../prov-identity", version = "0.4.0", default-features = false }
+prov-identity = { workspace = true, default-features = false }
 
 # Content fixity policy, digests, and the device-local stat-validated cache.
-prov-fixity = { path = "../prov-fixity", version = "0.4.0" }
+prov-fixity.workspace = true
 
 # Pure workspace policy, codecs, diagnostics, and controlled vocabularies.
-prov-config = { path = "../prov-config", version = "0.4.0", default-features = false }
+prov-config = { workspace = true, default-features = false }
 
 # The declarative view format and its executor. Re-exported at `prov::views`;
 # prov itself never executes a view (a view has no invariant to keep).
-prov-views = { path = "../prov-views", version = "0.4.0", default-features = false }
+prov-views = { workspace = true, default-features = false }
 
 # The export format and its planner. Re-exported at `prov::exports`; prov
 # itself never *consumes* a plan (publishing, copy-out, and OCFL are
 # downstream), but the axis is config and config is read here.
-prov-exports = { path = "../prov-exports", version = "0.4.0", default-features = false }
+prov-exports = { workspace = true, default-features = false }
 
 # Crash-atomic staged filesystem changes and write-ahead recovery.
-prov-transaction = { path = "../prov-transaction", version = "0.4.0", default-features = false }
+prov-transaction = { workspace = true, default-features = false }
 
 # History bounded context. `prov` retains forwarding methods for API
 # compatibility; history itself never depends back on this crate.
-prov-history = { path = "../prov-history", version = "0.4.0", default-features = false }
+prov-history = { workspace = true, default-features = false }
 
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs
 # runs `zig build`). The value tree is prov's common currency. Which format
