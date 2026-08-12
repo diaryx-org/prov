@@ -171,15 +171,17 @@ pub async fn plan<FS: ReadStorage, Ix: IdIndex>(
     // Resolve the view *before* walking: an export declared against a view
     // nobody can find should fail before it reads a single document.
     let view = match &spec.view {
-        Some(name) => Some(
-            views
-                .iter()
-                .find(|v| v.name == *name)
-                .ok_or_else(|| Error::ViewUnknown {
-                    export: spec.name.clone(),
-                    view: name.clone(),
-                })?,
-        ),
+        Some(name) => {
+            Some(
+                views
+                    .iter()
+                    .find(|v| v.name == *name)
+                    .ok_or_else(|| Error::ViewUnknown {
+                        export: spec.name.clone(),
+                        view: name.clone(),
+                    })?,
+            )
+        }
         None => None,
     };
 
@@ -298,7 +300,11 @@ mod tests {
             row("drafts/note.md", Some(&["family"])),
         ];
         let in_scope = scope(&["daily/index.md", "daily/monday.md", "daily/private.md"]);
-        let plan = compose(&spec("letters", "family", Some("daily")), &rows, Some(&in_scope));
+        let plan = compose(
+            &spec("letters", "family", Some("daily")),
+            &rows,
+            Some(&in_scope),
+        );
 
         assert_eq!(
             entry_paths(&plan),
@@ -323,7 +329,11 @@ mod tests {
             row("c.md", None),
         ];
         let everything = scope(&["a.md", "b.md", "c.md"]);
-        let plan = compose(&spec("letters", "family", Some("all")), &rows, Some(&everything));
+        let plan = compose(
+            &spec("letters", "family", Some("all")),
+            &rows,
+            Some(&everything),
+        );
 
         assert_eq!(entry_paths(&plan), ["a.md"]);
         let admitted: HashSet<&Path> = rows
@@ -349,10 +359,7 @@ mod tests {
     /// right file only if it keeps them apart.
     #[test]
     fn withheld_distinguishes_undeclared_from_otherwise_declared() {
-        let rows = [
-            row("private.md", None),
-            row("work.md", Some(&["internal"])),
-        ];
+        let rows = [row("private.md", None), row("work.md", Some(&["internal"]))];
         let plan = compose(&spec("letters", "family", None), &rows, None);
 
         assert!(plan.entries.is_empty());
@@ -368,7 +375,11 @@ mod tests {
     #[test]
     fn an_empty_view_scope_exports_nothing() {
         let rows = [row("a.md", Some(&["family"]))];
-        let plan = compose(&spec("letters", "family", Some("none")), &rows, Some(&scope(&[])));
+        let plan = compose(
+            &spec("letters", "family", Some("none")),
+            &rows,
+            Some(&scope(&[])),
+        );
         assert!(plan.entries.is_empty());
         assert_eq!(plan.outside_view, vec![PathBuf::from("a.md")]);
     }
@@ -484,9 +495,11 @@ mod fs_tests {
     #[test]
     fn an_unarranged_export_walks_the_whole_workspace() {
         let dir = journal("whole");
-        let plan =
-            block_on(plan(&graph(&dir), &export(None), &[], "index.md")).expect("a plan");
-        assert_eq!(entry_paths(&plan), ["daily/07-24.md", "daily.md", "note.md"]);
+        let plan = block_on(plan(&graph(&dir), &export(None), &[], "index.md")).expect("a plan");
+        assert_eq!(
+            entry_paths(&plan),
+            ["daily/07-24.md", "daily.md", "note.md"]
+        );
         // Home and 2026 are reachable, undeclared, and reported as such.
         assert_eq!(plan.withheld.len(), 2);
         assert!(plan.withheld.iter().all(|w| w.declared.is_none()));

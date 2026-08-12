@@ -29,6 +29,7 @@ use fig::ExtKind;
 use fig_schema::FieldType;
 
 use crate::textdist::nearest;
+use prov_exports::{ExportIssueKind, ExportSpec};
 pub use prov_fixity::Fixity;
 use prov_graph::content::ContentFormat;
 use prov_graph::document::EmbedStyle;
@@ -36,7 +37,6 @@ use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyl
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
 use prov_identity::{Registration, Trigger};
-use prov_exports::{ExportIssueKind, ExportSpec};
 use prov_views::{ViewIssueKind, ViewSpec};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because

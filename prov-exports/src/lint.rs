@@ -188,7 +188,10 @@ mod tests {
     fn an_unknown_key_is_reported_at_both_levels() {
         let issues = diagnose_export(
             "letters",
-            &entry(&[("gate", good_gate()), ("veiw", Value::String("daily".into()))]),
+            &entry(&[
+                ("gate", good_gate()),
+                ("veiw", Value::String("daily".into())),
+            ]),
         );
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].key, "veiw");
@@ -199,7 +202,11 @@ mod tests {
             "letters",
             &entry(&[(
                 "gate",
-                gate(&[("field", "audience"), ("value", "family"), ("audience", "x")]),
+                gate(&[
+                    ("field", "audience"),
+                    ("value", "family"),
+                    ("audience", "x"),
+                ]),
             )]),
         );
         assert_eq!(issues.len(), 1);
@@ -219,7 +226,10 @@ mod tests {
             entry(&[("gate", Value::String("family".into()))]),
             entry(&[("gate", gate(&[("field", "audience")]))]),
             entry(&[("gate", good_gate())]),
-            entry(&[("gate", good_gate()), ("veiw", Value::String("daily".into()))]),
+            entry(&[
+                ("gate", good_gate()),
+                ("veiw", Value::String("daily".into())),
+            ]),
             entry(&[(
                 "gate",
                 gate(&[("field", "audience"), ("value", "family"), ("extra", "x")]),

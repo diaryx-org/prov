@@ -299,8 +299,7 @@ mod tests {
         assert!(ExportSpec::parse("x", &mapping(&[("gate", gate("  ", "family"))])).is_none());
         // There is no shorthand: a bare string names half a gate at best.
         assert!(
-            ExportSpec::parse("x", &mapping(&[("gate", Value::String("family".into()))]))
-                .is_none()
+            ExportSpec::parse("x", &mapping(&[("gate", Value::String("family".into()))])).is_none()
         );
         assert!(ExportSpec::parse("x", &Value::String("family".into())).is_none());
     }
@@ -392,7 +391,10 @@ mod tests {
             field: "audience".into(),
             value: "family".into(),
         };
-        assert!(!g.admits(&meta(&[("audience", meta(&[("family", Value::Bool(true))]))])));
+        assert!(!g.admits(&meta(&[(
+            "audience",
+            meta(&[("family", Value::Bool(true))])
+        )])));
         assert!(!g.admits(&meta(&[(
             "audience",
             Value::Sequence(vec![seq(&["family"])])
@@ -413,8 +415,14 @@ mod tests {
     #[test]
     fn exports_read_in_declaration_order() {
         let mut exports = Mapping::new();
-        exports.insert("letters".into(), mapping(&[("gate", gate("audience", "family"))]));
-        exports.insert("notes".into(), mapping(&[("gate", gate("audience", "public"))]));
+        exports.insert(
+            "letters".into(),
+            mapping(&[("gate", gate("audience", "family"))]),
+        );
+        exports.insert(
+            "notes".into(),
+            mapping(&[("gate", gate("audience", "public"))]),
+        );
         let mut config = Mapping::new();
         config.insert(EXPORTS_KEY.into(), Value::Mapping(exports));
 

@@ -186,9 +186,9 @@ pub use identity::{
 };
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use mutate::Created;
+pub use prov_exports::ExportSpec;
 pub use prov_transaction::{ChangeSet, FileOp};
 pub use prov_transaction::{Recovered, recover};
-pub use prov_exports::ExportSpec;
 pub use prov_views::ViewSpec;
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
