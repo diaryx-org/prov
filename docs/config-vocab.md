@@ -119,6 +119,8 @@ prov:
       group: [date_of_document, created]  # field, or a chain (first non-empty wins)
       by: month               # year | month | day — cut the value at this grain
       under: '[Daily](id:abc1234)'        # scope: the subtree below this index
+      where:                  # conditions a document in scope must also meet
+        not: { has: draft }
       nest: year              # where a *new* entry is filed, independent of `by`
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
@@ -157,11 +159,53 @@ spine cannot do.
 | `group`  | a field name, or a list of field names tried in order (first non-empty wins). **Required** — an entry without one is not a view |
 | `by`     | `year` \| `month` \| `day` — cut the chosen value at this grain        |
 | `under`  | a link to an index; the view covers its whole spanning subtree. Absent = the whole workspace |
+| `where`  | conditions a document in scope must also meet. Absent = everything scope reaches |
 | `nest`   | `year` \| `month` \| `day` — the grain a *new* entry is filed at       |
 | `label`  | what a person calls it (absent = the name, humanized)                 |
 | `icon`   | a glyph hint, uninterpreted                                           |
 
-Two things are load-bearing, and both are places an obvious shortcut is wrong.
+#### `where:` — conditions
+
+Two predicates and three combinators, and deliberately no more:
+
+| key       | means                                                        |
+| --------- | ------------------------------------------------------------ |
+| `has`     | the field is present and carries a non-empty value; a list means all of them |
+| `equals`  | the field carries this value — any element of it, for a list. Compared as text |
+| `not`     | the inverse of the condition it wraps                        |
+| `any-of`  | at least one of a list of conditions                         |
+| `all-of`  | every one of a list of conditions                            |
+
+A mapping with several keys is an implicit **and**, which is the shape a real
+condition usually takes:
+
+```yaml
+where:
+  has: audience
+  equals: { audience: public }
+```
+
+This stops well short of an expression language, on purpose. Formulas are the
+point of no return for a view format: a closed set of named predicates can grow
+one member at a time, each with a reason, and a grammar cannot be taken back
+once views are in the wild. The rule for adding a predicate is a concrete lens
+that cannot otherwise be said.
+
+Three cases resolve toward *saying so* rather than guessing, because each has
+two opposite silent readings. An empty or unreadable `where:` is not a filter —
+it is a `check` finding, since guessing would either publish a workspace or hide
+it. `any-of: []` matches nothing and `all-of: []` matches everything (vacuous
+truth both times, and the reading where an empty disjunction cannot publish by
+accident). And `has` means present *and non-empty*, since a field written blank
+has nothing to group or display.
+
+#### The rest
+
+Scope and conditions are separate keys because they fail differently: an anchor
+that names nothing is a **broken view** and errors, while a condition that
+matches nothing is an ordinary empty answer.
+
+Three things are load-bearing, and each is a place an obvious shortcut is wrong.
 
 **There is no `date` grouping.** `group:` names fields and `by:` cuts values, so
 a date view is those two things pointed at date fields — the chain
@@ -186,8 +230,15 @@ finding can come from a wrong one, and `nest:` describes where a frontend should
 file a record rather than something prov goes and does. They live in the config
 so that every tool over the workspace reads the same lenses instead of each app
 keeping its own block. `prov views` lists them; `prov views <name>` executes one.
-The format and its executor are the `prov-views` crate, which depends only on
-prov's read core and so cannot write to the workspace it reads.
+
+The format and its engine are the `prov-views` crate, which depends only on
+prov's read core and so cannot write to the workspace it reads. Running a view
+is two steps, and they are worth knowing apart: **select** answers *which
+documents does this view cover* (scope, then conditions) and returns a flat,
+deduplicated set; **group** projects that into groups and is a pure function.
+So the count of documents a view covers and the count of rows it draws are
+different numbers — a document under two of a multi-valued field's groups is one
+document in two places — and `prov views <name>` prints both.
 
 ### Field types
 
