@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-config", "prov-history", "prov", "prov-cli"]
+members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov-history", "prov", "prov-cli"]
 
 [workspace.package]
 version = "0.4.0"

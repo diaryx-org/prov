@@ -1,0 +1,29 @@
+[package]
+name = "prov-exports"
+description = "Named, closed-by-default document sets that may leave a prov workspace: the gate format, and the plan that composes a gate with a view"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+# The read core. An export *plans* which documents leave; nothing about
+# planning writes a byte, and depending on `prov-graph` rather than
+# `prov-store`/`prov` means it cannot — the same structural guarantee
+# `prov-views` bought, needed here more: a crate whose whole job is a
+# disclosure boundary should not link an editor.
+prov-graph = { path = "../prov-graph", version = "0.4.0", default-features = false }
+# The view format and its selector. An export may name a view to arrange what
+# leaves; the composition is retain-only (see `plan`), so this dependency can
+# narrow an export but is structurally unable to widen one.
+prov-views = { path = "../prov-views", version = "0.4.0", default-features = false }
+
+[features]
+default = ["yaml"]
+yaml = ["prov-graph/yaml", "prov-views/yaml"]
+json = ["prov-graph/json", "prov-views/json"]
+toml = ["prov-graph/toml", "prov-views/toml"]
+fig-lang = ["prov-graph/fig-lang", "prov-views/fig-lang"]
