@@ -63,7 +63,6 @@ mod tests {
     use crate::fs::StdFs;
     use crate::graph::ReadSettings;
     use crate::index::NoIndex;
-    use crate::meta::Value;
 
     fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -89,8 +88,9 @@ mod tests {
 
         let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         let doc = block_on(ws.document("notes/a.md")).unwrap();
-        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("A"));
-        assert_eq!(doc.meta.get("author").and_then(Value::as_str), Some("Ada"));
+        let meta = fig::Value::from(&doc.meta);
+        assert_eq!(meta.get("title").and_then(fig::Value::as_str), Some("A"));
+        assert_eq!(meta.get("author").and_then(fig::Value::as_str), Some("Ada"));
         assert_eq!(doc.body, "body text\n");
     }
 

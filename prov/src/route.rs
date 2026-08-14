@@ -172,7 +172,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     async fn child_titled(&self, parent: &Path, segment: &str) -> Result<Option<PathBuf>> {
         let (_, doc) = self.load(parent).await?;
         let mut matches: Vec<PathBuf> = Vec::new();
-        for raw in self.relations().children(&doc.meta) {
+        for raw in self.relations().children(&fig::Value::from(&doc.meta)) {
             let link = Link::parse(&raw);
             // A target that cannot be resolved to a path cannot be title-matched:
             // an external URL has no document, and an unresolved id or ambiguous

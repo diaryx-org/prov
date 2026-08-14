@@ -13,7 +13,6 @@ use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
 use crate::index::IdIndex;
 use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::title::{self, TitleIndex, TitleMatch};
 
 use super::Target;
@@ -406,6 +405,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     continue;
                 }
             };
+            let meta = fig::Value::from(&doc.meta);
 
             // Reconcile a self-stored `id` against the registry (frontmatter
             // storage, DESIGN §5). Three outcomes when a document carries its own
@@ -413,7 +413,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // *different* id for this path, or hands this id to another document
             // (`IdMismatch` — a drift); or the registry has never heard of the id
             // (`UnregisteredId` — the shadow got ahead of the cache).
-            if let Some(fm) = doc.meta.get("id").and_then(Value::as_str)
+            if let Some(fm) = meta.get("id").and_then(fig::Value::as_str)
                 && !fm.trim().is_empty()
             {
                 let fm = Id(fm.trim().to_string());
@@ -457,7 +457,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             }
 
             // Frontmatter relation edges — the only links that can be spanning.
-            for edge in self.relations().edges(&doc.meta) {
+            for edge in self.relations().edges(&meta) {
                 // Parse once: `link.target` is the bare target (any `[label](…)`
                 // stripped), which is what both the census and findings record.
                 let link = Link::parse(&edge.target);
@@ -480,10 +480,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                             && let Ok((_, child_doc)) = self.load(&resolved).await
                             && child_doc.has_meta()
                         {
-                            let inverse_targets = child_doc
-                                .meta
+                            let child_meta = fig::Value::from(&child_doc.meta);
+                            let inverse_targets = child_meta
                                 .get(inverse)
-                                .map(Value::link_strings)
+                                .map(crate::meta::link_strings)
                                 .unwrap_or_default();
                             // Build the title index if a nominal inverse link needs it.
                             if titles.is_none()

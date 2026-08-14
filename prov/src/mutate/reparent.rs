@@ -16,7 +16,6 @@ use crate::workspace::Workspace;
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::Target;
 use prov_graph::link::{self, Link};
-use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -106,17 +105,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Ok(());
         }
 
-        let child_title = child_doc
-            .meta
+        let child_meta = fig::Value::from(&child_doc.meta);
+        let child_title = child_meta
             .get("title")
-            .and_then(Value::as_str)
+            .and_then(fig::Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&child));
         let (parent_text, parent_doc) = self.load(&parent).await?;
-        let parent_title = parent_doc
-            .meta
+        let parent_meta = fig::Value::from(&parent_doc.meta);
+        let parent_title = parent_meta
             .get("title")
-            .and_then(Value::as_str)
+            .and_then(fig::Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
@@ -136,7 +135,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // 2. The new parent's spanning entry, appended (created if it had none).
         let already_down =
-            self.relations().children(&parent_doc.meta).iter().any(|t| {
+            self.relations().children(&parent_meta).iter().any(|t| {
                 self.resolve_link(&parent, &Link::parse(t)) == Target::Path(child.clone())
             });
         if !already_down {

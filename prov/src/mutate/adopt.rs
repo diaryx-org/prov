@@ -15,7 +15,6 @@ use crate::workspace::Workspace;
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::Target;
 use prov_graph::link::{self, Link};
-use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -53,13 +52,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         let (child_text, child_doc) = self.load(&child).await?;
         let (parent_text, parent_doc) = self.load(&parent).await?;
+        let child_meta = fig::Value::from(&child_doc.meta);
+        let parent_meta = fig::Value::from(&parent_doc.meta);
 
         // Up: does the child already declare the inverse relation? If it points
         // here, that direction is done; if it points elsewhere, refuse rather than
         // clobber a deliberate parent claim.
-        let already_up = match child_doc.meta.get(&inverse) {
+        let already_up = match child_meta.get(inverse.as_str()) {
             Some(existing) => {
-                let points_here = existing.link_strings().iter().any(|t| {
+                let points_here = prov_graph::meta::link_strings(existing).iter().any(|t| {
                     self.resolve_link(&child, &Link::parse(t)) == Target::Path(parent.clone())
                 });
                 if !points_here {
@@ -75,7 +76,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         };
         // Down: does the parent's spanning field already resolve to the child?
         let already_down =
-            self.relations().children(&parent_doc.meta).iter().any(|t| {
+            self.relations().children(&parent_meta).iter().any(|t| {
                 self.resolve_link(&parent, &Link::parse(t)) == Target::Path(child.clone())
             });
 
@@ -83,16 +84,14 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Ok(());
         }
 
-        let child_title = child_doc
-            .meta
+        let child_title = child_meta
             .get("title")
-            .and_then(Value::as_str)
+            .and_then(fig::Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&child));
-        let parent_title = parent_doc
-            .meta
+        let parent_title = parent_meta
             .get("title")
-            .and_then(Value::as_str)
+            .and_then(fig::Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&parent));
 

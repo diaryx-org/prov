@@ -1980,7 +1980,7 @@ mod tests {
         assert_eq!(set.spanning_relation(), Some("part"));
         let d = doc("---\npart:\n- one.md\n- two.md\n---\nbody\n");
         assert_eq!(
-            set.children(&d.meta),
+            set.children(&fig::Value::from(&d.meta)),
             vec!["one.md".to_string(), "two.md".to_string()]
         );
         // Pointer relations survive a custom vocabulary so registry/config/bin

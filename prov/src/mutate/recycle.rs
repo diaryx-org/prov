@@ -67,7 +67,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // others would orphan them, so it is refused unless forced.
         let children: Vec<String> = self
             .relations()
-            .children(&doc.meta)
+            .children(&fig::Value::from(&doc.meta))
             .iter()
             .map(|raw| Link::parse(raw).target)
             .collect();
@@ -464,10 +464,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             && self.exists(parent).await?
         {
             let (parent_text, parent_doc) = self.load(parent).await?;
-            let already =
-                self.relations().children(&parent_doc.meta).iter().any(|t| {
-                    self.resolve_link(parent, &Link::parse(t)) == Target::Path(from.clone())
-                });
+            let already = self
+                .relations()
+                .children(&fig::Value::from(&parent_doc.meta))
+                .iter()
+                .any(|t| self.resolve_link(parent, &Link::parse(t)) == Target::Path(from.clone()));
             if !already {
                 let down = self
                     .authored_target(&spanning, parent, &from, &title, false)

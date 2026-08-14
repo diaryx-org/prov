@@ -21,6 +21,10 @@ path = "src/main.rs"
 # and falls back to `---` frontmatter. The other formats are additive and
 # forwarded through this crate's features below.
 prov.workspace = true
+# `RelationSet::children`/`edges` read `fig::Value` directly (fig 3.1's own
+# accessors superseded prov-graph's `meta::Value` wrapper for read-only call
+# sites); the CLI still needs the type to hand it a converted `doc.meta`.
+fig.workspace = true
 # Arg parsing.
 clap = { version = "4.5", features = ["derive"] }
 cliclack = "0.5.5"

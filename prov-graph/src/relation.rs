@@ -6,7 +6,6 @@
 //! cardinality, their inverse, and which single relation is **spanning**.
 
 use crate::link::ReferenceStyle;
-use crate::meta::Value;
 
 /// How many targets a relation field may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,13 +270,13 @@ impl RelationSet {
     }
 
     /// Extract every link declared by a document's metadata, tagged by relation.
-    pub fn edges(&self, meta: &Value) -> Vec<Edge> {
+    pub fn edges(&self, meta: &fig::Value) -> Vec<Edge> {
         let mut edges = Vec::new();
         for relation in &self.relations {
-            let Some(value) = meta.get(&relation.name) else {
+            let Some(value) = meta.get(relation.name.as_str()) else {
                 continue;
             };
-            for target in value.link_strings() {
+            for target in crate::meta::link_strings(value) {
                 edges.push(Edge {
                     relation: relation.name.clone(),
                     target,
@@ -290,9 +289,9 @@ impl RelationSet {
     /// The raw targets of the spanning relation — i.e. this node's children in
     /// the canonical tree. Empty if no spanning relation is configured or the
     /// field is absent.
-    pub fn children(&self, meta: &Value) -> Vec<String> {
+    pub fn children(&self, meta: &fig::Value) -> Vec<String> {
         match self.spanning.as_deref().and_then(|name| meta.get(name)) {
-            Some(value) => value.link_strings(),
+            Some(value) => crate::meta::link_strings(value),
             None => Vec::new(),
         }
     }
@@ -312,7 +311,7 @@ mod tests {
     fn extracts_edges_tagged_by_relation() {
         let d = doc("---\ncontents:\n- a.md\n- b.md\npart_of: ../root.md\n---\nbody\n");
         let set = RelationSet::diaryx();
-        let edges = set.edges(&d.meta);
+        let edges = set.edges(&fig::Value::from(&d.meta));
         assert_eq!(edges.len(), 3);
         assert!(edges.contains(&Edge {
             relation: "contents".into(),
@@ -329,7 +328,7 @@ mod tests {
         let d = doc("---\ncontents:\n- a.md\n- b.md\n---\nbody\n");
         let set = RelationSet::diaryx();
         assert_eq!(
-            set.children(&d.meta),
+            set.children(&fig::Value::from(&d.meta)),
             vec!["a.md".to_string(), "b.md".to_string()]
         );
         assert_eq!(set.spanning_relation(), Some("contents"));
@@ -390,7 +389,7 @@ mod tests {
             .spanning("part");
         let d = doc("---\npart:\n- one.md\n- two.md\n---\nbody\n");
         assert_eq!(
-            set.children(&d.meta),
+            set.children(&fig::Value::from(&d.meta)),
             vec!["one.md".to_string(), "two.md".to_string()]
         );
     }

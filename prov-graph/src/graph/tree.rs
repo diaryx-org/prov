@@ -30,7 +30,6 @@ use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::index::IdIndex;
 use crate::link::{self, Link};
-use crate::meta::Value;
 
 use super::Target;
 
@@ -221,15 +220,15 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     });
                 }
             };
-            let title = doc
-                .meta
+            let meta = fig::Value::from(&doc.meta);
+            let title = meta
                 .get("title")
-                .and_then(Value::as_str)
+                .and_then(fig::Value::as_str)
                 .map(str::to_owned);
 
             trail.push(path.clone());
             let mut children = Vec::new();
-            for raw in self.relations().children(&doc.meta) {
+            for raw in self.relations().children(&meta) {
                 let child = Link::parse(&raw);
                 // Build the title index on first sight of a nominal link, never
                 // before — this is the only place the tree walk can need it.

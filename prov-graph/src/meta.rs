@@ -97,6 +97,22 @@ impl Value {
     }
 }
 
+/// Interpret a `fig::Value` as a list of link strings, mirroring
+/// [`Value::link_strings`] for callers that have migrated to reading
+/// `fig::Value` directly at the accessor boundary. A bare string yields one
+/// element, a sequence yields its string-shaped elements, anything else
+/// yields nothing.
+pub fn link_strings(value: &fig::Value) -> Vec<String> {
+    match value {
+        fig::Value::Str(s) => vec![s.clone()],
+        fig::Value::Seq(seq) => seq
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Parse a metadata document in `format` into a [`Value`], serde-free.
 ///
 /// An empty document is [`Value::Null`].

@@ -27,7 +27,6 @@ use prov_graph::graph::{Graph, ReadSettings, Target};
 use prov_graph::identity::Id;
 use prov_graph::index::{Collision, IdIndex};
 use prov_graph::link::{self, Link};
-use prov_graph::meta::Value;
 use prov_store::fs::Storage;
 use prov_store::index::{FileIndex, IndexStore};
 use prov_transaction::{ChangeSet, FileOp};
@@ -139,10 +138,10 @@ impl<FS: ReadStorage> HistoryReadHost for TestHost<FS> {
         };
         let root_doc = link::normalize(root_doc);
         let (_, doc) = self.graph.load(&root_doc).await?;
-        let Some(raw) = doc
-            .meta
-            .get(&relation)
-            .map(Value::link_strings)
+        let meta = fig::Value::from(&doc.meta);
+        let Some(raw) = meta
+            .get(relation.as_str())
+            .map(prov_graph::meta::link_strings)
             .and_then(|targets| targets.into_iter().next())
         else {
             return Ok(None);

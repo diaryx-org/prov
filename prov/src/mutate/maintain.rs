@@ -116,7 +116,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             };
             out.push(path.clone());
-            for raw in self.relations().children(&doc.meta) {
+            for raw in self.relations().children(&fig::Value::from(&doc.meta)) {
                 if let Target::Path(child) = self.resolve_link(&path, &Link::parse(&raw)) {
                     queue.push(child);
                 }

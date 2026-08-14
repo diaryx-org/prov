@@ -46,7 +46,6 @@ use prov_graph::error::{Error, Result};
 use prov_graph::graph::{CensusEntry, LinkSite, Resolution, StructuralFact, Walk, reachable_set};
 use prov_graph::identity::Id;
 use prov_graph::link;
-use prov_graph::meta::Value;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
@@ -968,10 +967,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Err(e) => return Err(e),
         };
         let doc = prov_graph::document::Document::parse(path, &text)?;
-        Ok(doc
-            .meta
+        Ok(fig::Value::from(&doc.meta)
             .get("title")
-            .and_then(Value::as_str)
+            .and_then(fig::Value::as_str)
             .map(str::to_owned))
     }
 
@@ -1043,16 +1041,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Ok((_, bin_doc)) = self.load(&index).await else {
             return Ok(Vec::new());
         };
-        let records = bin_doc
-            .meta
+        let bin_meta = fig::Value::from(&bin_doc.meta);
+        let records: Vec<fig::Value> = bin_meta
             .get("deleted")
-            .and_then(Value::as_sequence)
-            .map(<[Value]>::to_vec)
+            .and_then(fig::Value::as_seq)
+            .map(<[fig::Value]>::to_vec)
             .unwrap_or_default();
 
         let mut findings = Vec::new();
         for record in &records {
-            let field = |key: &str| record.get(key).and_then(Value::as_str);
+            let field = |key: &str| record.get(key).and_then(fig::Value::as_str);
             // `from` is the record's identity — the path the user would name to
             // restore it, and so the path the finding must report.
             let Some(from) = field("from") else { continue };
@@ -1252,7 +1250,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
-            let Some(recorded) = doc.meta.get("content_hash").and_then(Value::as_str) else {
+            let meta = fig::Value::from(&doc.meta);
+            let Some(recorded) = meta.get("content_hash").and_then(fig::Value::as_str) else {
                 continue;
             };
             if !crate::fixity::is_recognized(recorded) {

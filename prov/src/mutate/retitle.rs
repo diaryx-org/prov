@@ -119,11 +119,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let Some(carrier) = doc.carrier else {
                 return Ok(None);
             };
-            let Some(value) = doc.meta.get(&relation.name) else {
+            let meta = fig::Value::from(&doc.meta);
+            let Some(value) = meta.get(relation.name.as_str()) else {
                 continue;
             };
-            let is_seq = value.as_sequence().is_some();
-            let items = value.link_strings();
+            let is_seq = value.as_seq().is_some();
+            let items = prov_graph::meta::link_strings(value);
 
             // Which entries resolve to `target`, carry a label, and are stale.
             let edits: Vec<(usize, String)> = items

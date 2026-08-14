@@ -53,7 +53,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         let children: Vec<String> = self
             .relations()
-            .children(&doc.meta)
+            .children(&fig::Value::from(&doc.meta))
             .iter()
             .map(|raw| Link::parse(raw).target)
             .collect();

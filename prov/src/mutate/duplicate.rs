@@ -13,7 +13,6 @@ use crate::identity::{IdentityPolicy, Trigger};
 use crate::workspace::Workspace;
 use prov_graph::error::{Error, Result};
 use prov_graph::link;
-use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -50,6 +49,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Err(Error::NotFound(source.to_path_buf()));
         }
         let (source_text, doc) = self.load(&source).await?;
+        let meta = fig::Value::from(&doc.meta);
         let (spanning, inverse) = self.spanning_pair()?;
 
         // A separated node carries its prose/payload in a sibling file; the copy
@@ -85,10 +85,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut cs = self.change();
         let parent_write = if let Some(parent) = &parent {
             let (parent_text, parent_doc) = self.load(parent).await?;
-            let copy_title = doc
-                .meta
+            let copy_title = meta
                 .get("title")
-                .and_then(Value::as_str)
+                .and_then(fig::Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(|| link::path_to_title(&dest));
             let down = self

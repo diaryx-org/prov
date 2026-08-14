@@ -26,7 +26,6 @@ use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::index::IdIndex;
 use crate::link::{self, Link};
-use crate::meta::Value;
 use crate::title::{self, TitleIndex};
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
@@ -84,10 +83,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
                 index.insert(stem, rel.clone());
             }
-            if let Ok((_, doc)) = self.load(&rel).await
-                && let Some(title) = doc.meta.get("title").and_then(Value::as_str)
-            {
-                index.insert(title, rel.clone());
+            if let Ok((_, doc)) = self.load(&rel).await {
+                let meta = fig::Value::from(&doc.meta);
+                if let Some(title) = meta.get("title").and_then(fig::Value::as_str) {
+                    index.insert(title, rel.clone());
+                }
             }
         }
         Ok(index)
@@ -130,7 +130,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
-            for edge in self.relations().edges(&doc.meta) {
+            let meta = fig::Value::from(&doc.meta);
+            for edge in self.relations().edges(&meta) {
                 let link = Link::parse(&edge.target);
                 let is_spanning = Some(edge.relation.as_str()) == spanning.as_deref();
                 if link.is_external() {
@@ -324,10 +325,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     // claim on the registry (see `attach_opaque`).
                     && !self.is_shadowed_payload(&rel, &listing).await
                     && let Ok((_, doc)) = self.load(&rel).await
-                    && let Some(id) = doc.meta.get("id").and_then(Value::as_str)
-                    && !id.trim().is_empty()
                 {
-                    ids.push((crate::identity::Id(id.trim().to_string()), rel));
+                    let meta = fig::Value::from(&doc.meta);
+                    if let Some(id) = meta.get("id").and_then(fig::Value::as_str)
+                        && !id.trim().is_empty()
+                    {
+                        ids.push((crate::identity::Id(id.trim().to_string()), rel));
+                    }
                 }
             }
             Ok(())
@@ -386,10 +390,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                         index.insert(stem, rel.clone());
                     }
                     // …and by the declared `title` when the document parses.
-                    if let Ok((_, doc)) = self.load(&rel).await
-                        && let Some(title) = doc.meta.get("title").and_then(Value::as_str)
-                    {
-                        index.insert(title, rel.clone());
+                    if let Ok((_, doc)) = self.load(&rel).await {
+                        let meta = fig::Value::from(&doc.meta);
+                        if let Some(title) = meta.get("title").and_then(fig::Value::as_str) {
+                            index.insert(title, rel.clone());
+                        }
                     }
                 }
             }

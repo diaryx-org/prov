@@ -13,7 +13,6 @@ use std::path::Path;
 use crate::workspace::Workspace;
 use prov_graph::error::Result;
 use prov_graph::link;
-use prov_graph::meta::Value;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
@@ -122,8 +121,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 }
                 None => crate::fixity::digest(doc.body.as_bytes()),
             };
-            (doc.meta.get("content_hash").and_then(Value::as_str) != Some(hash.as_str()))
-                .then_some(hash)
+            (fig::Value::from(&doc.meta)
+                .get("content_hash")
+                .and_then(fig::Value::as_str)
+                != Some(hash.as_str()))
+            .then_some(hash)
         } else {
             None
         };

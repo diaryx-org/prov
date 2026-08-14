@@ -673,7 +673,7 @@ fn cmd_show(file: &Path) -> CmdResult {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let children = set.children(&doc.meta);
+    let children = set.children(&fig::Value::from(&doc.meta));
     if let Some(spanning) = set.spanning_relation() {
         println!("  {spanning} ({} children):", children.len());
         for child in &children {
@@ -684,7 +684,7 @@ fn cmd_show(file: &Path) -> CmdResult {
     // Overlay relations (everything that isn't the spanning tree), grouped and
     // printed in the vocabulary's declared order.
     let spanning = set.spanning_relation();
-    let edges = set.edges(&doc.meta);
+    let edges = set.edges(&fig::Value::from(&doc.meta));
     for relation in set.relations() {
         if Some(relation.name.as_str()) == spanning {
             continue;
@@ -708,7 +708,7 @@ fn cmd_show(file: &Path) -> CmdResult {
 
 fn cmd_links(file: &Path, relation: Option<&str>) -> CmdResult {
     let (_, doc) = load(file)?;
-    for edge in relation_set().edges(&doc.meta) {
+    for edge in relation_set().edges(&fig::Value::from(&doc.meta)) {
         if relation.is_none_or(|want| want == edge.relation) {
             println!("{}\t{}", edge.relation, edge.target);
         }

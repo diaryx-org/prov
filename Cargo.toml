@@ -40,7 +40,11 @@ license = "MIT OR Apache-2.0"
 #   history/docs.rs) gained wildcard arms accordingly. 3.0.2 is where
 #   `fig-sys` learned to skip its native build under `DOCS_RS`, without which
 #   prov itself fails to build on docs.rs (no Zig, no network there).
-fig = { version = "3.0.2", default-features = false, features = ["serde", "derive", "indexmap"] }
+# - 3.1 added convenience accessors on `fig::Value` itself (`as_str`,
+#   `as_bool`, `as_seq`, `as_mapping`, `is_null`, a string/index-aware `get`),
+#   letting accessor-only call sites work on `fig::Value` directly instead of
+#   going through `prov_graph::meta::Value`.
+fig = { version = "3.1", default-features = false, features = ["serde", "derive", "indexmap"] }
 # The schema layer over fig's value tree. prov uses only its `FieldType` — the
 # vocabulary a `fields.<name>.type` declaration is spelled in — so that prov, a
 # schema-aware frontend, and (later) a view engine all name field types
