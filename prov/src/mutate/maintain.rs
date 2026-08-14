@@ -175,11 +175,21 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             })
     }
 
-    /// Rewrite the entry of `field` in `doc` whose target resolves to `old` so
-    /// it reaches `new` instead, preserving the entry's label and the
-    /// document's formatting. Returns the updated text, or `None` when no
-    /// entry matches — or when the matching entry is a `colophon:<id>`
-    /// reference, which needs no rewrite: the registry keeps it resolving.
+    /// Rewrite **every** entry of `field` in `doc` whose target resolves to
+    /// `old` so it reaches `new` instead, preserving each entry's label and the
+    /// document's formatting. Returns the updated text, or `None` when nothing
+    /// matches.
+    ///
+    /// *Every*, not the first, and that is the whole point: one document may
+    /// hold many references to the same target — a chapter of scripture cites
+    /// another chapter once per verse — and rewriting one of them would leave
+    /// the rest pointing at a path the move just emptied. The move would then be
+    /// the author of the broken links `check` reports.
+    ///
+    /// Non-path entries are skipped rather than aborting the field, so a
+    /// relation mixing an `id:` reference with a path reference to the same
+    /// document still gets its path half rewritten. Id-form targets need no
+    /// rewrite in any case — the registry keeps them resolving.
     fn retarget_entry(
         &self,
         text: &str,
@@ -192,31 +202,48 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Some(value) = doc.meta.get(field) else {
             return Ok(None);
         };
-        let entries = value.link_strings();
         let dir = doc_path.parent().unwrap_or(Path::new(""));
-        let Some(index) = entries.iter().position(|raw| {
-            self.resolve_link(doc_path, &Link::parse(raw)) == Target::Path(old.to_path_buf())
-        }) else {
-            return Ok(None);
+        let matches = |raw: &str| {
+            let link = Link::parse(raw);
+            link.is_path_target()
+                && self.resolve_link(doc_path, &link) == Target::Path(old.to_path_buf())
         };
-        let entry = Link::parse(&entries[index]);
-        if entry.id_target().is_some() {
-            // Linked by ID: stable across the move by construction.
+        // Indices are into the *raw* sequence, not into `link_strings()` (which
+        // filters non-string items and so skews every position taken from it).
+        let hits: Vec<(usize, String)> = match value.as_sequence() {
+            Some(items) => items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| item.as_str().map(|raw| (i, raw.to_string())))
+                .filter(|(_, raw)| matches(raw))
+                .collect(),
+            None => value
+                .as_str()
+                .filter(|raw| matches(raw))
+                .map(|raw| vec![(0, raw.to_string())])
+                .unwrap_or_default(),
+        };
+        if hits.is_empty() {
             return Ok(None);
         }
-        let updated = entry.with_path(link::relative(dir, new));
         let Some(carrier) = doc.carrier else {
             return Ok(None); // no metadata block: nothing to rewrite
         };
+        let is_sequence = value.as_sequence().is_some();
         let mut editor = MetaEditor::open(text, carrier)?;
-        // A scalar field is addressed by key; a sequence entry by key + index.
-        if value.as_sequence().is_some() {
-            editor.replace_value(
-                &[Segment::Key(field), Segment::Index(index)],
-                fig::Value::Str(updated.render()),
-            )?;
-        } else {
-            editor.replace_value(&[Segment::Key(field)], fig::Value::Str(updated.render()))?;
+        for (index, raw) in hits {
+            let updated = Link::parse(&raw).with_path(link::relative(dir, new));
+            // A scalar field is addressed by key; a sequence entry by key + index.
+            // Replacing in place never changes the sequence's length, so indices
+            // taken before the first edit stay valid through the last.
+            if is_sequence {
+                editor.replace_value(
+                    &[Segment::Key(field), Segment::Index(index)],
+                    fig::Value::Str(updated.render()),
+                )?;
+            } else {
+                editor.replace_value(&[Segment::Key(field)], fig::Value::Str(updated.render()))?;
+            }
         }
         Ok(Some(editor.render()?))
     }

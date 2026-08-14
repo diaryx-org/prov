@@ -348,6 +348,46 @@ mod tests {
     }
 
     #[test]
+    fn rename_retargets_every_inbound_reference_not_just_the_first() {
+        // One document may reference the same target many times — a chapter of
+        // scripture cites another chapter once per verse, each with its own
+        // `#verse` locator. Rewriting only the first left the rest pointing at
+        // the path the move had just emptied, so the move itself authored the
+        // broken links `check` then reported.
+        let dir = tempdir("rename-many-inbound");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n- b.md\n---\n",
+        );
+        write(
+            &dir,
+            "a.md",
+            "---\npart_of: index.md\nlinks:\n- '[B 1](b.md#1)'\n- '[B 2](b.md#2)'\n\
+             - '[elsewhere](index.md)'\n- '[B 3](b.md#3)'\n---\nAlso [[b.md#4|B 4]].\n",
+        );
+        write(&dir, "b.md", "---\npart_of: index.md\n---\n");
+
+        block_on(ws(&dir).rename(Path::new("b.md"), Path::new("sub/b.md"))).unwrap();
+
+        let a = read(&dir, "a.md");
+        // Every one of the three frontmatter references moved, each keeping its
+        // own locator and label…
+        assert!(a.contains("- '[B 1](sub/b.md#1)'"), "{a}");
+        assert!(a.contains("- '[B 2](sub/b.md#2)'"), "{a}");
+        assert!(a.contains("- '[B 3](sub/b.md#3)'"), "{a}");
+        // …the body wikilink too, and the unrelated entry was left alone.
+        assert!(a.contains("[[sub/b.md#4|B 4]]"), "{a}");
+        assert!(a.contains("- '[elsewhere](index.md)'"), "{a}");
+        assert!(
+            !a.contains("(b.md#"),
+            "a stale target survived the move: {a}"
+        );
+        // And the workspace the move produced is itself clean.
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
     fn rename_rerelativizes_path_wikilinks_and_spares_id_ones() {
         // The identity-free (Diaryx-style) half: a moved document's body
         // wikilinks are maintained by rewriting the path form, while a
