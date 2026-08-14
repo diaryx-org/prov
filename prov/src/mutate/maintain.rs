@@ -204,7 +204,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // Linked by ID: stable across the move by construction.
             return Ok(None);
         }
-        let updated = entry.with_target(link::relative(dir, new));
+        let updated = entry.with_path(link::relative(dir, new));
         let Some(carrier) = doc.carrier else {
             return Ok(None); // no metadata block: nothing to rewrite
         };
@@ -372,9 +372,7 @@ pub(crate) fn retarget_written_entry(
         _ => None,
     };
     let Some(raw) = raw else { return Ok(None) };
-    let rendered = Link::parse(raw)
-        .with_target(new_target.to_string())
-        .render();
+    let rendered = Link::parse(raw).with_path(new_target.to_string()).render();
     replace_written_entry(text, doc, field, written, &rendered)
 }
 
@@ -529,7 +527,7 @@ fn rewrite_body_inbound(text: &str, body: &str, source: &Path, from: &Path, to: 
         if link::resolve(source, &bl.link.target).as_path() != from {
             continue;
         }
-        let retargeted = bl.link.with_target(link::relative(source_dir, to)).render();
+        let retargeted = bl.link.with_path(link::relative(source_dir, to)).render();
         new_body.replace_range(bl.span.clone(), &retargeted);
         changed = true;
     }

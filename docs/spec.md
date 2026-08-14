@@ -176,6 +176,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **Controlled term** | a `fields` value | resolved against a vocabulary store, checked (§3) — not traversed |
 | **Generated prose** | a one-way pointer relation (`about`) | plaintext in the workspace's *content* format; reached from the root only; **no inverse, no `part_of`, no id, not in the spanning tree, not orphan-checked**; rewritten **whole** by prov and never merged; a pure function of configuration, therefore **discardable** — deleting it loses nothing |
 | **External** | a URL | recognized by syntax, never resolved or validated |
+| **A place inside a document** | a `#locator` suffix on any target | *not a target of its own* — the document part resolves normally; the locator is carried, never resolved or validated, and preserved across moves |
 
 Four consequences worth stating outright:
 
@@ -193,6 +194,13 @@ Four consequences worth stating outright:
   registry. Contrast a *separated* node, whose `content` names a prose body that
   **is** a document in its own right: the marker is what distinguishes the two
   when the extension no longer can.
+- **A locator is not a node.** Verse 1 of a chapter is not a document, so it is
+  not in the graph — it is a *place* named on an edge that lands on the chapter.
+  This is what lets the reading unit and the addressing unit differ: one document
+  per chapter, one address per verse, without minting a node for every address.
+  The edge is real (inverse maintained, rewritten on move, orphan-checked); only
+  the sub-document part is opaque. See
+  [Reference styles](/docs/reference-styles.md#locators--pointing-inside-a-document).
 - **Machinery is reached one-way.** The root points *down* at a machine file
   through its typed pointer (`config: prov.yaml`); the machine file declares no
   back-link. It is not content — not in the containment tree, not ID'd, not

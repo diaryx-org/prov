@@ -300,7 +300,7 @@ fn restyle_frontmatter_links(
         }
         let resolved = link::resolve(file, &link.target);
         Some(
-            link.with_target(link::path_text(style, file, &resolved))
+            link.with_path(link::path_text(style, file, &resolved))
                 .render(),
         )
     };
@@ -357,7 +357,7 @@ fn restyle_body_links(
         let resolved = link::resolve(file, &bl.link.target);
         let retargeted = bl
             .link
-            .with_target(link::path_text(style, file, &resolved))
+            .with_path(link::path_text(style, file, &resolved))
             .render();
         new_body.push_str(&body[cursor..bl.span.start]);
         new_body.push_str(&retargeted);

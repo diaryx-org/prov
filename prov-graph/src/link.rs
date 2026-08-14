@@ -144,11 +144,54 @@ impl Link {
         self.target.contains("://") || self.target.starts_with("mailto:")
     }
 
+    /// The **sub-document locator** this target carries — the text after a `#`,
+    /// naming a place *inside* a document rather than a document.
+    ///
+    /// A locator is carried, never resolved. prov strips it before resolving the
+    /// target and re-attaches it on rewrite, which is the same contract §4 gives
+    /// an external URL: recognized by syntax, never validated. What it *means*
+    /// is the workspace's business — a verse number in a chapter, a heading
+    /// slug, a line range — so a locator naming nothing is not a `check`
+    /// finding. That is the price of not teaching prov every document format's
+    /// internal address space.
+    ///
+    /// `None` for an external target (a URL's fragment belongs to the URL) and
+    /// for a target that is *only* a locator (`#3`), which stays byte-literal —
+    /// see [`split_locator`].
+    pub fn locator(&self) -> Option<&str> {
+        if self.is_external() {
+            return None;
+        }
+        split_locator(&self.target).1
+    }
+
+    /// This link's target with any [`locator`](Self::locator) removed — the part
+    /// that names a *document*, and so the only part that resolves.
+    pub fn addressed_target(&self) -> &str {
+        if self.is_external() {
+            return &self.target;
+        }
+        split_locator(&self.target).0
+    }
+
+    /// This link with its document part replaced, **preserving the locator**.
+    ///
+    /// The rewrite passes (rename, re-relativize, restyle) use this rather than
+    /// [`with_target`](Self::with_target), which sets the target verbatim: a
+    /// move changes where a document lives, never which part of it was pointed
+    /// at.
+    pub fn with_path(&self, path: impl Into<String>) -> Self {
+        self.with_target(join_locator(path, self.locator()))
+    }
+
     /// What this link's `id:`-scheme target names — local, foreign, or
     /// malformed. `None` when the target carries no id scheme at all (a path,
     /// an alias, a URL).
+    ///
+    /// Any [`locator`](Self::locator) is stripped first, so `id:abc1234#2-3`
+    /// names the same document as `id:abc1234`.
     pub fn id_ref(&self) -> Option<IdRef> {
-        strip_id_scheme(&self.target).map(parse_id_body)
+        strip_id_scheme(self.addressed_target()).map(parse_id_body)
     }
 
     /// The stable ID this link names, when the target uses the `id:<id>`
@@ -495,6 +538,47 @@ pub fn slug(title: &str) -> String {
     } else {
         out
     }
+}
+
+/// The character that begins a [sub-document locator](Link::locator) on a link
+/// target.
+pub const LOCATOR_SEPARATOR: char = '#';
+
+/// Split a target into the part naming a document and its locator.
+///
+/// Splits at the **first** separator, so a locator may itself contain one. Two
+/// targets deliberately have no locator:
+///
+/// - one with no `#` at all — the ordinary case;
+/// - one whose `#` is the *first* character (`#3`). That is a same-document
+///   reference, and reading it as a locator on an empty path would resolve the
+///   link to the containing *directory* — a silent retarget where doing nothing
+///   is correct.
+///
+/// Purely syntactic: callers that must not split an external URL's fragment
+/// guard with [`Link::is_external`] first, as [`Link::locator`] does.
+///
+/// The cost of the convention is a document whose *filename* contains `#`,
+/// which can no longer be linked by path. That is the same trade every URL and
+/// Markdown implementation makes, and the character is rare in filenames where
+/// a locator is not.
+pub fn split_locator(target: &str) -> (&str, Option<&str>) {
+    match target.split_once(LOCATOR_SEPARATOR) {
+        Some((doc, locator)) if !doc.is_empty() => (doc, Some(locator)),
+        _ => (target, None),
+    }
+}
+
+/// Re-attach a locator to a document target — the inverse of [`split_locator`].
+/// `None` returns the target unchanged, so this is safe on a target that never
+/// had one.
+pub fn join_locator(target: impl Into<String>, locator: Option<&str>) -> String {
+    let mut target = target.into();
+    if let Some(locator) = locator {
+        target.push(LOCATOR_SEPARATOR);
+        target.push_str(locator);
+    }
+    target
 }
 
 /// The target scheme marking a link-by-ID: `id:<id>`.
@@ -850,9 +934,10 @@ impl Wikilink {
 
     /// The stable ID this wikilink names, when its target uses the `id:<id>`
     /// scheme (or the legacy `colophon:<id>` spelling) — `None` for a plain path
-    /// target. Mirrors [`Link::id_target`].
+    /// target. Mirrors [`Link::id_target`], including its locator handling:
+    /// `[[id:abc1234#2]]` names the document `abc1234`.
     pub fn id_target(&self) -> Option<crate::identity::Id> {
-        strip_id_scheme(&self.target).map(|id| crate::identity::Id(id.to_string()))
+        strip_id_scheme(split_locator(&self.target).0).map(|id| crate::identity::Id(id.to_string()))
     }
 }
 
@@ -1145,7 +1230,11 @@ pub fn escapes_root(path: impl AsRef<Path>) -> bool {
 /// a leading `/` is **workspace-absolute** — resolved from the root, not `doc`'s
 /// directory, and never against the filesystem root; any other target is
 /// relative to `doc`'s directory.
+///
+/// Any [sub-document locator](Link::locator) is dropped first: it names a place
+/// inside the document, so it has no bearing on which file this is.
 pub fn resolve(doc: &Path, target: &str) -> PathBuf {
+    let (target, _) = split_locator(target);
     if let Some(from_root) = target.strip_prefix('/') {
         return normalize(from_root);
     }
@@ -1181,6 +1270,79 @@ pub fn relative(from_dir: &Path, to: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locator_splits_at_the_first_separator_and_round_trips() {
+        assert_eq!(split_locator("chapter.md"), ("chapter.md", None));
+        assert_eq!(split_locator("chapter.md#3"), ("chapter.md", Some("3")));
+        assert_eq!(split_locator("id:abc1234#2-3"), ("id:abc1234", Some("2-3")));
+        // First separator wins, so a locator may itself contain one.
+        assert_eq!(split_locator("a.md#b#c"), ("a.md", Some("b#c")));
+        // An empty locator is still a locator — the author wrote the `#`.
+        assert_eq!(split_locator("a.md#"), ("a.md", Some("")));
+        // A leading `#` is a same-document reference, not a locator on "".
+        assert_eq!(split_locator("#3"), ("#3", None));
+
+        for target in ["chapter.md", "chapter.md#3", "a.md#b#c", "a.md#", "#3"] {
+            let (doc, locator) = split_locator(target);
+            assert_eq!(join_locator(doc, locator), target, "round-trip `{target}`");
+        }
+    }
+
+    #[test]
+    fn a_locator_does_not_change_which_document_is_named() {
+        // Path targets: the locator is dropped before resolution.
+        assert_eq!(
+            resolve(Path::new("bofm/1-ne-1.md"), "1-ne-2.md#5"),
+            PathBuf::from("bofm/1-ne-2.md")
+        );
+        assert_eq!(
+            resolve(Path::new("a/b.md"), "/vol/c.md#2-3"),
+            PathBuf::from("vol/c.md")
+        );
+
+        // Id targets: same id with or without a locator.
+        let plain = Link::parse("[1 Nephi 1](id:abc1234)");
+        let located = Link::parse("[1 Nephi 1:1](id:abc1234#1)");
+        assert_eq!(located.id_target(), plain.id_target());
+        assert_eq!(located.id_ref(), plain.id_ref());
+        assert_eq!(located.locator(), Some("1"));
+        assert_eq!(located.addressed_target(), "id:abc1234");
+        assert_eq!(plain.locator(), None);
+
+        // …and a located id target is still not a path, so no move rewrites it.
+        assert!(!located.is_path_target());
+    }
+
+    #[test]
+    fn an_external_url_keeps_its_own_fragment() {
+        let url = Link::parse("[talk](https://example.com/a#p3)");
+        assert!(url.is_external());
+        assert_eq!(url.locator(), None);
+        assert_eq!(url.addressed_target(), "https://example.com/a#p3");
+        // Untouched by a rewrite, fragment and all.
+        assert_eq!(url.with_path("x.md").render(), "[talk](x.md)");
+    }
+
+    #[test]
+    fn with_path_preserves_the_locator_but_with_target_does_not() {
+        let link = Link::parse("[1 Nephi 1:1](../1-ne-1.md#1)");
+        // The rewrite passes use `with_path`: a move changes where the document
+        // lives, never which part of it was pointed at.
+        assert_eq!(
+            link.with_path("bofm/1-ne-1.md").render(),
+            "[1 Nephi 1:1](bofm/1-ne-1.md#1)"
+        );
+        // `with_target` still sets the target verbatim.
+        assert_eq!(
+            link.with_target("bofm/1-ne-1.md").render(),
+            "[1 Nephi 1:1](bofm/1-ne-1.md)"
+        );
+        // A wikilink keeps its wrapper and its locator alike.
+        let wl = Link::parse("[[1-ne-1.md#1|1 Nephi 1:1]]");
+        assert_eq!(wl.locator(), Some("1"));
+        assert_eq!(wl.with_path("x.md").render(), "[[x.md#1|1 Nephi 1:1]]");
+    }
 
     #[test]
     fn slug_makes_readable_stems_and_round_trips_the_common_case() {

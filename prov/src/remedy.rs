@@ -1368,7 +1368,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 to,
             } => {
                 let (text, parsed) = self.load(doc).await?;
-                let rendered = Link::parse(from).with_target(to.clone()).render();
+                let rendered = Link::parse(from).with_path(to.clone()).render();
                 let updated =
                     maintain::splice_body_span(&text, &parsed.body, span, from, &rendered)?;
                 cs.write(doc, updated);

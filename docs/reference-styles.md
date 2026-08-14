@@ -225,6 +225,46 @@ notice. That is a real limit, stated rather than hidden — closing it would
 require workspace A to reach workspace B, which is exactly the reaching this
 design refuses.
 
+## Locators — pointing *inside* a document
+
+Every axis above answers *which document*. A **locator** answers *where in it*:
+the text after a `#` on any target, in any notation.
+
+```yaml
+cross_reference:
+  - '[1 Nephi 1:1](id:abc1234#1)'      # id target + locator
+  - '[Mosiah 1:2–3](/bofm/mosiah-1.md#2-3)'   # path target + locator
+  - '[[1-ne-1.md#1|1 Nephi 1:1]]'      # wikilink + locator
+```
+
+**It is carried, never resolved.** prov strips the locator before resolving the
+target and re-attaches it on rewrite. That is the contract [spec §4](/docs/spec.md)
+already gives an external URL — recognized by syntax, never validated — and it is
+the whole reason a locator can exist without prov learning every document
+format's internal address space. A locator that names nothing is therefore *not*
+a `check` finding: `#847` in a 22-verse chapter is the workspace's problem, not
+prov's.
+
+The axis is deliberately unstructured. A verse number, a heading slug, a line
+range, a timestamp: prov reads none of them, so the workspace and its renderer
+agree on a meaning without asking prov's permission first.
+
+Two rules make it safe to add to an existing format:
+
+- **The first `#` splits.** A locator may contain more (`a.md#b#c` → locator
+  `b#c`), so no escaping is needed for the formats that use `#` internally.
+- **A leading `#` is not a locator.** `#3` alone is a same-document reference and
+  stays byte-literal; reading it as a locator on the empty path would silently
+  retarget the link to its containing *directory*.
+
+The cost is one thing that used to work: a document whose **filename** contains
+`#` can no longer be linked by path. Every URL and Markdown implementation makes
+that trade, and `#` is rare in filenames where a locator is not.
+
+`with_path` (not `with_target`) is the rewrite seam — a move changes where a
+document lives, never which part of it was pointed at — so rename,
+re-relativize, restyle and `check --fix` all preserve locators.
+
 ## Implementation status
 
 - ✅ `ReferenceStyle` renderer + parsing (`link.rs`); the config-facing

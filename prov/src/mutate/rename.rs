@@ -236,7 +236,7 @@ fn rerelativize(
             let resolved = link::resolve(from, &target.target);
             Some(
                 target
-                    .with_target(link::relative(new_dir, &resolved))
+                    .with_path(link::relative(new_dir, &resolved))
                     .render(),
             )
         };
@@ -293,7 +293,7 @@ fn rerelativize_body_links(text: &str, body: &str, from: &Path, to: &Path) -> St
         let resolved = link::resolve(from, &bl.link.target);
         let retargeted = bl
             .link
-            .with_target(link::relative(new_dir, &resolved))
+            .with_path(link::relative(new_dir, &resolved))
             .render();
         new_body.push_str(&body[cursor..bl.span.start]);
         new_body.push_str(&retargeted);
