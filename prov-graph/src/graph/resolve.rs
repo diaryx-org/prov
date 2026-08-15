@@ -104,12 +104,20 @@ impl<FS, Ix: IdIndex> Graph<FS, Ix> {
                 None => Target::UnresolvedId(id),
             };
         }
+        // The *addressed* target, not the whole one: a locator names a place
+        // inside the document an alias names, so `[[My File#v2]]` is the same
+        // nominal reference as `[[My File]]`. Asking the index for the spelling
+        // with the locator still on it would miss, fall through to the path
+        // branch, and quietly turn a nominal reference into a relative path.
+        // (The path branch below needs no such care — `link::resolve` splits the
+        // locator off itself.)
+        let addressed = link.addressed_target();
         if let Some(titles) = titles
-            && title::is_alias_shaped(&link.target)
+            && title::is_alias_shaped(addressed)
         {
-            match titles.resolve(&link.target) {
+            match titles.resolve(addressed) {
                 TitleMatch::Unique(path) => return Target::Path(link::normalize(path)),
-                TitleMatch::Ambiguous(_) => return Target::AmbiguousAlias(link.target.clone()),
+                TitleMatch::Ambiguous(_) => return Target::AmbiguousAlias(addressed.to_string()),
                 // Unknown: fall through — a bare name with nothing behind it is
                 // treated as a path, so it reads as missing like any dead link.
                 TitleMatch::Unknown => {}
@@ -201,6 +209,41 @@ mod tests {
                 workspace: "notes".into(),
                 id: identity::Id("ajp7eq".into()),
             }
+        );
+    }
+
+    #[test]
+    fn a_locator_names_a_place_in_the_document_every_style_already_resolved_to() {
+        // §4's contract, checked across all three target styles at once: the
+        // locator changes *where in* a document a reader lands, never *which*
+        // document resolution finds. A style that lost the equivalence would
+        // send a `#v2` reference somewhere its unsuffixed twin never goes.
+        let ws = named_ws("notes");
+        let mut titles = TitleIndex::new();
+        titles.insert("Mosiah 1", "mosiah/mosiah-1.md");
+
+        for (plain, located) in [
+            ("/mosiah/mosiah-1.md", "/mosiah/mosiah-1.md#v2"),
+            ("./sibling.md", "./sibling.md#v2"),
+            ("id:ajp7eq", "id:ajp7eq#v2"),
+            ("Mosiah 1", "Mosiah 1#v2"),
+        ] {
+            let doc = Path::new("1-nephi/1-nephi-1.md");
+            assert_eq!(
+                ws.resolve_link_with(doc, &Link::parse(located), Some(&titles)),
+                ws.resolve_link_with(doc, &Link::parse(plain), Some(&titles)),
+                "`{located}` should land on the same document as `{plain}`"
+            );
+        }
+        // And the alias one really did go through the title index rather than
+        // falling through to a relative path beside the citing document.
+        assert_eq!(
+            ws.resolve_link_with(
+                Path::new("1-nephi/1-nephi-1.md"),
+                &Link::parse("[[Mosiah 1#v2]]"),
+                Some(&titles)
+            ),
+            Target::Path(PathBuf::from("mosiah/mosiah-1.md"))
         );
     }
 
