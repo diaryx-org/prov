@@ -16,7 +16,7 @@
 //!   body links alike, labels and wrappers kept, id-form targets left untouched
 //!   because the registry is what keeps *those* resolving.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -157,6 +157,60 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(writes)
     }
 
+    /// The inbound half of a *set* of moves landing together —
+    /// [`collect_inbound_rewrites`](Self::collect_inbound_rewrites) generalized
+    /// from one `(from, to)` to many, keyed by the source's *current* path.
+    ///
+    /// One census, not one per move, and one accumulated text per source, not one
+    /// per (source, move) pair. Both matter, and the second is the correctness
+    /// half: when a sweep moves `a.md` and `b.md` together and `a.md` links to
+    /// `b.md`, running the single-move collector twice yields two texts for `a.md`
+    /// — each computed from disk, so each missing the other's rewrite — and
+    /// whichever is staged last silently drops the one before it. Folding every
+    /// applicable move through the same text is what keeps a mover that references
+    /// another mover correct.
+    ///
+    /// A document's reference to *itself* is skipped (a mover's own path is not
+    /// retargeted), but a mover's references to its fellow movers are not: those
+    /// are exactly the ones a sweep exists to maintain. `root` anchors the census,
+    /// so the caller (which already knows the swept subtree) supplies it.
+    pub(super) async fn collect_inbound_rewrites_multi(
+        &self,
+        root: &Path,
+        moves: &BTreeMap<PathBuf, PathBuf>,
+    ) -> Result<BTreeMap<PathBuf, String>> {
+        // source → the moved paths it references, in a stable order so a
+        // multi-move document rewrites the same way every run.
+        let mut by_source: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+        for entry in self.census(root).await? {
+            let (Resolution::Path(p) | Resolution::CaseMismatch { got: p, .. }) = &entry.resolution
+            else {
+                continue;
+            };
+            if moves.contains_key(p) && &entry.source != p {
+                by_source.entry(entry.source.clone()).or_default();
+                by_source.get_mut(&entry.source).unwrap().insert(p.clone());
+            }
+        }
+        let mut writes = BTreeMap::new();
+        for (source, froms) in by_source {
+            let (original, mut doc) = self.load(&source).await?;
+            let mut text = original.clone();
+            for from in &froms {
+                if let Some(updated) =
+                    self.rewrite_inbound_text(&source, &text, &doc, from, &moves[from])?
+                {
+                    doc = Document::parse(&source, &updated)?;
+                    text = updated;
+                }
+            }
+            if text != original {
+                writes.insert(source, text);
+            }
+        }
+        Ok(writes)
+    }
+
     /// The index of the entry in `doc`'s `field` sequence whose target
     /// resolves to `wanted` — by relative path or through the registry.
     pub(crate) fn entry_index(
@@ -260,13 +314,28 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         from: &Path,
         to: &Path,
     ) -> Result<Option<String>> {
-        let (original, doc0) = self.load(source).await?;
+        let (original, doc) = self.load(source).await?;
+        self.rewrite_inbound_text(source, &original, &doc, from, to)
+    }
+
+    /// [`rewrite_inbound_doc`](Self::rewrite_inbound_doc) over text already in
+    /// hand rather than text read from disk — the form a caller folding several
+    /// moves through one document needs, since after the first rewrite the text
+    /// that matters is no longer the one the filesystem holds.
+    fn rewrite_inbound_text(
+        &self,
+        source: &Path,
+        original: &str,
+        doc0: &Document,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Option<String>> {
         let mut text =
-            rewrite_body_inbound(&original, &doc0.body, source, from, to, self.link_style());
+            rewrite_body_inbound(original, &doc0.body, source, from, to, self.link_style());
         let mut doc = if text != original {
             Document::parse(source, &text)?
         } else {
-            doc0
+            doc0.clone()
         };
         for relation in self.relations().relations() {
             if let Some(updated) =

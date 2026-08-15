@@ -182,7 +182,8 @@ fn main() -> ExitCode {
             axis,
             value,
             recursive,
-        } => resolve_target(&file).and_then(|f| cmd_convert(&f, &axis, &value, recursive)),
+            force,
+        } => resolve_target(&file).and_then(|f| cmd_convert(&f, &axis, &value, recursive, force)),
         Command::Id { file, workspace } => match workspace {
             Some(name) => cmd_id_workspace(name.as_deref()),
             // `required_unless_present` makes this unreachable without the flag.
@@ -3024,7 +3025,7 @@ fn report_converted(changed: &[PathBuf], target: &str) {
     eprintln!("converted {} document(s) to {target}", changed.len());
 }
 
-fn cmd_convert(file: &Path, axis: &str, value: &str, recursive: bool) -> CmdResult {
+fn cmd_convert(file: &Path, axis: &str, value: &str, recursive: bool, force: bool) -> CmdResult {
     let ctx = find_root()?;
     let mut ws = workspace(&ctx)?;
     // Convert authors path links in a target [`LinkStyle`], which fuses the
@@ -3070,10 +3071,21 @@ fn cmd_convert(file: &Path, axis: &str, value: &str, recursive: bool) -> CmdResu
             persist(&ctx, &mut ws)?;
             report_converted(&changed, &format!("{value} embedding"));
         }
+        "content_format" | "content-format" | "content" => {
+            let fmt = prov::ContentFormat::from_config_str(value).ok_or_else(|| {
+                format!("unknown content_format `{value}` (expected markdown|djot|html)")
+            })?;
+            let changed =
+                block_on(ws.convert_content_format(&ws_rel(&ctx, file)?, fmt, recursive, force))?;
+            persist(&ctx, &mut ws)?;
+            // Unlike the other axes, this one moves the files it converts — the
+            // paths reported are where each document now *is*, not where it was.
+            report_converted(&changed, &format!("{value} prose"));
+        }
         other => {
             return Err(format!(
                 "convert: axis `{other}` is not supported (only `notation`, `path_style`, \
-                 `metadata.format`, and `metadata.embed`)"
+                 `metadata.format`, `metadata.embed`, and `content_format`)"
             )
             .into());
         }

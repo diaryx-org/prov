@@ -162,7 +162,7 @@ pub fn generate(
     ctx: &AboutContext,
 ) -> Result<String> {
     let body = markdown_body(config, relations, ctx);
-    let body = transcode(&body, config.content_format)?;
+    let body = transcode(&body, ContentFormat::Markdown, config.content_format)?;
     with_metadata_block(&body, config, ctx)
 }
 

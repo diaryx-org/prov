@@ -468,6 +468,61 @@ key as a teaser), and a note if a surface declares a `spec` newer than
 `SPEC_VERSION`. It is suppressed by `PROV_QUIET`, and skipped on `check` and
 `config` (which report config in full themselves).
 
+## Restating existing documents (`prov convert`)
+
+Setting a config axis governs the documents prov writes *next*. `prov convert
+<file> <axis> <value>` reconciles the ones already there, per file by default
+(`-r` extends it to that file's spanning subtree, so `convert <root> … -r` is the
+whole-workspace case). A mixed workspace is valid and `check`-clean throughout —
+how a document spells itself is its own to declare.
+
+| Axis | Effect |
+| --- | --- |
+| `notation`, `path_style` | re-spell the document's own path links, in frontmatter and body; destination, label and wrapper preserved; id/external/alias targets untouched |
+| `metadata.format` | re-emit the metadata block in another language, keeping its embedding shape |
+| `metadata.embed` | re-emit it in another shape, keeping its language |
+| `content_format` | transcode the body prose — **and rename the file** |
+
+The fourth is the odd one, and unavoidably so. A metadata block declares its own
+language *inside* the file, so those conversions rewrite in place. A body's
+grammar is declared by its **filename** — that is the only place prov reads it
+from, and the only place every other tool on the machine reads it from too. So
+`prov convert notes.md content_format djot` transcodes the prose *and* moves
+`notes.md` → `notes.dj`, retargeting every inbound reference exactly as a rename
+would (`colophon:<id>` references are left alone; the registry's `id → path`
+update is what keeps those resolving). A recursive sweep lands as one change set,
+so a document that links to another document in the same sweep comes out pointing
+at where that one actually went.
+
+Markdown ↔ Djot converts freely: emphasis, headings and raw HTML are re-spelled
+into the target grammar, and footnotes, tables, code fences and `[[wikilinks]]`
+survive intact. A reference-style link is inlined (`[x][ref]` → `[x](b.md)`),
+leaving its now-unused `[ref]:` definition behind. Anything with **`html` at
+either end is lossy** — into HTML the authored markup is gone, out of HTML
+whatever has no prose spelling survives as a raw escape or not at all — and needs
+`-f`/`--force`.
+
+A separated pair converts its **body**, not its node: the node's extension names
+a metadata format, so `notes.md` moves to `notes.dj` and the node's `content`
+pointer follows it. An attachment's opaque payload and a document with no body
+have no prose to convert — an error when named directly, a skip when merely
+swept.
+
+Moving a whole workspace across is three commands, because each does a distinct
+thing:
+
+```
+prov config content_format djot            # what new documents get
+prov convert index.md content_format djot -r   # what existing ones become
+prov about                                 # regenerate the page that names the root
+```
+
+The last is needed because the about page states the root's filename, which the
+sweep just changed; `check` reports it as stale either way. Convert the about
+page itself and the root's `about` pointer is *not* retargeted — it declares no
+`part_of`, so the inbound census has no root to walk up to (the same limit
+`prov mv` has on that file). Regenerate it rather than converting it.
+
 ## Making config explicit
 
 Because every axis has a default, a workspace need not spell config out. For

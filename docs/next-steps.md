@@ -245,7 +245,11 @@ defaults. `link_format` precedence: config doc > root frontmatter (diaryx compat
   filename (`link::slug(title).<content-ext>`) beside the parent while recording
   the real title in metadata; `--as <path>` / `--ext <e>` override the derived
   name (DESIGN §1 legibility — a slug, never an opaque `note-3.md`). The
-  title-primary library seam is `Workspace::create_with_title`.
+  title-primary library seam is `Workspace::create_with_title`. Existing documents
+  are reconciled by `convert <file> content_format <grammar>` (engine 3 below) —
+  the knob governs what gets *written next*, the convert governs what is already
+  there, and the two are deliberately independent (a mixed-grammar workspace is
+  valid, since every reader takes the grammar from the file's own extension).
 - **More config knobs.** `vocabulary` (a named `RelationSet` preset, later a full
   spec).
 - **`prov config preset diaryx|obsidian`** — write a whole preset via
@@ -298,19 +302,45 @@ format-agnosticism, made an action). Decided this session:
      `Workspace::convert_link_style` + `restyle_frontmatter_links`/
      `restyle_body_links`; CLI `convert <file> link_format <style> [-r]`. Only the
      `link_format` axis so far; the other reference axes are the natural next add.
-  2. **Metadata language** (`embed_format` yaml↔fig↔json, `embed_style`) — reserialize
-     frontmatter via `meta::serialize_mapping`; `embed_style: separate` already *is*
-     `separate`/`combine`. Comment loss across formats is the caveat.
-  3. **Content transcode** (`content_format` md↔djot) — twig `Document::serialize`
-     transcodes (proven: md→djot), *plus* a `.md→.dj` rename whose inbound-link
-     cascade is `rename`'s existing job. The heavy, lossy one — gate behind `-f`.
+  2. ✅ **Metadata language** (`metadata.format` yaml↔fig↔json↔toml, `metadata.embed`) —
+     reserialize the block via `reformat_block`, resolving a target `EmbedType` from
+     the document's *other* axis. `convert_meta_format` / `convert_meta_embed`.
+     Comment loss across formats is the caveat; `separate` stays out of scope (a
+     move, not a re-fence).
+  3. ✅ **Content transcode** (`content_format`) — `convert_content_format`.
+     `content::transcode` took a `from` parameter (it had assumed Markdown source,
+     which only its two generated-page callers wanted), and the `.md → .dj` rename
+     rides on the inbound-link machinery `rename` already had. What the plan
+     underestimated: the cascade is **not** simply "`rename`'s existing job,"
+     because a recursive sweep moves many documents *at once* and a mover may link
+     to a fellow mover. Running the single-move collector per file yields two texts
+     for such a document, each computed from disk and so each missing the other's
+     rewrite, and the last one staged wins. Hence
+     `collect_inbound_rewrites_multi`: one census for the whole set, one
+     accumulated text per source. Force-gated on `html` at either end (via
+     `ContentFormat::is_lossy_to`) rather than on the whole axis — md↔djot proved
+     high-fidelity (emphasis, headings and raw HTML re-spelled; footnotes, tables,
+     fences and `[[wikilinks]]` intact), with reference-style links inlined and
+     their `[ref]:` definitions orphaned as the one wart. A separated pair converts
+     its *body* and repoints the node's `content`.
   4. **Identity migration** (`id_storage`, `identity`) — stamp/strip ids, build/drop
      the registry; some directions destructive (identity→off breaks id links).
-- **Un-abstract until the 2nd engine (DESIGN §10 discipline).** `convert_link_style`
-  is a concrete method, not a `Migration` trait. Extract the shared plan-then-apply
-  seam (reuse the `StructurePlan` preview pattern) only when engine 2 lands to
-  justify it. `restyle_frontmatter_links` is a near-sibling of `rerelativize` (move
-  vs restyle); a shared `map_frontmatter_links(…, render)` could unify them then.
+- **Un-abstract until the 2nd engine (DESIGN §10 discipline).** Three engines in and
+  the `Migration` trait still has not earned itself: engine 2 shares a
+  plan-then-apply *shape* with engine 1 but no code (`reformat_sweep` vs
+  `convert_link_style`), and engine 3 shares neither — it plans a set of moves up
+  front precisely because it cannot decide file-by-file. What did get extracted is
+  the piece two verbs genuinely both needed: `rewrite_inbound_text`, the text-level
+  half of `rewrite_inbound_doc`, so a caller folding several moves through one
+  document is not forced back to the filesystem between them.
+  `restyle_frontmatter_links` is still a near-sibling of `rerelativize` (move vs
+  restyle); a shared `map_frontmatter_links(…, render)` could unify those two.
+- **Known limit, inherited not introduced:** the inbound census walks the spanning
+  relation *up* from the named file, so a document declaring no `part_of` roots
+  that walk at itself and its inbound links are invisible. The `about` page is the
+  one such document prov authors — converting or `mv`-ing it leaves the root's
+  `about` pointer stale (`check` catches it). Fixing it means anchoring the census
+  at the discovered workspace root instead, which is `rename`'s call to make first.
 
 ## Routes (`route.rs`)
 

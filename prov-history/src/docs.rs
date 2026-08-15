@@ -119,7 +119,11 @@ pub fn render_index(
                 .collect(),
         ),
     );
-    let body = transcode(&format!("# {title}\n\n{prose}\n"), style.content)?;
+    let body = transcode(
+        &format!("# {title}\n\n{prose}\n"),
+        ContentFormat::Markdown,
+        style.content,
+    )?;
     prov_store::edit::reformat_block(&body, &map, style.embed)
 }
 

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use prov_graph::content::transcode;
+use prov_graph::content::{ContentFormat, transcode};
 use prov_graph::error::Result;
 use prov_graph::index::IdIndex;
 use prov_graph::link;
@@ -252,8 +252,11 @@ impl<H: HistoryWriteHost> HistoryStore<H> {
             }
             .describe()
         );
-        let event_text =
-            prov_store::edit::reformat_block(&transcode(&body, style.content)?, &map, style.embed)?;
+        let event_text = prov_store::edit::reformat_block(
+            &transcode(&body, ContentFormat::Markdown, style.content)?,
+            &map,
+            style.embed,
+        )?;
 
         drop(scope);
         let mut cs = self.host_mut().change();

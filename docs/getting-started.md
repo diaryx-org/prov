@@ -541,7 +541,7 @@ these reminders.
 | `edit FILE`                     | open in `$EDITOR`, restamping fixity/`updated` on save    |
 | `render FILE`                   | render the body to HTML                                  |
 | `duplicate FILE`                | copy a document as a fresh sibling                       |
-| `convert FILE AXIS VALUE`       | re-spell a document's links (`notation` / `path_style`)  |
+| `convert FILE AXIS VALUE`       | restate a document: links (`notation` / `path_style`), metadata (`metadata.format` / `metadata.embed`), or prose (`content_format`) |
 | `id FILE` / `resolve ID`        | mint / look up a stable ID                               |
 | `backlinks FILE`                | list inbound links                                       |
 | `config [KEY [VALUE]]`          | read/write workspace settings                            |

@@ -545,18 +545,22 @@ pub(crate) enum Command {
     /// Permanently purge every document in the recycle bin. Irreversible; the
     /// only hard delete of binned documents.
     EmptyBin,
-    /// Convert a document along a config axis, in place. Four axes are supported.
+    /// Convert a document along a config axis. Five axes are supported.
     /// Two restyle the document's own outbound path links: `notation` (how a
     /// target is wrapped — `markdown` `[Title](target)` or `bare` `target`) and
     /// `path_style` (how the path itself is written — `root` / `relative` /
     /// only the spelling changes; each link's destination, label,
     /// and wrapper are preserved, and id/external/alias targets are left untouched.
-    /// The other two rewrite the metadata block: `metadata.format` re-emits the
+    /// Two rewrite the metadata block: `metadata.format` re-emits the
     /// frontmatter in a different language (`yaml` / `json` / `toml` / `fig`),
     /// keeping its embedding shape; `metadata.embed` re-emits it in a different
     /// shape (`delimited` / `code_block` / `html_script` / `html_code`), keeping its
     /// language — so a `delimited` block can become a code block that can then hold
     /// fig. Both preserve every value (comments do not survive a block rewrite).
+    /// The fifth, `content_format` (`markdown` / `djot` / `html`), transcodes the
+    /// body prose — and, because a body's grammar is declared by its file
+    /// extension, renames the file (`notes.md` → `notes.dj`) and retargets every
+    /// inbound link to it. Converting to or from `html` is lossy and needs `-f`.
     /// Per file by default (DESIGN §8) — a document's spelling is its own to
     /// declare; `-r` also converts this file's spanning subtree.
     Convert {
@@ -564,15 +568,19 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         file: String,
         /// The config axis to convert: `notation`, `path_style`, `metadata.format`,
-        /// or `metadata.embed`.
+        /// `metadata.embed`, or `content_format`.
         axis: String,
         /// The target value (e.g. `bare` for `notation`, `relative` for
         /// `path_style`, `json` for `metadata.format`, `code_block` for
-        /// `metadata.embed`).
+        /// `metadata.embed`, `djot` for `content_format`).
         value: String,
         /// Also convert every document in this file's spanning subtree.
         #[arg(long, short)]
         recursive: bool,
+        /// Allow a lossy conversion — converting body prose to or from `html`,
+        /// where the authored markup does not survive the round trip.
+        #[arg(long, short)]
+        force: bool,
     },
     /// Duplicate a document as a fresh sibling under the same parent, linking the
     /// copy in both directions. The copy takes the next free `-copy` name and

@@ -79,6 +79,27 @@ impl ContentFormat {
             _ => None,
         }
     }
+
+    /// Whether [transcoding](transcode) between `self` and `other` loses authored
+    /// structure badly enough to need an explicit `--force`.
+    ///
+    /// HTML is the lossy endpoint, in both directions. *Into* HTML is a one-way
+    /// trip: the result is a rendering, and the Markdown or Djot the author wrote
+    /// — the `#`, the `_emph_`, the fence — is gone from the file, recoverable
+    /// only by re-deriving a guess at it. *Out of* HTML is that trip run
+    /// backwards, and everything HTML carries that a prose grammar has no spelling
+    /// for (attributes, nested inline markup, whole elements) survives only as a
+    /// raw-HTML escape, or not at all.
+    ///
+    /// Markdown ↔ Djot is deliberately not gated: twig re-spells emphasis,
+    /// headings and raw HTML into the target grammar and carries footnotes,
+    /// tables, code fences and `[[wikilinks]]` through intact. The one wart is a
+    /// reference-style link, which is inlined (`[x][ref]` → `[x](notes/b.md)`),
+    /// leaving its now-unused `[ref]:` definition behind — untidy, but nothing a
+    /// reader loses.
+    pub fn is_lossy_to(self, other: Self) -> bool {
+        self != other && (self == Self::Html || other == Self::Html)
+    }
 }
 
 /// Parse `body` as `format` with `twig`. Shared by [`render_html`] and
@@ -88,26 +109,32 @@ fn parse(body: &str, format: ContentFormat) -> crate::error::Result<twig::Docume
         .map_err(|e| crate::error::Error::Content(format!("twig parse: {e}")))
 }
 
-/// Transcode Markdown source into `format`.
+/// Transcode a body from the `from` grammar into the `to` grammar.
 ///
-/// The one move behind every page prov *authors* rather than reads. Generated
-/// prose — `prov`'s `about`'s page, the history store's index and event bodies —
-/// is written as Markdown in the Rust source, where it is legible to whoever
-/// maintains it, and converted here to whatever grammar the workspace actually
-/// uses. Without this, an HTML workspace ends up holding `.html` files whose
-/// bodies are literal `# Heading` Markdown: prov reads them back fine, and every
-/// other tool in the world does not.
+/// Two callers, one move. It is what every page prov *authors* rather than reads
+/// goes through — `prov`'s `about` page, the history store's index and event
+/// bodies are written as Markdown in the Rust source, where they are legible to
+/// whoever maintains them, and converted here to whatever grammar the workspace
+/// actually uses (without which an HTML workspace ends up holding `.html` files
+/// whose bodies are literal `# Heading` Markdown: prov reads them back fine, and
+/// every other tool in the world does not). It is also the engine behind
+/// `convert <file> content_format`, where `from` is the grammar the document's
+/// own extension declares rather than always Markdown.
 ///
-/// Markdown is returned untouched — twig's serializer is idempotent here, but
-/// round-tripping would buy nothing and risks reflowing prose the caller
-/// deliberately wrapped.
-pub fn transcode(body: &str, format: ContentFormat) -> crate::error::Result<String> {
-    if format == ContentFormat::Markdown {
+/// A body already in the target grammar is returned untouched: twig's serializer
+/// is idempotent here, but round-tripping would buy nothing and risks reflowing
+/// prose the author deliberately wrapped.
+pub fn transcode(
+    body: &str,
+    from: ContentFormat,
+    to: ContentFormat,
+) -> crate::error::Result<String> {
+    if from == to {
         return Ok(body.to_string());
     }
-    let mut doc = parse(body, ContentFormat::Markdown)?;
+    let mut doc = parse(body, from)?;
     let out = doc
-        .serialize(format.twig_format())
+        .serialize(to.twig_format())
         .map_err(|e| crate::error::Error::Content(format!("twig serialize: {e}")))?;
     String::from_utf8(out)
         .map_err(|e| crate::error::Error::Content(format!("twig produced non-UTF-8: {e}")))
@@ -222,6 +249,50 @@ mod tests {
         ] {
             let name = format!("derived.{}", f.extension());
             assert_eq!(ContentFormat::from_extension(Path::new(&name)), Some(f));
+        }
+    }
+
+    #[test]
+    fn transcode_respells_the_grammar_and_leaves_a_matching_body_alone() {
+        // Markdown → Djot is a genuine re-spelling, not a copy: setext headings
+        // become ATX and emphasis takes djot's markers. `[[wikilinks]]` are prov's
+        // notation rather than twig's, and must ride through untouched — the
+        // `convert` engine renames files on this promise.
+        let md = "Title\n=====\n\n*emph* and [[a:b]] and `code`.\n";
+        let dj = transcode(md, ContentFormat::Markdown, ContentFormat::Djot).unwrap();
+        assert!(dj.contains("# Title"), "{dj}");
+        assert!(dj.contains("_emph_"), "{dj}");
+        assert!(dj.contains("[[a:b]]"), "wikilink verbatim: {dj}");
+        assert!(dj.contains("`code`"), "{dj}");
+
+        // Same grammar in and out: returned verbatim, so prose the author wrapped
+        // by hand is never silently reflowed.
+        assert_eq!(
+            transcode(md, ContentFormat::Markdown, ContentFormat::Markdown).unwrap(),
+            md
+        );
+
+        // And the source grammar is honoured, not assumed: djot's `_emph_` read as
+        // djot survives, where reading it as Markdown would not.
+        let back = transcode(&dj, ContentFormat::Djot, ContentFormat::Markdown).unwrap();
+        assert!(back.contains("*emph*"), "djot read as djot: {back}");
+    }
+
+    #[test]
+    fn html_is_the_lossy_endpoint_in_both_directions() {
+        // What `convert --force` gates: the prose grammars interconvert freely,
+        // and every pairing with HTML is lossy whichever way it runs.
+        assert!(!ContentFormat::Markdown.is_lossy_to(ContentFormat::Djot));
+        assert!(!ContentFormat::Djot.is_lossy_to(ContentFormat::Markdown));
+        assert!(ContentFormat::Markdown.is_lossy_to(ContentFormat::Html));
+        assert!(ContentFormat::Html.is_lossy_to(ContentFormat::Djot));
+        // A conversion to the grammar already in use is not a conversion at all.
+        for f in [
+            ContentFormat::Markdown,
+            ContentFormat::Djot,
+            ContentFormat::Html,
+        ] {
+            assert!(!f.is_lossy_to(f));
         }
     }
 
