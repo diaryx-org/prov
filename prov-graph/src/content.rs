@@ -4,13 +4,14 @@
 //! really code, e.g. `[[inf] * n for _ in range(m)]]` inside backticks, must
 //! never be treated as a link).
 //!
-//! `twig` (a sister Zig-backed project, path-dependent for now) parses
-//! Markdown/Djot into a shared AST. [`render_html`] and [`code_spans`] are
-//! direct FFI calls into it — `twig`'s C ABI exposes `twig_document_render_html`
-//! and the generic `twig_document_query`, no subprocess involved. (`code_spans`
-//! used to bind a code-block-specific accessor; twig has since matured to a
-//! single generic query API, so it now selects the code-bearing node kinds
-//! itself.) `twig` is a required dependency, so these are always available.
+//! `twig` (a sister Zig-backed project) parses Markdown/Djot into a shared AST.
+//! [`render_html`] and [`code_spans`] are direct FFI calls into it — `twig`'s C
+//! ABI exposes `twig_document_render_html` and `twig_document_nodes`, no
+//! subprocess involved. (`code_spans` used to bind a code-block-specific
+//! accessor, then a selector query per code-bearing kind; it now filters the
+//! flat node array by kind, which needs one call and reaches the detached
+//! definition subtrees a query does not — see `spans_where`.) `twig` is a
+//! required dependency, so these are always available.
 //!
 //! Pair [`code_spans`] with [`crate::link::scan_wikilinks`] (which is what
 //! actually uses it) to keep a body-link scan from ever treating code as
@@ -150,32 +151,62 @@ pub fn render_html(body: &str, format: ContentFormat) -> crate::error::Result<St
         .map_err(|e| crate::error::Error::Content(format!("twig produced non-UTF-8 HTML: {e}")))
 }
 
-/// The AST node kinds `twig` parses as opaque code — inline code spans
-/// (`verbatim`), fenced/indented code blocks (`code_block`), and raw
-/// inline/block escapes (`raw_inline` / `raw_block`). twig's selector grammar
-/// has no union combinator, so [`code_spans`] queries these one at a time.
-const CODE_KINDS: [&str; 4] = ["verbatim", "code_block", "raw_inline", "raw_block"];
+/// Whether a node kind is one `twig` parses as opaque code — inline code spans
+/// (`Verbatim`), fenced/indented code blocks (`CodeBlock`), and raw
+/// inline/block escapes (`RawInline` / `RawBlock`).
+fn is_code(kind: &twig::Kind) -> bool {
+    matches!(
+        kind,
+        twig::Kind::Verbatim | twig::Kind::CodeBlock | twig::Kind::RawInline | twig::Kind::RawBlock
+    )
+}
+
+/// The spans of every node in `body` whose kind satisfies `want`, sorted by
+/// start offset. The one walk [`code_spans`] and [`link_spans`] share.
+///
+/// **Why the flat node array and not `twig`'s selector query.** A parsed
+/// document is not one tree. Footnote and link-reference definitions resolve by
+/// *label* rather than by position, so twig attaches them to no parent — and
+/// `twig_document_query` walks from the root, which means it never enters them.
+/// Both of prov's uses were wrong inside a footnote in the two opposite
+/// directions at once: a `` `[[x]]` `` in a footnote body was not reported as
+/// code, so the lexical wikilink scan promoted it to a link (DESIGN §8's
+/// false positive, the exact thing [`code_spans`] exists to prevent), and a real
+/// `[a](b.md)` in a footnote body was not reported as a link, so a rename never
+/// rewrote it and no broken-link finding was ever raised for it.
+///
+/// `Document::nodes` is indexed over the whole arena rather than walked from the
+/// root, so the detached definition subtrees are simply in it. It also replaces
+/// the four separate queries [`code_spans`] used to issue — twig's selector
+/// grammar has no union combinator, and a kind predicate needs none.
+fn spans_where(
+    body: &str,
+    format: ContentFormat,
+    want: impl Fn(&twig::Kind) -> bool,
+) -> crate::error::Result<Vec<std::ops::Range<usize>>> {
+    let mut doc = parse(body, format)?;
+    let nodes = doc
+        .nodes()
+        .map_err(|e| crate::error::Error::Content(format!("twig nodes: {e}")))?;
+    let mut spans: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| want(&n.kind))
+        .map(|n| n.span)
+        .collect();
+    spans.sort_by_key(|s| s.start);
+    Ok(spans)
+}
 
 /// The byte ranges in `body` that `twig` parses as code (inline code spans,
 /// fenced code blocks, raw inline/block escapes) — everything a link scan
-/// should treat as opaque. Built from `twig`'s generic query API
-/// (`twig_document_query`) by selecting each code-bearing node kind
-/// (`CODE_KINDS`) and taking its whole span; see
-/// [`crate::link::scan_wikilinks`]. Spans are returned sorted by start offset.
+/// should treat as opaque; see [`crate::link::scan_wikilinks`]. Spans are
+/// returned sorted by start offset, and cover code inside a footnote definition
+/// as well as code in the document body (see `spans_where`).
 pub fn code_spans(
     body: &str,
     format: ContentFormat,
 ) -> crate::error::Result<Vec<std::ops::Range<usize>>> {
-    let mut doc = parse(body, format)?;
-    let mut spans = Vec::new();
-    for kind in CODE_KINDS {
-        let matches = doc
-            .query(kind)
-            .map_err(|e| crate::error::Error::Content(format!("twig query {kind}: {e}")))?;
-        spans.extend(matches.into_iter().map(|m| m.span));
-    }
-    spans.sort_by_key(|s| s.start);
-    Ok(spans)
+    spans_where(body, format, is_code)
 }
 
 /// The byte ranges in `body` that `twig` parses as inline links — the whole
@@ -190,19 +221,14 @@ pub fn code_spans(
 /// Reference-style and autolink forms also surface as `link` nodes; the caller
 /// keeps only the inline `[label](target)` ones (a successful markdown parse),
 /// which is the form prov can resolve and rewrite in place.
+///
+/// Links inside a footnote definition are included, which a walk from the
+/// document root does not reach — see `spans_where`.
 pub fn link_spans(
     body: &str,
     format: ContentFormat,
 ) -> crate::error::Result<Vec<std::ops::Range<usize>>> {
-    let mut doc = parse(body, format)?;
-    let mut spans: Vec<_> = doc
-        .query("link")
-        .map_err(|e| crate::error::Error::Content(format!("twig query link: {e}")))?
-        .into_iter()
-        .map(|m| m.span)
-        .collect();
-    spans.sort_by_key(|s| s.start);
-    Ok(spans)
+    spans_where(body, format, |k| *k == twig::Kind::Link)
 }
 
 #[cfg(test)]
@@ -293,6 +319,59 @@ mod tests {
             ContentFormat::Html,
         ] {
             assert!(!f.is_lossy_to(f));
+        }
+    }
+
+    #[test]
+    fn code_and_link_spans_reach_inside_a_footnote_definition() {
+        // A footnote definition resolves by label, so twig attaches it to no
+        // parent and a walk from the document root never enters it. Both spans
+        // are read out of the flat node array for exactly this case.
+        //
+        // The code half is DESIGN §8's false positive: unmasked, the lexical
+        // `[[…]]` scan promotes this code to a link.
+        for format in [ContentFormat::Markdown, ContentFormat::Djot] {
+            let body = "Body.[^n]\n\n[^n]: A note with `[[inf] * n]` code.\n";
+            let spans = code_spans(body, format).unwrap();
+            assert_eq!(
+                spans.iter().map(|s| &body[s.clone()]).collect::<Vec<_>>(),
+                ["`[[inf] * n]`"],
+                "{format:?}"
+            );
+
+            // The link half: unreported, a rename never rewrites it and no
+            // broken-link finding is ever raised for it.
+            let body = "Body.[^n]\n\n[^n]: See [b](notes/b.md) here.\n";
+            let spans = link_spans(body, format).unwrap();
+            assert_eq!(
+                spans.iter().map(|s| &body[s.clone()]).collect::<Vec<_>>(),
+                ["[b](notes/b.md)"],
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_spans_covers_every_code_bearing_kind_in_one_pass() {
+        // One kind predicate over the flat array replaces four separate
+        // selector queries; all four kinds must still be reported, in source
+        // order regardless of the order the arena holds them in.
+        let body = "`v`\n\n```\nfenced\n```\n\n<span>raw</span>\n\n<div>\nblock\n</div>\n";
+        let spans = code_spans(body, ContentFormat::Markdown).unwrap();
+        assert!(
+            spans.windows(2).all(|w| w[0].start <= w[1].start),
+            "sorted by start: {spans:?}"
+        );
+        let covered: String = spans.iter().map(|s| &body[s.clone()]).collect();
+        // One fixture per kind: verbatim, code_block, raw_inline, raw_block.
+        // A raw *inline* is the tag alone — the prose between `<span>` and
+        // `</span>` is not code and is deliberately left unmasked — whereas a
+        // raw *block* is the whole element, its interior included.
+        for expected in ["`v`", "fenced", "<span>", "<div>\nblock\n</div>"] {
+            assert!(
+                covered.contains(expected),
+                "{expected} missing: {covered:?}"
+            );
         }
     }
 

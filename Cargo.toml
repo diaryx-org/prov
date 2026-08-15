@@ -55,17 +55,13 @@ thiserror = "2.0"
 
 # Body-prose parsing (Djot/Markdown) — prov's body-parser dependency (see
 # `src/content.rs`).
-#
-# 2.7.1 is a floor, not a preference: it's the release where `twig-sys`
-# learned to build for `wasm32-wasip1` (mapped to Zig's `wasi` os tag), which
-# prov's own WASI release build needs.
-twig-doc = { version = "2.7.1" }
+twig-doc = "3"
 
 # Opaque document-ID minting: NOID xdigit alphabet + NOID check character
 # over a seeded PRNG. Prov supplies its own seed (uniqueness is enforced by
 # rejection against the index, not entropy), so the dependency-free default —
 # no `os`/`js` features — is all it needs. See `prov/src/identity.rs`.
-moid = "1.0.0"
+moid = "1"
 
 # Internal crate.
 prov = { path = "prov", version = "0.5.0" }
