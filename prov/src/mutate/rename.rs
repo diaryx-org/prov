@@ -987,4 +987,58 @@ mod tests {
         assert_eq!(w.index().resolve(&a), Some(PathBuf::from("p1.md")));
         assert_eq!(w.index().resolve(&b), Some(PathBuf::from("p2.md")));
     }
+
+    #[test]
+    fn rename_maintains_links_to_a_document_that_declares_no_parent() {
+        // The `about` page's shape: reached by the root's `about` pointer, and
+        // declaring no `part_of` of its own, so it sits in no spanning tree. The
+        // inbound census walks `part_of` *up* from the renamed file, and a walk
+        // that cannot move used to answer "about.md" — a one-document workspace,
+        // in which the root's pointer is invisible and survives the rename naming
+        // a path that no longer exists.
+        let dir = tempdir("rename-parentless");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nabout: about.md\ncontents:\n- a.md\n---\nSee [the page](about.md).\n",
+        );
+        write(&dir, "about.md", "---\ntitle: About\n---\nprose\n");
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+
+        block_on(ws(&dir).rename(Path::new("about.md"), Path::new("guide.md"))).unwrap();
+
+        let root = read(&dir, "index.md");
+        assert!(
+            root.contains("about: /guide.md"),
+            "the pointer followed the move: {root}"
+        );
+        assert!(
+            root.contains("[the page](/guide.md)"),
+            "and so did the body link: {root}"
+        );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn renaming_the_root_still_roots_its_own_census() {
+        // The other document that declares no `part_of` is the root itself, where
+        // "the walk did not move" is the correct answer. Its children's `part_of`
+        // entries must still be retargeted — the fallback must not send the census
+        // somewhere else, or hand back a root that no longer exists.
+        let dir = tempdir("rename-root");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n---\n",
+        );
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+
+        block_on(ws(&dir).rename(Path::new("index.md"), Path::new("home.md"))).unwrap();
+
+        assert!(
+            read(&dir, "a.md").contains("part_of: /home.md"),
+            "the child's up-link followed the root"
+        );
+        assert_eq!(block_on(ws(&dir).check("home.md")).unwrap(), vec![]);
+    }
 }

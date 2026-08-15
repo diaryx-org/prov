@@ -83,6 +83,24 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// root — the document nothing contains — so a census can cover `from`'s
     /// whole workspace. A cycle or an unreadable ancestor stops the walk at the
     /// last good document, which still roots a scan over `from`'s neighborhood.
+    ///
+    /// **A walk that never moves is not an answer.** When `from` declares no
+    /// `part_of` at all, the loop below returns `from` itself — which is right for
+    /// the workspace root and wrong for every other such document, and prov
+    /// authors one of those: the `about` page is reached by the root's `about`
+    /// pointer and declares no parent, so it is in no spanning tree. Answering
+    /// "about.md" here hands every caller a one-document workspace: `rename` and
+    /// `convert` see none of its inbound references and leave the root's pointer
+    /// naming a path that just moved, `retitle` relabels nothing, and
+    /// [`remedy`](crate::remedy)'s config and vocabulary lookups read defaults
+    /// instead of the workspace's own settings.
+    ///
+    /// So a walk that terminated where it started is checked against the
+    /// workspace's actual root ([`root_document`](Workspace::root_document)) and
+    /// yields to it. The cost falls only on that case — a document *with* a parent
+    /// climbs to a genuine root and never asks — and a directory with no
+    /// discoverable root (or an ambiguous one) keeps the old answer, since there
+    /// is nothing better to give.
     pub(crate) async fn spanning_root(&self, from: &Path, inverse: &str) -> Result<PathBuf> {
         let mut current = from.to_path_buf();
         let mut seen = BTreeSet::new();
@@ -94,6 +112,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Some(parent) => current = parent,
                 None => break,
             }
+        }
+        if current == from
+            && let Some(root) = self.root_document().await?
+            && root != current
+        {
+            return Ok(root);
         }
         Ok(current)
     }

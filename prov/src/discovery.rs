@@ -96,17 +96,7 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         let mut candidates: Vec<String> = Vec::new();
         for entry in entries {
             let path = entry.path();
-            let is_content_ext = ContentFormat::from_extension(path).is_some();
-            // A separated root's node is a whole-file metadata document
-            // (`index.yaml`, …). Accept those too, but only under the conventional
-            // `index`/`readme` stem — otherwise a stray `.json`/`.yaml` config file
-            // (a mapping at its root, no `part_of`) would masquerade as a root.
-            let is_meta_ext = document::whole_file_format(path).is_some();
-            if !is_content_ext && !is_meta_ext {
-                continue;
-            }
-            if is_meta_ext && !is_content_ext && !stem_is(path, "index") && !stem_is(path, "readme")
-            {
+            if !can_be_root(path) {
                 continue;
             }
             let Ok(text) = fs.read_to_string(path).await else {
@@ -115,20 +105,13 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
             let Ok(doc) = Document::parse(path, &text) else {
                 continue;
             };
-            if doc.has_meta()
-                && doc.meta.get("part_of").is_none()
+            if declares_no_parent(&doc)
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
             {
                 candidates.push(name.to_string());
             }
         }
-        let chosen = candidates
-            .iter()
-            .find(|n| stem_is(Path::new(n), "index"))
-            .or_else(|| candidates.iter().find(|n| stem_is(Path::new(n), "readme")))
-            .cloned()
-            .or_else(|| (candidates.len() == 1).then(|| candidates[0].clone()));
-        match chosen {
+        match choose_root(&candidates) {
             Some(root_doc) => {
                 let discovered = build(fs, dir.to_path_buf(), PathBuf::from(root_doc)).await?;
                 return Ok(Discovery::Found(discovered));
@@ -143,6 +126,82 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         }
     }
     Ok(Discovery::NotFound)
+}
+
+/// Whether `path` is *shaped* like a root document — the cheap half of the test,
+/// applied before anything is read.
+///
+/// A content document (Markdown/Djot/HTML) qualifies. So does a whole-file
+/// metadata document (a *separated* root's node, `index.yaml` and friends), but
+/// only under the conventional `index`/`readme` stem — otherwise a stray
+/// `.json`/`.yaml` config file, which is a mapping at its root and declares no
+/// `part_of`, would masquerade as a root.
+fn can_be_root(path: &Path) -> bool {
+    let is_content_ext = ContentFormat::from_extension(path).is_some();
+    let is_meta_ext = document::whole_file_format(path).is_some();
+    if is_content_ext {
+        return true;
+    }
+    is_meta_ext && (stem_is(path, "index") || stem_is(path, "readme"))
+}
+
+/// The other half: a root document has metadata and says nothing contains it.
+fn declares_no_parent(doc: &Document) -> bool {
+    doc.has_meta() && doc.meta.get("part_of").is_none()
+}
+
+/// Pick the root from a directory's candidates: an `index` stem wins, then
+/// `readme`, then a lone candidate. Two or more unnamed candidates are a tie this
+/// will not break — prov refuses to guess which is the root.
+fn choose_root(candidates: &[String]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|n| stem_is(Path::new(n), "index"))
+        .or_else(|| candidates.iter().find(|n| stem_is(Path::new(n), "readme")))
+        .cloned()
+        .or_else(|| (candidates.len() == 1).then(|| candidates[0].clone()))
+}
+
+impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Workspace<FS, Id, Ix> {
+    /// This workspace's own root document — the same judgment [`discover`] makes,
+    /// asked of a workspace already located rather than of a directory being
+    /// searched for one. `None` when the root directory holds no candidate, or
+    /// holds several with no `index`/`readme` to break the tie.
+    ///
+    /// Where [`discover`] walks *up* the filesystem to find which workspace a
+    /// directory belongs to, this reads one directory — the root this workspace is
+    /// already rooted at — so it needs neither `Clone` nor a second config layering
+    /// pass. It exists because "walk the spanning relation up to the root" is not a
+    /// complete answer to "which document roots this workspace": a document that
+    /// declares no `part_of` roots that walk at *itself*, whether it is the root or
+    /// merely outside the tree. See
+    /// [`spanning_root`](Workspace::spanning_root), which uses this to tell those
+    /// two apart.
+    pub async fn root_document(&self) -> Result<Option<PathBuf>> {
+        let mut candidates = Vec::new();
+        for entry in self.listing(Path::new("")).await? {
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            // `listing` yields *absolute* paths; every document verb below takes
+            // workspace-relative ones, and for entries of the root directory the
+            // relative path is exactly the file name.
+            let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let path = PathBuf::from(name);
+            if !can_be_root(&path) {
+                continue;
+            }
+            let Ok((_, doc)) = self.load(&path).await else {
+                continue;
+            };
+            if declares_no_parent(&doc) {
+                candidates.push(name.to_string());
+            }
+        }
+        Ok(choose_root(&candidates).map(PathBuf::from))
+    }
 }
 
 /// Assemble the [`Discovered`] for a chosen root: resolve the registry pointer
@@ -254,5 +313,45 @@ mod tests {
             Discovery::Found(d) => assert_eq!(d.root_dir, root.join("sub")),
             other => panic!("expected Found at sub, got {other:?}"),
         }
+    }
+
+    fn probe(dir: &Path) -> Workspace<StdFs> {
+        Workspace::builder(StdFs).root(dir).build()
+    }
+
+    #[test]
+    fn root_document_names_the_root_of_a_located_workspace() {
+        // The same judgment `discover` makes, asked of a workspace already rooted:
+        // `index` wins over another parentless document in the same directory, and
+        // a child (which declares `part_of`) is not a candidate at all.
+        let root = tmp("root-doc");
+        std::fs::write(root.join("index.md"), "---\ntitle: Home\n---\n").unwrap();
+        // The about page: parentless, so a *candidate*, but `index` outranks it.
+        std::fs::write(root.join("about.md"), "---\ntitle: About\n---\n").unwrap();
+        std::fs::write(
+            root.join("child.md"),
+            "---\ntitle: Child\npart_of: index.md\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            block_on(probe(&root).root_document()).unwrap(),
+            Some(PathBuf::from("index.md"))
+        );
+    }
+
+    #[test]
+    fn root_document_declines_to_guess() {
+        // Two unnamed candidates and no `index`/`readme` to break the tie is the
+        // one case `discover` refuses; asked this way it answers `None` rather
+        // than picking, so a caller falls back instead of acting on a guess.
+        let root = tmp("root-doc-tie");
+        std::fs::write(root.join("one.md"), "---\ntitle: One\n---\n").unwrap();
+        std::fs::write(root.join("two.md"), "---\ntitle: Two\n---\n").unwrap();
+        assert_eq!(block_on(probe(&root).root_document()).unwrap(), None);
+
+        // And a directory with no document at all has no root to name.
+        let bare = tmp("root-doc-bare");
+        std::fs::write(bare.join("plain.txt"), "not a document").unwrap();
+        assert_eq!(block_on(probe(&bare).root_document()).unwrap(), None);
     }
 }

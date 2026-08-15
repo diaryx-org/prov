@@ -201,14 +201,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// [`ContentFormat::is_lossy_to`]). Returns the *new* paths of the prose files
     /// actually converted.
     ///
-    /// One inherited limit, shared with [`rename`](Workspace::rename) because it
-    /// is the same census: inbound references are found by walking the spanning
-    /// relation *up* from `file` to a root and taking a census from there, so a
-    /// document that declares no `part_of` at all roots that walk at itself and
-    /// its inbound links are never seen. The `about` page is the one such document
-    /// prov itself authors — converting it directly leaves the root's `about`
-    /// pointer naming the old path, which `check` reports as an orphan. Regenerate
-    /// it with `prov about` instead of converting it.
+    /// A document reached by a *pointer* rather than by the spanning relation —
+    /// the `about` page is the one prov authors — converts like any other: it
+    /// declares no `part_of`, but
+    /// [`spanning_root`](Workspace::spanning_root) resolves that to the
+    /// workspace's actual root, so the census covers the document holding the
+    /// pointer and the pointer follows the move.
     pub async fn convert_content_format(
         &mut self,
         file: &Path,
@@ -1250,6 +1248,42 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("both become"), "{err}");
         assert_eq!(snapshot(&dir), before, "nothing converted");
+    }
+
+    #[test]
+    fn convert_content_format_retargets_links_to_a_parentless_document() {
+        // The about page's shape — reached by the root's `about` pointer, in no
+        // spanning tree. Converting it moves it, so the pointer has to follow;
+        // `spanning_root` yielding the workspace root rather than the file itself
+        // is what puts the root in the census that finds it.
+        let dir = tempdir("convert-content-parentless");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nabout: about.md\n---\nSee [the page](about.md).\n",
+        );
+        write(&dir, "about.md", "---\ntitle: About\n---\n*emph* prose.\n");
+
+        let n = block_on(ws(&dir).convert_content_format(
+            Path::new("about.md"),
+            ContentFormat::Djot,
+            false,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(n, vec![PathBuf::from("about.dj")]);
+
+        let root = read(&dir, "index.md");
+        assert!(
+            root.contains("about: /about.dj"),
+            "pointer followed: {root}"
+        );
+        assert!(
+            root.contains("[the page](/about.dj)"),
+            "body link followed: {root}"
+        );
+        assert!(read(&dir, "about.dj").contains("_emph_"));
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 
     #[test]

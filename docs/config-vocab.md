@@ -518,10 +518,11 @@ prov about                                 # regenerate the page that names the 
 ```
 
 The last is needed because the about page states the root's filename, which the
-sweep just changed; `check` reports it as stale either way. Convert the about
-page itself and the root's `about` pointer is *not* retargeted — it declares no
-`part_of`, so the inbound census has no root to walk up to (the same limit
-`prov mv` has on that file). Regenerate it rather than converting it.
+sweep just changed; `check` reports it as stale either way. The sweep does not
+reach the about page itself — `-r` follows the spanning relation, and the page
+hangs off the root's `about` pointer instead — so convert it directly
+(`prov convert about.md content_format djot`) or just regenerate it, which writes
+it in the configured grammar.
 
 ## Making config explicit
 

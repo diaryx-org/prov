@@ -335,12 +335,21 @@ format-agnosticism, made an action). Decided this session:
   document is not forced back to the filesystem between them.
   `restyle_frontmatter_links` is still a near-sibling of `rerelativize` (move vs
   restyle); a shared `map_frontmatter_links(…, render)` could unify those two.
-- **Known limit, inherited not introduced:** the inbound census walks the spanning
-  relation *up* from the named file, so a document declaring no `part_of` roots
-  that walk at itself and its inbound links are invisible. The `about` page is the
-  one such document prov authors — converting or `mv`-ing it leaves the root's
-  `about` pointer stale (`check` catches it). Fixing it means anchoring the census
-  at the discovered workspace root instead, which is `rename`'s call to make first.
+- ✅ **Pointer-reached documents keep their inbound links.** Found while converting
+  the about page, but never convert's bug: `spanning_root` walks `part_of` *up*
+  from the named file, and a document declaring none roots that walk at *itself*.
+  That is right for the workspace root and wrong for every other parentless
+  document — and prov authors one, the about page, which hangs off the root's
+  `about` pointer. Every caller of that walk was affected: `rename`, `convert`,
+  `retitle`, `delete`/`recycle` saw a one-document workspace and left the root's
+  pointer naming a path that had moved, and `remedy`'s config and vocabulary
+  lookups read *defaults* rather than the workspace's own settings. The fix is one
+  condition — a walk that never moved yields to `Workspace::root_document`, the
+  `discover` judgment (index > readme > lone candidate, extracted into `can_be_root`
+  / `declares_no_parent` / `choose_root` so both callers share one rule) asked of a
+  workspace already located. Costs nothing on the common path: a document *with* a
+  parent climbs to a genuine root and never asks. An ambiguous or rootless
+  directory keeps the old answer, there being nothing better to give.
 
 ## Routes (`route.rs`)
 
