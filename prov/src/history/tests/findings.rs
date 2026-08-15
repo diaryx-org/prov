@@ -223,7 +223,7 @@ fn an_unlinked_store_is_reported_first_and_its_fix_retires_it() {
         }
     );
     block_on(ws(&dir).apply_fix(&fix)).unwrap();
-    assert!(read(&dir, "index.md").contains("history: history/index.md"));
+    assert!(read(&dir, "index.md").contains("history: /history/index.md"));
     assert_eq!(
         check(&dir),
         vec![],

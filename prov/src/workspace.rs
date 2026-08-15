@@ -263,6 +263,13 @@ impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryReadHost for Workspac
         self.relations().history_relation()
     }
 
+    fn history_link_style(&self) -> LinkStyle {
+        match self.relations().history_relation() {
+            Some(relation) => self.reference_style_for(relation).path_style,
+            None => self.link_style(),
+        }
+    }
+
     async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
         self.history_path(root_doc).await
     }

@@ -34,6 +34,7 @@ use prov_graph::fs::{Metadata, ReadStorage};
 use prov_graph::graph::Graph;
 use prov_graph::identity::Id;
 use prov_graph::index::Collision;
+use prov_graph::link::LinkStyle;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 use prov_transaction::ChangeSet;
@@ -91,6 +92,12 @@ pub trait HistoryReadHost {
     /// declared here at all, which is why a capture reports it rather than
     /// silently writing an unreachable store.
     fn history_relation(&self) -> Option<&str>;
+
+    /// The path style prov authors the `history` pointer relation in — root-
+    /// absolute or `../`-relative, this workspace's own axis. The store defers
+    /// to it rather than assuming a shape, so a pointer it authors resolves the
+    /// same way every other structural link in the workspace does.
+    fn history_link_style(&self) -> LinkStyle;
 
     /// The history-store index document this root declares via its pointer
     /// relation, if any. `None` when there is no relation configured or the
@@ -181,6 +188,9 @@ impl<T: HistoryReadHost + ?Sized> HistoryReadHost for &T {
     fn history_relation(&self) -> Option<&str> {
         (**self).history_relation()
     }
+    fn history_link_style(&self) -> LinkStyle {
+        (**self).history_link_style()
+    }
     async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
         (**self).history_path(root_doc).await
     }
@@ -213,6 +223,9 @@ impl<T: HistoryReadHost + ?Sized> HistoryReadHost for &mut T {
     }
     fn history_relation(&self) -> Option<&str> {
         (**self).history_relation()
+    }
+    fn history_link_style(&self) -> LinkStyle {
+        (**self).history_link_style()
     }
     async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
         (**self).history_path(root_doc).await

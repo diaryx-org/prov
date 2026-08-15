@@ -198,7 +198,10 @@ fn a_store_the_root_stopped_declaring_is_reported_first_and_repairable() {
     let repaired =
         block_on(store(&dir).pointer_text(Path::new("index.md"), Path::new("history/index.md")))
             .unwrap();
-    assert!(repaired.contains("history: history/index.md"), "{repaired}");
+    assert!(
+        repaired.contains("history: /history/index.md"),
+        "{repaired}"
+    );
     write(&dir, "index.md", &repaired);
     assert!(
         !findings(&dir)
@@ -206,6 +209,24 @@ fn a_store_the_root_stopped_declaring_is_reported_first_and_repairable() {
             .any(|f| matches!(f, HistoryIssue::StoreUnlinked { .. })),
         "the repair has to actually retire the issue"
     );
+}
+
+#[test]
+fn the_repair_pointer_respects_the_hosts_path_style() {
+    // The default host authors root-absolute, as `prov`'s own workspace
+    // default does (the case above). A host configured for `../`-relative
+    // links must get that shape out of the very same repair — the pointer
+    // defers to the host's style rather than assuming one.
+    let dir = seed("check-unlinked-relative");
+    capture(&dir, "2026-07-31T09:00:00.000000Z", None);
+    unlink_the_store(&dir);
+
+    let repaired = block_on(
+        store_with_link_style(&dir, prov_graph::link::LinkStyle::MarkdownRelative)
+            .pointer_text(Path::new("index.md"), Path::new("history/index.md")),
+    )
+    .unwrap();
+    assert!(repaired.contains("history: history/index.md"), "{repaired}");
 }
 
 /// With the axis off, a leftover `history/` is not a loss — the workspace said

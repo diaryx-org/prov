@@ -27,7 +27,7 @@ use crate::workspace::Workspace;
 use prov_graph::document::Document;
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::{Resolution, Target};
-use prov_graph::link::{self, Link};
+use prov_graph::link::{self, Link, LinkStyle};
 use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
@@ -202,7 +202,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Some(value) = doc.meta.get(field) else {
             return Ok(None);
         };
-        let dir = doc_path.parent().unwrap_or(Path::new(""));
         let matches = |raw: &str| {
             let link = Link::parse(raw);
             link.is_path_target()
@@ -230,9 +229,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Ok(None); // no metadata block: nothing to rewrite
         };
         let is_sequence = value.as_sequence().is_some();
+        let style = self.reference_style_for(field).path_style;
         let mut editor = MetaEditor::open(text, carrier)?;
         for (index, raw) in hits {
-            let updated = Link::parse(&raw).with_path(link::relative(dir, new));
+            let updated = Link::parse(&raw).with_path(link::path_text(style, doc_path, new));
             // A scalar field is addressed by key; a sequence entry by key + index.
             // Replacing in place never changes the sequence's length, so indices
             // taken before the first edit stay valid through the last.
@@ -261,7 +261,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         to: &Path,
     ) -> Result<Option<String>> {
         let (original, doc0) = self.load(source).await?;
-        let mut text = rewrite_body_inbound(&original, &doc0.body, source, from, to);
+        let mut text =
+            rewrite_body_inbound(&original, &doc0.body, source, from, to, self.link_style());
         let mut doc = if text != original {
             Document::parse(source, &text)?
         } else {
@@ -540,11 +541,17 @@ pub(crate) fn splice_body(text: &str, old_body: &str, new_body: &str) -> String 
 /// targets are left untouched. Rewrites right-to-left so each span stays valid
 /// as earlier ones are replaced. Returns `text` unchanged when no body link
 /// pointed at `from`.
-fn rewrite_body_inbound(text: &str, body: &str, source: &Path, from: &Path, to: &Path) -> String {
+fn rewrite_body_inbound(
+    text: &str,
+    body: &str,
+    source: &Path,
+    from: &Path,
+    to: &Path,
+    style: LinkStyle,
+) -> String {
     if body.is_empty() {
         return text.to_string();
     }
-    let source_dir = source.parent().unwrap_or(Path::new(""));
     let mut new_body = body.to_string();
     let mut changed = false;
     for bl in link::scan_body_links(source, body).into_iter().rev() {
@@ -554,7 +561,10 @@ fn rewrite_body_inbound(text: &str, body: &str, source: &Path, from: &Path, to: 
         if link::resolve(source, &bl.link.target).as_path() != from {
             continue;
         }
-        let retargeted = bl.link.with_path(link::relative(source_dir, to)).render();
+        let retargeted = bl
+            .link
+            .with_path(link::path_text(style, source, to))
+            .render();
         new_body.replace_range(bl.span.clone(), &retargeted);
         changed = true;
     }

@@ -26,7 +26,7 @@ use prov_graph::fs::{Metadata, ReadStorage, StdFs};
 use prov_graph::graph::{Graph, ReadSettings, Target};
 use prov_graph::identity::Id;
 use prov_graph::index::{Collision, IdIndex};
-use prov_graph::link::{self, Link};
+use prov_graph::link::{self, Link, LinkStyle};
 use prov_store::fs::Storage;
 use prov_store::index::{FileIndex, IndexStore};
 use prov_transaction::{ChangeSet, FileOp};
@@ -51,6 +51,10 @@ pub(super) struct TestHost<FS = StdFs> {
     /// `&self`: a capture that learns a digest is not a mutation of the
     /// workspace, and the trait says so.
     fixity_cache: RefCell<Option<FixityCache>>,
+    /// The path style the `history` pointer is authored in — `prov`'s own
+    /// default (root-absolute), unless a test opts into relative with
+    /// [`link_style`](Self::link_style).
+    link_style: LinkStyle,
 }
 
 impl<FS> TestHost<FS> {
@@ -80,6 +84,7 @@ impl<FS> TestHost<FS> {
             default_embed_format,
             captures: true,
             fixity_cache: RefCell::new(None),
+            link_style: LinkStyle::default(),
         }
     }
 
@@ -88,6 +93,14 @@ impl<FS> TestHost<FS> {
     /// it wants one.
     pub(super) fn history_off(mut self) -> Self {
         self.captures = false;
+        self
+    }
+
+    /// Author the `history` pointer in a given path style — the axis a real
+    /// workspace's config drives, exercised here without pulling in `prov`'s
+    /// `Workspace`.
+    pub(super) fn link_style(mut self, style: LinkStyle) -> Self {
+        self.link_style = style;
         self
     }
 
@@ -128,6 +141,10 @@ impl<FS: ReadStorage> HistoryReadHost for TestHost<FS> {
 
     fn history_relation(&self) -> Option<&str> {
         self.graph.relations().history_relation()
+    }
+
+    fn history_link_style(&self) -> LinkStyle {
+        self.link_style
     }
 
     /// The first target of the `history` relation on the root, resolved — the

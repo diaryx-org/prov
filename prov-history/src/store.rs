@@ -63,8 +63,8 @@ impl<H: HistoryReadHost> HistoryStore<H> {
     }
 
     /// The root document's text with its `history` pointer at the store index —
-    /// authored the first time only, as a plain relative path (the same shape
-    /// `recycle` gives the bin pointer), comment- and format-preservingly.
+    /// authored the first time only, in the host's own path style (the same
+    /// shape `recycle` gives the bin pointer), comment- and format-preservingly.
     ///
     /// Computed rather than staged directly so the capture can hash *this* text
     /// into its own manifest, and so the pointer still lands in the same
@@ -91,8 +91,7 @@ impl<H: HistoryReadHost> HistoryStore<H> {
             .history_relation()
             .ok_or_else(|| Error::Structure("no history relation configured".into()))?
             .to_string();
-        let root_dir = root_doc.parent().unwrap_or(Path::new(""));
-        let pointer = link::relative(root_dir, store_index);
+        let pointer = link::path_text(self.host().history_link_style(), root_doc, store_index);
         prov_store::edit::set_in_text(
             text,
             carrier,

@@ -50,6 +50,15 @@ pub(super) fn store_history_off(dir: &Path) -> HistoryStore<TestHost> {
     HistoryStore::new(TestHost::new(StdFs, dir).history_off())
 }
 
+/// [`store`] authoring the `history` pointer in a given path style — see
+/// [`TestHost::link_style`](super::host::TestHost::link_style).
+pub(super) fn store_with_link_style(
+    dir: &Path,
+    style: prov_graph::link::LinkStyle,
+) -> HistoryStore<TestHost> {
+    HistoryStore::new(TestHost::new(StdFs, dir).link_style(style))
+}
+
 /// [`store`] with a declared metadata embedding — see
 /// [`TestHost::authoring`](super::host::TestHost::authoring).
 pub(super) fn store_authoring(

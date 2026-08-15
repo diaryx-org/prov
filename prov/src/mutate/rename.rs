@@ -14,7 +14,7 @@ use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
 use prov_graph::document::Document;
 use prov_graph::error::{Error, Result};
-use prov_graph::link::{self, Link};
+use prov_graph::link::{self, Link, LinkStyle};
 use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
@@ -107,8 +107,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 self.relations().relations(),
                 &from,
                 &to,
+                |field| self.reference_style_for(field).path_style,
             )?;
-            rerelativize_body_links(&meta_rewritten, &from_doc.body, &from, &to)
+            rerelativize_body_links(
+                &meta_rewritten,
+                &from_doc.body,
+                &from,
+                &to,
+                self.link_style(),
+            )
         } else {
             from_text
         };
@@ -180,7 +187,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         } else {
             let (raw, _) = self.load(&body_from).await?;
             Some(if from.parent() != to.parent() {
-                rerelativize_body_links(&raw, &raw, &body_from, &body_to)
+                rerelativize_body_links(&raw, &raw, &body_from, &body_to, self.link_style())
             } else {
                 raw
             })
@@ -218,27 +225,26 @@ fn rerelativize(
     relations: &[prov_graph::relation::Relation],
     from: &Path,
     to: &Path,
+    style_for: impl Fn(&str) -> LinkStyle,
 ) -> Result<String> {
     let Some(carrier) = doc.carrier else {
         return Ok(text.to_string()); // no metadata: nothing to re-relativize
     };
     let mut editor = MetaEditor::open(text, carrier)?;
-    let new_dir = to.parent().unwrap_or(Path::new(""));
     for relation in relations {
         let Some(value) = doc.meta.get(&relation.name) else {
             continue;
         };
+        let style = style_for(&relation.name);
         let rewrite = |raw: &str| -> Option<String> {
             let target = Link::parse(raw);
             if !target.is_path_target() {
                 return None;
             }
             let resolved = link::resolve(from, &target.target);
-            Some(
-                target
-                    .with_path(link::relative(new_dir, &resolved))
-                    .render(),
-            )
+            let new_target = link::path_text(style, to, &resolved);
+            let rendered = target.with_path(new_target).render();
+            (rendered != raw).then_some(rendered)
         };
         match value {
             Value::String(raw) => {
@@ -275,11 +281,16 @@ fn rerelativize(
 /// lives. Each link keeps its own wrapper on rewrite ([`Link::render`]), so a
 /// wikilink stays `[[…]]` and a markdown link stays `[label](…)`. Returns `text`
 /// unchanged when the body has no rewritable link.
-fn rerelativize_body_links(text: &str, body: &str, from: &Path, to: &Path) -> String {
+fn rerelativize_body_links(
+    text: &str,
+    body: &str,
+    from: &Path,
+    to: &Path,
+    style: LinkStyle,
+) -> String {
     if body.is_empty() {
         return text.to_string();
     }
-    let new_dir = to.parent().unwrap_or(Path::new(""));
     let mut new_body = String::with_capacity(body.len());
     let mut cursor = 0;
     let mut rewrote = false;
@@ -291,10 +302,11 @@ fn rerelativize_body_links(text: &str, body: &str, from: &Path, to: &Path) -> St
             continue;
         }
         let resolved = link::resolve(from, &bl.link.target);
-        let retargeted = bl
-            .link
-            .with_path(link::relative(new_dir, &resolved))
-            .render();
+        let new_target = link::path_text(style, to, &resolved);
+        let retargeted = bl.link.with_path(new_target).render();
+        if retargeted == body[bl.span.start..bl.span.end] {
+            continue; // already resolves under the workspace's path style
+        }
         new_body.push_str(&body[cursor..bl.span.start]);
         new_body.push_str(&retargeted);
         cursor = bl.span.end;
@@ -331,20 +343,58 @@ mod tests {
 
         block_on(ws(&dir).rename(Path::new("mid.md"), Path::new("sub/mid.md"))).unwrap();
 
-        // Parent entry retargeted, label kept.
+        // Parent entry retargeted, label kept, root-absolute (the workspace
+        // default path style).
         let index = read(&dir, "index.md");
-        assert!(index.contains("- '[Mid](sub/mid.md)'"), "{index}");
+        assert!(index.contains("- '[Mid](/sub/mid.md)'"), "{index}");
         // Child's inverse retargeted.
         let leaf = read(&dir, "leaf.md");
-        assert!(leaf.contains("part_of: sub/mid.md"), "{leaf}");
+        assert!(leaf.contains("part_of: /sub/mid.md"), "{leaf}");
         // The moved doc's own links re-relativized; comment and body kept.
         let mid = read(&dir, "sub/mid.md");
-        assert!(mid.contains("part_of: ../index.md"), "{mid}");
-        assert!(mid.contains("- ../leaf.md"), "{mid}");
+        assert!(mid.contains("part_of: /index.md"), "{mid}");
+        assert!(mid.contains("- /leaf.md"), "{mid}");
         assert!(mid.contains("# a comment to preserve"), "{mid}");
         assert!(mid.ends_with("mid body\n"), "{mid}");
         // The whole workspace still validates.
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn rename_respects_an_explicit_relative_path_style() {
+        // The workspace default is root-absolute (every other test in this
+        // module runs under it); a workspace configured for `../`-relative
+        // links must still get those out of a move — the style is an axis
+        // `rename` consults, not a form it assumes.
+        let dir = tempdir("rename-relative-style");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- '[Mid](mid.md)'\n---\n",
+        );
+        write(
+            &dir,
+            "mid.md",
+            "---\npart_of: index.md\ncontents:\n- leaf.md\n---\nSee [[leaf.md]].\n",
+        );
+        write(&dir, "leaf.md", "---\npart_of: mid.md\n---\n");
+
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .link_style(LinkStyle::MarkdownRelative)
+            .build();
+        block_on(w.rename(Path::new("mid.md"), Path::new("sub/mid.md"))).unwrap();
+
+        // Inbound references from root-level documents: no leading `/`.
+        let index = read(&dir, "index.md");
+        assert!(index.contains("- '[Mid](sub/mid.md)'"), "{index}");
+        let leaf = read(&dir, "leaf.md");
+        assert!(leaf.contains("part_of: sub/mid.md"), "{leaf}");
+        // The moved doc's own links, re-relativized from its new directory.
+        let mid = read(&dir, "sub/mid.md");
+        assert!(mid.contains("part_of: ../index.md"), "{mid}");
+        assert!(mid.contains("- ../leaf.md"), "{mid}");
+        assert!(mid.contains("[[../leaf.md]]"), "{mid}");
     }
 
     #[test]
@@ -373,11 +423,11 @@ mod tests {
         let a = read(&dir, "a.md");
         // Every one of the three frontmatter references moved, each keeping its
         // own locator and label…
-        assert!(a.contains("- '[B 1](sub/b.md#1)'"), "{a}");
-        assert!(a.contains("- '[B 2](sub/b.md#2)'"), "{a}");
-        assert!(a.contains("- '[B 3](sub/b.md#3)'"), "{a}");
+        assert!(a.contains("- '[B 1](/sub/b.md#1)'"), "{a}");
+        assert!(a.contains("- '[B 2](/sub/b.md#2)'"), "{a}");
+        assert!(a.contains("- '[B 3](/sub/b.md#3)'"), "{a}");
         // …the body wikilink too, and the unrelated entry was left alone.
-        assert!(a.contains("[[sub/b.md#4|B 4]]"), "{a}");
+        assert!(a.contains("[[/sub/b.md#4|B 4]]"), "{a}");
         assert!(a.contains("- '[elsewhere](index.md)'"), "{a}");
         assert!(
             !a.contains("(b.md#"),
@@ -408,12 +458,13 @@ mod tests {
         block_on(ws(&dir).rename(Path::new("mid.md"), Path::new("sub/mid.md"))).unwrap();
 
         let mid = read(&dir, "sub/mid.md");
-        // Path wikilink re-relativized (label kept) so it still reaches leaf.md.
-        assert!(mid.contains("[[../leaf.md|the leaf]]"), "{mid}");
+        // Path wikilink re-relativized (label kept) so it still reaches leaf.md,
+        // root-absolute (the workspace default path style).
+        assert!(mid.contains("[[/leaf.md|the leaf]]"), "{mid}");
         // ID wikilink untouched — location-independent by construction.
         assert!(mid.contains("[[colophon:ajp7eqb|pinned]]"), "{mid}");
         // Frontmatter maintenance still holds, and the prose survives verbatim.
-        assert!(mid.contains("part_of: ../index.md"), "{mid}");
+        assert!(mid.contains("part_of: /index.md"), "{mid}");
         assert!(mid.ends_with(".\n"), "body preserved: {mid}");
         // Parent's spanning entry followed the move too.
         assert!(
@@ -445,8 +496,9 @@ mod tests {
         block_on(ws(&dir).rename(Path::new("mid.md"), Path::new("sub/mid.md"))).unwrap();
 
         let mid = read(&dir, "sub/mid.md");
-        // The inline markdown link was re-relativized, label kept, wrapper kept.
-        assert!(mid.contains("[the leaf](../leaf.md)"), "{mid}");
+        // The inline markdown link was re-relativized, label kept, wrapper kept,
+        // root-absolute (the workspace default path style).
+        assert!(mid.contains("[the leaf](/leaf.md)"), "{mid}");
         // The external URL is untouched.
         assert!(mid.contains("[home](https://ex.com)"), "{mid}");
         // The look-alike link inside the code fence must NOT be rewritten.
@@ -500,7 +552,7 @@ mod tests {
         );
         // The ordinary path link beside them still moved, so the pass ran at all
         // — without this the test would pass on a rename that did nothing.
-        assert!(mid.contains("[the leaf](../leaf.md)"), "control: {mid}");
+        assert!(mid.contains("[the leaf](/leaf.md)"), "control: {mid}");
     }
 
     #[test]
@@ -519,7 +571,7 @@ mod tests {
         block_on(ws(&dir).rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap();
 
         assert!(
-            read(&dir, "b.md").contains("[it](sub/a.md)"),
+            read(&dir, "b.md").contains("[it](/sub/a.md)"),
             "inbound md link retargeted: {}",
             read(&dir, "b.md")
         );
@@ -573,12 +625,13 @@ mod tests {
             "parent retargeted"
         );
         let b = read(&dir, "b.md");
-        // Overlay `links` inbound from a sibling — newly maintained.
-        assert!(b.contains("- sub/a.md"), "overlay links retargeted: {b}");
+        // Overlay `links` inbound from a sibling — newly maintained,
+        // root-absolute (the workspace default path style).
+        assert!(b.contains("- /sub/a.md"), "overlay links retargeted: {b}");
         // Body wikilink inbound from a sibling — newly maintained.
-        assert!(b.contains("[[sub/a.md]]"), "body wikilink retargeted: {b}");
+        assert!(b.contains("[[/sub/a.md]]"), "body wikilink retargeted: {b}");
         // The moved doc's own inverse re-relativized from its new location.
-        assert!(read(&dir, "sub/a.md").contains("part_of: ../index.md"));
+        assert!(read(&dir, "sub/a.md").contains("part_of: /index.md"));
         // The whole workspace still validates.
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
@@ -775,7 +828,7 @@ mod tests {
 
         let registry = read(&dir, "registry.yaml");
         assert!(
-            registry.contains("part_of: docs/index.md"),
+            registry.contains("part_of: /docs/index.md"),
             "the registry document's own part_of must survive the root's move: {registry}"
         );
         assert!(

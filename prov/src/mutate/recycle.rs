@@ -317,8 +317,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .recycle_relation()
                 .ok_or_else(|| Error::Structure("no recycle relation configured".into()))?
                 .to_string();
-            let root_dir = root.parent().unwrap_or(Path::new(""));
-            let pointer = link::relative(root_dir, &bin_index);
+            let style = self.reference_style_for(&relation).path_style;
+            let pointer = link::path_text(style, &root, &bin_index);
             root_text = Some(prov_store::edit::set_in_text(
                 &base,
                 root_doc.carrier,
@@ -414,11 +414,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // The bin index without this record, re-rendered whole (a machine file).
         let mut remaining = records;
         remaining.remove(pos);
-        let bin_dir = bin_index
-            .parent()
-            .unwrap_or(Path::new("recyclebin"))
-            .to_path_buf();
         let format = self.default_embed_format();
+        let part_of_style = self.reference_style_for("part_of").path_style;
         let mut bin_map = prov_graph::meta::Mapping::new();
         bin_map.insert(
             "title".into(),
@@ -439,7 +436,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .get("part_of")
                     .and_then(Value::as_str)
                     .map(str::to_string)
-                    .unwrap_or_else(|| link::relative(&bin_dir, root_doc)),
+                    .unwrap_or_else(|| link::path_text(part_of_style, &bin_index, root_doc)),
             ),
         );
         bin_map.insert("deleted".into(), Value::Sequence(remaining));
@@ -514,11 +511,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .unwrap_or_default();
         let count = records.len();
 
-        let bin_dir = bin_index
-            .parent()
-            .unwrap_or(Path::new("recyclebin"))
-            .to_path_buf();
         let format = self.default_embed_format();
+        let part_of_style = self.reference_style_for("part_of").path_style;
         let mut bin_map = prov_graph::meta::Mapping::new();
         bin_map.insert(
             "title".into(),
@@ -539,7 +533,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .get("part_of")
                     .and_then(Value::as_str)
                     .map(str::to_string)
-                    .unwrap_or_else(|| link::relative(&bin_dir, root_doc)),
+                    .unwrap_or_else(|| link::path_text(part_of_style, &bin_index, root_doc)),
             ),
         );
         bin_map.insert("deleted".into(), Value::Sequence(Vec::new()));
