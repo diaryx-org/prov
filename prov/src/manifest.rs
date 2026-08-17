@@ -762,6 +762,32 @@ mod tests {
     }
 
     #[test]
+    fn a_covered_directory_is_invisible_to_the_loose_sweeps() {
+        // The failure this prevents is the loud one: `attach --all --recursive`
+        // over an archive would mint one sidecar per photograph — exactly what
+        // the manifest was reached for.
+        let dir = photos("loose");
+        write(&dir, "loose.pdf", b"%PDF-1.7\n");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+
+        assert_eq!(
+            block_on(ws(&dir).loose_attachments()).unwrap(),
+            vec![PathBuf::from("loose.pdf")],
+            "the recursive sweep walks into no covered directory"
+        );
+        assert_eq!(
+            block_on(ws(&dir).loose_attachments_in(Path::new("index.md"))).unwrap(),
+            vec![PathBuf::from("loose.pdf")]
+        );
+
+        // And a covered file named outright is refused rather than gaining a
+        // second, rival record of its bytes.
+        let err = block_on(ws(&dir).attach(Path::new("photos/a.jpg"), Path::new("index.md")))
+            .unwrap_err();
+        assert!(err.to_string().contains("already covered"), "{err}");
+    }
+
+    #[test]
     fn an_unhashed_manifest_promises_nothing_about_bytes() {
         let dir = photos("deep-unhashed");
         block_on(ws(&dir).attach_manifest_titled(

@@ -118,9 +118,17 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             }
         }
         let reached_dirs = Self::reached_dirs(&reachable);
+        // Directories already covered by a manifest, computed once from the
+        // census rather than probed per file: a covered file is accounted for in
+        // bulk, and offering it here is offering to mint the ten thousand
+        // sidecars a manifest exists to avoid.
+        let covered = self.graph().manifest_roots(&reachable).await;
         let mut found = Vec::new();
         for file in self.direct_child_files(&reached_dirs).await? {
-            if is_opaque_payload(&file) && self.attachment_for(&file).await?.is_none() {
+            if is_opaque_payload(&file)
+                && !covered.iter().any(|root| file.starts_with(root))
+                && self.attachment_for(&file).await?.is_none()
+            {
                 found.push(file);
             }
         }
@@ -156,6 +164,15 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                     rel_dir.join(&name)
                 };
                 if entry.file_type().is_dir() {
+                    // A covered directory is accounted for in bulk. Probed
+                    // directory-locally (the `<dir>.<ext>` convention, confirmed
+                    // by the manifest's own `root`) rather than from a census,
+                    // because this walk deliberately has none: it is the
+                    // `--recursive` sweep, which goes where reachability does
+                    // not.
+                    if self.manifest_node_for(&rel).await?.is_some() {
+                        continue;
+                    }
                     self.scan_loose(rel, out).await?;
                 } else if entry.file_type().is_file()
                     && is_opaque_payload(&rel)
@@ -236,6 +253,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Err(Error::Structure(format!(
                 "{} is a prov document, not an opaque attachment — use `adopt`, \
                  or `--opaque` to shadow it unread",
+                payload.display()
+            )));
+        }
+        // A file a manifest already covers has metadata — its parent directory's
+        // node — and a sidecar beside it would be a second claim on the same
+        // bytes, with two fixity records to keep in step and no rule about which
+        // wins.
+        if self.graph().under_manifest(&payload).await? {
+            return Err(Error::Structure(format!(
+                "{} is already covered by a manifest — the directory's node is \
+                 its metadata; `manifest --update` records a change to it",
                 payload.display()
             )));
         }
