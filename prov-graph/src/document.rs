@@ -375,7 +375,9 @@ impl Document {
     /// **mutually exclusive** with it: a node covers one payload or a set of
     /// them, never both. See [`manifest`](crate::manifest) for the record shape.
     pub fn manifest_attr(&self) -> Option<&str> {
-        self.meta.get(crate::manifest::MANIFEST_KEY).and_then(Value::as_str)
+        self.meta
+            .get(crate::manifest::MANIFEST_KEY)
+            .and_then(Value::as_str)
     }
 
     /// `true` when this document is a **manifest node**: it declares a

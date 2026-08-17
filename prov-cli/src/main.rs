@@ -150,6 +150,8 @@ fn main() -> ExitCode {
             opaque,
             all,
             recursive,
+            manifest,
+            no_hash,
         } => cmd_attach(
             payload.as_deref(),
             in_target.as_deref(),
@@ -158,7 +160,14 @@ fn main() -> ExitCode {
             opaque,
             all,
             recursive,
+            manifest,
+            !no_hash,
         ),
+        Command::Manifest {
+            target,
+            update,
+            verify,
+        } => cmd_manifest(&target, update, verify),
         Command::Mv {
             from,
             to,
@@ -1398,6 +1407,122 @@ fn cmd_check(root: Option<&Path>, fix: Option<FixModeArg>) -> CmdResult {
     }
 }
 
+/// Show, refresh or deeply verify the manifest covering a directory.
+///
+/// `target` is whichever handle the caller has — the covered directory, the
+/// node describing it, or the manifest document itself — because after a
+/// rename the three no longer share a name, and requiring the right one would
+/// be requiring the user to know which.
+///
+/// Narration to stderr; stdout carries the machine value, which is the manifest
+/// document's path (bare/`--update`) or one line per failing file (`--verify`).
+fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+    let target_rel = ws_rel(&ctx, target)?;
+    let node = resolve_manifest_node(&ws, &target_rel)?;
+
+    if update {
+        let changed = block_on(ws.update_manifest(&node))?;
+        persist(&ctx, &mut ws)?;
+        if changed.is_clean() {
+            eprintln!("{}: already up to date", changed.manifest.display());
+        } else {
+            eprintln!(
+                "{}: {} added, {} removed, {} changed",
+                changed.manifest.display(),
+                changed.added.len(),
+                changed.removed.len(),
+                changed.changed.len()
+            );
+        }
+        println!("{}", changed.manifest.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if verify {
+        let findings = block_on(ws.verify_manifest(&node))?;
+        for finding in &findings {
+            println!("{finding}");
+        }
+        return if findings.is_empty() {
+            eprintln!("ok: every listed file matches its checksum");
+            Ok(ExitCode::SUCCESS)
+        } else {
+            eprintln!("{} file(s) no longer match their checksum", findings.len());
+            Ok(ExitCode::FAILURE)
+        };
+    }
+
+    let status = block_on(ws.manifest_status(&node))?
+        .ok_or_else(|| format!("{} declares no manifest", node.display()))?;
+    eprintln!(
+        "{}: {} file(s) under {}{}",
+        status.manifest.display(),
+        status.listed,
+        status.root.display(),
+        if status.hashed {
+            ", each with a checksum"
+        } else {
+            ", no checksums (an inventory)"
+        }
+    );
+    for path in &status.missing {
+        eprintln!("  missing: {}", path.display());
+    }
+    for path in &status.extra {
+        eprintln!("  unlisted: {}", path.display());
+    }
+    if !status.agrees() {
+        eprintln!("the directory has drifted — `prov manifest --update` records it as it is now");
+    }
+    println!("{}", status.manifest.display());
+    Ok(if status.agrees() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// The node describing `target`, which may be the covered directory, the node
+/// itself, or the manifest document. A rename separates their names, so all
+/// three are accepted rather than making the user work out which one prov wants.
+fn resolve_manifest_node(
+    ws: &Workspace<StdFs, Minter, FileIndex>,
+    target: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // A directory: the reverse lookup by convention.
+    if let Ok(meta) = block_on(ws.graph().stat(target))
+        && meta.is_dir()
+    {
+        return block_on(ws.manifest_node_covering(target))?.ok_or_else(|| {
+            format!(
+                "{} is not covered by a manifest — `prov attach --manifest {}` covers it",
+                target.display(),
+                target.display()
+            )
+            .into()
+        });
+    }
+    // The node itself.
+    if block_on(ws.manifest_of(target))?.is_some() {
+        return Ok(target.to_path_buf());
+    }
+    // The manifest document: find the node through the directory it covers, so
+    // the answer is the same one every other route gives.
+    if let Ok(manifest) = block_on(ws.graph().read_manifest(target))
+        && let Ok(root) = manifest.checked_root(target)
+        && let Some(node) = block_on(ws.manifest_node_covering(&root))?
+    {
+        return Ok(node);
+    }
+    Err(format!(
+        "{} is not a manifest, a manifest node, or a covered directory",
+        target.display()
+    )
+    .into())
+}
+
 /// Repair the findings: walk them, and for each one offer everything
 /// [`remedies`](prov::Workspace::remedies) can do about it.
 ///
@@ -1810,6 +1935,8 @@ fn cmd_attach(
     opaque: bool,
     all: bool,
     recursive: bool,
+    manifest: bool,
+    hash: bool,
 ) -> CmdResult {
     let mut ctx = find_root()?;
     let mints = ctx.config.mints_on_mutation();
@@ -1866,6 +1993,26 @@ fn cmd_attach(
         return Err("specify a file to attach, or pass --all".into());
     };
     let payload_rel = ws_rel(&ctx, payload)?;
+
+    // The bulk form: the positional is a directory, and it gains one node and
+    // one list rather than a sidecar per file.
+    if manifest {
+        let node = block_on(ws.attach_manifest_titled(&payload_rel, &parent_rel, None, hash))?;
+        persist(&ctx, &mut ws)?;
+        let (manifest_doc, listed) = block_on(ws.manifest_of(&node))?
+            .map(|(doc, m)| (doc, m.files.len()))
+            .unwrap_or_default();
+        eprintln!(
+            "covered {} ({listed} file(s) in {}, node {} in {})",
+            payload.display(),
+            manifest_doc.display(),
+            node.display(),
+            parent_rel.display()
+        );
+        println!("{}", node.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let node = if opaque {
         block_on(ws.attach_opaque(&payload_rel, &parent_rel))?
     } else {

@@ -1452,15 +1452,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             }
 
-            let on_disk: std::collections::BTreeSet<PathBuf> =
-                self.graph().scan_covered(&root).await?.into_iter().collect();
-            let listed: std::collections::BTreeSet<PathBuf> = manifest
-                .files
-                .iter()
-                .map(|entry| entry.path.clone())
-                .collect();
-            let missing: Vec<PathBuf> = listed.difference(&on_disk).cloned().collect();
-            let extra: Vec<PathBuf> = on_disk.difference(&listed).cloned().collect();
+            let on_disk = self.graph().scan_covered(&root).await?;
+            let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
             if !missing.is_empty() || !extra.is_empty() {
                 findings.push(Finding::ManifestDrift {
                     node: path,

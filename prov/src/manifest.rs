@@ -88,6 +88,34 @@ impl ManifestUpdate {
     }
 }
 
+/// What a manifest says about its directory, and how the directory currently
+/// disagrees — the cheap report, computed without reading a covered file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestStatus {
+    /// The node declaring the manifest.
+    pub node: PathBuf,
+    /// The manifest document itself.
+    pub manifest: PathBuf,
+    /// The covered directory, workspace-relative.
+    pub root: PathBuf,
+    /// Whether every row carries a digest — a fixity baseline rather than an
+    /// inventory.
+    pub hashed: bool,
+    /// How many files the manifest lists.
+    pub listed: usize,
+    /// Rows whose file is not on disk, relative to `root`.
+    pub missing: Vec<PathBuf>,
+    /// Opaque files under `root` that no row claims, relative to `root`.
+    pub extra: Vec<PathBuf>,
+}
+
+impl ManifestStatus {
+    /// Whether the directory and the manifest still describe the same file set.
+    pub fn agrees(&self) -> bool {
+        self.missing.is_empty() && self.extra.is_empty()
+    }
+}
+
 impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// The node covering the directory `dir`, or `None` when nothing does — the
     /// bulk counterpart of [`attachment_for`](Workspace::attachment_for).
@@ -110,12 +138,19 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// decide what to do, never establish a fixity baseline, and these rows are
     /// exactly that (DESIGN §, the fixity-cache rule). Bit-rot is by
     /// construction the change a stat cannot see.
-    pub async fn build_manifest(&self, manifest_doc: &Path, root: &str, hash: bool) -> Result<Manifest> {
+    pub async fn build_manifest(
+        &self,
+        manifest_doc: &Path,
+        root: &str,
+        hash: bool,
+    ) -> Result<Manifest> {
         let covered = link::resolve(manifest_doc, root);
         let mut files = Vec::new();
         for rel in self.graph().scan_covered(&covered).await? {
             let hash = if hash {
-                let bytes = self.read_bytes(&link::normalize(covered.join(&rel))).await?;
+                let bytes = self
+                    .read_bytes(&link::normalize(covered.join(&rel)))
+                    .await?;
                 Some(crate::fixity::digest(&bytes))
             } else {
                 None
@@ -128,6 +163,69 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         };
         manifest.sort();
         Ok(manifest)
+    }
+
+    /// The node covering `dir`, found by the convention *or*, failing that, by
+    /// asking every reachable document what it covers.
+    ///
+    /// [`manifest_node_for`](Self::manifest_node_for) probes `<dir>.<ext>` and
+    /// is the fast path; this is the authoritative one, and the two are not
+    /// interchangeable. A `rename` moves the node without moving the covered
+    /// directory (deliberately — see `mutate::rename`), so the conventional name
+    /// stops matching as a matter of *ordinary use*, not of hand-editing. If the
+    /// verbs trusted the probe, `attach --manifest` on an already-covered
+    /// directory would mint a second manifest over it, and two records would
+    /// claim one archive with no rule about which is right.
+    ///
+    /// That is what makes it worth a whole census here, where the attachment
+    /// lookup settles for the probe: a payload's sidecar keeps the convention
+    /// across a rename (the payload travels with it), and a manifest's node
+    /// cannot.
+    pub async fn manifest_node_covering(&self, dir: &Path) -> Result<Option<PathBuf>> {
+        let dir = link::normalize(dir);
+        if let Some(node) = self.manifest_node_for(&dir).await? {
+            return Ok(Some(node));
+        }
+        let Some(root) = self.root_document().await? else {
+            return Ok(None);
+        };
+        let walk = self.walk(&root).await?;
+        let reachable = self
+            .reachable_documents(&root, &walk.census, &walk.content_bodies)
+            .await?;
+        for doc in reachable {
+            if let Ok(Some((manifest_doc, manifest))) = self.manifest_of(&doc).await
+                && manifest.covered_root(&manifest_doc) == dir
+            {
+                return Ok(Some(doc));
+            }
+        }
+        Ok(None)
+    }
+
+    /// What the manifest `node` declares says, and whether the directory still
+    /// agrees with it — the cheap report, reading no covered file.
+    ///
+    /// `None` when `node` declares no manifest. The same completeness question
+    /// `check`'s drift pass asks, answered through the same
+    /// [`diff`](prov_graph::manifest::diff), so a host and a `check` can never
+    /// disagree about what is in the directory.
+    pub async fn manifest_status(&self, node: &Path) -> Result<Option<ManifestStatus>> {
+        let Some((manifest_doc, manifest)) = self.manifest_of(node).await? else {
+            return Ok(None);
+        };
+        let root = manifest.checked_root(&manifest_doc)?;
+        let on_disk = self.graph().scan_covered(&root).await?;
+        let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
+        Ok(Some(ManifestStatus {
+            node: node.to_path_buf(),
+            manifest: manifest_doc,
+            root,
+            hashed: manifest.is_hashed(),
+            listed: manifest.files.len(),
+            missing,
+            extra,
+        }))
     }
 
     /// **Deep** verification of the manifest `node` declares: read every listed
@@ -150,7 +248,9 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         };
         let mut findings = Vec::new();
         for entry in &manifest.files {
-            let Some(recorded) = &entry.hash else { continue };
+            let Some(recorded) = &entry.hash else {
+                continue;
+            };
             if !crate::fixity::is_recognized(recorded) {
                 continue;
             }
@@ -295,14 +395,20 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let dir = link::normalize(dir);
         let parent = link::normalize(parent);
 
-        if !self.graph().stat(&dir).await.map(|m| m.is_dir()).unwrap_or(false) {
+        if !self
+            .graph()
+            .stat(&dir)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+        {
             return Err(Error::Structure(format!(
                 "{} is not a directory — a manifest covers a directory of files; \
                  use `attach` for a single one",
                 dir.display()
             )));
         }
-        if let Some(existing) = self.manifest_node_for(&dir).await? {
+        if let Some(existing) = self.manifest_node_covering(&dir).await? {
             return Err(Error::Structure(format!(
                 "{} is already covered by the manifest node {}",
                 dir.display(),
@@ -472,8 +578,8 @@ mod tests {
     #[test]
     fn one_node_and_one_manifest_stand_for_a_whole_directory() {
         let dir = photos("basic");
-        let node = block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md")))
-            .unwrap();
+        let node =
+            block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
         assert_eq!(node, PathBuf::from("photos.yaml"));
 
         let node_text = read(&dir, "photos.yaml");
@@ -657,9 +763,9 @@ mod tests {
         let drift = findings
             .iter()
             .find_map(|f| match f {
-                Finding::ManifestDrift {
-                    missing, extra, ..
-                } => Some((missing.clone(), extra.clone())),
+                Finding::ManifestDrift { missing, extra, .. } => {
+                    Some((missing.clone(), extra.clone()))
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("expected drift, got {findings:?}"));
@@ -717,7 +823,11 @@ mod tests {
         block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
         // A row loses its `path` — the file parses as a document and fails as a
         // record store, which is a different repair and a different risk.
-        write(&dir, "photos.manifest.yaml", b"title: M\nroot: photos/\nfiles:\n- hash: sha256:x\n");
+        write(
+            &dir,
+            "photos.manifest.yaml",
+            b"title: M\nroot: photos/\nfiles:\n- hash: sha256:x\n",
+        );
 
         let findings = block_on(ws(&dir).check("index.md")).unwrap();
         assert!(
@@ -750,13 +860,17 @@ mod tests {
             "both.yaml",
             b"title: Both\npart_of: index.md\ncontent: photos/a.jpg\nmanifest: both.manifest.yaml\n",
         );
-        write(&dir, "both.manifest.yaml", b"title: M\nroot: photos/\nfiles:\n");
+        write(
+            &dir,
+            "both.manifest.yaml",
+            b"title: M\nroot: photos/\nfiles:\n",
+        );
 
         let findings = block_on(ws(&dir).check("index.md")).unwrap();
         assert!(
-            findings
-                .iter()
-                .any(|f| matches!(f, Finding::ManifestConflict { doc } if doc == Path::new("both.yaml"))),
+            findings.iter().any(
+                |f| matches!(f, Finding::ManifestConflict { doc } if doc == Path::new("both.yaml"))
+            ),
             "{findings:?}"
         );
     }
@@ -813,6 +927,30 @@ mod tests {
         // And the node's pin followed the manifest's new bytes, so prov's own
         // maintenance did not leave a fixity alarm behind it.
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_renamed_node_still_covers_its_directory() {
+        // The hazard the convention alone cannot see. After a rename nothing
+        // beside `photos/` names the node, so a probe reads the directory as
+        // uncovered — and minting a second manifest would leave two records
+        // claiming one archive with no rule about which is right.
+        let dir = photos("renamed-cover");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        block_on(ws(&dir).rename(Path::new("photos.yaml"), Path::new("albums/trip.yaml"))).unwrap();
+
+        assert_eq!(
+            block_on(ws(&dir).manifest_node_for(Path::new("photos"))).unwrap(),
+            None,
+            "the probe cannot see it — which is why the verbs do not use it"
+        );
+        assert_eq!(
+            block_on(ws(&dir).manifest_node_covering(Path::new("photos"))).unwrap(),
+            Some(PathBuf::from("albums/trip.yaml"))
+        );
+        let err = block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md")))
+            .unwrap_err();
+        assert!(err.to_string().contains("already covered"), "{err}");
     }
 
     #[test]

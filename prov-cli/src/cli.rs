@@ -451,6 +451,42 @@ pub(crate) enum Command {
         /// bounded default.
         #[arg(long)]
         recursive: bool,
+        /// Treat the positional as a *directory* and cover it with a manifest:
+        /// one node and one list of every opaque file under it, instead of one
+        /// sidecar per file. For an archive — ten thousand photographs — where a
+        /// sidecar each is not a workspace anyone can read.
+        #[arg(long, conflicts_with_all = ["all", "opaque"])]
+        manifest: bool,
+        /// With `--manifest`, list the files without checksumming them: an
+        /// inventory rather than a fixity baseline. Hashing reads every file,
+        /// now and at each refresh, which is a real cost over an archive.
+        #[arg(long = "no-hash", requires = "manifest")]
+        no_hash: bool,
+    },
+    /// Show, refresh or deeply verify the manifest covering a directory — the
+    /// bulk attachment minted by `attach --manifest`.
+    ///
+    /// Bare, it reports what the manifest says and whether the directory still
+    /// agrees with it, reading no covered file. `--update` rebuilds the list
+    /// from the directory as it is now (and re-stamps the node that pins it);
+    /// `--verify` re-reads every listed file and compares its checksum, which is
+    /// the pass `check` deliberately leaves out because it costs a full read of
+    /// the archive.
+    Manifest {
+        /// The covered directory, or the node/manifest document that describes
+        /// it — whichever you have to hand.
+        #[arg(value_name = "TARGET")]
+        target: PathBuf,
+        /// Rebuild the list from the directory: record files that appeared, drop
+        /// rows whose file is gone, and re-checksum what is there. Accepts the
+        /// directory as it stands, so a file you have *lost* is written out of
+        /// the record — which is why it is never automatic.
+        #[arg(long)]
+        update: bool,
+        /// Re-read every listed file and compare its checksum against the
+        /// manifest — the deep integrity pass over the archive.
+        #[arg(long)]
+        verify: bool,
     },
     /// Move/rename a document, maintaining every affected link: every inbound
     /// reference across the workspace (parent entry, children's inverses,

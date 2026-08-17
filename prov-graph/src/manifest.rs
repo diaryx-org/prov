@@ -220,6 +220,23 @@ impl Manifest {
     }
 }
 
+/// How a manifest's rows and a directory listing disagree: `(missing, extra)` —
+/// rows whose file is not on disk, and opaque files under the root that no row
+/// claims. Both relative to the root, both sorted.
+///
+/// The completeness rule in one place, because it is the whole meaning of
+/// `root`: the manifest claims that directory entirely, so a file it does not
+/// name is drift and not merely an omission. `check` and the `manifest` report
+/// both ask this question and must not be able to answer it differently.
+pub fn diff(listed: &[ManifestEntry], on_disk: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let rows: std::collections::BTreeSet<&Path> = listed.iter().map(|e| e.path.as_path()).collect();
+    let disk: std::collections::BTreeSet<&Path> = on_disk.iter().map(PathBuf::as_path).collect();
+    (
+        rows.difference(&disk).map(|p| p.to_path_buf()).collect(),
+        disk.difference(&rows).map(|p| p.to_path_buf()).collect(),
+    )
+}
+
 /// A path spelled with `/` separators regardless of host platform — what a
 /// manifest row holds, so a manifest written on Windows and one written on Linux
 /// describe the same directory identically.
@@ -247,7 +264,10 @@ pub fn path_sort_key(path: &Path) -> String {
 /// whole-file metadata documents in the same format, so a convention that only
 /// swapped the extension would name the node itself.
 pub fn manifest_sibling(node: &Path) -> PathBuf {
-    let stem = node.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let stem = node
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
     let ext = node.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
     node.with_file_name(format!("{stem}.{MANIFEST_INFIX}.{ext}"))
 }
@@ -311,7 +331,10 @@ mod tests {
         // a manifest one directory down (and is what a rename writes), while the
         // same spelling from the workspace root is an escape.
         let m = parse("root: ../photos/\n").unwrap();
-        assert!(m.checked_root(Path::new("albums/trip.manifest.yaml")).is_ok());
+        assert!(
+            m.checked_root(Path::new("albums/trip.manifest.yaml"))
+                .is_ok()
+        );
         assert!(m.checked_root(Path::new("trip.manifest.yaml")).is_err());
     }
 

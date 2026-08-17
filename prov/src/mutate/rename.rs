@@ -127,10 +127,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             && let Some(carrier) = from_doc.carrier
         {
             let mut editor = MetaEditor::open(&self_text, carrier)?;
-            editor.replace_value(
-                &[Segment::Key(mv.key)],
-                fig::Value::Str(mv.new_ref.clone()),
-            )?;
+            editor.replace_value(&[Segment::Key(mv.key)], fig::Value::Str(mv.new_ref.clone()))?;
             // A manifest whose `root` was re-spelled is different bytes, and the
             // node pins those bytes — so the pin is re-stamped here, in the same
             // change set. Otherwise every cross-directory rename of a covered

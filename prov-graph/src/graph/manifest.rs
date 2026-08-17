@@ -96,6 +96,17 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// Walks the ancestors rather than only the immediate parent, because a
     /// manifest claims its root *recursively*: `photos/2019/a.jpg` is covered by
     /// the node beside `photos/`.
+    ///
+    /// **Probe-only, and bounded on purpose.** A node renamed away from its
+    /// directory leaves no local evidence beside that directory (moving the
+    /// archive to keep the convention is the thing `rename` deliberately does
+    /// not do), so this can answer "no" where a census would answer "yes". The
+    /// caller is `attach`, which runs per file inside `--all`; making each one
+    /// authoritative would cost a census per file. The residue is a covered file
+    /// that also gains a sidecar — duplicated bookkeeping, not a contradiction,
+    /// since both records are derived from the same bytes. The operation where a
+    /// wrong "no" *would* matter — minting a second manifest over a whole
+    /// archive — asks `manifest_node_covering` instead and pays for the census.
     pub async fn under_manifest(&self, path: &Path) -> Result<bool> {
         let path = link::normalize(path);
         let mut dir = path.parent().map(Path::to_path_buf);
