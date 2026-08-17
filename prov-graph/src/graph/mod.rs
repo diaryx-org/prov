@@ -75,6 +75,14 @@
 //! would exist only to abstract a single already-generic parameter
 //! (`Ix: IdIndex`) and a self-contained cache type, and would cost a layer
 //! of indirection for no dependency this module does not already own.
+//!
+//! [`crate::peer`] is not that trait arriving late. It abstracts a dependency
+//! this module genuinely does not have — a map from a workspace *name* to a
+//! location, which only a host holds — and nothing here consumes it: no method
+//! below takes a resolver and [`Graph`] grows no third parameter for one.
+//! Following a foreign reference is a step a caller takes after resolution
+//! returns [`Target::Foreign`], so a traversal that never follows one is
+//! unchanged by the port existing.
 
 pub mod census;
 pub mod load;

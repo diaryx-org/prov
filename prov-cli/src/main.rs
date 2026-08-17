@@ -30,8 +30,8 @@ use prov::document::MetaCarrier;
 use prov::{
     Addressing, Adoption, ChangeSet, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id,
     IdIndex, IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind, Notation,
-    PathStyle, RelationSet, RoutePlan, Settings, StdFs, StructurePlan, SynthNode, Target, Trigger,
-    Value, Workspace, WorkspaceConfig, block_on, edit, link, meta,
+    PathStyle, PeerResolver, RelationSet, RoutePlan, Settings, StdFs, StructurePlan, SynthNode,
+    Target, Trigger, Value, Workspace, WorkspaceConfig, block_on, edit, link, meta,
 };
 
 mod backup;
@@ -1205,6 +1205,10 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
         let mut forward_targets: std::collections::HashSet<PathBuf> =
             std::collections::HashSet::new();
 
+        // Once per screen, not once per link: every foreign reference on this
+        // document is answered against the same map, and a map edited between
+        // screens is picked up on the next one.
+        let peers = peer::PeerMap::load();
         for relation in ws.relations().relations() {
             let Some(value) = doc.meta.get(&relation.name) else {
                 continue;
@@ -1234,15 +1238,10 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
                     ),
                     Target::Foreign { workspace, id } => (
                         format!("{}: {id} (workspace {workspace})", relation.name),
-                        ExploreAction::Note(match peer::resolve(&workspace) {
-                            Some(root) => format!(
-                                "another workspace — `{}`, per this device's peer map",
-                                root.display()
-                            ),
-                            None => format!(
-                                "another workspace — no peer named `{workspace}` on this device (`prov peer add {workspace} <dir>`)"
-                            ),
-                        }),
+                        ExploreAction::Note(format!(
+                            "another workspace — {}",
+                            describe_peer(&peers.locate(&workspace), &workspace)
+                        )),
                     ),
                 };
                 actions.push((label, String::new(), action));
@@ -2362,28 +2361,39 @@ fn cmd_peer(action: PeerAction) -> CmdResult {
                 .canonicalize()
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
             // Discovering the peer's root is what turns "a directory" into "a
-            // workspace", and it is also the only chance to notice that the name
-            // being recorded is not the name that workspace answers to — which
-            // would silently resolve every reference to the wrong place.
+            // workspace", and it is the first chance to notice that the name
+            // being recorded is not the name that workspace answers to. It is no
+            // longer the *last* chance — `peer resolve` asks again at the moment
+            // it matters, because a line true when it was written can be stale by
+            // the time it is followed — so this is advice, given early, and the
+            // entry is recorded either way.
+            let location = prov::PeerLocation::Path(dir.clone());
             match find_root_quiet_at(&dir) {
                 Ok(peer_ctx) => {
-                    let declared = &peer_ctx.config.workspace_id;
-                    if declared.is_empty() {
-                        eprintln!(
+                    // The same constructor the resolver uses, so `add` and
+                    // `resolve` cannot come to different conclusions about the
+                    // same directory.
+                    match prov::PeerLookup::confirm(&name, location, &peer_ctx.config.workspace_id)
+                    {
+                        prov::PeerLookup::Confirmed(_) => {}
+                        prov::PeerLookup::Unconfirmed { .. } => eprintln!(
                             "warning: the workspace at {} does not name itself — set \
                              `workspace_id` there\n  (`prov -C {} config workspace_id {name}`), \
                              or references written `id:{name}/<id>` will not be recognized as \
                              local when read inside it",
                             dir.display(),
                             dir.display()
-                        );
-                    } else if declared != &name {
-                        eprintln!(
-                            "warning: the workspace at {} calls itself `{declared}`, not \
-                             `{name}` — references to it will be written `id:{declared}/<id>`, \
-                             which this entry will not resolve",
+                        ),
+                        prov::PeerLookup::Mismatched { declares, .. } => eprintln!(
+                            "warning: the workspace at {} calls itself `{declares}`, not \
+                             `{name}` — references to it will be written `id:{declares}/<id>`, \
+                             and `prov peer resolve id:{name}/<id>` will refuse this entry \
+                             rather than follow it",
                             dir.display()
-                        );
+                        ),
+                        prov::PeerLookup::Unknown => {
+                            unreachable!("confirm never answers Unknown — it is given a location")
+                        }
                     }
                 }
                 Err(e) => {
@@ -2414,7 +2424,33 @@ fn cmd_peer(action: PeerAction) -> CmdResult {
             eprintln!("removed `{name}` — references to it are still carried, just not followable");
             Ok(ExitCode::SUCCESS)
         }
-        PeerAction::Resolve { reference } => cmd_peer_resolve(&reference),
+        PeerAction::Resolve {
+            reference,
+            unverified,
+        } => cmd_peer_resolve(&reference, unverified),
+    }
+}
+
+/// One line saying where a peer is, or why it is not somewhere prov will go.
+///
+/// Every case names the location it found, including the ones it refuses: a
+/// reader told only "cannot follow" has no way to see that the entry points at
+/// the workspace next door.
+fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> String {
+    match lookup {
+        prov::PeerLookup::Confirmed(location) => {
+            format!("`{location}`, per this device's peer map")
+        }
+        prov::PeerLookup::Unconfirmed { location, why } => {
+            format!("`{location}`, but {why} (`--unverified` to follow it anyway)")
+        }
+        prov::PeerLookup::Mismatched { location, declares } => format!(
+            "the peer map says `{location}`, but that workspace calls itself \
+             `{declares}` — not followed (`prov peer add {workspace} <dir>` to correct it)"
+        ),
+        prov::PeerLookup::Unknown => format!(
+            "no peer named `{workspace}` on this device (`prov peer add {workspace} <dir>`)"
+        ),
     }
 }
 
@@ -2424,7 +2460,13 @@ fn cmd_peer(action: PeerAction) -> CmdResult {
 /// reference and stopped at "workspace `notes`, id `ajp7eq`"; everything past
 /// that point is this device's peer map plus the *peer's own* registry. Nothing
 /// here consults the current workspace at all.
-fn cmd_peer_resolve(reference: &str) -> CmdResult {
+///
+/// The map is checked here rather than trusted here. A line recorded when it was
+/// true and stale by now points at a directory that is some *other* workspace,
+/// and following it would print a path to real documents in the wrong archive —
+/// a wrong answer that looks exactly like a right one. So the peer is asked what
+/// it calls itself, and a disagreement stops the command.
+fn cmd_peer_resolve(reference: &str, unverified: bool) -> CmdResult {
     // Tolerate a bare `notes/ajp7eq` as well as the written `id:notes/ajp7eq`,
     // since the former is what a person reads off a screen.
     let written = if prov::link::strip_id_scheme(reference).is_some() {
@@ -2438,26 +2480,23 @@ fn cmd_peer_resolve(reference: &str) -> CmdResult {
         )
         .into());
     };
-    let Some(root) = peer::resolve(&peer_name) else {
-        return Err(format!(
-            "no peer named `{peer_name}` on this device\n\
-             \n  Record one with `prov peer add {peer_name} <dir>`."
-        )
-        .into());
-    };
-    let peer_ctx = find_root_quiet_at(&root).map_err(|e| format!("{}: {e}", root.display()))?;
-    let peer_ws = workspace(&peer_ctx)?;
-    let Some(path) = peer_ws.index().resolve(&id) else {
-        return Err(format!(
+    match peer::PeerMap::load().resolve_document(&peer_name, &id, unverified) {
+        Ok(path) => {
+            println!("{}", path.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(peer::DocumentError::Unfollowable(lookup)) => {
+            Err(describe_peer(&lookup, &peer_name).into())
+        }
+        Err(peer::DocumentError::Unopenable(root, why)) => {
+            Err(format!("{}: {why}", root.display()).into())
+        }
+        Err(peer::DocumentError::Unregistered(root)) => Err(format!(
             "`{id}` is not registered in the workspace at {}",
             root.display()
         )
-        .into());
-    };
-    // Absolute, because the answer is only useful outside the peer workspace —
-    // the caller is standing somewhere else by construction.
-    println!("{}", root.join(path).display());
-    Ok(ExitCode::SUCCESS)
+        .into()),
+    }
 }
 
 fn cmd_cache(clear: bool) -> CmdResult {

@@ -81,15 +81,17 @@ pub use prov_graph::{
     Addressing, Backlink, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat, DirEntry,
     Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id, IdIndex,
     IdStorage, Link, LinkSite, LinkStyle, Manifest, ManifestEntry, Mapping, MetaCarrier, Metadata,
-    NoIndex, Node, NodeKind, Notation, PathStyle, ReadScope, ReadSettings, ReadStorage,
-    ReferenceStyle, Relation, RelationSet, Resolution, Result, StdFs, StructuralFact, Target,
-    TitleIndex, TitleMatch, TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans,
-    embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title,
-    reachable_set, render_html, require_whole_file,
+    NoIndex, NoPeers, Node, NodeKind, Notation, PathStyle, PeerLocation, PeerLookup, PeerResolver,
+    ReadScope, ReadSettings, ReadStorage, ReferenceStyle, Relation, RelationSet, Resolution,
+    Result, StdFs, StructuralFact, Target, TitleIndex, TitleMatch, TreeOptions, Unconfirmed, Value,
+    Walk, Wikilink, Wrapper, block_on, code_spans, embed_carrier, embed_style_of, escapes_root,
+    format_link, is_opaque_payload, path_to_title, reachable_set, render_html, require_whole_file,
 };
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.
-pub use prov_graph::{content, document, error, exec, graph, link, memo, meta, relation, title};
+pub use prov_graph::{
+    content, document, error, exec, graph, link, memo, meta, peer, relation, title,
+};
 /// Metadata editing, at the path it had before the write surface moved out of
 /// the read core into `prov-store`.
 pub use prov_store::edit;

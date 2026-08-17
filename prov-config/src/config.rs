@@ -476,27 +476,11 @@ pub struct WorkspaceConfig {
 
 /// Whether `name` is a usable workspace self-name.
 ///
-/// The constraint comes entirely from where the name is *written*: it is the
-/// qualifier in an `id:<workspace>/<id>` target, so it may not contain the `/`
-/// that separates it from the id, the `:` that ends the scheme, or whitespace
-/// (a target is a single scalar; a space would make it two). Anything else is
-/// the user's business — this is a name for humans to *choose*. prov can mint an
-/// opaque one (`prov_identity::mint_workspace_id`, reached by `prov id
-/// --workspace`) for an owner who has no naming authority to lean on, but only
-/// when asked: a minted name satisfies this predicate like any other, and
-/// nothing here can tell the two apart.
-///
-/// Deliberately *not* checked: uniqueness across workspaces. Nothing here can
-/// see another workspace, so a collision is undetectable from inside; it is the
-/// resolving host's problem, and the host is the only thing that has the
-/// evidence to notice. (A minted name buys its uniqueness with width instead —
-/// the only currency available to something that cannot check.)
-pub fn is_valid_workspace_id(name: &str) -> bool {
-    !name.is_empty()
-        && !name
-            .chars()
-            .any(|c| c == '/' || c == ':' || c.is_whitespace())
-}
+/// Re-exported at the path it has always had, but *defined* beside the grammar
+/// it is a constraint on: every clause of it is dictated by how an
+/// `id:<workspace>/<id>` target parses, which is `prov-graph`'s business, not
+/// policy this crate gets a say in.
+pub use prov_graph::link::is_valid_workspace_id;
 
 impl Default for WorkspaceConfig {
     /// The standalone default: portable markdown-root path links, identity

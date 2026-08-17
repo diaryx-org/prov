@@ -131,11 +131,19 @@ pub(crate) enum PeerAction {
         name: String,
     },
     /// Resolve a cross-workspace reference (`id:<name>/<id>`) to a file on this
-    /// device, by looking the id up in that workspace's own registry.
+    /// device, by looking the id up in that workspace's own registry. The peer
+    /// is asked what it calls itself first: a directory that turns out to be a
+    /// different workspace is reported, never followed.
     Resolve {
         /// The reference, with or without the `id:` scheme.
         #[arg(value_name = "REFERENCE")]
         reference: String,
+        /// Follow a peer whose name could not be checked — one that is
+        /// anonymous, or that could not be opened as a workspace. Never accepts
+        /// a peer that calls itself something else; that is not missing
+        /// evidence, it is evidence of the wrong archive.
+        #[arg(long)]
+        unverified: bool,
     },
 }
 

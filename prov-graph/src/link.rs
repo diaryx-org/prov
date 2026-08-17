@@ -610,6 +610,38 @@ pub fn foreign_id_target(workspace: &str, id: &crate::identity::Id) -> String {
     format!("{ID_SCHEME}{workspace}{WORKSPACE_SEPARATOR}{id}")
 }
 
+/// Whether `name` is a usable workspace self-name.
+///
+/// The constraint comes entirely from where the name is *written*: it is the
+/// qualifier in an `id:<workspace>/<id>` target, so it may not contain the
+/// [`WORKSPACE_SEPARATOR`] that divides it from the id, the `:` that ends the
+/// scheme, or whitespace (a target is a single scalar; a space would make it
+/// two). Anything else is the user's business — this is a name for humans to
+/// *choose*. `prov_identity::mint_workspace_id` (reached by `prov id
+/// --workspace`) can mint an opaque one for an owner with no naming authority
+/// to lean on, but only when asked: a minted name satisfies this predicate like
+/// any other, and nothing here can tell the two apart.
+///
+/// It lives beside the grammar it is a constraint on rather than in
+/// `prov-config` with the [`workspace_id`] key, because it is not a policy
+/// choice — every clause above is dictated by how [`IdRef`] parses, and a config
+/// layer that spelled its own version of this could drift from the parser that
+/// decides what a reference actually means.
+///
+/// Deliberately *not* checked: uniqueness across workspaces. Nothing here can
+/// see another workspace, so a collision is undetectable from inside; it is the
+/// resolving host's problem, and the host is the only thing with the evidence to
+/// notice ([`crate::peer`]). A minted name buys its uniqueness with width
+/// instead — the only currency available to something that cannot check.
+///
+/// [`workspace_id`]: crate::graph::ReadSettings::workspace_id
+pub fn is_valid_workspace_id(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c == WORKSPACE_SEPARATOR || c == ':' || c.is_whitespace())
+}
+
 /// What an `id:`-scheme target names.
 ///
 /// The scheme carries three distinguishable things, and keeping them apart is

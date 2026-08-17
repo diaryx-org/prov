@@ -37,6 +37,10 @@ pub enum Target {
     /// *where it lives* to the host — `prov-cli` keeps a device-local peer map,
     /// diaryx resolves through its published ARK permalinks.
     ///
+    /// The shape that answer comes back in, and the check that makes it
+    /// trustworthy, are [`crate::peer`]. Following one is a step a caller takes
+    /// *after* this, never a deeper mode of it.
+    ///
     /// A reference qualified with this workspace's own
     /// [`workspace_id`](Graph::workspace_id) is **not** foreign: it is
     /// resolved locally through the registry, so a document carrying one keeps

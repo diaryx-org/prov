@@ -195,6 +195,54 @@ registry. diaryx resolves the same reference through its published ARK
 permalinks instead. Neither map is prov's business, and nothing depends on
 either: a foreign reference is carried whether or not it resolves.
 
+### The peer port — the shape of a host's answer
+
+Holding no map is not the same as having nothing to say about one. Two things
+*are* prov's, and `prov_graph::peer` is where they live — the third port beside
+`fs::ReadStorage` and `index::IdIndex`, and the smallest of the three.
+
+**What an answer is.** `PeerLocation` is a path on this device or a URL, and
+that is the whole vocabulary. prov-cli answers with the first, diaryx with the
+second, and a consumer that renders either — an export writing an `href`, a
+viewer offering to follow a link — is written once. `PeerResolver::locate` gives
+the workspace's address; `locate_document` gives one document's, for a host
+whose scheme can answer the whole reference at once (an ARK permalink is exactly
+this) and defaults to `None` for one that cannot.
+
+**What makes an answer trustworthy.** This is the load-bearing half. A peer map
+is a claim about a name, and a wrong claim does not fail — it resolves to real
+documents in the wrong archive. That is the same silent wrongness that keeps a
+peer table out of `prov.yaml`, and it does not stop being true of a device-local
+map, which can be hand-edited or simply outlived by the directory it names. But
+it *is* checkable, because a workspace declares its own name. So `PeerLookup`
+carries the check:
+
+| variant | meaning | followable? |
+|---|---|---|
+| `Confirmed` | the workspace there declares the name asked for | ✅ |
+| `Unconfirmed` | anonymous, unreadable, or not checked (a URL) | on the reader's say-so |
+| `Mismatched` | it calls itself something else | ❌ never |
+| `Unknown` | no location on record | ❌ |
+
+`PeerLookup::confirm(asked, location, declares)` is the only way to reach
+`Confirmed`, so no host decides for itself what confirmation means, and a
+resolver that has not read the peer's `workspace_id` has nothing to build the
+variant out of. `Mismatched` is refused by both accessors: the escape hatch
+(`followable_unverified`, `prov peer resolve --unverified`) is for *absent*
+evidence, never for evidence pointing the other way.
+
+The check happens where the reference is **used**, not where the entry was
+recorded. `prov peer add` still warns early — catching it there is kinder — but a
+line true when it was written can be stale by the time it is followed, so
+`peer resolve` asks the peer what it calls itself and stops on a disagreement.
+
+**Where the port stops: at an address.** Nothing in it opens a workspace, and
+nothing in it can — reading the peer needs a second `ReadStorage` and a second
+`IdIndex`, which only the host has. That is also why `Graph` grows no third type
+parameter and no method takes a resolver: following a foreign reference is a
+*second step* after resolution, taken by a caller that wants it, so a traversal
+that never follows one pays nothing.
+
 ### Self-qualification — the rule with teeth
 
 A reference qualified with the reading workspace's **own** name is not foreign.
@@ -296,6 +344,13 @@ re-relativize, restyle and `check --fix` all preserve locators.
   self-qualification resolving locally in both resolvers; the five rewrite sites
   in `mutate` filtering on `is_path_target`; and the CLI's device-local peer map
   (`prov peer list|add|remove|resolve`, `peer.rs`).
+- ✅ **The peer port** (§ "The peer port"): `prov_graph::peer` — `PeerResolver`
+  (`locate` / `locate_document`), `PeerLocation`, `PeerLookup` with the
+  verifying `confirm` constructor, and `NoPeers`. `is_valid_workspace_id` moved
+  down to `link.rs` beside the grammar that dictates it (re-exported from
+  `prov_config`, so every existing path still resolves). prov-cli's `PeerMap` is
+  the first implementor, and `prov peer resolve` gained the use-time check plus
+  `--unverified`.
 - ✅ **Naming the workspace** (§ "Choosing the name — or not choosing it"): `prov
   id --workspace [NAME]` — manual, idempotent, never a rename — over
   `prov_identity::mint_workspace_id` (a double-width blade, since a workspace

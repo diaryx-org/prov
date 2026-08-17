@@ -78,6 +78,7 @@ pub mod link;
 pub mod manifest;
 pub mod memo;
 pub mod meta;
+pub mod peer;
 pub mod relation;
 pub mod title;
 
@@ -99,10 +100,11 @@ pub use identity::{Id, IdStorage};
 pub use index::{Collision, IdIndex, NoIndex};
 pub use link::{
     Addressing, BodyLink, Link, LinkStyle, Notation, PathStyle, ReferenceStyle, Wikilink, Wrapper,
-    escapes_root, format_link, path_to_title,
+    escapes_root, format_link, is_valid_workspace_id, path_to_title,
 };
 pub use manifest::{Manifest, ManifestEntry, manifest_sibling};
 pub use memo::ReadScope;
 pub use meta::{Mapping, Value};
+pub use peer::{NoPeers, PeerLocation, PeerLookup, PeerResolver, Unconfirmed};
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use title::{TitleIndex, TitleMatch};
