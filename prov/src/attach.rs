@@ -56,7 +56,7 @@ use prov_store::index::IndexStore;
 /// The sidecar path for `payload` in metadata `format`: the payload's full name
 /// plus the format's whole-file extension, as a sibling (`sub/a.pdf` →
 /// `sub/a.pdf.yaml`), so the sidecar's `content` pointer is just the basename.
-fn sidecar_path(payload: &Path, format: fig::Format) -> PathBuf {
+pub(crate) fn sidecar_path(payload: &Path, format: fig::Format) -> PathBuf {
     let ext = whole_file_extension(format);
     let name = payload
         .file_name()

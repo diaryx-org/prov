@@ -114,6 +114,21 @@ pub enum Fix {
     /// carrying it keeps `apply_fix` free of any dependency on configuration —
     /// the repair is a write, not a decision.
     RegenerateAbout { path: PathBuf, content: String },
+    /// Repair a [`Finding::ManifestDrift`] or [`Finding::ManifestMismatch`] by
+    /// rebuilding the manifest `node` declares from the directory as it is now,
+    /// and re-stamping the node over the result.
+    ///
+    /// Carries only the node, unlike [`RegenerateAbout`](Fix::RegenerateAbout):
+    /// the content is a function of a *directory*, not of configuration, and a
+    /// directory can change between the check and the repair. Recomputing at
+    /// apply time is what keeps the manifest a description of what is there
+    /// rather than of what was there when `check` ran.
+    ///
+    /// **Never `Derived`.** Regenerating accepts the directory as it stands —
+    /// including a file that vanished and a file whose bytes changed — which is
+    /// the same judgment [`RestampFixity`](Fix::RestampFixity) refuses to make
+    /// unattended, on the same evidence.
+    RegenerateManifest { node: PathBuf },
     /// Drop the entry of `relation` in `doc` whose target is written as
     /// `target` — the repair for a link with nowhere left to point and no
     /// candidate worth repointing it at.
@@ -265,6 +280,13 @@ impl fmt::Display for Fix {
                     f,
                     "regenerate {} from this workspace's configuration",
                     path.display()
+                )
+            }
+            Fix::RegenerateManifest { node } => {
+                write!(
+                    f,
+                    "rebuild {}'s manifest from the directory it covers",
+                    node.display()
                 )
             }
             Fix::RemoveEntry {
@@ -904,6 +926,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     content: expected.clone(),
                 },
             )]),
+            // Accept the directory as it stands, and re-record what is in it.
+            //
+            // `Judgment`, for the reason `FixityMismatch`'s re-stamp is: a file
+            // the manifest listed and cannot find is either one you deleted or
+            // one you have lost, and rebuilding writes the loss into the record
+            // as though it were intended. The rival repair — putting the file
+            // back — is not prov's to perform, but it is the right one often
+            // enough that this must never happen unattended.
+            Finding::ManifestDrift { node, .. } | Finding::ManifestMismatch { node, .. } => {
+                Ok(vec![Remedy::new(
+                    RemedyKind::Regenerate,
+                    Warrant::Judgment,
+                    "accept the directory as it is now and rebuild the manifest",
+                    Fix::RegenerateManifest { node: node.clone() },
+                )])
+            }
             // A path with nothing behind it. The candidates are whatever sits
             // beside where it pointed under a name close enough to be the one
             // meant; where nothing is, dropping the link is the only offer.
@@ -1330,6 +1368,16 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // `prov about` would have written.
             Fix::RegenerateAbout { path, content } => {
                 cs.write(path, content.clone());
+            }
+            // Recomputed here rather than carried, because the authority is a
+            // directory and a directory can change between the check and the
+            // repair. Both writes — the manifest and the node that pins it —
+            // join this change set, so the pair can never land half-applied.
+            Fix::RegenerateManifest { node } => {
+                let (_, writes) = self.plan_manifest_rebuild(node).await?;
+                for (path, text) in writes {
+                    cs.write(&path, text);
+                }
             }
             // Drop the entry, addressed by how it is written — the one handle a
             // link with nothing behind it still offers.

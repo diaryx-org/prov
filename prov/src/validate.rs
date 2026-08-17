@@ -144,6 +144,7 @@ impl From<StructuralFact> for Finding {
             StructuralFact::BrokenLink { doc, site, target } => {
                 Finding::BrokenLink { doc, site, target }
             }
+            StructuralFact::ManifestConflict { doc } => Finding::ManifestConflict { doc },
         }
     }
 }
@@ -503,6 +504,68 @@ pub enum Finding {
         expected: String,
         missing: bool,
     },
+    /// A node declares both `content` and `manifest` — a sidecar for one payload
+    /// and for a whole directory at once. The two are mutually exclusive: a node
+    /// stands for one set of bytes or for a set of files, and every pass that
+    /// asks "what does this node cover" would get two answers.
+    ///
+    /// Diagnosis only. Which key is the mistake is the author's to say — dropping
+    /// either one is a claim about what this node was meant to be, and prov has
+    /// no evidence for it.
+    ManifestConflict { doc: PathBuf },
+    /// A manifest document could not be read as one: its `root` is missing or
+    /// climbs out of the workspace, a row carries no `path`, or `files` is not a
+    /// sequence. `doc` is the manifest, `error` what parsing said.
+    ///
+    /// Distinct from [`Unreadable`](Finding::Unreadable) on purpose: the file
+    /// parsed fine *as a document* and failed as a *record store*, which is a
+    /// different repair (fix the rows) and a different risk — a manifest that
+    /// will not parse is a fixity baseline nothing is checking.
+    ManifestMalformed { doc: PathBuf, error: String },
+    /// The covered directory and the manifest disagree about what is in it:
+    /// `missing` names rows whose file is not on disk, `extra` names opaque files
+    /// under the root that no row claims. Both are relative to the manifest's
+    /// `root`, as the rows are.
+    ///
+    /// This is the finding a bulk attachment exists for. One node stands for ten
+    /// thousand files, so "did one of them vanish, did one appear" is a question
+    /// nothing else in prov can answer: the files are not documents, so the
+    /// orphan pass ignores them, and the census never sees them.
+    ///
+    /// **Cheap by construction.** One directory walk, no file reads — which is
+    /// what lets it run inside every `check` over an archive. Corruption *inside*
+    /// a present, listed file is the other half, and costs a full read of the
+    /// archive: [`verify_manifest`](crate::Workspace::verify_manifest).
+    ///
+    /// Repaired by regenerating the manifest
+    /// ([`Fix::RegenerateManifest`](crate::remedy::Fix::RegenerateManifest)) —
+    /// confirmation-gated, because accepting the directory as it is now is a
+    /// judgment, exactly as re-stamping a checksum is.
+    ManifestDrift {
+        node: PathBuf,
+        manifest: PathBuf,
+        missing: Vec<PathBuf>,
+        extra: Vec<PathBuf>,
+    },
+    /// A manifest row's recorded digest does not match the bytes of the file it
+    /// names — bit-rot inside a covered file. `path` is workspace-relative (the
+    /// file a person has to go and look at), `manifest` the record that pinned it.
+    ///
+    /// Raised **per file**, unlike [`ManifestDrift`](Finding::ManifestDrift):
+    /// one corrupted photograph is one thing to restore, and a report that
+    /// collapsed fifty of them into a count would hide which fifty.
+    ///
+    /// Only [`verify_manifest`](crate::Workspace::verify_manifest) raises this;
+    /// `check` does not read covered files. The same judgment
+    /// [`FixityMismatch`](Finding::FixityMismatch) makes applies — intended
+    /// change or corruption is not prov's to decide.
+    ManifestMismatch {
+        node: PathBuf,
+        manifest: PathBuf,
+        path: PathBuf,
+        recorded: String,
+        actual: String,
+    },
 }
 
 impl fmt::Display for Finding {
@@ -784,6 +847,32 @@ impl fmt::Display for Finding {
                     path.display()
                 )
             }
+            Finding::ManifestConflict { doc } => write!(
+                f,
+                "{}: declares both content and manifest — a node covers one payload or a directory, not both",
+                doc.display()
+            ),
+            Finding::ManifestMalformed { doc, error } => {
+                write!(f, "{}: not a readable manifest: {error}", doc.display())
+            }
+            Finding::ManifestDrift {
+                manifest,
+                missing,
+                extra,
+                ..
+            } => write!(
+                f,
+                "{}: {} listed file(s) missing, {} unlisted file(s) present in the directory it covers",
+                manifest.display(),
+                missing.len(),
+                extra.len()
+            ),
+            Finding::ManifestMismatch { manifest, path, .. } => write!(
+                f,
+                "{}: bytes no longer match the checksum recorded in {}",
+                path.display(),
+                manifest.display()
+            ),
         }
     }
 }
@@ -895,6 +984,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         findings.extend(self.orphans(start, &census, &content_bodies).await?);
         findings.extend(
             self.fixity_findings(start, &census, &content_bodies)
+                .await?,
+        );
+        findings.extend(
+            self.manifest_findings(start, &census, &content_bodies)
                 .await?,
         );
         findings.extend(self.config_findings(start).await?);
@@ -1258,8 +1351,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             }
             // What the hash covers: the `content` sibling if this document points
-            // at one, else the document's own body.
-            let actual = match doc.content_attr() {
+            // at one, the `manifest` document if it stands for a directory, else
+            // the document's own body. A manifest node pinning its manifest is
+            // the same relationship an attachment sidecar has with its payload —
+            // and it is what makes the per-row digests inside worth anything,
+            // since a rewritten row is then a rewritten file the node has hashed.
+            let actual = match doc.content_attr().or_else(|| doc.manifest_attr()) {
                 Some(raw) => {
                     let dir = path.parent().unwrap_or(Path::new(""));
                     let target = link::normalize(dir.join(raw));
@@ -1277,6 +1374,99 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     doc: path,
                     recorded: recorded.to_string(),
                     actual,
+                });
+            }
+        }
+        Ok(findings)
+    }
+
+    /// Compare every reachable manifest against the directory it covers —
+    /// [`Finding::ManifestDrift`] for a disagreement, and
+    /// [`Finding::ManifestMalformed`] for a manifest that will not parse as one.
+    ///
+    /// The bulk-attachment counterpart of the orphan pass, and it exists for the
+    /// same reason: a file nothing accounts for should be visible. The covered
+    /// files are *not* documents, so the orphan walk cannot see them, and they
+    /// are not in the census, so nothing else can either — which is why a
+    /// manifest claims its root **completely**. Anything opaque under it that no
+    /// row names is drift, and any row whose file is gone is drift the other way.
+    ///
+    /// **One directory walk, no file reads.** That bound is the reason this can
+    /// run in every `check` over an archive of ten thousand photographs. What it
+    /// cannot see — a file still present, still listed, with different bytes —
+    /// costs a full read of the archive and is
+    /// [`verify_manifest`](Workspace::verify_manifest), run on purpose.
+    ///
+    /// A malformed manifest yields *only* that finding for its directory: with
+    /// no trustworthy row set there is nothing to compare a listing against, and
+    /// reporting every file in the directory as unlisted would bury the one
+    /// finding that matters under ten thousand that do not.
+    async fn manifest_findings(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<Vec<Finding>> {
+        let reachable = self
+            .reachable_documents(start, census, content_bodies)
+            .await?;
+
+        let mut findings = Vec::new();
+        for path in reachable {
+            let Ok((_, doc)) = self.load(&path).await else {
+                continue;
+            };
+            let Some(raw) = doc.manifest_attr() else {
+                continue;
+            };
+            let manifest_doc = link::resolve(&path, raw);
+            // An absent manifest is the census's broken-link finding, already
+            // raised against the node; saying it twice in different words helps
+            // nobody.
+            if !self.exists(&manifest_doc).await? {
+                continue;
+            }
+            let manifest = match self.graph().read_manifest(&manifest_doc).await {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    findings.push(Finding::ManifestMalformed {
+                        doc: manifest_doc,
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let root = manifest.covered_root(&manifest_doc);
+            if !self
+                .graph()
+                .stat(&root)
+                .await
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                findings.push(Finding::BrokenLink {
+                    doc: manifest_doc,
+                    site: LinkSite::Relation(prov_graph::manifest::ROOT_KEY.to_string()),
+                    target: manifest.root.clone(),
+                });
+                continue;
+            }
+
+            let on_disk: std::collections::BTreeSet<PathBuf> =
+                self.graph().scan_covered(&root).await?.into_iter().collect();
+            let listed: std::collections::BTreeSet<PathBuf> = manifest
+                .files
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect();
+            let missing: Vec<PathBuf> = listed.difference(&on_disk).cloned().collect();
+            let extra: Vec<PathBuf> = on_disk.difference(&listed).cloned().collect();
+            if !missing.is_empty() || !extra.is_empty() {
+                findings.push(Finding::ManifestDrift {
+                    node: path,
+                    manifest: manifest_doc,
+                    missing,
+                    extra,
                 });
             }
         }

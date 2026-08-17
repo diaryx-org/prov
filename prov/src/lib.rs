@@ -62,6 +62,7 @@ mod fs_faults;
 pub mod history;
 pub mod identity;
 pub mod intake;
+pub mod manifest;
 pub mod mutate;
 pub mod remedy;
 pub mod route;
@@ -79,7 +80,8 @@ pub use prov_graph;
 pub use prov_graph::{
     Addressing, Backlink, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat, DirEntry,
     Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id, IdIndex,
-    IdStorage, Link, LinkSite, LinkStyle, Mapping, MetaCarrier, Metadata, NoIndex, Node, NodeKind,
+    IdStorage, Link, LinkSite, LinkStyle, Manifest, ManifestEntry, Mapping, MetaCarrier, Metadata,
+    NoIndex, Node, NodeKind,
     Notation, PathStyle, ReadScope, ReadSettings, ReadStorage, ReferenceStyle, Relation,
     RelationSet, Resolution, Result, StdFs, StructuralFact, Target, TitleIndex, TitleMatch,
     TreeOptions, Value, Walk, Wikilink, Wrapper, block_on, code_spans, embed_carrier,
@@ -185,6 +187,7 @@ pub use identity::{
     mint_workspace_id,
 };
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
+pub use manifest::ManifestUpdate;
 pub use mutate::Created;
 pub use prov_exports::ExportSpec;
 pub use prov_transaction::{ChangeSet, FileOp};

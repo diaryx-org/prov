@@ -194,6 +194,10 @@ pub enum StructuralFact {
         site: LinkSite,
         target: String,
     },
+    /// A node declaring both `content` and `manifest` — a sidecar for one
+    /// payload and for a whole directory at once. The two are mutually
+    /// exclusive ([`crate::manifest`]), and neither reading is safe to pick.
+    ManifestConflict { doc: PathBuf },
 }
 
 /// The result of one spanning-tree
@@ -558,6 +562,43 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                         doc: path.clone(),
                         site,
                         target: content.to_string(),
+                    }),
+                }
+            }
+
+            // A manifest node's `manifest` must resolve to an existing document,
+            // the same way and for the same reason: it is not a graph edge (the
+            // manifest is machinery, carrying no `part_of` and no id), but it
+            // does reach a file, so the orphan pass must count it as reached.
+            //
+            // The rows *inside* it reach files too, and deliberately do not
+            // arrive here. A covered file is opaque bytes — never a content
+            // document, so never an orphan candidate — and adding ten thousand
+            // of them to every walk's reachable set would make a photo archive
+            // pay for a check none of those files can fail. What the manifest
+            // promises about them is `check`'s manifest pass, once, not the
+            // census's, per document.
+            if let Some(manifest) = doc.manifest_attr() {
+                if doc.content_attr().is_some() {
+                    structural.push(StructuralFact::ManifestConflict { doc: path.clone() });
+                }
+                let target = link::resolve(&path, manifest);
+                let site = LinkSite::Relation(crate::manifest::MANIFEST_KEY.to_string());
+                match self.exact_name(&target).await {
+                    NameMatch::Exact => content_bodies.push(target),
+                    NameMatch::CaseOnly(actual) => {
+                        content_bodies.push(target.with_file_name(&actual));
+                        structural.push(StructuralFact::CaseMismatch {
+                            doc: path.clone(),
+                            site,
+                            target: manifest.to_string(),
+                            actual,
+                        });
+                    }
+                    NameMatch::None => structural.push(StructuralFact::BrokenLink {
+                        doc: path.clone(),
+                        site,
+                        target: manifest.to_string(),
                     }),
                 }
             }
