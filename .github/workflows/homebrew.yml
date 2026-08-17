@@ -1,186 +1,39 @@
 name: Homebrew
-# Release the `prov` CLI to Homebrew. Same shape as fig's homebrew.yml, but
-# the binaries are built with cargo (prov is a Rust workspace; the CLI is
-# the `prov-cli` crate, whose binary is named `prov`). Four jobs:
-# 1. build macOS binaries (arm64, x86_64) and
-# 2. Linux binaries (x86_64, aarch64), attach them to this repo's GitHub
-#    Release, then
-# 3. render the formula with the release's version + checksums and push it to
-#    the tap repo.
-# 4. build a wasm32-wasip1 binary and attach it to the same Release. Not part
-#    of the Homebrew formula (brew doesn't run wasm) — just a portable
-#    download for any WASI runtime (wasmtime, wasmer, ...), so it doesn't
-#    block or feed `bump-formula`.
+# Release the `prov` CLI to Homebrew. The build/attach/render/push mechanics are
+# shared with twig, fig, and moid and live in diaryx-org/.github; only what makes
+# prov different is below.
 #
-# Per-arch prebuilt binaries (not a source `depends_on "rust"` formula): users
-# don't need a Rust toolchain, and installs are fast.
+# prov is a Rust workspace: the CLI is the `prov-cli` crate, whose binary is
+# named `prov` — hence `cargo-package` and `name` differing. The aarch64-linux
+# cross linker the cargo build needs is installed by the shared workflow.
 #
-# Cross builds: macOS arm64 is native on the macos-latest runner and x86_64 is a
-# rustup cross-target (Apple's linker handles both). On Linux, x86_64 is native
-# and aarch64 uses the gcc-aarch64-linux-gnu cross linker.
+# `needs-zig: true` because prov depends on fig-sys/twig-sys, whose build.rs
+# builds fig/twig-doc's native library from source (via `zig build`) when no
+# prebuilt payload exists for the target — which is the case for wasm32-wasip1,
+# and cheap insurance on the native targets.
+#
+# `wasi: true` attaches a wasm32-wasip1 build to the same Release. It is not part
+# of the Homebrew formula (brew doesn't run wasm) — just a portable download for
+# any WASI runtime (wasmtime, wasmer, ...).
 #
 # Runs on `v*.*.*` tags. Prerequisite before the first tagged release: install
 # the diaryx-bot GitHub App on diaryx-org/homebrew-tap (Contents:write) and add
 # its App ID + private key as the TAP_APP_ID / TAP_APP_KEY secrets on this repo.
-# The bump-formula job mints a short-lived token from these.
 on:
   push: { tags: [v*.*.*] }
-  workflow_dispatch: null
+  workflow_dispatch:
 permissions:
-  contents: write # the binary jobs attach assets to the GitHub Release
+  contents: write # caps what the called workflow may request
 jobs:
-  macos-binaries:
-    name: Build + attach macOS binaries
-    runs-on: macos-latest
-    if: github.ref_type == 'tag'
-    steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-      with: { targets: "aarch64-apple-darwin,x86_64-apple-darwin" }
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - name: Build macOS arm64
-      run: |
-        cargo build --release -p prov-cli --target aarch64-apple-darwin
-        tar -czf prov-macos-arm64.tar.gz -C target/aarch64-apple-darwin/release prov
-    - name: Build macOS x86_64
-      run: |
-        cargo build --release -p prov-cli --target x86_64-apple-darwin
-        tar -czf prov-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release prov
-    - name: Attach to the GitHub Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        files: |
-          prov-macos-arm64.tar.gz
-          prov-macos-x86_64.tar.gz
-  linux-binaries:
-    name: Build + attach Linux binaries
-    runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
-    steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-      with: { targets: "x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu" }
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - name: Install aarch64 cross linker
-      run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-    - name: Build Linux x86_64
-      run: |
-        cargo build --release -p prov-cli --target x86_64-unknown-linux-gnu
-        tar -czf prov-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release prov
-    - name: Build Linux aarch64
-      env:
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      run: |
-        cargo build --release -p prov-cli --target aarch64-unknown-linux-gnu
-        tar -czf prov-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release prov
-    - name: Attach to the GitHub Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        files: |
-          prov-linux-x86_64.tar.gz
-          prov-linux-aarch64.tar.gz
-  wasi-binary:
-    name: Build + attach WASI binary
-    runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
-    steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-      with: { targets: "wasm32-wasip1" }
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - name: Build wasm32-wasip1
-      # No prebuilt fig-sys/twig-sys payload exists for this target, so both
-      # build fig/twig-doc's native library from source — hence Zig on PATH.
-      run: |
-        cargo build --release -p prov-cli --target wasm32-wasip1
-        cp target/wasm32-wasip1/release/prov.wasm prov-wasi.wasm
-    - name: Attach to the GitHub Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        files: prov-wasi.wasm
-  bump-formula:
-    name: Bump tap formula
-    runs-on: ubuntu-latest
-    needs: [macos-binaries, linux-binaries]
-    if: github.ref_type == 'tag'
-    steps:
-    - name: Compute checksums and render the Homebrew formula
-      run: |
-        version="${GITHUB_REF_NAME#v}"
-        base="https://github.com/diaryx-org/prov/releases/download/${GITHUB_REF_NAME}"
-        mac_arm64_sha=$(curl -sL "$base/prov-macos-arm64.tar.gz" | sha256sum | cut -d' ' -f1)
-        mac_x64_sha=$(curl -sL "$base/prov-macos-x86_64.tar.gz" | sha256sum | cut -d' ' -f1)
-        linux_x64_sha=$(curl -sL "$base/prov-linux-x86_64.tar.gz" | sha256sum | cut -d' ' -f1)
-        linux_arm64_sha=$(curl -sL "$base/prov-linux-aarch64.tar.gz" | sha256sum | cut -d' ' -f1)
-        cat > /tmp/prov.rb <<RUBY
-        class Prov < Formula
-          desc "Command-line companion for the prov self-describing workspace library"
-          homepage "https://github.com/diaryx-org/prov"
-          version "$version"
-          license "MIT OR Apache-2.0"
-
-          on_macos do
-            on_arm do
-              url "https://github.com/diaryx-org/prov/releases/download/v$version/prov-macos-arm64.tar.gz"
-              sha256 "$mac_arm64_sha"
-            end
-            on_intel do
-              url "https://github.com/diaryx-org/prov/releases/download/v$version/prov-macos-x86_64.tar.gz"
-              sha256 "$mac_x64_sha"
-            end
-          end
-
-          on_linux do
-            on_arm do
-              url "https://github.com/diaryx-org/prov/releases/download/v$version/prov-linux-aarch64.tar.gz"
-              sha256 "$linux_arm64_sha"
-            end
-            on_intel do
-              url "https://github.com/diaryx-org/prov/releases/download/v$version/prov-linux-x86_64.tar.gz"
-              sha256 "$linux_x64_sha"
-            end
-          end
-
-          def install
-            bin.install "prov"
-          end
-
-          test do
-            assert_match version.to_s, shell_output("#{bin}/prov --version")
-          end
-        end
-        RUBY
-    # Mint a short-lived installation token from the diaryx-bot GitHub App
-    # (scoped to Contents:write on diaryx-org/homebrew-tap only). Replaces the
-    # old HOMEBREW_TAP_TOKEN PAT, which was tied to a personal account and broke
-    # when the repos moved into the org. The token lasts ~1h and is confined to
-    # this job; only the App's private key (TAP_APP_KEY) is stored long-term.
-    - name: Mint a tap token from the GitHub App
-      id: tap_token
-      uses: actions/create-github-app-token@v2
-      with:
-        app-id: ${{ secrets.TAP_APP_ID }}
-        private-key: ${{ secrets.TAP_APP_KEY }}
-        owner: diaryx-org
-        repositories: homebrew-tap
-    - name: Push to the tap
-      env: { COMMITTER_TOKEN: '${{ steps.tap_token.outputs.token }}' }
-      run: |
-        git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/diaryx-org/homebrew-tap" tap
-        cp /tmp/prov.rb tap/Formula/prov.rb
-        cd tap
-        git config user.name "diaryx-bot[bot]"
-        git config user.email "306900725+diaryx-bot[bot]@users.noreply.github.com"
-        git add Formula/prov.rb
-        if git diff --cached --quiet; then
-          echo "Formula unchanged — skipping commit"
-        else
-          git commit -m "prov ${GITHUB_REF_NAME#v}"
-          git push
-        fi
+  homebrew:
+    uses: diaryx-org/.github/.github/workflows/reusable-homebrew.yml@main
+    with:
+      name: prov
+      desc: "Command-line companion for the prov self-describing workspace library"
+      language: rust
+      cargo-package: prov-cli
+      needs-zig: true
+      wasi: true
+    secrets:
+      TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
+      TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
