@@ -173,6 +173,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **Content node** | a relation (`contents`/`part_of`/`links`/your vocabulary) | in the graph; two-way (inverse maintained); ID-able; rewritten on move; orphan-checked |
 | **Machinery** | a one-way pointer relation (`registry`, `config`, `recycle_bin`, `history`, a `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
 | **Opaque payload** | the `content` field | *not a node* — the bytes are the body of a sidecar node (an attachment); hashed for fixity, never parsed |
+| **A directory of opaque payloads** | the `manifest` field (exclusive with `content`) | *not nodes* — one node stands for the whole set through a manifest store listing every opaque file under a directory it claims completely, each row optionally hashed; the node hashes the manifest. Not in the graph, not orphan-checked, never parsed. See [Manifests](/docs/manifests.md) |
 | **Controlled term** | a `fields` value | resolved against a vocabulary store, checked (§3) — not traversed |
 | **Generated prose** | a one-way pointer relation (`about`) | plaintext in the workspace's *content* format; reached from the root only; **no inverse, no `part_of`, no id, not in the spanning tree, not orphan-checked**; rewritten **whole** by prov and never merged; a pure function of configuration, therefore **discardable** — deleting it loses nothing |
 | **External** | a URL | recognized by syntax, never resolved or validated |
@@ -184,6 +185,16 @@ Four consequences worth stating outright:
   the workspace, `attach` mints a sidecar (`photo.jpg.yaml`) — an ordinary content
   node whose `content` field names the opaque payload. The graph stays all-plaintext;
   the binary rides along as a node's body.
+- **At scale, the wrapper is shared.** One sidecar per file is the right shape
+  for the file you thought about and the wrong one for the archive you dumped:
+  ten thousand photographs would mean ten thousand documents, which no editor can
+  browse and no sync transport carries cheaply. A `manifest` node stands for the
+  directory instead, and the difference from a sidecar is a *claim of
+  completeness* — the manifest names every opaque file under its root, so a file
+  that appears or vanishes is drift prov reports. Nothing else can report it:
+  covered files are not documents, so the orphan walk cannot see them, and not
+  links, so the census cannot either. Files prov *can* read are deliberately not
+  claimed, which is what keeps a manifest from ever shadowing a document.
 - **Opacity is declared, not inferred.** A payload is normally opaque because its
   extension is not one prov reads, but a sidecar may also say so outright with
   `attachment: true`, and that marker wins. It is how a *specimen* is carried — an

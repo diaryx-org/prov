@@ -11,6 +11,7 @@ contents:
 - '[Next Steps](/docs/next-steps.md)'
 - '[Reference Styles](/docs/reference-styles.md)'
 - '[History Format](/docs/history-format.md)'
+- '[Manifests](/docs/manifests.md)'
 - '[`prov` proposals](/docs/proposals/proposals.md)'
 - '[Author''s notes](/authors-notes.md)'
 config: prov.yaml

@@ -532,6 +532,8 @@ these reminders.
 | `restore PATH` / `empty-bin`    | recover a binned document / purge the bin                |
 | `attach FILE [--in P]`          | give a non-document file a metadata sidecar, linked in    |
 | `attach FILE --opaque`          | the same for a file prov *could* read — a specimen it must not interpret |
+| `attach DIR --manifest`         | cover a whole directory with one node and one file list, instead of a sidecar each |
+| `manifest DIR [--update\|--verify]` | what the list says / rebuild it from the directory / re-check every file's checksum |
 | `tree [ROOT]`                   | print the containment tree                               |
 | `explore [FILE]`                | walk the graph interactively                             |
 | `check [ROOT] [--fix]`          | report (and optionally repair) integrity problems        |
