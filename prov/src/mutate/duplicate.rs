@@ -49,6 +49,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Err(Error::NotFound(source.to_path_buf()));
         }
         let (source_text, doc) = self.load(&source).await?;
+        // A manifest node has no meaningful copy. Sharing the manifest would put
+        // two nodes' checksums over one record store; copying it would put two
+        // records over one archive, free to drift apart with no rule about which
+        // is right — the very state `attach --manifest` refuses to create. The
+        // archive is the archive, and describing it twice describes nothing.
+        if doc.is_manifest_node() {
+            return Err(Error::Structure(format!(
+                "{} covers a directory with a manifest, which has no copy — \
+                 `attach --manifest` covers a different directory",
+                source.display()
+            )));
+        }
         let meta = fig::Value::from(&doc.meta);
         let (spanning, inverse) = self.spanning_pair()?;
 

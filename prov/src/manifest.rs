@@ -970,6 +970,32 @@ mod tests {
     }
 
     #[test]
+    fn the_reachable_set_holds_the_manifest_and_not_the_archive() {
+        // What a history capture parks falls out of this one set, so the promise
+        // "the manifest is captured, the photographs are not" is really a
+        // statement about reachability — tested where it is decided rather than
+        // through the store that consumes it.
+        let dir = photos("reachable");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+
+        let reachable = block_on(ws(&dir).reachable_files("index.md")).unwrap();
+        assert!(reachable.contains(Path::new("photos.manifest.yaml")));
+        assert!(reachable.contains(Path::new("photos.yaml")));
+        assert!(
+            !reachable.contains(Path::new("photos/a.jpg")),
+            "an archive must not be duplicated into the history store"
+        );
+    }
+
+    #[test]
+    fn a_manifest_node_has_no_copy() {
+        let dir = photos("duplicate");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        let err = block_on(ws(&dir).duplicate(Path::new("photos.yaml"))).unwrap_err();
+        assert!(err.to_string().contains("no copy"), "{err}");
+    }
+
+    #[test]
     fn an_unhashed_manifest_promises_nothing_about_bytes() {
         let dir = photos("deep-unhashed");
         block_on(ws(&dir).attach_manifest_titled(
