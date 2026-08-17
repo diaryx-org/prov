@@ -75,6 +75,7 @@ pub mod graph;
 pub mod identity;
 pub mod index;
 pub mod link;
+pub mod manifest;
 pub mod memo;
 pub mod meta;
 pub mod relation;
@@ -100,6 +101,7 @@ pub use link::{
     Addressing, BodyLink, Link, LinkStyle, Notation, PathStyle, ReferenceStyle, Wikilink, Wrapper,
     escapes_root, format_link, path_to_title,
 };
+pub use manifest::{Manifest, ManifestEntry, manifest_sibling};
 pub use memo::ReadScope;
 pub use meta::{Mapping, Value};
 pub use relation::{Cardinality, Edge, Relation, RelationSet};

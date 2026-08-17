@@ -78,6 +78,7 @@
 
 pub mod census;
 pub mod load;
+pub mod manifest;
 pub mod probe;
 pub mod resolve;
 pub mod scan;

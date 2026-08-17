@@ -367,6 +367,32 @@ impl Document {
         self.meta.get("content").and_then(Value::as_str)
     }
 
+    /// The raw `manifest` attribute — the relative path to the manifest
+    /// document listing the files this node stands for — or `None` for a node
+    /// that stands for itself.
+    ///
+    /// The bulk counterpart of [`content_attr`](Document::content_attr) and
+    /// **mutually exclusive** with it: a node covers one payload or a set of
+    /// them, never both. See [`manifest`](crate::manifest) for the record shape.
+    pub fn manifest_attr(&self) -> Option<&str> {
+        self.meta.get(crate::manifest::MANIFEST_KEY).and_then(Value::as_str)
+    }
+
+    /// `true` when this document is a **manifest node**: it declares a
+    /// `manifest` pointer, so the files it stands for are listed there rather
+    /// than being a single `content` payload.
+    pub fn is_manifest_node(&self) -> bool {
+        self.manifest_attr().is_some()
+    }
+
+    /// `true` when this document declares *both* `content` and `manifest` —
+    /// a node claiming to be a single payload's sidecar and a whole
+    /// directory's at once. Neither reading is safe to pick, so the pair is
+    /// reported rather than resolved.
+    pub fn manifest_conflicts(&self) -> bool {
+        self.content_attr().is_some() && self.manifest_attr().is_some()
+    }
+
     /// `true` when this document is an **attachment sidecar**: a whole-file
     /// metadata document whose `content` points at an [opaque
     /// payload](is_opaque_payload) rather than a prose body. Recognized two ways,
