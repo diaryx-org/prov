@@ -20,17 +20,25 @@
 //! and tampering with a row means tampering with a file the node has pinned.
 //! The record shape is [`prov_graph::manifest`]; this module is the verbs.
 //!
-//! Four of them:
+//! The verbs:
 //! - [`attach_manifest`](Workspace::attach_manifest) — mint the pair and link
 //!   the node under a parent (the bulk analogue of `attach`).
-//! - [`manifest_node_for`](Workspace::manifest_node_for) — the reverse lookup:
-//!   which node covers this directory.
 //! - [`update_manifest`](Workspace::update_manifest) — rebuild the rows from the
 //!   directory as it is now, and re-stamp the node.
+//! - [`manifest_status`](Workspace::manifest_status) — what the manifest says and
+//!   whether the directory still agrees, reading no covered file.
 //! - [`verify_manifest`](Workspace::verify_manifest) — the **deep** check: read
 //!   every listed file and compare its digest. `check` deliberately does not do
-//!   this (see [`manifest_findings`](Workspace::manifest_findings)); it is the
-//!   pass you run on purpose, or on a schedule, over an archive.
+//!   this; it is the pass you run on purpose, or on a schedule, over an archive.
+//!
+//! And the two reverse lookups, which are **not** interchangeable:
+//! [`manifest_node_for`](Workspace::manifest_node_for) probes the `<dir>.<ext>`
+//! convention and is cheap, while
+//! [`manifest_node_covering`](Workspace::manifest_node_covering) asks every
+//! reachable document and is right. A `rename` moves the node without moving the
+//! archive, so the convention stops matching in ordinary use — which is why the
+//! verb that would otherwise mint a *second* manifest over one archive pays for
+//! the census.
 //!
 //! ## What a manifest does *not* do
 //!

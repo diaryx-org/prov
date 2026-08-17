@@ -860,13 +860,21 @@ impl fmt::Display for Finding {
                 missing,
                 extra,
                 ..
-            } => write!(
-                f,
-                "{}: {} listed file(s) missing, {} unlisted file(s) present in the directory it covers",
-                manifest.display(),
-                missing.len(),
-                extra.len()
-            ),
+            } => {
+                let mut parts = Vec::new();
+                if !missing.is_empty() {
+                    parts.push(format!("{} listed but gone", missing.len()));
+                }
+                if !extra.is_empty() {
+                    parts.push(format!("{} unlisted", extra.len()));
+                }
+                write!(
+                    f,
+                    "{}: the directory it covers has drifted ({}) — `prov manifest` names them",
+                    manifest.display(),
+                    parts.join(", ")
+                )
+            }
             Finding::ManifestMismatch { manifest, path, .. } => write!(
                 f,
                 "{}: bytes no longer match the checksum recorded in {}",
