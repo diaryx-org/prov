@@ -19,7 +19,7 @@ use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
-use super::maintain::content_target;
+use super::maintain::paired_file;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Delete the document at `path`, removing the parent's spanning entry for
@@ -143,8 +143,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
 
-        // A separated node's body lives in a sibling file; delete the pair.
-        let body_file = content_target(&doc, &path);
+        // The file that travels with the node — a separated body, an attachment
+        // payload, or a manifest — is deleted with it.
+        //
+        // The directory a manifest *covers* is not touched. A body is the node's
+        // content and goes where it goes; a manifest is a description of files
+        // that exist on their own terms, so deleting the description must not
+        // delete ten thousand photographs. What is left behind is an uncovered
+        // directory, which is exactly what it was before anything described it.
+        let body_file = paired_file(&doc, &path);
         let body_exists = match &body_file {
             Some(body) => self.exists(body).await?,
             None => false,

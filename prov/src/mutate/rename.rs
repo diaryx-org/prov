@@ -20,7 +20,9 @@ use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
-use super::maintain::{body_sibling, content_target, splice_body};
+use prov_graph::manifest::manifest_sibling;
+
+use super::maintain::{body_sibling, content_target, manifest_target, splice_body};
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Move/rename the document at `from` to `to`, maintaining every affected
@@ -119,15 +121,31 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         } else {
             from_text
         };
-        // For a separated node, repoint its `content` to the (moved) body file.
+        // For a separated node, repoint its `content` to the (moved) body file;
+        // for a manifest node, its `manifest`.
         if let Some(mv) = &body_move
             && let Some(carrier) = from_doc.carrier
         {
             let mut editor = MetaEditor::open(&self_text, carrier)?;
             editor.replace_value(
-                &[Segment::Key("content")],
+                &[Segment::Key(mv.key)],
                 fig::Value::Str(mv.new_ref.clone()),
             )?;
+            // A manifest whose `root` was re-spelled is different bytes, and the
+            // node pins those bytes — so the pin is re-stamped here, in the same
+            // change set. Otherwise every cross-directory rename of a covered
+            // directory's node would leave a fixity mismatch behind it, which is
+            // an alarm raised by prov's own maintenance and therefore the worst
+            // kind: the one that teaches people to ignore the real ones.
+            if mv.key == prov_graph::manifest::MANIFEST_KEY
+                && from_doc.meta.get("content_hash").is_some()
+                && let Some(text) = &mv.text
+            {
+                editor.set_value(
+                    &[Segment::Key("content_hash")],
+                    fig::Value::Str(crate::fixity::digest(text.as_bytes())),
+                )?;
+            }
             self_text = editor.render()?;
         }
 
@@ -173,6 +191,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         from: &Path,
         to: &Path,
     ) -> Result<Option<BodyMove>> {
+        if doc.manifest_attr().is_some() {
+            return self.plan_manifest_move(doc, from, to).await;
+        }
         let Some(body_from) = content_target(doc, from) else {
             return Ok(None);
         };
@@ -197,6 +218,68 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             to: body_to,
             new_ref,
             text,
+            key: "content",
+        }))
+    }
+
+    /// The manifest half of [`plan_body_move`](Self::plan_body_move): a manifest
+    /// node's record store travels beside it, and its `root` is re-pointed at
+    /// the directory it has always covered.
+    ///
+    /// **The covered directory does not move.** A separated body *is* the node's
+    /// content, so it follows; a manifest is a *description* of a directory that
+    /// exists on its own terms, and moving ten thousand photographs because
+    /// their index was renamed would be a filesystem operation nobody asked for
+    /// — slow, and destructive if it half-finished. Re-relativizing one line
+    /// says the same thing and moves nothing.
+    ///
+    /// The name follows [`manifest_sibling`], not [`body_sibling`]: the node and
+    /// its manifest are both whole-file metadata documents in the same format,
+    /// so the body convention (swap the extension) would name the node itself.
+    async fn plan_manifest_move(
+        &self,
+        doc: &Document,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Option<BodyMove>> {
+        let Some(manifest_from) = manifest_target(doc, from) else {
+            return Ok(None);
+        };
+        let manifest_to = manifest_sibling(to);
+        let new_ref = manifest_to
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let (raw, parsed) = self.load(&manifest_from).await?;
+        let text = if manifest_from.parent() == manifest_to.parent() {
+            Some(raw)
+        } else {
+            // The covered directory as it resolves *now*, re-spelled from where
+            // the manifest is going. Written with a trailing slash: it names a
+            // directory, and the file should say so to someone reading it
+            // without prov.
+            let covered = prov_graph::manifest::Manifest::from_meta(&parsed.meta)
+                .map(|m| m.covered_root(&manifest_from))
+                .unwrap_or_default();
+            let root = format!(
+                "{}/",
+                link::relative(manifest_to.parent().unwrap_or(Path::new("")), &covered)
+            );
+            Some(prov_store::edit::set_in_text(
+                &raw,
+                parsed.carrier,
+                prov_graph::manifest::ROOT_KEY,
+                fig::Value::Str(root),
+            )?)
+        };
+        Ok(Some(BodyMove {
+            from: manifest_from,
+            to: manifest_to,
+            new_ref,
+            text,
+            key: prov_graph::manifest::MANIFEST_KEY,
         }))
     }
 }
@@ -208,12 +291,17 @@ struct BodyMove {
     from: PathBuf,
     /// Where the body file moves to (beside the renamed metadata file).
     to: PathBuf,
-    /// The metadata file's new `content` value — the body file's basename.
+    /// The metadata file's new `content`/`manifest` value — the moved file's
+    /// basename.
     new_ref: String,
     /// The prose body's text, wikilinks re-relativized if the directory changed,
     /// to rewrite after the move. `None` for an opaque attachment payload, whose
     /// bytes the bare rename carries untouched.
     text: Option<String>,
+    /// The node key that points at the moved file — `content` for a separated
+    /// body or an attachment payload, `manifest` for a covered directory's
+    /// record store.
+    key: &'static str,
 }
 
 /// Recompute every relative link `doc` declares so it still resolves after the

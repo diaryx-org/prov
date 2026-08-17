@@ -788,6 +788,50 @@ mod tests {
     }
 
     #[test]
+    fn renaming_the_node_moves_its_manifest_and_leaves_the_archive_alone() {
+        let dir = photos("rename");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+
+        block_on(ws(&dir).rename(Path::new("photos.yaml"), Path::new("albums/trip.yaml"))).unwrap();
+
+        // The record store travelled; the ten thousand photographs did not.
+        assert!(dir.join("albums/trip.manifest.yaml").exists());
+        assert!(!dir.join("photos.manifest.yaml").exists());
+        assert!(
+            dir.join("photos/a.jpg").exists(),
+            "a rename of the description must not move the archive"
+        );
+
+        let node = read(&dir, "albums/trip.yaml");
+        assert!(node.contains("manifest: trip.manifest.yaml"), "{node}");
+        let manifest = read(&dir, "albums/trip.manifest.yaml");
+        assert!(
+            manifest.contains("root: ../photos/"),
+            "root re-spelled from where the manifest now sits: {manifest}"
+        );
+
+        // And the node's pin followed the manifest's new bytes, so prov's own
+        // maintenance did not leave a fixity alarm behind it.
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn deleting_the_node_deletes_the_manifest_and_keeps_the_photographs() {
+        let dir = photos("delete");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+
+        block_on(ws(&dir).delete(Path::new("photos.yaml"), false)).unwrap();
+
+        assert!(!dir.join("photos.yaml").exists());
+        assert!(!dir.join("photos.manifest.yaml").exists());
+        assert!(
+            dir.join("photos/a.jpg").exists() && dir.join("photos/2019/b.jpg").exists(),
+            "deleting a description is not deleting the archive"
+        );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
     fn an_unhashed_manifest_promises_nothing_about_bytes() {
         let dir = photos("deep-unhashed");
         block_on(ws(&dir).attach_manifest_titled(

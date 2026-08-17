@@ -110,11 +110,6 @@ impl Manifest {
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Structure(format!("manifest has no `{ROOT_KEY}`")))?
             .to_string();
-        if crate::link::escapes_root(&root) {
-            return Err(Error::Structure(format!(
-                "manifest `{ROOT_KEY}: {root}` climbs outside the workspace"
-            )));
-        }
         let rows = match meta.get(FILES_KEY) {
             // A manifest over an empty directory has no rows at all, which is a
             // legitimate state (`files:` written as null, or absent).
@@ -179,6 +174,25 @@ impl Manifest {
     /// document itself lives.
     pub fn covered_root(&self, manifest_doc: &Path) -> PathBuf {
         crate::link::resolve(manifest_doc, &self.root)
+    }
+
+    /// [`covered_root`](Self::covered_root), refusing one that lands outside the
+    /// workspace.
+    ///
+    /// The check cannot live in [`from_meta`](Self::from_meta), which has no
+    /// path to resolve against: `root` is relative to the *manifest's* directory,
+    /// so `../photos/` is an ordinary, correct value for a manifest one
+    /// directory down — and is exactly what a rename writes. Only the resolved
+    /// path can say whether a workspace boundary was crossed.
+    pub fn checked_root(&self, manifest_doc: &Path) -> Result<PathBuf> {
+        let root = self.covered_root(manifest_doc);
+        if crate::link::escapes_root(&root) {
+            return Err(Error::Structure(format!(
+                "manifest `{ROOT_KEY}: {}` climbs outside the workspace",
+                self.root
+            )));
+        }
+        Ok(root)
     }
 
     /// A row's file, workspace-relative — the covered root joined with the row's
@@ -288,9 +302,17 @@ mod tests {
     }
 
     #[test]
-    fn neither_root_nor_row_may_climb_out() {
-        assert!(parse("root: ../../etc/\n").is_err());
+    fn neither_root_nor_row_may_climb_out_of_the_workspace() {
+        // A row climbs out of the manifest's own root, which nothing resolves
+        // away, so it is refused at parse time.
         assert!(parse("root: photos/\nfiles:\n- path: ../../etc/passwd\n").is_err());
+
+        // A `root` can only be judged once resolved: `../photos/` is correct for
+        // a manifest one directory down (and is what a rename writes), while the
+        // same spelling from the workspace root is an escape.
+        let m = parse("root: ../photos/\n").unwrap();
+        assert!(m.checked_root(Path::new("albums/trip.manifest.yaml")).is_ok());
+        assert!(m.checked_root(Path::new("trip.manifest.yaml")).is_err());
     }
 
     #[test]

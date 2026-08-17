@@ -563,6 +563,25 @@ pub(super) fn content_target(doc: &Document, doc_path: &Path) -> Option<PathBuf>
     Some(link::normalize(dir.join(raw)))
 }
 
+/// The workspace-relative path a document's `manifest` attribute points at (the
+/// record store listing the directory it covers). `None` for a node that stands
+/// for itself.
+///
+/// The counterpart of [`content_target`] for the bulk shape, and the two are
+/// exclusive by construction — which is why the verbs that must move or remove
+/// "the file that travels with this node" ask for one, then the other.
+pub(super) fn manifest_target(doc: &Document, doc_path: &Path) -> Option<PathBuf> {
+    let raw = doc.manifest_attr()?;
+    let dir = doc_path.parent().unwrap_or(Path::new(""));
+    Some(link::normalize(dir.join(raw)))
+}
+
+/// The file that travels with the node at `doc_path` — its separated body, its
+/// attachment payload, or its manifest.
+pub(super) fn paired_file(doc: &Document, doc_path: &Path) -> Option<PathBuf> {
+    content_target(doc, doc_path).or_else(|| manifest_target(doc, doc_path))
+}
+
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// The node in `root`'s spanning subtree whose `content` names `body`, if
     /// any — the other half of [`content_target`], read backwards.

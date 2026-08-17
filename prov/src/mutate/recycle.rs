@@ -24,7 +24,7 @@ use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
-use super::maintain::content_target;
+use super::maintain::paired_file;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Delete the document at `path` by moving it into the workspace **recycle
@@ -202,8 +202,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             bump += 1;
         }
 
-        // A separated document's prose body travels with it.
-        let body_from = content_target(&doc, &path);
+        // A separated document's prose body — or a manifest node's record store
+        // — travels with it into the bin, so `restore` brings back the pair. The
+        // directory a manifest covers stays where it is: recycling a description
+        // is not recycling the archive it describes.
+        let body_from = paired_file(&doc, &path);
         let body_bin = match &body_from {
             Some(body) if self.exists(body).await? => Some((body.clone(), items_dir.join(body))),
             _ => None,

@@ -48,8 +48,14 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             .carrier
             .ok_or_else(|| Error::Structure(format!("{} carries no metadata", path.display())))?;
         require_whole_file(path, carrier)?;
-        Manifest::from_meta(&doc.meta)
-            .map_err(|e| Error::Structure(format!("{}: {e}", path.display())))
+        let manifest = Manifest::from_meta(&doc.meta)
+            .map_err(|e| Error::Structure(format!("{}: {e}", path.display())))?;
+        // Judged here, where the manifest's own location is known — see
+        // `Manifest::checked_root`.
+        manifest
+            .checked_root(path)
+            .map_err(|e| Error::Structure(format!("{}: {e}", path.display())))?;
+        Ok(manifest)
     }
 
     /// Whether the document at `candidate` is a manifest node whose manifest
