@@ -27,7 +27,7 @@ use crate::validate::Finding;
 use crate::workspace::Workspace;
 
 use super::delete::Diagnosis;
-use prov_graph::document::Document;
+use prov_graph::document::{Document, whole_file_format};
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::{LinkSite, Resolution, Target};
 use prov_graph::link::{self, Link, LinkStyle};
@@ -617,11 +617,40 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// A neighbour that fails to load is skipped rather than fatal: the question
     /// is "does something depend on these bytes", and an unreadable document is
     /// a finding `check` already raises, not a reason to block a delete.
+    ///
+    /// ## Only the whole-file neighbours are opened
+    ///
+    /// The directory bound is not enough on its own. A vault keeps a month of
+    /// daily notes in one folder, so "one `read_dir`" was still nine document
+    /// reads to delete the tenth — and it was *most* of what an undiagnosed
+    /// delete cost (fifteen reads, nine of them here).
+    ///
+    /// A node that owns a body is a **whole-file metadata document**, and that is
+    /// not a guess about layout: [`separate`](Workspace::separate) mints the
+    /// metadata half with [`whole_file_extension`], `attach` names its sidecar by
+    /// the same convention (which is why [`attachment_for`] can probe for it),
+    /// and [`combine`](Workspace::combine) refuses outright to take a node that
+    /// is not one. So a neighbour whose *extension* cannot carry whole-file
+    /// metadata cannot be anyone's owner, and [`whole_file_format`] settles that
+    /// from the path without opening the file. A folder of `.md` notes now costs
+    /// the listing and nothing else.
+    ///
+    /// One shape is given up, and it is one prov cannot produce: frontmatter in a
+    /// *markdown* document naming `content:`. `separate` will not author it and
+    /// `combine` will not reverse it, so it can only be hand-written — and the
+    /// cost of missing it is the cost already accepted above, a refusal that does
+    /// not fire and a broken `content` link `check` reports afterwards. The
+    /// converse shape is *not* given up: a body file carrying a stray
+    /// frontmatter, which `combine` explicitly tolerates, is still found, because
+    /// what is tested here is the neighbour's extension and never the subject's.
+    ///
+    /// [`whole_file_extension`]: prov_graph::document::whole_file_extension
+    /// [`attachment_for`]: Workspace::attachment_for
     pub(super) async fn content_owner(&self, body: &Path) -> Result<Option<PathBuf>> {
         let dir = body.parent().unwrap_or(Path::new("")).to_path_buf();
         let neighbourhood = BTreeSet::from([dir]);
         for node in self.direct_child_files(&neighbourhood).await? {
-            if node == body {
+            if node == body || whole_file_format(&node).is_none() {
                 continue;
             }
             let Ok((_, doc)) = self.load(&node).await else {

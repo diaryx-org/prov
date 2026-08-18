@@ -294,6 +294,68 @@ mod tests {
         );
     }
 
+    /// The separated-body guard is one `read_dir` of the subject's own
+    /// directory, and it used to open every document in it. A vault keeping a
+    /// month of daily notes in one folder therefore paid nine document reads to
+    /// delete the tenth — more than everything else an undiagnosed delete does,
+    /// put together. Only a whole-file metadata neighbour can own a body, and
+    /// that is a question about the path.
+    #[test]
+    fn the_body_guard_does_not_open_markdown_neighbours() {
+        let dir = tempdir("delete-neighbours");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- day/a.md\n- day/b.md\n- day/c.md\n---\n",
+        );
+        for name in ["a", "b", "c"] {
+            write(
+                &dir,
+                &format!("day/{name}.md"),
+                "---\npart_of: /index.md\n---\n",
+            );
+        }
+
+        let fs = crate::fs_faults::CountingFs::default();
+        let mut workspace = Workspace::builder(fs.clone()).root(&dir).build();
+        block_on(workspace.delete_with(Path::new("day/a.md"), false, Diagnosis::Skip)).unwrap();
+
+        assert!(!dir.join("day/a.md").exists());
+        for bystander in ["day/b.md", "day/c.md"] {
+            assert_eq!(
+                fs.doc_reads(&dir, bystander),
+                0,
+                "{bystander} was opened to ask whether it owns a body it cannot own"
+            );
+        }
+    }
+
+    /// The shape the cheaper guard must *not* give up. `combine` tolerates a
+    /// stray frontmatter on the prose half of a separated pair, so a body can
+    /// look like an ordinary document — and the guard still has to catch it. It
+    /// does, because what the path test asks about is the *neighbour's*
+    /// extension, never the subject's.
+    #[test]
+    fn the_body_guard_still_catches_a_body_that_carries_frontmatter() {
+        let dir = tempdir("delete-stray-frontmatter");
+        write(&dir, "index.md", "---\ncontents:\n- day/n.yaml\n---\n");
+        write(&dir, "day/n.yaml", "part_of: /index.md\ncontent: body.md\n");
+        write(&dir, "day/body.md", "---\ntitle: Stray\n---\nB body.\n");
+        // A markdown neighbour, to prove the sweep is still reaching the right
+        // file rather than simply refusing everything in a mixed directory.
+        write(&dir, "day/other.md", "---\npart_of: /index.md\n---\n");
+
+        let err = block_on(ws(&dir).delete(Path::new("day/body.md"), false)).unwrap_err();
+        assert!(
+            err.to_string().contains("is the body of day/n.yaml"),
+            "{err}"
+        );
+        assert!(
+            dir.join("day/body.md").exists(),
+            "and nothing was destroyed"
+        );
+    }
+
     #[test]
     fn delete_diagnoses_inbound_references_left_dangling() {
         // A sibling links the doomed document two ways (overlay `links` + a body
