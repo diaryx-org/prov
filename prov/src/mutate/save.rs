@@ -16,6 +16,39 @@ use prov_graph::link;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
+/// What a document's recorded content checksum says about its bytes right now.
+///
+/// The three answers are not a scale, they are three different situations, and
+/// a caller deciding whether to stamp a timestamp has to tell them apart:
+/// [`Drifted`](Self::Drifted) is evidence an edit happened,
+/// [`Intact`](Self::Intact) is evidence one did not, and the other two are the
+/// absence of evidence rather than either verdict — which is why they are not
+/// folded into one of the first two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentState {
+    /// The document records no `content_hash` — fixity is off for its kind, or
+    /// it predates fixity. Nothing has drifted *from* nothing; a caller that
+    /// wants to stamp anyway is making a claim of its own, not restating one.
+    Unrecorded,
+    /// A recorded digest spelled in an algorithm this build cannot compute (a
+    /// newer prov wrote it). Left alone rather than compared or overwritten.
+    Unverifiable,
+    /// The recorded digest still describes the bytes.
+    Intact,
+    /// The bytes no longer hash to what the document records. Whether that is
+    /// an intended out-of-band edit or corruption is not this answer — see
+    /// [`Finding::FixityMismatch`](crate::Finding::FixityMismatch), which
+    /// surfaces the same fact as a question.
+    Drifted,
+}
+
+/// The `content_hash` a document records, if any.
+fn recorded_hash(doc: &prov_graph::document::Document) -> Option<&str> {
+    doc.meta
+        .get("content_hash")
+        .and_then(prov_graph::meta::Value::as_str)
+}
+
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Record that a document's content just changed — the single seam for the
     /// bookkeeping an edit implies, done as one crash-safe write.
@@ -113,19 +146,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             self.fixity().covers_bodies()
         };
         let new_hash = if covered {
-            let hash = match doc.content_attr() {
-                Some(raw) => {
-                    let dir = path.parent().unwrap_or(Path::new(""));
-                    let target = link::normalize(dir.join(raw));
-                    crate::fixity::digest(&self.read_bytes(&target).await?)
-                }
-                None => crate::fixity::digest(doc.body.as_bytes()),
-            };
-            (fig::Value::from(&doc.meta)
-                .get("content_hash")
-                .and_then(fig::Value::as_str)
-                != Some(hash.as_str()))
-            .then_some(hash)
+            let hash = self.covered_digest(path, doc).await?;
+            (recorded_hash(doc) != Some(hash.as_str())).then_some(hash)
         } else {
             None
         };
@@ -154,6 +176,64 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             stamped = true;
         }
         Ok(stamped.then_some(text))
+    }
+
+    /// The digest of the bytes this document's `content_hash` covers — the
+    /// `content` sibling when it points at one (an attachment payload, or a
+    /// separated prose body), else the document's own body.
+    ///
+    /// The one place that rule is written down for the write path, so
+    /// [`stamped`](Self::stamped) and [`content_state`](Self::content_state)
+    /// cannot drift apart on what a hash is *of*.
+    async fn covered_digest(
+        &self,
+        path: &Path,
+        doc: &prov_graph::document::Document,
+    ) -> Result<String> {
+        Ok(match doc.content_attr() {
+            Some(raw) => {
+                let dir = path.parent().unwrap_or(Path::new(""));
+                let target = link::normalize(dir.join(raw));
+                crate::fixity::digest(&self.read_bytes(&target).await?)
+            }
+            None => crate::fixity::digest(doc.body.as_bytes()),
+        })
+    }
+
+    /// Whether the checksum a document records still describes its bytes —
+    /// the question [`record_content_update`](Self::record_content_update)
+    /// answers implicitly, asked out loud so a caller can decide *before*
+    /// writing.
+    ///
+    /// It exists because the timestamp half of a stamp has no evidence behind
+    /// it: `record_content_update` sets the `updated` field whenever one is
+    /// passed, so a caller that cannot say for itself whether an edit happened
+    /// (anything that did not own the editor) needs the checksum to tell it.
+    /// A sweep over a whole workspace must not bump `updated` on every document
+    /// it reads.
+    ///
+    /// Reads, never writes. Hashes the same bytes
+    /// [`check`](Self::check) does, via the same rule
+    /// [`record_content_update`](Self::record_content_update) will apply, so a
+    /// [`Drifted`](ContentState::Drifted) answer here is exactly a stamp there.
+    pub async fn content_state(&self, path: impl AsRef<Path>) -> Result<ContentState> {
+        let path = link::normalize(path.as_ref());
+        let (_, doc) = self.load(&path).await?;
+        let Some(recorded) = recorded_hash(&doc) else {
+            return Ok(ContentState::Unrecorded);
+        };
+        // A digest this build does not know how to compute cannot be compared,
+        // and guessing would mean overwriting a future algorithm's hash with
+        // this one's. `check` declines the same way, on the same evidence.
+        if !crate::fixity::is_recognized(recorded) {
+            return Ok(ContentState::Unverifiable);
+        }
+        let recorded = recorded.to_string();
+        Ok(if self.covered_digest(&path, &doc).await? == recorded {
+            ContentState::Intact
+        } else {
+            ContentState::Drifted
+        })
     }
 
     /// Reconcile the content checksum for the document at `path` — [
@@ -229,6 +309,144 @@ mod tests {
         // Restamp (what `prov edit` does on save) re-blesses it.
         assert!(block_on(w.restamp_fixity("note.md")).unwrap());
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn content_state_tells_the_four_situations_apart() {
+        use crate::config::Fixity;
+        let dir = tempdir("content-state");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
+        );
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .fixity(Fixity::Full)
+            .build();
+
+        // No `content_hash` yet: nothing has drifted *from* nothing.
+        assert_eq!(
+            block_on(w.content_state("note.md")).unwrap(),
+            ContentState::Unrecorded
+        );
+
+        // Earning one makes the document verifiable, and intact.
+        assert!(block_on(w.restamp_fixity("note.md")).unwrap());
+        assert_eq!(
+            block_on(w.content_state("note.md")).unwrap(),
+            ContentState::Intact
+        );
+
+        // An out-of-band body edit is drift — the same fact `check` reports as
+        // a `FixityMismatch`, which is the agreement `stamp` relies on.
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        std::fs::write(dir.join("note.md"), text.replace("body", "edited")).unwrap();
+        assert_eq!(
+            block_on(w.content_state("note.md")).unwrap(),
+            ContentState::Drifted
+        );
+        assert!(
+            block_on(w.check("index.md"))
+                .unwrap()
+                .iter()
+                .any(|f| matches!(f, crate::Finding::FixityMismatch { .. })),
+            "content_state and check must agree about drift"
+        );
+
+        // A digest from an algorithm this build cannot compute is left alone
+        // rather than compared — the same judgment `check` declines to make.
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("content_hash:"))
+            .unwrap()
+            .to_string();
+        std::fs::write(
+            dir.join("note.md"),
+            text.replace(&line, "content_hash: blake9:deadbeef"),
+        )
+        .unwrap();
+        assert_eq!(
+            block_on(w.content_state("note.md")).unwrap(),
+            ContentState::Unverifiable
+        );
+    }
+
+    #[test]
+    fn content_state_reads_the_payload_for_an_attachment_not_the_sidecar() {
+        use crate::config::Fixity;
+        let dir = tempdir("content-state-payload");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- photo.jpg.yaml\n---\n",
+        );
+        std::fs::write(dir.join("photo.jpg"), b"original bytes").unwrap();
+        write(
+            &dir,
+            "photo.jpg.yaml",
+            "title: Photo\npart_of: index.md\ncontent: photo.jpg\n",
+        );
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .fixity(Fixity::Full)
+            .build();
+        assert!(block_on(w.restamp_fixity("photo.jpg.yaml")).unwrap());
+        assert_eq!(
+            block_on(w.content_state("photo.jpg.yaml")).unwrap(),
+            ContentState::Intact
+        );
+
+        // Replacing the payload out of band is what the sidecar's hash covers —
+        // the case `stamp <file>` exists for on a binary nothing can diff.
+        std::fs::write(dir.join("photo.jpg"), b"replaced bytes").unwrap();
+        assert_eq!(
+            block_on(w.content_state("photo.jpg.yaml")).unwrap(),
+            ContentState::Drifted
+        );
+    }
+
+    #[test]
+    fn content_state_never_writes() {
+        use crate::config::Fixity;
+        let dir = tempdir("content-state-readonly");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
+        );
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .fixity(Fixity::Full)
+            .build();
+        block_on(w.restamp_fixity("note.md")).unwrap();
+        let before = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        std::fs::write(dir.join("note.md"), before.replace("body", "edited")).unwrap();
+        let drifted = std::fs::read_to_string(dir.join("note.md")).unwrap();
+
+        // Asking the question is what makes the sweep safe: `stamp --all` calls
+        // this on every document it reaches, and must leave the ones it decides
+        // against byte-identical.
+        assert_eq!(
+            block_on(w.content_state("note.md")).unwrap(),
+            ContentState::Drifted
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("note.md")).unwrap(),
+            drifted,
+            "content_state must not write"
+        );
     }
 
     #[test]

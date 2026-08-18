@@ -80,6 +80,7 @@ mod separate;
 pub use create::Created;
 pub use delete::Diagnosis;
 pub use reparent::Reparented;
+pub use save::ContentState;
 
 #[cfg(all(test, feature = "yaml"))]
 mod support;

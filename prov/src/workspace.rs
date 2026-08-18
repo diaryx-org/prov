@@ -1230,6 +1230,29 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.census_within(start, &parked).await
     }
 
+    /// The documents the workspace reaches from `start` — the population
+    /// [`check`](Self::check) validates, over a walk this performs itself.
+    ///
+    /// The convenience form of
+    /// [`reachable_documents`](Self::reachable_documents), which takes a census
+    /// and a content-body list a caller outside this crate has no way to
+    /// assemble ([`walk`](Self::walk) is internal). Callers that want "every
+    /// document, the way check counts them" would otherwise reach for
+    /// [`reachable_files`](Self::reachable_files) — which is a *file* set, and
+    /// so includes the shadowed payloads (`attach --opaque`) that this
+    /// deliberately leaves out. Those are bytes prov is holding without
+    /// interpreting: any `content_hash` inside one belongs to the exhibit, not
+    /// to this workspace, and a sweep that parsed them would rewrite it.
+    pub async fn reachable_documents_from(
+        &self,
+        start: impl AsRef<Path>,
+    ) -> Result<BTreeSet<PathBuf>> {
+        let start = start.as_ref();
+        let walk = self.walk(start).await?;
+        self.reachable_documents(start, &walk.census, &walk.content_bodies)
+            .await
+    }
+
     /// The shared spanning-tree walk behind [`census`](Self::census) and the
     /// structural findings. Scoped for the reason [`census`](Self::census) is.
     pub(crate) async fn walk(&self, start: &Path) -> Result<Walk> {

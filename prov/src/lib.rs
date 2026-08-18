@@ -190,7 +190,7 @@ pub use identity::{
 };
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use manifest::{ManifestStatus, ManifestUpdate};
-pub use mutate::{Created, Diagnosis, Reparented};
+pub use mutate::{ContentState, Created, Diagnosis, Reparented};
 pub use prov_exports::ExportSpec;
 pub use prov_transaction::{ChangeSet, FileOp};
 pub use prov_transaction::{Recovered, recover};
