@@ -63,13 +63,17 @@ green.
 a release that died halfway (say `prov` up, `prov-cli` failed) is finished by
 running it again, locally or by re-running the workflow.
 
-**Every crate needs its own Trusted Publisher entry** before its first release
-through the workflow. The token `publish.yml` mints is scoped per crate, so an
-unregistered one answers `403 … token is not valid for crate <name>` — which is
-what v0.6.0 hit, the workspace having gained nine crates that had never been
-published from CI. For each name in `cargo xtask publish --list`: crates.io →
-that crate → Settings → Trusted Publishing → Add, owner `diaryx-org`, repository
-`prov`, workflow `publish.yml`, environment blank.
+Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, and
+moid. It was Trusted Publishing until v0.6.0, which failed at its first upload
+with `403 … token is not valid for crate prov-graph`: the token that scheme
+mints is scoped to the crates the workflow is *registered* for, one crate at a
+time, and the workspace had become eleven crates.
+
+One token covers all of them, but it has to actually cover all of them — issue
+it with `publish-update` and `publish-new` (a crate the workspace has never
+published needs the latter) and no crate restriction, or a release fails the
+same way at whichever crate the token cannot reach. `cargo xtask publish` says
+so when it hits that 403.
 
 ## The changelog
 

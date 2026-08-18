@@ -663,19 +663,21 @@ pub fn publish(sh: &Sh, args: &[&str]) -> Result<()> {
         // version is visible on the index before it returns, which is exactly
         // what the next crate in the order needs.
         sh.cargo(&["publish", "-p", name]).map_err(|e| {
-            // The one failure worth naming: the OIDC token publish.yml mints is
-            // scoped to the crates this workflow is a registered Trusted
-            // Publisher for, one crate at a time. A crate nobody registered gets
-            // a 403 that says nothing about registration, and the workspace
-            // gained nine crates that had never been published before.
+            // The one failure worth naming, because the message crates.io sends
+            // does not name its own cause: a token that cannot reach this crate.
+            // A crates.io token can be scoped to particular crates, and
+            // publishing a crate for the first time needs `publish-new` where
+            // updating an existing one needs only `publish-update` — the
+            // workspace gained nine crates at 0.5.0, so both halves have bitten.
             format!(
                 "{e}\n\n\
-                 if that was `403 … token is not valid for crate {name}`, crates.io has no \
-                 Trusted Publisher for it yet:\n  \
-                 crates.io -> {name} -> Settings -> Trusted Publishing -> Add\n  \
-                 owner `diaryx-org`, repository `prov`, workflow `publish.yml`, no environment\n\n\
-                 Every crate needs its own entry. Re-running this job afterwards picks up where \
-                 it stopped."
+                 if that was `403 … token is not valid for crate {name}`, the \
+                 CARGO_REGISTRY_TOKEN in use cannot publish it: either it is scoped to a \
+                 subset of the crates that leaves {name} out, or {name} is new to crates.io \
+                 and the token lacks `publish-new`.\n\n\
+                 Issue one at crates.io -> Account Settings -> API Tokens with both scopes and \
+                 no crate restriction, then `gh secret set CARGO_REGISTRY_TOKEN`. Re-running \
+                 picks up where this stopped."
             )
         })?;
     }
