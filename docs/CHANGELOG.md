@@ -24,7 +24,40 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **check** — a subtree nothing links to stops being invisible ([`c6a2246`](https://github.com/diaryx-org/prov/commit/c6a2246477abc109ee5a3241823a052fccef23ea))
+
+### Fixed
+
+- **cli** — the one diagnostic that finds unreachable files runs with history off ([`6b84744`](https://github.com/diaryx-org/prov/commit/6b8474447b7850e632af7010d4d7dd37f311cb88))
+- **mutate** — reparent writes the half that is missing instead of reporting success ([`af74603`](https://github.com/diaryx-org/prov/commit/af7460369f9f551f189d19dc92fe1beba321c019))
+
+### Behavioural changes
+
+- `prov history-capture --dry-run` now succeeds on a
+workspace with `history: off` instead of exiting 1 with "history is off for
+this workspace". A script relying on that non-zero exit to detect the axis
+should read `prov config history` instead. Under `off` the report adds one
+stderr line saying no capture is going to take the files it lists; stdout —
+the capture set, one path per line — is unchanged.
+
+- `prov check` gains a finding kind and now scans the whole
+tree rather than only reached directories, so a workspace that reported clean
+can report findings and exit 1 — every one of them a document that is really
+unreachable and really outside the capture set. A document that was reported as
+an `Orphan` while declaring `part_of` at a reachable parent is now reported as
+`MissingContainment` instead (one finding, not two), with a single derived
+remedy rather than a list of candidate parents to choose between. Library
+consumers matching on `prov::Finding` need an arm for the new variant.
+
+- `Workspace::reparent` now answers with a `Reparented` value
+rather than the unit type; a caller that discards the result needs no change, one
+that matched on `Ok(())` does. Reparenting a child that already claims the given
+parent now writes the parent's spanning entry when it is missing, where before it
+was a silent no-op — a workspace repaired with `prov reparent` will gain the
+`contents` entries those runs did not make. Reparenting away from a parent that is
+no longer on disk now succeeds instead of failing with an I/O error.
 
 <!-- git-cliff:end -->
 
