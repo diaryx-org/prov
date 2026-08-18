@@ -79,6 +79,7 @@ mod separate;
 
 pub use create::Created;
 pub use delete::Diagnosis;
+pub use reparent::Reparented;
 
 #[cfg(all(test, feature = "yaml"))]
 mod support;

@@ -1298,7 +1298,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // reproducing it here would be a second, worse one.
         match fix {
             Fix::Adopt { child, parent } => return self.adopt(child, parent).await,
-            Fix::Reparent { child, parent } => return self.reparent(child, parent).await,
+            Fix::Reparent { child, parent } => {
+                self.reparent(child, parent).await?;
+                return Ok(());
+            }
             _ => {}
         }
         let mut cs = self.change();

@@ -436,6 +436,23 @@ containment a human must resolve"); reparent *replaces* the claim. An unparented
 child is accepted, which makes reparent a superset — so `prov adopt` was never
 added, since `reparent --in` already links an orphan.
 
+- **The two directions are judged separately** (fixed 2026-08-18). A child whose
+  `part_of` already named the target used to return success having written
+  nothing, while the parent went on not listing it — so the document stayed
+  unreachable and the repair reported that it had worked. That is the state most
+  orphans are in, not a rare one: `reparent` over 64 of them changed nothing,
+  exited 0 on every one, and left all 64 orphaned. Now whichever half is missing
+  is written and the other left alone (exactly `adopt`), nothing is written only
+  when both hold, and the return value (`Reparented::{Moved, Linked, Unchanged}`)
+  says which — so a caller need not report a move that did not happen.
+- **A dangling old parent is not an error** (fixed 2026-08-18). `single_target`
+  answers with a path, not with a promise that a file is at it, and an `id:`
+  reference outlives its document by design (the registry keeps resolving it).
+  Step 3 used to `load` that path and abort on a bare `ENOENT`, which made the
+  verb refuse precisely in the state it is most needed for — the workaround being
+  to hand-clear the stale key first. There is nothing to remove, so it is now
+  skipped.
+
 - **It is atomic against errors, detectable against crashes.** Three documents
   change, and they land as one `ChangeSet` (`prov/src/change.rs`), so an I/O
   failure at any of them unwinds the rest: no error leaves the child contained
@@ -443,10 +460,13 @@ added, since `reparent --in` already links an orphan.
   *order* still earns its keep, chosen so every window a crash could expose is a
   finding `check` reports: repoint the child (→ `MissingInverse` if it stops there),
   add the new entry (→ `DuplicateContainment`), remove the old one last. Removing
-  first would leave a child pointing at a parent that forgot it — the one state in
-  this set `check` does *not* look for, which is exactly why it is last. Closing
-  the crash window needs a journal and an `fsync` seam on `Storage`; nothing else
-  will.
+  first would leave a child pointing at a parent that forgot it — which was, when
+  the order was chosen, the one state in this set `check` did *not* look for, and
+  is exactly why it is last. `Finding::MissingContainment` now names that state
+  too, for an unreached child, which makes the ordering belt-and-braces rather
+  than the only thing standing between that window and silence; it stays as it
+  is. Closing the crash window needs a journal and an `fsync` seam on `Storage`;
+  nothing else will.
 - **The cycle check is a walk, not a census.** Reparenting a node under its own
   descendant is refused by walking `part_of` up from the new parent. Cheap and
   bounded, but note *why* it must be refused rather than reported: the detached pair

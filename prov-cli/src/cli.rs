@@ -534,6 +534,14 @@ pub(crate) enum Command {
     /// The old parent's entry is removed and the new one's added, so the document
     /// is never contained twice. An unparented document is accepted: there is
     /// nothing to remove, so this simply links it in.
+    ///
+    /// The two directions are judged separately, so a document that already
+    /// claims this parent while the parent does not list it — the state most
+    /// orphans are actually in — gets the missing entry written rather than a
+    /// success message and no change. It says which of the three happened: it
+    /// moved, it linked, or both directions already held and nothing was
+    /// written. An old parent that is no longer on disk is not an error either;
+    /// there is simply no entry to remove.
     Reparent {
         /// The document to reparent: a path, a title route (`@Daily/2026/07`), or
         /// an id (`id:fpk38j`).

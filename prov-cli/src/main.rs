@@ -2074,8 +2074,9 @@ fn cmd_mv(
         else {
             return Ok(ExitCode::SUCCESS);
         };
-        block_on(ws.reparent(&to_rel, &parent_rel))?;
-        eprintln!("reparented {} -> in {}", to.display(), parent_rel.display());
+        if block_on(ws.reparent(&to_rel, &parent_rel))? != prov::Reparented::Unchanged {
+            eprintln!("reparented {} -> in {}", to.display(), parent_rel.display());
+        }
     }
     persist(&ctx, &mut ws)?;
     // The document's new location is the handle a caller acts on next.
@@ -2106,13 +2107,29 @@ fn cmd_reparent(
         return Ok(ExitCode::SUCCESS);
     };
     let path_rel = ws_rel(&ctx, &resolve_target(path)?)?;
-    block_on(ws.reparent(&path_rel, &parent_rel))?;
+    let outcome = block_on(ws.reparent(&path_rel, &parent_rel))?;
     persist(&ctx, &mut ws)?;
-    eprintln!(
-        "reparented {} -> in {}",
-        path_rel.display(),
-        parent_rel.display()
-    );
+    // Say which of the three happened. "reparented" for a run that wrote
+    // nothing is how a workspace full of half-linked documents survives a
+    // repair pass that reported success on every one of them.
+    match outcome {
+        prov::Reparented::Moved => eprintln!(
+            "reparented {} -> in {}",
+            path_rel.display(),
+            parent_rel.display()
+        ),
+        prov::Reparented::Linked => eprintln!(
+            "{} already claimed {} — added the missing entry in {}",
+            path_rel.display(),
+            parent_rel.display(),
+            parent_rel.display()
+        ),
+        prov::Reparented::Unchanged => eprintln!(
+            "{} is already in {}, both ways — nothing to do",
+            path_rel.display(),
+            parent_rel.display()
+        ),
+    }
     println!("{}", path_rel.display());
     Ok(ExitCode::SUCCESS)
 }
