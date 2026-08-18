@@ -107,10 +107,12 @@ fn the_store_is_authored_in_the_workspaces_own_grammar_not_just_its_extension() 
         prov_graph::document::EmbedStyle::HtmlScript,
         fig::Format::Json,
     );
-    let Captured::Written { id, .. } =
-        block_on(html.capture(Path::new("index.html"), "2026-07-31T09:15:22.000000Z", None))
-            .unwrap()
-    else {
+    let Captured::Written { id, .. } = block_on(html.capture(
+        Path::new("index.html"),
+        "2026-07-31T09:15:22.000000Z",
+        CaptureNote::default(),
+    ))
+    .unwrap() else {
         panic!("the first capture must write an event");
     };
 
@@ -674,8 +676,12 @@ fn a_warm_cache_captures_without_reading_a_single_file() {
     let (mut warm, fs) = store_counting(&dir);
     warm.host_mut()
         .set_fixity_cache(Some(FixityCache::new(&dir)));
-    let first =
-        block_on(warm.capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+    let first = block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-01T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
     assert!(matches!(first, Captured::Written { .. }));
     assert!(
         fs.total_byte_reads() > 0,
@@ -690,8 +696,12 @@ fn a_warm_cache_captures_without_reading_a_single_file() {
     // is the first capture in a position to remember it.
     fs.reset();
     warm.host_mut().set_fixity_cache(Some(cache));
-    let second =
-        block_on(warm.capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None)).unwrap();
+    let second = block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-02T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
     assert_eq!(fs.byte_reads(&dir, "index.md"), 1);
     assert_eq!(
         fs.total_byte_reads(),
@@ -705,8 +715,12 @@ fn a_warm_cache_captures_without_reading_a_single_file() {
 
     // The steady state: nothing changed, nothing left to learn, nothing read.
     fs.reset();
-    let third =
-        block_on(warm.capture(Path::new("index.md"), "2026-01-03T00:00:00Z", None)).unwrap();
+    let third = block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-03T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
     assert_eq!(
         fs.total_byte_reads(),
         0,
@@ -723,14 +737,24 @@ fn a_cached_manifest_is_the_manifest_the_disk_would_have_given() {
     let cold = seed("cache-cold-manifest");
     let warm = seed("cache-warm-manifest");
     for dir in [&cold, &warm] {
-        block_on(store(dir).capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+        block_on(store(dir).capture(
+            Path::new("index.md"),
+            "2026-01-01T00:00:00Z",
+            CaptureNote::default(),
+        ))
+        .unwrap();
     }
     // `warm` gets a cache populated by that first capture; `cold` never does.
     let mut warm_store = store(&warm);
     warm_store
         .host_mut()
         .set_fixity_cache(Some(FixityCache::new(&warm)));
-    block_on(warm_store.capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None)).unwrap();
+    block_on(warm_store.capture(
+        Path::new("index.md"),
+        "2026-01-02T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     for dir in [&cold, &warm] {
         write(
@@ -740,8 +764,18 @@ fn a_cached_manifest_is_the_manifest_the_disk_would_have_given() {
         );
         touch(dir, "notes/a.md", 5);
     }
-    block_on(store(&cold).capture(Path::new("index.md"), "2026-01-03T00:00:00Z", None)).unwrap();
-    block_on(warm_store.capture(Path::new("index.md"), "2026-01-03T00:00:00Z", None)).unwrap();
+    block_on(store(&cold).capture(
+        Path::new("index.md"),
+        "2026-01-03T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
+    block_on(warm_store.capture(
+        Path::new("index.md"),
+        "2026-01-03T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     let manifest = |dir: &Path| {
         let events = block_on(store(dir).list(Path::new("index.md"))).unwrap();
@@ -769,7 +803,12 @@ fn an_edited_file_is_still_captured_with_a_warm_cache() {
     let mut warm = store(&dir);
     warm.host_mut()
         .set_fixity_cache(Some(FixityCache::new(&dir)));
-    block_on(warm.capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+    block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-01T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     // Same length, different bytes — only the timestamp can catch this one.
     let before = read(&dir, "notes/a.md");
@@ -778,8 +817,12 @@ fn an_edited_file_is_still_captured_with_a_warm_cache() {
     write(&dir, "notes/a.md", &after);
     touch(&dir, "notes/a.md", 5);
 
-    let outcome =
-        block_on(warm.capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None)).unwrap();
+    let outcome = block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-02T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
     let Captured::Written { .. } = outcome else {
         panic!("a warm cache hid an edit: {outcome:?}")
     };
@@ -808,7 +851,12 @@ fn a_remembered_digest_is_ignored_when_its_blob_is_gone() {
     let (mut warm, fs) = store_counting(&dir);
     warm.host_mut()
         .set_fixity_cache(Some(FixityCache::new(&dir)));
-    block_on(warm.capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+    block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-01T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     // The blob for `notes/a.md` goes missing — the loss `findings` reports as
     // `BlobMissing`, and a state a warm cache must not paper over.
@@ -817,11 +865,120 @@ fn a_remembered_digest_is_ignored_when_its_blob_is_gone() {
     std::fs::remove_file(&blob).unwrap();
 
     fs.reset();
-    block_on(warm.capture(Path::new("index.md"), "2026-01-02T00:00:00Z", None)).unwrap();
+    block_on(warm.capture(
+        Path::new("index.md"),
+        "2026-01-02T00:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
     assert_eq!(
         fs.byte_reads(&dir, "notes/a.md"),
         1,
         "a digest was trusted for a blob that is not on disk"
     );
     assert!(blob.exists(), "the missing blob was not re-parked");
+}
+
+/// A message is prose in the event's body, and the id is a digest of the
+/// manifest — so the note costs the id nothing. That is the whole reason the
+/// message exists as something separate from the label, and it has to be true
+/// rather than merely intended.
+#[test]
+fn a_message_lands_in_the_body_and_leaves_the_id_alone() {
+    let dir = seed("capture-message");
+    let note = CaptureNote {
+        label: Some("pre-sync"),
+        message: Some(
+            "Ahead of the Syncthing migration. If the graph comes back\nwrong, this is the last capture from the old topology.",
+        ),
+    };
+    let Captured::Written { id, .. } =
+        block_on(store(&dir).capture(Path::new("index.md"), "2026-07-31T09:15:22.000000Z", note))
+            .unwrap()
+    else {
+        panic!("a first capture writes an event");
+    };
+
+    // The id a bare label would have minted, from the same manifest at the same
+    // instant. `capture` is deterministic given its arguments, so building the
+    // same workspace again is the honest comparison.
+    let plain_dir = seed("capture-message-plain");
+    let Captured::Written { id: plain, .. } = block_on(store(&plain_dir).capture(
+        Path::new("index.md"),
+        "2026-07-31T09:15:22.000000Z",
+        CaptureNote::labelled(Some("pre-sync")),
+    ))
+    .unwrap() else {
+        panic!("a first capture writes an event");
+    };
+    assert_eq!(
+        id, plain,
+        "the canonical form hashes the manifest and the label, never the body"
+    );
+
+    let doc = read(&dir, &format!("history/events/2026/07/{id}.md"));
+    assert!(
+        doc.contains("Ahead of the Syncthing migration."),
+        "the message must be in the document: {doc}"
+    );
+    assert!(
+        doc.contains("this is the last capture from the old topology."),
+        "a multi-line message survives whole"
+    );
+    // The generated prose is not displaced by it: the heading still opens the
+    // body (so no user line can be read as a second frontmatter fence), and the
+    // recovery instruction a reader needs is still there.
+    let heading = doc.find("# History").expect("the heading survives");
+    let message = doc.find("Ahead of the").unwrap();
+    assert!(heading < message, "the heading has to come first");
+    assert!(doc.contains(&format!("prov history-restore {id}")));
+}
+
+/// The note describes a change; it is not one. A capture over an unchanged
+/// workspace writes nothing however much is said about it — otherwise a habit of
+/// writing messages would fill the store with events that record no state.
+#[test]
+fn a_message_alone_does_not_make_an_event() {
+    let dir = seed("capture-message-noop");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+    let after_first = event_ids(&dir);
+
+    let outcome = block_on(store(&dir).capture(
+        Path::new("index.md"),
+        "2026-07-31T10:00:00Z",
+        CaptureNote {
+            label: None,
+            message: Some("nothing changed, but I want to say so"),
+        },
+    ))
+    .unwrap();
+    assert!(matches!(outcome, Captured::Unchanged { .. }));
+    assert_eq!(event_ids(&dir), after_first, "no event was written");
+}
+
+/// Blank is absent. A `-m ''` or a message of whitespace must not open the body
+/// with an empty paragraph — the same trimming `--label` has always had.
+#[test]
+fn a_blank_message_is_no_message() {
+    let dir = seed("capture-message-blank");
+    let Captured::Written { id, .. } = block_on(store(&dir).capture(
+        Path::new("index.md"),
+        "2026-07-31T09:15:22.000000Z",
+        CaptureNote {
+            label: None,
+            message: Some("   \n  "),
+        },
+    ))
+    .unwrap() else {
+        panic!("a first capture writes an event");
+    };
+    let doc = read(&dir, &format!("history/events/2026/07/{id}.md"));
+    assert!(
+        doc.contains("# History"),
+        "the generated body is written as usual"
+    );
+    assert!(
+        !doc.contains("\n\n\n"),
+        "a blank message must not leave a hole in the prose: {doc}"
+    );
 }

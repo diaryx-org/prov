@@ -73,7 +73,12 @@ pub(super) fn seed(tag: &str) -> PathBuf {
 }
 
 pub(super) fn capture(dir: &Path, now: &str, label: Option<&str>) -> Captured {
-    block_on(ws(dir).history_capture(Path::new("index.md"), now, label)).unwrap()
+    block_on(ws(dir).history_capture(
+        Path::new("index.md"),
+        now,
+        crate::CaptureNote::labelled(label),
+    ))
+    .unwrap()
 }
 
 /// Capture with `notes/a.md` rewritten first, so each capture has something to

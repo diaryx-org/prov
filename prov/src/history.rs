@@ -93,11 +93,11 @@ use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
 pub use prov_history::{
-    BLOBS_DIR, Captured, Change, Conflict, DiffRow, Disposition, EVENTS_DIR, Event, FORGOTTEN_STEM,
-    FileEntry, Forgotten, HISTORY_DIR, HistoryIssue, HistoryStore, Latest, ManifestDiff, Presence,
-    Pruned, RestoreOp, RestorePlan, Retention, Retrieved, Scope, StoreLocation, Subject, Summary,
-    TRIGGER_MANUAL, Version, blob_path, comparable, event_path, manifest_diff, shard_of, store_dir,
-    under,
+    BLOBS_DIR, CaptureNote, Captured, Change, Conflict, DiffRow, Disposition, EVENTS_DIR, Event,
+    FORGOTTEN_STEM, FileEntry, Forgotten, HISTORY_DIR, HistoryIssue, HistoryStore, Latest,
+    ManifestDiff, Presence, Pruned, RestoreOp, RestorePlan, Retention, Retrieved, Scope,
+    StoreLocation, Subject, Summary, TRIGGER_MANUAL, Version, blob_path, comparable, event_path,
+    manifest_diff, shard_of, store_dir, under,
 };
 
 /// The compatibility surface: one forward per verb, through
@@ -234,9 +234,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         &mut self,
         root_doc: &Path,
         now: &str,
-        label: Option<&str>,
+        note: CaptureNote<'_>,
     ) -> Result<Captured> {
-        self.history_store_mut().capture(root_doc, now, label).await
+        self.history_store_mut().capture(root_doc, now, note).await
     }
 
     /// Execute a [`RestorePlan`]. See `prov_history::HistoryStore::restore`.

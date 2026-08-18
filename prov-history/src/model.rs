@@ -85,6 +85,40 @@ impl Event {
     }
 }
 
+/// What a person is saying about a capture, beyond the file set itself.
+///
+/// The two are **not** interchangeable, and carrying them as a named pair is
+/// what keeps them from being transposed at a call site — where the mistake
+/// would be silent, since both are `Option<&str>` and both would compile.
+///
+/// - [`label`](Self::label) is slugged into the **event id** (§4), so it is part
+///   of a filename that can never be rewritten: short, and worth keeping short.
+/// - [`message`](Self::message) is written into the event document's **body**,
+///   which the canonical form (§4.1) does not hash. It costs the id nothing, so
+///   it can be as long as the capture deserves.
+///
+/// A message alone cannot produce an event. A capture whose manifest equals the
+/// newest event's is [`Unchanged`](Captured::Unchanged) whatever is written
+/// about it — the note describes a change to the workspace, and is not one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureNote<'a> {
+    /// Short text slugged into the event id. `None`, empty or blank for none.
+    pub label: Option<&'a str>,
+    /// Prose for the event document's body. `None`, empty or blank for none.
+    pub message: Option<&'a str>,
+}
+
+impl<'a> CaptureNote<'a> {
+    /// A capture with a label and no message — the shape every caller had
+    /// before the message existed.
+    pub fn labelled(label: Option<&'a str>) -> Self {
+        Self {
+            label,
+            message: None,
+        }
+    }
+}
+
 /// What a capture did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Captured {

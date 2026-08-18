@@ -208,7 +208,9 @@ fn main() -> ExitCode {
         } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
         Command::About { check, print } => cmd_about(check, print),
-        Command::HistoryCapture { label } => cmd_history_capture(label.as_deref()),
+        Command::HistoryCapture { label, message } => {
+            cmd_history_capture(label.as_deref(), message.as_deref())
+        }
         Command::Cache { clear } => cmd_cache(clear),
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
@@ -2242,7 +2244,7 @@ fn diff_path_display(ctx: &Ctx, path: Option<&Path>) -> String {
 /// capture of a known-broken workspace is still useful (it is a pre-image of
 /// whatever is there), but a silently-dirty "safe rollback point" is false
 /// confidence.
-fn cmd_history_capture(label: Option<&str>) -> CmdResult {
+fn cmd_history_capture(label: Option<&str>, message: Option<&str>) -> CmdResult {
     let ctx = find_root()?;
     if !ctx.config.history.captures() {
         return Err("history is off for this workspace — enable it with \
@@ -2258,7 +2260,8 @@ fn cmd_history_capture(label: Option<&str>) -> CmdResult {
     // and hashes the files whose stat changed rather than all of them. Absent
     // under `--no-cache`, or when there is nowhere on this machine to keep one.
     ws.set_fixity_cache(cache::load(&ctx.root_dir));
-    let outcome = block_on(ws.history_capture(&ctx.root_doc, &now_rfc3339(), label))?;
+    let note = prov::CaptureNote { label, message };
+    let outcome = block_on(ws.history_capture(&ctx.root_doc, &now_rfc3339(), note))?;
     // Before `persist`, so a failure writing the registry does not also throw
     // away what the capture just learned.
     cache::store(&ctx.root_dir, ws.take_fixity_cache());

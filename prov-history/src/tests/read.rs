@@ -300,7 +300,7 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
         .index_mut()
         .register(&id, Path::new("notes/a.md"));
     let take = |w: &mut HistoryStore<TestHost>, now: &str| {
-        block_on(w.capture(Path::new("index.md"), now, None)).unwrap()
+        block_on(w.capture(Path::new("index.md"), now, CaptureNote::default())).unwrap()
     };
     take(&mut w, "2026-07-31T09:00:00Z");
 
@@ -392,7 +392,7 @@ fn a_lineage_records_a_deletion_and_a_return() {
         .index_mut()
         .register(&id, Path::new("notes/a.md"));
     let take = |w: &mut HistoryStore<TestHost>, now: &str| {
-        block_on(w.capture(Path::new("index.md"), now, None)).unwrap()
+        block_on(w.capture(Path::new("index.md"), now, CaptureNote::default())).unwrap()
     };
     take(&mut w, "2026-07-31T09:00:00Z");
 
@@ -514,7 +514,12 @@ fn a_cat_follows_an_id_to_the_path_the_capture_recorded() {
     w.host_mut()
         .index_mut()
         .register(&id, Path::new("notes/a.md"));
-    block_on(w.capture(Path::new("index.md"), "2026-07-31T09:00:00Z", None)).unwrap();
+    block_on(w.capture(
+        Path::new("index.md"),
+        "2026-07-31T09:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
     let first = event_ids(&dir).pop().unwrap();
 
     std::fs::rename(dir.join("notes/a.md"), dir.join("notes/b.md")).unwrap();
@@ -522,7 +527,12 @@ fn a_cat_follows_an_id_to_the_path_the_capture_recorded() {
     w.host_mut()
         .index_mut()
         .set_path(&id, Path::new("notes/b.md"));
-    block_on(w.capture(Path::new("index.md"), "2026-07-31T10:00:00Z", None)).unwrap();
+    block_on(w.capture(
+        Path::new("index.md"),
+        "2026-07-31T10:00:00Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     let event = block_on(w.event(Path::new("index.md"), &first))
         .unwrap()

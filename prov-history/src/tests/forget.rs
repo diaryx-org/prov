@@ -158,7 +158,12 @@ fn forgetting_by_id_reaches_the_versions_a_path_key_would_miss() {
     w.host_mut()
         .index_mut()
         .register(&id, Path::new("notes/a.md"));
-    block_on(w.capture(Path::new("index.md"), "2026-07-31T09:00:00.000000Z", None)).unwrap();
+    block_on(w.capture(
+        Path::new("index.md"),
+        "2026-07-31T09:00:00.000000Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     // The move: the same document, a second path, and a hash a path-keyed
     // forget would leave behind.
@@ -172,7 +177,12 @@ fn forgetting_by_id_reaches_the_versions_a_path_key_would_miss() {
     w.host_mut()
         .index_mut()
         .set_path(&id, Path::new("notes/b.md"));
-    block_on(w.capture(Path::new("index.md"), "2026-07-31T10:00:00.000000Z", None)).unwrap();
+    block_on(w.capture(
+        Path::new("index.md"),
+        "2026-07-31T10:00:00.000000Z",
+        CaptureNote::default(),
+    ))
+    .unwrap();
 
     // Out of the workspace, so the guard is not what is under test.
     std::fs::remove_file(dir.join("notes/b.md")).unwrap();

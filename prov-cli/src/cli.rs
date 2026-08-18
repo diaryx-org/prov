@@ -768,8 +768,23 @@ pub(crate) enum Command {
     HistoryCapture {
         /// A short note recorded on the event and slugged into its id
         /// (`pre-sync`, `nightly`, `pre-migration`). Free-form.
+        ///
+        /// It lands in a filename that is never rewritten, so keep it short.
+        /// The reason for the capture belongs in `--message`.
         #[arg(long, value_name = "TEXT")]
         label: Option<String>,
+        /// Why this capture was taken, in as many words as it deserves —
+        /// written into the event document's own prose.
+        ///
+        /// The event id is a digest of the manifest and the label, never of the
+        /// body, so a message costs the id nothing and can be as long as you
+        /// like. It is also why `--label` stays short: one is a filename, the
+        /// other is a note to whoever reads this event later.
+        ///
+        /// A message cannot make an event on its own. A capture that finds the
+        /// workspace unchanged writes nothing, whatever is said about it.
+        #[arg(short = 'm', long, value_name = "TEXT")]
+        message: Option<String>,
     },
     /// Show this device's fixity cache for the workspace: where it lives and how
     /// many files it remembers.

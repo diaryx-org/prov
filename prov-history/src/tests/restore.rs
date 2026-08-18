@@ -260,9 +260,12 @@ fn a_restore_refuses_to_displace_a_registration_unless_it_resolves_it_itself() {
     w.host_mut()
         .index_mut()
         .register(&id, Path::new("notes/a.md"));
-    let Captured::Written { id: event, .. } =
-        block_on(w.capture(Path::new("index.md"), "2026-07-31T09:15:22Z", None)).unwrap()
-    else {
+    let Captured::Written { id: event, .. } = block_on(w.capture(
+        Path::new("index.md"),
+        "2026-07-31T09:15:22Z",
+        CaptureNote::default(),
+    ))
+    .unwrap() else {
         panic!("the first capture must write an event");
     };
 
@@ -319,9 +322,12 @@ fn a_scope_restores_a_slice_and_refuses_what_the_capture_never_held() {
     w.host_mut()
         .index_mut()
         .register(&id, Path::new("notes/a.md"));
-    let Captured::Written { id: event, .. } =
-        block_on(w.capture(Path::new("index.md"), "2026-07-31T09:15:22Z", None)).unwrap()
-    else {
+    let Captured::Written { id: event, .. } = block_on(w.capture(
+        Path::new("index.md"),
+        "2026-07-31T09:15:22Z",
+        CaptureNote::default(),
+    ))
+    .unwrap() else {
         panic!("the first capture must write an event");
     };
     write(&dir, "notes/a.md", "clobbered");

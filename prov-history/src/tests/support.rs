@@ -99,7 +99,7 @@ pub(super) fn seed(tag: &str) -> PathBuf {
 }
 
 pub(super) fn capture(dir: &Path, now: &str, label: Option<&str>) -> Captured {
-    block_on(store(dir).capture(Path::new("index.md"), now, label)).unwrap()
+    block_on(store(dir).capture(Path::new("index.md"), now, CaptureNote::labelled(label))).unwrap()
 }
 
 pub(super) fn event_ids(dir: &Path) -> Vec<String> {

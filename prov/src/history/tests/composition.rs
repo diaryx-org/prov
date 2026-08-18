@@ -106,7 +106,12 @@ fn a_cache_from_another_workspace_is_refused() {
     let two = seed("cache-foreign-two");
     let mut first = ws(&one);
     first.set_fixity_cache(Some(crate::FixityCache::new(&one)));
-    block_on(first.history_capture(Path::new("index.md"), "2026-01-01T00:00:00Z", None)).unwrap();
+    block_on(first.history_capture(
+        Path::new("index.md"),
+        "2026-01-01T00:00:00Z",
+        crate::CaptureNote::default(),
+    ))
+    .unwrap();
     let bytes = first.take_fixity_cache().unwrap().encode();
 
     assert!(

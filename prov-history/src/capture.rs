@@ -12,7 +12,7 @@ use super::docs::{
 };
 use super::event_id::mint_id;
 use super::layout::{StoreLocation, blob_path, event_path, shard_of, shard_parts, store_dir};
-use super::model::{Captured, Event, FileEntry};
+use super::model::{CaptureNote, Captured, Event, FileEntry};
 use super::paths::{manifest_of, slash_path};
 use super::{EVENTS_DIR, HistoryStore, HistoryWriteHost, TRIGGER_MANUAL};
 
@@ -47,7 +47,7 @@ impl<H: HistoryWriteHost> HistoryStore<H> {
         &mut self,
         root_doc: &Path,
         now: &str,
-        label: Option<&str>,
+        note: CaptureNote<'_>,
     ) -> Result<Captured> {
         // The capture set comes from a full walk of the graph, and the manifest
         // loop then visits every file that walk found. One scope over both means
@@ -60,7 +60,8 @@ impl<H: HistoryWriteHost> HistoryStore<H> {
         let style = self.authoring(&root_doc)?;
         let ext = style.ext.as_str();
         let (store_index, found) = self.store_index(&root_doc).await?;
-        let label = label.map(str::trim).filter(|l| !l.is_empty());
+        let label = note.label.map(str::trim).filter(|l| !l.is_empty());
+        let message = note.message.map(str::trim).filter(|m| !m.is_empty());
 
         // Bootstrapping the store *edits the root* (it gains the `history`
         // pointer), so that edit is computed up front and the manifest hashes the
@@ -238,8 +239,16 @@ impl<H: HistoryWriteHost> HistoryStore<H> {
                 files.len()
             ),
         };
+        // The message goes after the heading, never at the top of the body. A
+        // body opening with a user's `---` line, in a delimited-frontmatter
+        // workspace, is a second fence where a re-parse expects prose; a
+        // heading in front of it means the message can say anything.
+        let note = match message {
+            Some(message) => format!("{message}\n\n"),
+            None => String::new(),
+        };
         let body = format!(
-            "# History — {}\n\n{summary}\n\nRoll the workspace back to this point with:\n\n    \
+            "# History — {}\n\n{note}{summary}\n\nRoll the workspace back to this point with:\n\n    \
              prov history-restore {id}\n",
             Event {
                 id: id.clone(),

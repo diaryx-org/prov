@@ -169,7 +169,7 @@ One document per capture. Frontmatter:
 | `part_of` | yes | Spanning inverse to the month shard index. |
 | `created` | yes | RFC 3339 UTC timestamp of the capture, to **microsecond** precision (§3.2). |
 | `trigger` | yes | How the capture was invoked. `manual` is the only Phase 0 value. |
-| `label` | no | The `--label` text verbatim (the *slug* of it appears in the id). |
+| `label` | no | The `--label` text verbatim (the *slug* of it appears in the id). Short by design — see the body note below. |
 | `parent` | no | The id of the newest event that existed locally at capture time. |
 | `files` | yes | The manifest — the complete capture set (§3.1). |
 
@@ -189,8 +189,31 @@ files:
 ---
 # History — 2026-07-31 09:15 (pre-sync)
 
-Captured 412 files (2 changed since the previous event) before syncing.
+Ahead of the Syncthing migration. If the graph comes back wrong, this is the
+last capture taken from the old topology.
+
+Captured 412 file(s) — 2 changed, 0 removed since the previous event.
+
+Roll the workspace back to this point with:
+
+    prov history-restore 2026-07-31-0915-pre-sync-4f2a9c1e
 ```
+
+**The body is prose, and `--message` is how a person writes it.** The canonical
+form (§4.1) hashes `created`, `trigger`, `label`, `parent` and the manifest —
+never the body — so a message costs the id nothing and may be as long as the
+capture deserves. That is exactly why `--label` stays short: the label is slugged
+into a filename that is never rewritten, and the message is a note to whoever
+reads the event later.
+
+The message is written **after** the generated `# History — …` heading, never at
+the top of the body. A body opening with a user's `---` line, in a workspace
+using delimited frontmatter, is a second fence where a re-parse expects prose; a
+heading in front of it means the message can say anything. Blank or
+whitespace-only is treated as no message, the same trimming `--label` has. A
+message cannot produce an event on its own: a capture whose manifest equals the
+newest event's is `Unchanged` (§6) whatever is written about it, because the note
+describes a change to the workspace and is not one.
 
 **`parent` is display metadata.** Nothing computes through it. A missing or
 skewed parent is cosmetic — it costs `history-list` its changed-file counts and
