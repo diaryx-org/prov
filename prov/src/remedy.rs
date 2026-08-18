@@ -1036,6 +1036,20 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     })
                     .collect())
             }
+            // An island that named its own parent. Unlike an orphan there is
+            // nothing to choose — the document already said where it belongs, and
+            // the repair is to write the half of the pair that is missing. So one
+            // remedy, `Derived`: a directory of four hundred notes comes back
+            // under `--fix` without four hundred prompts about where to put them.
+            Finding::MissingContainment { doc, parent } => Ok(vec![Remedy::new(
+                RemedyKind::Adopt,
+                Warrant::Derived,
+                format!("list it in {}, the parent it claims", parent.display()),
+                Fix::Adopt {
+                    child: doc.clone(),
+                    parent: parent.clone(),
+                },
+            )]),
             // A value its vocabulary does not admit. Offer the spellings close
             // enough to be what was meant — and, when the value is genuinely new
             // rather than retired, admitting it as a term.

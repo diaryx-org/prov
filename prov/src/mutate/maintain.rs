@@ -37,7 +37,7 @@ use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
 /// Walking the spanning relation needs the relation set and the resolver, and
-/// neither of those is an identity concern — so these three sit outside the
+/// neither of those is an identity concern — so these four sit outside the
 /// `IdentityPolicy` bound the mutation verbs carry. `validate`'s remedy
 /// suggestions read the tree without any power to mint, and that is a property
 /// worth keeping in the type: a pass that only *offers* repairs must not be able
@@ -80,6 +80,24 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Target::Path(p) => Some(p),
             _ => None,
         }
+    }
+
+    /// The index of the entry in `doc`'s `field` sequence whose target
+    /// resolves to `wanted` — by relative path or through the registry.
+    pub(crate) fn entry_index(
+        &self,
+        doc: &Document,
+        field: &str,
+        doc_path: &Path,
+        wanted: &Path,
+    ) -> Option<usize> {
+        doc.meta
+            .get(field)
+            .map(Value::link_strings)?
+            .iter()
+            .position(|raw| {
+                self.resolve_link(doc_path, &Link::parse(raw)) == Target::Path(wanted.to_path_buf())
+            })
     }
 
     /// Walk `part_of` (the spanning inverse) up from `from` to the spanning
@@ -236,24 +254,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
         Ok(writes)
-    }
-
-    /// The index of the entry in `doc`'s `field` sequence whose target
-    /// resolves to `wanted` — by relative path or through the registry.
-    pub(crate) fn entry_index(
-        &self,
-        doc: &Document,
-        field: &str,
-        doc_path: &Path,
-        wanted: &Path,
-    ) -> Option<usize> {
-        doc.meta
-            .get(field)
-            .map(Value::link_strings)?
-            .iter()
-            .position(|raw| {
-                self.resolve_link(doc_path, &Link::parse(raw)) == Target::Path(wanted.to_path_buf())
-            })
     }
 
     /// Rewrite **every** entry of `field` in `doc` whose target resolves to

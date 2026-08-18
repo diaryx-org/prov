@@ -20,6 +20,10 @@
 //!   (the spanning relation must be a single-parent tree);
 //! - **missing inverse** — a spanning child whose inverse field (`part_of`)
 //!   does not point back at its parent;
+//! - **missing containment** — the mirror of it: a document nothing reaches
+//!   whose `part_of` names a parent that does not list it, which is how a whole
+//!   unlinked subtree becomes visible to a walk that by construction cannot
+//!   reach it;
 //! - **malformed / dangling ID** — a `prov:<id>` reference (in a relation
 //!   or a wikilink) that fails its check character, or that no live registry
 //!   entry resolves;
@@ -36,6 +40,7 @@
 //! statements admit several defensible answers. Nothing in this module knows
 //! how to change a document, and that is what keeps it a view.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -295,6 +300,29 @@ pub enum Finding {
     /// *from*, so it records it — leaving the root always offered as the home of
     /// last resort, which is what the CLI used to hardcode as the only one.
     Orphan { doc: PathBuf, root: PathBuf },
+    /// A document nothing reaches that *names its own parent* — its inverse
+    /// (`part_of`) points at a document the workspace does reach, and that
+    /// document does not list it back. The mirror of
+    /// [`MissingInverse`](Finding::MissingInverse), which is the same broken
+    /// pair seen from the parent's side.
+    ///
+    /// This is the finding that lets `check` see a **disconnected island**.
+    /// [`Orphan`](Finding::Orphan) is reachability-bounded (DESIGN §8) and so
+    /// cannot be: an unlinked directory is never scanned, so the whole subtree
+    /// under it — however well-linked internally, however large — produces no
+    /// finding at all, and `check` reports clean precisely *because* it cannot
+    /// see it. A document's own `part_of` is the one piece of evidence that
+    /// survives that bound, because it is written down in the island rather than
+    /// in the tree: a file that says which parent it belongs to is workspace
+    /// content that lost a forward link, not a vendored copy or a nested
+    /// workspace that never claimed membership.
+    ///
+    /// Only the island's **entry point** is reported. Its interior — every
+    /// document whose parent does list it — is left alone, because writing the
+    /// one missing entry makes the entire subtree reachable and every ordinary
+    /// pass then sees it. So a 400-note folder is one finding and one repair,
+    /// not four hundred of each.
+    MissingContainment { doc: PathBuf, parent: PathBuf },
     /// A document's stored content checksum no longer matches its bytes — the
     /// bit-rot signal (fixity). `recorded` is the hash on file; `actual` is what
     /// the bytes hash to now. Unlike a broken link there is nothing to re-point:
@@ -682,6 +710,14 @@ impl fmt::Display for Finding {
                     doc.display()
                 )
             }
+            Finding::MissingContainment { doc, parent } => write!(
+                f,
+                "{}: claims {} as its parent, but {} does not list it — nothing reaches this \
+                 document or anything under it",
+                doc.display(),
+                parent.display(),
+                parent.display()
+            ),
             Finding::FixityMismatch { doc, .. } => write!(
                 f,
                 "{}: fixity mismatch — content changed since its checksum was recorded \
@@ -958,7 +994,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// that fails to resolve becomes a finding, joined with the structural
     /// findings (unreadable document, duplicate containment, missing inverse)
     /// the walk raises from traversal state.
-    /// Nine passes follow, most of them over the same documents: the walk loads
+    /// Ten passes follow, most of them over the same documents: the walk loads
     /// every reachable document to build the census, and the fixity, orphan,
     /// vocabulary and label passes each go back for their own reasons. A
     /// [`read_scope`](Self::read_scope) makes that composition cost one read per
@@ -989,7 +1025,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
             findings.extend(finding_for(entry));
         }
-        findings.extend(self.orphans(start, &census, &content_bodies).await?);
+        // Islands first: what it finds is what the (reachability-bounded) orphan
+        // sweep must not report a second time under a vaguer name.
+        let (islands, island_members) = self
+            .missing_containment(start, &census, &content_bodies)
+            .await?;
+        findings.extend(islands);
+        findings.extend(
+            self.orphans(start, &census, &content_bodies, &island_members)
+                .await?,
+        );
         findings.extend(
             self.fixity_findings(start, &census, &content_bodies)
                 .await?,
@@ -1489,7 +1534,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// directory enters scope by an explicit act that links into it (`new`,
     /// `adopt`, `attach`, a `mirror` import); `check` then keeps it honest. The
     /// deliberate trade: a document dropped into a not-yet-linked folder is
-    /// invisible here rather than flagged.
+    /// invisible here rather than flagged — with one exception, which is
+    /// [`missing_containment`](Self::missing_containment): a document that names
+    /// its own parent has said it belongs here, and that claim is evidence a
+    /// reachability bound cannot reach past. `island` is what that pass found,
+    /// and it is excluded here so one broken forward link is one finding: an
+    /// island member is unreachable *through its island*, and repairing the
+    /// island's entry point brings the whole of it back into the tree.
     ///
     /// Orphanhood is relative to `start`: run from the workspace root (the usual
     /// case) it means "on disk in a known directory but unlinked."
@@ -1498,6 +1549,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         start: &Path,
         census: &[CensusEntry],
         content_bodies: &[PathBuf],
+        island: &BTreeSet<PathBuf>,
     ) -> Result<Vec<Finding>> {
         let reachable = reachable_set(start, census, content_bodies);
         // Scan only the directories the reachable set occupies (their direct
@@ -1507,7 +1559,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .direct_child_files(&reached_dirs)
             .await?
             .into_iter()
-            .filter(|p| ContentFormat::from_extension(p).is_some() && !reachable.contains(p))
+            .filter(|p| {
+                ContentFormat::from_extension(p).is_some()
+                    && !reachable.contains(p)
+                    && !island.contains(p)
+            })
             .collect();
         docs.sort();
         Ok(docs
@@ -1517,6 +1573,107 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 root: link::normalize(start),
             })
             .collect())
+    }
+
+    /// The **disconnected islands**: every document outside the reachable graph
+    /// whose `part_of` chain lands inside it, and the
+    /// [`Finding::MissingContainment`] for each one whose named parent does not
+    /// list it back. Also returns the island's full membership, which
+    /// [`orphans`](Self::orphans) excludes so one broken link is one finding.
+    ///
+    /// This is the one pass in `check` whose scan is **not** reachability-bounded,
+    /// and it has to be: "what does the workspace fail to reach?" is precisely the
+    /// question a reachability bound cannot answer, so the bounded orphan sweep
+    /// finds only the orphans *adjacent* to the tree and a whole unlinked subtree
+    /// stays silent (see [`Finding::MissingContainment`]). The scan reads every
+    /// content document on disk that nothing reaches; what keeps that from
+    /// becoming a report about someone else's files is the claim itself. A
+    /// vendored tree, a nested prov workspace, a `scratch/` folder — none of them
+    /// name a parent in *this* workspace, so none of them appear here, and DESIGN
+    /// §8's trade is preserved where it was actually protecting something.
+    ///
+    /// prov's own parked bytes are skipped outright: a recycled document keeps
+    /// the `part_of` it had when it was binned, and reading that as a claim would
+    /// report every deleted file as an island the moment it was deleted.
+    ///
+    /// Membership is a closure, not a single step: an island's interior claims
+    /// the island, not the tree, so the set grows until it stops growing. That is
+    /// what makes a stack of unlinked years — `Daily/2025`, then `Daily/2025/10`
+    /// beneath it — resolve in one run instead of one run per layer.
+    async fn missing_containment(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<(Vec<Finding>, BTreeSet<PathBuf>)> {
+        let empty = BTreeSet::new();
+        // No spanning relation, no containment to be missing from.
+        let Ok((spanning, inverse)) = self.spanning_pair() else {
+            return Ok((Vec::new(), empty));
+        };
+        let reachable = reachable_set(start, census, content_bodies);
+        let parked = self.parked_dirs(start).await?;
+
+        // Every unreached content document that names a parent, in path order so
+        // the closure below and the findings it produces are deterministic.
+        let mut claims: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for doc in self.content_documents().await? {
+            if reachable.contains(&doc) || parked.iter().any(|dir| doc.starts_with(dir)) {
+                continue;
+            }
+            let Ok((_, parsed)) = self.load(&doc).await else {
+                continue;
+            };
+            if let Some(parent) = self.single_target(&parsed, &inverse, &doc) {
+                claims.push((doc, parent));
+            }
+        }
+
+        // A claim on the tree makes an island member; a claim on a member does
+        // too. Repeat until nothing new joins.
+        let mut island: BTreeSet<PathBuf> = BTreeSet::new();
+        loop {
+            let before = island.len();
+            for (doc, parent) in &claims {
+                if !island.contains(doc) && (reachable.contains(parent) || island.contains(parent))
+                {
+                    island.insert(doc.clone());
+                }
+            }
+            if island.len() == before {
+                break;
+            }
+        }
+
+        // The entry points: a member whose parent does not list it. Its
+        // neighbours further in are already accounted for by their own parents,
+        // and become reachable the moment this entry is written.
+        let mut findings = Vec::new();
+        for (doc, parent) in &claims {
+            if !island.contains(doc) {
+                continue;
+            }
+            let Ok((_, parent_doc)) = self.load(parent).await else {
+                continue;
+            };
+            if self
+                .entry_index(&parent_doc, &spanning, parent, doc)
+                .is_some()
+            {
+                continue;
+            }
+            // An archive claimed in bulk is accounted for by its manifest, and
+            // its rows are pinned in a document the tree does reach — the same
+            // exclusion `attach --all` and the capture-set report make.
+            if self.graph().under_manifest(doc).await? {
+                continue;
+            }
+            findings.push(Finding::MissingContainment {
+                doc: doc.clone(),
+                parent: parent.clone(),
+            });
+        }
+        Ok((findings, island))
     }
 }
 
@@ -1531,7 +1688,7 @@ mod tests {
     use prov_store::index::FileIndex;
     // The three id round-trips below assert that the repair *clears the
     // finding*, so they name a `Fix` from the module downstream of this one.
-    use crate::remedy::Fix;
+    use crate::remedy::{Fix, Warrant};
 
     pub(super) fn write(dir: &Path, rel: &str, text: &str) {
         let p = dir.join(rel);
@@ -1555,7 +1712,7 @@ mod tests {
         assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
     }
 
-    /// `check` is nine passes over one graph, and several of them want the same
+    /// `check` is ten passes over one graph, and several of them want the same
     /// documents. The read scope it opens is what makes that composition cost
     /// one read per document instead of one per pass.
     #[test]
@@ -2409,6 +2566,128 @@ mod tests {
             findings,
             vec![],
             "an unlinked subdirectory yields no findings: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_disconnected_island_is_reported_once_at_the_link_it_is_missing() {
+        // The failure the bounded sweep cannot see: a whole subtree, internally
+        // well-linked, that no `contents` anywhere points into. Every document in
+        // it is unreachable and a capture would take none of them, and `check`
+        // used to report **clean** — precisely *because* it never scanned the
+        // directory. What survives the bound is the island's own claim: its top
+        // document names a parent in the tree, and that parent does not list it.
+        //
+        // One finding, at that one link. The interior is left alone: writing the
+        // entry makes the whole subtree reachable, so reporting its members too
+        // would be four findings for one broken link.
+        let dir = tempdir("island");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(
+            &dir,
+            "daily/index.md",
+            "---\ntitle: Daily\npart_of: /index.md\ncontents:\n- '[Oct](/daily/oct/index.md)'\n---\n",
+        );
+        write(
+            &dir,
+            "daily/oct/index.md",
+            "---\ntitle: Oct\npart_of: /daily/index.md\ncontents:\n- '[D1](/daily/oct/d1.md)'\n---\n",
+        );
+        write(
+            &dir,
+            "daily/oct/d1.md",
+            "---\ntitle: D1\npart_of: /daily/oct/index.md\n---\n",
+        );
+        // Never claimed anything, so it is still none of prov's business.
+        write(&dir, "vendor/dup.md", "---\ntitle: Vendored\n---\n");
+
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::MissingContainment {
+                doc: PathBuf::from("daily/index.md"),
+                parent: PathBuf::from("index.md"),
+            }],
+            "one island, one finding, and the vendored tree still invisible: {findings:?}"
+        );
+
+        // And the repair is derived — the document already said where it goes —
+        // so it needs no answer from anyone, and it brings the subtree back whole.
+        let remedies = block_on(ws.remedies(&findings[0])).unwrap();
+        assert_eq!(remedies.len(), 1);
+        assert_eq!(remedies[0].warrant, Warrant::Derived);
+        block_on(ws.apply_fix(&remedies[0].fix)).unwrap();
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn stacked_islands_are_all_reported_in_one_run() {
+        // An island whose own parent is an island: `2025` claims `daily`, which
+        // claims the root, and neither is listed. Membership is a closure for
+        // exactly this reason — settling for "claims something *reachable*"
+        // would report one layer per run and make a five-deep vault five runs of
+        // `check --fix`.
+        let dir = tempdir("island-stacked");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(
+            &dir,
+            "d/index.md",
+            "---\ntitle: Daily\npart_of: /index.md\n---\n",
+        );
+        write(
+            &dir,
+            "d/y/index.md",
+            "---\ntitle: Year\npart_of: /d/index.md\n---\n",
+        );
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert_eq!(
+            findings,
+            vec![
+                Finding::MissingContainment {
+                    doc: PathBuf::from("d/index.md"),
+                    parent: PathBuf::from("index.md"),
+                },
+                Finding::MissingContainment {
+                    doc: PathBuf::from("d/y/index.md"),
+                    parent: PathBuf::from("d/index.md"),
+                },
+            ],
+            "both layers, one run: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn an_unlinked_document_that_claims_its_parent_is_not_also_an_orphan() {
+        // The same document, seen by two passes. `loose.md` sits in a reached
+        // directory, so the bounded sweep calls it an orphan ("adopt it — where?"),
+        // while its own `part_of` already answers the question. The specific
+        // finding wins and the vague one stands down: one broken link, one finding,
+        // one repair with nothing to choose.
+        let dir = tempdir("orphan-claims-parent");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(
+            &dir,
+            "loose.md",
+            "---\ntitle: Loose\npart_of: /index.md\n---\n",
+        );
+
+        let findings = block_on(
+            Workspace::builder(StdFs)
+                .root(&dir)
+                .build()
+                .check("index.md"),
+        )
+        .unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::MissingContainment {
+                doc: PathBuf::from("loose.md"),
+                parent: PathBuf::from("index.md"),
+            }],
+            "reported as the missing link it is, and not twice: {findings:?}"
         );
     }
 

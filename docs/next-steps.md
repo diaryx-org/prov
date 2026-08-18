@@ -560,22 +560,43 @@ hide here and should be separated before either is fixed:
 
 ## Orphan detection can't see disconnected islands
 
-`validate::orphans` scans only "the directories the reachable set occupies (their
-direct children), never descending into unreached subdirectories." So a subtree that
-is internally well-linked but attached to *nothing* is invisible: in a real
-workspace, `School/Archive/MATH113/` holds `math113.md` plus ~20 children all
-correctly linked to each other, no `contents` entry anywhere points into the
-directory, and `check` reports **zero** findings there while flagging 180 orphans
-that happen to lie in already-reached directories.
+✅ **Mostly done — `Finding::MissingContainment`.** `validate::orphans` scans only
+"the directories the reachable set occupies (their direct children), never
+descending into unreached subdirectories." So a subtree that is internally
+well-linked but attached to *nothing* was invisible: in a real workspace,
+`School/Archive/MATH113/` holds `math113.md` plus ~20 children all correctly linked
+to each other, no `contents` entry anywhere points into the directory, and `check`
+reported **zero** findings there while flagging 180 orphans that happen to lie in
+already-reached directories. Worse than a miscount: `check` came back clean with 86
+files sitting outside the capture set, so the safety net said "safe" about content
+history would not bring back.
 
 This is §8 turned on itself: discovery is reachability-bounded, but *"what is
-unreachable?"* is precisely the question a reachability bound cannot answer. The
-current check therefore finds only orphans **adjacent** to the tree, which is a
-much narrower claim than `Finding::Orphan`'s wording ("on disk but not linked into
-the workspace") implies — and the gap is silent, which is the worst property for a
-check to have. Any fix needs an unbounded scan, so it wants to be opt-in
-(`check --unreached`?) rather than a default, and the finding's message should say
-which of the two questions it answered. Deferred deliberately, not overlooked.
+unreachable?"* is precisely the question a reachability bound cannot answer, and
+the gap was silent, which is the worst property for a check to have.
+
+What landed is the half that needs no flag, because it has no false positives to
+guard against. `validate::missing_containment` scans **unbounded** and reports only
+documents that *claim membership*: an unreached document whose own `part_of`
+resolves to a document the tree reaches, which does not list it back. The claim is
+the evidence that survives the bound — it is written down inside the island rather
+than in the tree — and it is exactly what a vendored copy, a nested prov workspace
+and a `scratch/` folder do not have, so §8's trade is preserved where it was
+actually protecting something. Membership is a closure (an island's interior claims
+the island, not the tree, so a stack of unlinked years resolves in one run), only
+each island's entry point is reported, and the repair is `Derived` — one
+`check --fix mechanical` reattaches the whole subtree.
+
+What is still open: an island that claims **nothing at all** — a folder of notes
+with no `part_of` anywhere in it — remains invisible, and so does one whose top
+claims a parent that is *gone* (the claim has to land in the reachable set to be
+evidence of anything, and a dangling one is indistinguishable from a stray copy of
+someone else's document). Finding those still needs the opt-in unbounded report
+(`check --unreached`?) with a message that says which
+of the two questions it answered. `prov history-capture --dry-run` names them today
+(its second list is every file a capture would leave behind), and it no longer
+refuses under `history: off`, so the one diagnostic that catches them is no longer
+gated behind enabling the feature you are diagnosing.
 
 ## Mutation
 
