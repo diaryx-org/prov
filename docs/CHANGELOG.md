@@ -24,6 +24,12 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.6.0 — 2026-08-18
+
 ### Added
 
 - **history** — a verb for the bytes a capture is still holding ([`5bbc59e`](https://github.com/diaryx-org/prov/commit/5bbc59e1ff5fdd64221913cdad1a60cd61a688dc))
@@ -38,10 +44,12 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 - **discovery** — a page prov generated cannot be the root it was generated from ([`6500d7d`](https://github.com/diaryx-org/prov/commit/6500d7deaf957762f0fb60051103896e71c973a3))
 - **attach** — the recursive sweep stops at the stores prov parks bytes in ([`5664bb1`](https://github.com/diaryx-org/prov/commit/5664bb1511af5dcf2fd7ebce7126cc3da72f9966))
+- **release** — a tag cut after the fact still gets its section ([`5883110`](https://github.com/diaryx-org/prov/commit/58831101b0faea1093a04e05f626574e6180e3a0))
 
 ### Changed
 
 - **ci** — the workflow asks a program what CI is instead of holding it ([`5ac43f4`](https://github.com/diaryx-org/prov/commit/5ac43f4e446d191d9de8da58bf634ffbefeaed08))
+- **read** — the passes that read a document three times now read it once ([`d777db9`](https://github.com/diaryx-org/prov/commit/d777db9af90f0231e255d527f7ea48af10bd4cab))
 
 ### Behavioural changes
 
@@ -76,7 +84,22 @@ enumerate parked bytes must read the store's own index instead. The signature is
 take `CaptureNote<'_>` where they took `label: Option<&str>`. A caller passing
 a label updates to `CaptureNote::labelled(label)`, and one passing `None` to
 
-<!-- git-cliff:end -->
+- `Graph::read_scope` and `Workspace::read_scope` return
+`ReadScope` rather than `ReadScope<'_>` — the guard holds a share of the memo
+instead of borrowing the graph. A caller naming the type in a signature drops
+the lifetime; one that binds the guard to a local, as every caller in tree
+does, is unaffected. The lifetime was also a weak argument that a scope cannot
+be stashed and left open; that is now discipline rather than a type.
+
+- `walk`, `tree_within`, `Workspace::census`/`walk`/
+`reachable_files`, and the mutating verbs listed above now read each document
+once per operation rather than once per pass. A `Storage` that counts reads,
+or one whose reads have side effects, sees fewer of them. And a document
+rewritten by something outside prov partway through one of these operations is
+now read either wholly before or wholly after that write, where a later pass
+could previously have picked up the new bytes while an earlier one held the
+old.
+
 
 ## v0.5.0 — 2026-08-17
 
