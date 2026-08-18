@@ -1,14 +1,20 @@
 name: Publish
 # Publish the workspace crates to crates.io on a version tag — the registry
 # half of a release (its sibling, homebrew.yml, ships the CLI binaries). Both
-# fire on the same `v*.*.*` tags, so one `git tag vX.Y.Z && git push --tags`
+# fire on the same `v*.*.*` tags, so one `cargo xtask release <spec> --push`
 # cuts a complete release.
 #
-# Idempotent by design: before publishing a crate it asks crates.io whether that
-# exact version already exists and skips cleanly if so. That makes the workflow
-# safe to re-run (workflow_dispatch, or a re-pushed tag) and lets a partial
-# release — e.g. `prov` published but `prov-cli` failed — be finished by simply
-# running again: the already-published crate is skipped, the missing one goes up.
+# As in ci.yml, this file holds no knowledge of the workspace: which crates go
+# up, in what order, and which are already there is `cargo xtask publish`, which
+# derives all three from the manifests. A crate added to the workspace is
+# published by the next tag with no edit here.
+#
+# That command is idempotent by design: before publishing a crate it asks
+# crates.io whether that exact version already exists and skips cleanly if so.
+# So the workflow is safe to re-run (workflow_dispatch, or a re-pushed tag), and
+# a partial release — say `prov` published but `prov-cli` failed — is finished by
+# simply running it again: the published crates are skipped, the missing ones go
+# up.
 #
 # Zig, as everywhere in CI: `cargo publish` runs a verification build, and prov's
 # `fig`/`twig-doc` dependencies are Zig-backed (their build.rs runs `zig build`),
@@ -19,9 +25,9 @@ name: Publish
 # there is no long-lived CARGO_REGISTRY_TOKEN secret to store or rotate. That
 # exchange needs `id-token: write` (below).
 #
-# Prerequisite before the first tagged release: register this workflow as a
-# Trusted Publisher for BOTH crates. On crates.io, for each of `prov` and
-# `prov-cli`, go to Settings → Trusted Publishing → Add, and enter owner
+# Prerequisite before a crate's first release: register this workflow as its
+# Trusted Publisher. On crates.io, for each crate in `cargo xtask publish
+# --list`, go to Settings → Trusted Publishing → Add, and enter owner
 # `diaryx-org`, repository `prov`, and workflow `publish.yml` (leave the
 # environment blank — this workflow uses none). No API token is needed.
 on:
@@ -40,55 +46,25 @@ jobs:
     - uses: mlugg/setup-zig@v2
       with: { version: "0.16.0" }
     - uses: Swatinem/rust-cache@v2
-    - name: Mint a short-lived crates.io token via Trusted Publishing
-      uses: rust-lang/crates-io-auth-action@v1
-      id: auth
-    - name: Publish prov, then prov-cli (skipping versions already on crates.io)
-      env:
-        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+    # On a tag, the tag must name the version being published — refuse a
+    # mismatch rather than publish a surprise. (workflow_dispatch has no tag, so
+    # the guard is skipped there.)
+    - name: Check the tag against the workspace version
+      if: github.ref_type == 'tag'
       run: |
-        set -euo pipefail
-
-        # Both crates share the workspace version (version.workspace = true),
-        # read the same way the MSRV job reads rust-version, so the two can
-        # never drift from the manifest.
-        version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+        version=$(cargo run -q -p xtask -- version)
         echo "Workspace version: $version"
-
-        # On a tag, the tag must name the version being published — refuse a
-        # mismatch rather than publish a surprise. (workflow_dispatch has no
-        # tag, so this guard is skipped there.)
-        if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+        if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
           echo "::error::tag ${GITHUB_REF_NAME} does not match workspace version ${version}"
           exit 1
         fi
 
-        # GET /api/v1/crates/<crate>/<version> is 200 only when that exact
-        # version is already published (a yanked version also 200s — correct to
-        # skip, since a version number can never be reused). Anything else (404
-        # new version, 404 new crate) means "go publish". crates.io requires a
-        # descriptive User-Agent.
-        already_published() {
-          local crate="$1" code
-          code=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -A "prov-release (github-actions; https://github.com/diaryx-org/prov)" \
-            "https://crates.io/api/v1/crates/${crate}/${version}")
-          [ "$code" = "200" ]
-        }
+    - name: Mint a short-lived crates.io token via Trusted Publishing
+      uses: rust-lang/crates-io-auth-action@v1
+      id: auth
 
-        publish() {
-          local crate="$1"
-          if already_published "$crate"; then
-            echo "✅ ${crate} ${version} already on crates.io — skipping"
-          else
-            echo "📦 publishing ${crate} ${version}"
-            cargo publish -p "$crate"
-          fi
-        }
-
-        # Order matters: prov-cli depends on prov, so the library must be on the
-        # index first. Modern cargo waits for a freshly published version to be
-        # indexed before `cargo publish` returns, so the sequential calls are
-        # safe with no manual sleep.
-        publish prov
-        publish prov-cli
+    - name: Publish every crate crates.io is missing, in dependency order
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      run: cargo xtask publish

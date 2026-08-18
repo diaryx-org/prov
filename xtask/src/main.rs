@@ -9,8 +9,14 @@
 //! Locally, `cargo xtask ci` runs the same jobs in the same order against the
 //! same commands, so a green run here is a green run there.
 //!
+//! Cutting a release lives here too, in [`release`], for the same reason: the
+//! publish workflow asks the program what to publish rather than holding a list
+//! of crates that goes stale the moment the workspace gains one.
+//!
 //! There are no dependencies on purpose. Every CI job builds this crate before
 //! it can start, so its build time is paid a dozen times over per push.
+
+mod release;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -221,6 +227,16 @@ fn main() -> ExitCode {
             println!("{}", ci_matrix());
             Ok(())
         }
+        ["version"] => release::print_version(&sh),
+        ["bump", spec] => release::bump(&sh, spec),
+        ["changelog", ref rest @ ..] => release::changelog(&sh, rest),
+        ["publish", ref rest @ ..] => release::publish(&sh, rest),
+        ["release", spec, ref rest @ ..] => release::release(&sh, spec, rest),
+        // Both take a version, and neither should guess one.
+        [command @ ("bump" | "release")] => Err(format!(
+            "`{command}` needs a version: patch, minor, major, or x.y.z\n\n{}",
+            usage()
+        )),
         [id] => match JOBS.iter().find(|job| job.id == id) {
             Some(job) => (job.run)(&sh),
             None => Err(format!("unknown job `{id}`\n\n{}", usage())),
@@ -271,8 +287,9 @@ fn ci_matrix() -> String {
 
 fn usage() -> String {
     let mut out = String::from(
-        "prov's CI. Each job below is exactly what the CI workflow runs.\n\n\
-         usage: cargo xtask <job>\n\n",
+        "prov's CI, and its releases. Each job below is exactly what the CI \
+         workflow runs.\n\n\
+         usage: cargo xtask <command>\n\njobs:\n\n",
     );
     for job in JOBS {
         out.push_str(&format!("  {:<18}{}\n", job.id, job.about));
@@ -282,8 +299,33 @@ fn usage() -> String {
         "  {:<18}{}\n",
         "ci-matrix", "the job table as JSON, for the workflow matrix"
     ));
+    // Releasing is not CI, so it is not in the table above — these are run by
+    // hand (and `publish` by the release workflow), not by every push.
+    out.push_str("\nreleasing:\n\n");
+    for (command, about) in RELEASE_COMMANDS {
+        out.push_str(&format!("  {command:<18}{about}\n"));
+    }
     out
 }
+
+/// The release commands, for `cargo xtask` with no arguments. See
+/// [`release`] for what each one does and why the push is opt-in.
+const RELEASE_COMMANDS: &[(&str, &str)] = &[
+    ("version", "the workspace version"),
+    ("bump <spec>", "move to patch | minor | major | x.y.z"),
+    (
+        "changelog",
+        "regenerate the unreleased region (--write, --check)",
+    ),
+    (
+        "release <spec>",
+        "bump, changelog, commit, tag — and push only with --push",
+    ),
+    (
+        "publish",
+        "publish every crate crates.io is missing (--list)",
+    ),
+];
 
 // ---------------------------------------------------------------------------
 // Running things
@@ -334,6 +376,53 @@ impl Sh {
         } else {
             Err(format!("`{shown} {}` failed ({status})", args.join(" ")))
         }
+    }
+
+    /// Run a command and hand back its stdout, for the answers a job needs to
+    /// act on rather than show — an HTTP status, a branch name, a tag list. The
+    /// command is not echoed: these are questions, and a log of them reads as
+    /// noise between the commands that actually did something.
+    fn capture(&self, program: &str, args: &[&str]) -> Result<String> {
+        let output = Command::new(program)
+            .args(args)
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| format!("could not run `{program}`: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "`{program} {}` failed ({})\n{}",
+                args.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Fail early, and with the install line, when a tool the task needs is
+    /// missing — rather than halfway through a release, with the version
+    /// already bumped.
+    fn require(&self, program: &str, hint: &str) -> Result<()> {
+        Command::new(program)
+            .arg("--version")
+            .current_dir(&self.root)
+            .output()
+            .map(|_| ())
+            .map_err(|_| format!("`{program}` not found on PATH\nhint: {hint}"))
+    }
+
+    /// Read a workspace file, by its path from the root.
+    fn read(&self, path: &str) -> Result<String> {
+        let path = self.root.join(path);
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))
+    }
+
+    /// Write a workspace file, by its path from the root.
+    fn write(&self, path: &str, contents: &str) -> Result<()> {
+        let path = self.root.join(path);
+        std::fs::write(&path, contents)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))
     }
 
     /// `workspace.package.rust-version`, the single source of truth for the MSRV.
