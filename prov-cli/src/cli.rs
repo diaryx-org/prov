@@ -71,9 +71,18 @@ pub(crate) fn sidecar_name(stem: &str, format: Format) -> String {
     format!("{stem}.{}", sidecar_ext(format))
 }
 
+/// What `prov --version` prints.
+///
+/// The package version on a clean build of the release tag, and the package
+/// version plus the commit it was built from on anything else — see
+/// `build.rs`, which resolves the git state and emits `PROV_VERSION`. The
+/// parenthetical is how a bug report distinguishes a dev build from the
+/// release that shares its version number.
+pub(crate) const VERSION: &str = env!("PROV_VERSION");
+
 /// A self-describing plaintext workspace, from the command line.
 #[derive(Parser)]
-#[command(name = "prov", version, about, long_about = None)]
+#[command(name = "prov", version = VERSION, about, long_about = None)]
 pub(crate) struct Cli {
     /// Run as if started in this directory — discover the workspace root from
     /// here instead of the current directory (like `git -C`, this goes *before*
