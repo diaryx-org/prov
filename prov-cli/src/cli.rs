@@ -385,6 +385,61 @@ pub(crate) enum Command {
         /// touched, and no fix ever deletes a file.
         #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "ask")]
         fix: Option<FixModeArg>,
+        /// Report only the findings lodged against this document — the ones
+        /// whose repair rewrites it, or that name it as the file to go and look
+        /// at. A filter on the *results*, not on the walk: the whole workspace
+        /// is still checked, because the findings that matter most about one
+        /// document (nothing links to it, its parent dropped it, an inbound
+        /// label went stale) are only visible from the graph. Checking *from*
+        /// the document instead is the positional argument, and cannot see
+        /// them.
+        #[arg(long, value_name = "TARGET")]
+        only: Option<String>,
+        /// Print findings to stdout as a JSON array instead of one line each —
+        /// `kind`, `subject`, the human `message`, and the finding's own
+        /// fields. Empty findings print `[]`, so "clean" and "no output" stay
+        /// distinguishable. Not available with `--fix`, whose stdout means
+        /// something else (the findings a repair introduced).
+        #[arg(long, conflicts_with = "fix")]
+        json: bool,
+    },
+    /// Record that a document changed **outside prov** — restamp its content
+    /// checksum, and stamp the workspace's `updated` field with the current
+    /// time. What `prov edit` does automatically for an edit it hosted, for the
+    /// edits it did not: another editor, a sync, a script.
+    ///
+    /// `check --fix` is not this. It offers to re-stamp the checksum (as a
+    /// judgment, so `--fix mechanical` skips it), but it never writes
+    /// `updated` — nothing on disk tells it when the edit happened — so it
+    /// repairs the hash while erasing the only remaining sign the file changed.
+    ///
+    /// Idempotent: with a checksum on record, the stamps land only when the
+    /// bytes actually drifted, so re-running changes nothing and this is safe
+    /// in a sync hook.
+    Stamp {
+        /// The document to stamp. An attachment's payload is covered through
+        /// its sidecar, so either handle works. Omit with `--all`.
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        /// Bring the whole workspace's fixity up to date: correct every
+        /// checksum whose bytes have drifted, and seed one for every document
+        /// that never had one.
+        ///
+        /// It writes `updated` only for the documents that actually drifted. A
+        /// checksum restates the bytes, so it is owed wherever it is missing or
+        /// wrong; a timestamp claims an edit happened, and a sweep across a
+        /// workspace it merely read has no evidence for that. Naming a single
+        /// target is that evidence — which is the one way `--all` differs from
+        /// running this per file.
+        #[arg(long, conflicts_with = "target")]
+        all: bool,
+        /// Restamp the checksum but leave the timestamp alone — for keeping
+        /// fixity true without claiming an edit time.
+        #[arg(long)]
+        no_timestamp: bool,
+        /// Print what would be stamped, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Create a document as a child of a parent, linking both directions. The
     /// positional is the new document's **title** — prov derives a readable

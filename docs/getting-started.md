@@ -520,6 +520,100 @@ these reminders.
 
 ---
 
+## 11. When something changed outside prov
+
+`edit` restamps the checksum and the `updated` field when it saves, because it
+launched the editor and knows whether you changed anything. Nothing else does:
+a sync client, another editor, a script, or `git checkout` all move bytes behind
+prov's back, and the document's own bookkeeping is then out of date.
+
+Turn on body checksums and name an `updated` field, so there is bookkeeping to
+be out of date in the first place:
+
+<!-- exec -->
+```console
+$ prov config fixity all
+$ prov config updated updated
+$ prov stamp --all
+```
+
+`stamp --all` gives every document a checksum for the bytes it currently has —
+the baseline. It does *not* set `updated` on any of them: a checksum only
+restates the bytes, but a timestamp claims an edit happened, and a sweep across
+a workspace it merely read has no evidence for that.
+
+Now change a file the way anything other than prov would, and `check` sees it:
+
+<!-- exec allow-fail -->
+```console
+$ printf '\nA paragraph added by another editor.\n' >> notes/rust.md
+$ prov check
+notes/rust.md: fixity mismatch — content changed since its checksum was recorded (bit-rot, or an out-of-band edit)
+1 finding(s)
+```
+
+`check` deliberately stops there. It cannot tell an edit you meant from bit-rot
+you didn't, so it reports the question rather than answering it — which is why
+`--fix mechanical` skips this one, and why even `--fix` would only correct the
+checksum and never write `updated`: nothing on disk tells it when the edit
+happened. **You** are the missing evidence, and `stamp` is how you supply it:
+
+<!-- exec -->
+```console
+$ prov stamp notes/rust.md
+notes/rust.md: stamped `updated` + checksum
+$ prov check
+ok: no findings
+```
+
+Run it again and it writes nothing — with a checksum on record, the stamps land
+only when the bytes actually drifted. That makes it safe to put in a sync hook
+or a cron job, and it makes `prov stamp --all` the standing repair for "my
+folder was touched by something else":
+
+<!-- exec -->
+```console
+$ prov stamp notes/rust.md
+notes/rust.md: checksum still matches the bytes — nothing to stamp
+```
+
+Use `--no-timestamp` to correct the checksum without claiming an edit time, and
+`--dry-run` to see what would move.
+
+**Asking about one document.** `check --only` reports just the findings lodged
+against one file — the ones whose repair rewrites it. It still walks the whole
+workspace, because the findings that matter most about a single document are
+the ones discovered from somewhere else: nothing links to it, its parent dropped
+it, an inbound label went stale. Checking *from* the document (`prov check
+notes/rust.md`, the positional argument) is a different question — that walks
+its subtree — and it cannot see any of those.
+
+<!-- exec allow-fail -->
+```console
+$ prov unset notes/rust.md part_of
+$ prov check --only notes/rust.md
+index.md: child notes/rust.md does not declare part_of back to it
+1 finding(s) for notes/rust.md
+$ prov check --only notes/rust.md --fix mechanical
+```
+
+Note whose finding that is: the missing back-link is reported by the *parent*,
+but it is filed against the child, because the child is the file a repair
+rewrites.
+
+**For a script.** `--json` prints the same findings as a JSON array — each with
+a `kind` to branch on, the `subject` it is filed against, the human `message`,
+and that finding's own fields. A clean run prints `[]` rather than nothing, so
+"no findings" and "no output" stay distinguishable:
+
+<!-- exec -->
+```console
+$ prov check --json
+[]
+```
+
+---
+
 ## Command reference
 
 | Command                         | What it does                                             |
@@ -537,10 +631,12 @@ these reminders.
 | `tree [ROOT]`                   | print the containment tree                               |
 | `explore [FILE]`                | walk the graph interactively                             |
 | `check [ROOT] [--fix]`          | report (and optionally repair) integrity problems        |
+| `check --only F` / `--json`     | just one document's findings / the same as machine-readable JSON |
 | `show FILE`                     | summarize a document                                     |
 | `meta / get / links / body`     | read metadata or body                                    |
 | `set FILE KEY VALUE` / `unset`  | edit a metadata field, format-preserving                 |
 | `edit FILE`                     | open in `$EDITOR`, restamping fixity/`updated` on save    |
+| `stamp FILE` / `stamp --all`    | the same bookkeeping for an edit prov didn't host (a sync, another editor) |
 | `render FILE`                   | render the body to HTML                                  |
 | `duplicate FILE`                | copy a document as a fresh sibling                       |
 | `convert FILE AXIS VALUE`       | restate a document: links (`notation` / `path_style`), metadata (`metadata.format` / `metadata.embed`), or prose (`content_format`) |

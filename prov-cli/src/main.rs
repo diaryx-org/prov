@@ -28,15 +28,16 @@ use std::process::ExitCode;
 use clap::Parser;
 use prov::document::MetaCarrier;
 use prov::{
-    Addressing, Adoption, ChangeSet, ContentFormat, Document, EmbedStyle, FileIndex, Format, Id,
-    IdIndex, IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind, Notation,
-    PathStyle, PeerResolver, RelationSet, RoutePlan, Settings, StdFs, StructurePlan, SynthNode,
-    Target, Trigger, Value, Workspace, WorkspaceConfig, block_on, edit, link, meta,
+    Addressing, Adoption, ChangeSet, ContentFormat, ContentState, Document, EmbedStyle, FileIndex,
+    Format, Id, IdIndex, IdStorage, IndexStore, Layout, LinkStyle, Mapping, Minter, Node, NodeKind,
+    Notation, PathStyle, PeerResolver, RelationSet, RoutePlan, Settings, StdFs, StructurePlan,
+    SynthNode, Target, Trigger, Value, Workspace, WorkspaceConfig, block_on, edit, link, meta,
 };
 
 mod backup;
 mod cache;
 mod cli;
+mod json;
 mod peer;
 mod zip;
 use cli::*;
@@ -121,10 +122,24 @@ fn main() -> ExitCode {
             .transpose()
             .and_then(|r| cmd_tree(r.as_deref())),
         Command::Explore { file } => cmd_explore(file.as_deref()),
-        Command::Check { root, fix } => root
-            .map(|r| resolve_target(&r))
+        Command::Check {
+            root,
+            fix,
+            only,
+            json,
+        } => root.map(|r| resolve_target(&r)).transpose().and_then(|r| {
+            let only = only.map(|o| resolve_target(&o)).transpose()?;
+            cmd_check(r.as_deref(), fix, only.as_deref(), json)
+        }),
+        Command::Stamp {
+            target,
+            all,
+            no_timestamp,
+            dry_run,
+        } => target
+            .map(|t| resolve_target(&t))
             .transpose()
-            .and_then(|r| cmd_check(r.as_deref(), fix)),
+            .and_then(|t| cmd_stamp(t.as_deref(), all, no_timestamp, dry_run)),
         Command::New {
             title,
             in_target,
@@ -857,6 +872,183 @@ fn cmd_edit(file: &Path) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `stamp` — the bookkeeping of an edit prov did not host.
+///
+/// [`cmd_edit`] already does this for an edit it launched the editor for, and
+/// it can be unconditional about the timestamp because it snapshotted the bytes
+/// before handing over. Nothing here saw the edit happen, so the checksum is
+/// the only evidence available, and [`ContentState`] is how that evidence is
+/// read:
+///
+/// - **`Drifted`** — the bytes changed. Both stamps land, in the single
+///   crash-safe write `record_content_update` makes of them.
+/// - **`Intact`** — the bytes did not change. Nothing is written, which is what
+///   makes re-running this free and puts it safely in a sync hook.
+/// - **`Unrecorded`** — no checksum on record (fixity off, or a document that
+///   predates it). There is no evidence either way, so a *named* target is
+///   stamped on the strength of the user having named it, and `--all` skips it:
+///   naming one file asserts an edit, sweeping a workspace does not.
+/// - **`Unverifiable`** — a digest from an algorithm this build cannot compute.
+///   Skipped, never overwritten, exactly as `check` leaves it alone.
+///
+/// Narration to stderr; stdout carries the machine value, one stamped path per
+/// line — so `prov stamp --all | xargs …` gets what actually changed.
+fn cmd_stamp(target: Option<&Path>, all: bool, no_timestamp: bool, dry_run: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+
+    // What to consider, and whether a name was put to each one.
+    //
+    // `--all` takes the document population `check` validates, not the *file*
+    // set: a shadowed payload (`attach --opaque`) is bytes prov holds without
+    // interpreting, and any `content_hash` inside one belongs to the exhibit
+    // rather than to this workspace. An ordinary attachment payload is still in
+    // here and still will not parse as a document — it is covered through its
+    // sidecar, and skipped below where it is found.
+    let targets: Vec<PathBuf> = match (target, all) {
+        (Some(path), _) => vec![ws_rel(&ctx, path)?],
+        (None, true) => block_on(ws.reachable_documents_from(&ctx.root_doc))?
+            .into_iter()
+            .collect(),
+        (None, false) => {
+            return Err("nothing to stamp: name a document, or pass --all".into());
+        }
+    };
+    let named = target.is_some();
+
+    let now = now_rfc3339();
+    let field = &ctx.config.updated;
+    // The workspace may not record an `updated` field at all, in which case
+    // there is no timestamp half to this command and only the checksum moves.
+    let timestamp = (!no_timestamp && !field.is_empty()).then_some((field.as_str(), now.as_str()));
+
+    let mut stamped = 0usize;
+    let mut seeded = 0usize;
+    let mut skipped = 0usize;
+    for path in targets {
+        let state = match block_on(ws.content_state(&path)) {
+            Ok(state) => state,
+            // Under `--all` this is a reached file that is not a document (an
+            // attachment's payload, a manifest's covered bytes) — not an error,
+            // just not this command's business. A named target that cannot be
+            // read is.
+            Err(_) if !named => continue,
+            Err(e) => return Err(format!("{}: {e}", path.display()).into()),
+        };
+        // Which stamps this document has earned. The two halves are decided
+        // separately because they rest on different evidence: a checksum
+        // *restates* the bytes, so it is owed wherever it is missing or wrong,
+        // while a timestamp *asserts* that an edit happened, which only drift
+        // or the user naming the file can establish.
+        //
+        // That split is what makes `--all` worth running: it brings a whole
+        // workspace's fixity up to date — seeding the documents that never had
+        // a checksum, correcting the ones that drifted — and claims an edit
+        // time for exactly the drifted ones, never for a document it merely
+        // read.
+        let (write, claims_edit) = match state {
+            ContentState::Drifted => (true, true),
+            ContentState::Unrecorded => (true, named),
+            ContentState::Intact | ContentState::Unverifiable => (false, false),
+        };
+        let timestamp = claims_edit.then_some(timestamp).flatten();
+        if !write {
+            if named {
+                eprintln!(
+                    "{}: {} — nothing to stamp",
+                    path.display(),
+                    match state {
+                        ContentState::Intact => "checksum still matches the bytes",
+                        ContentState::Unverifiable =>
+                            "checksum uses an algorithm this build cannot compute",
+                        _ => "unchanged",
+                    }
+                );
+            }
+            skipped += 1;
+            continue;
+        }
+        if dry_run {
+            // Both states that reach here are being stamped *for* the
+            // checksum, so that is what a dry run names. Whether one actually
+            // lands on an unrecorded document depends on the workspace's fixity
+            // tier covering its kind, which only the write answers — and which
+            // "would" already leaves open.
+            eprintln!(
+                "{}: would stamp {}",
+                path.display(),
+                stamp_summary(&ctx, timestamp, true)
+            );
+            println!("{}", path.display());
+            if state == ContentState::Unrecorded {
+                seeded += 1;
+            } else {
+                stamped += 1;
+            }
+            continue;
+        }
+        if block_on(ws.record_content_update(&path, timestamp))? {
+            // Whether a checksum actually landed is not knowable up front for an
+            // `Unrecorded` document: `record_content_update` writes one only if
+            // the workspace's fixity tier covers this document's *kind*, which
+            // is a decision the library makes and does not report. Re-reading
+            // the state is how the narration stays a claim about what happened
+            // rather than about what was attempted — one extra read, and only
+            // for a document that was actually written.
+            let hashed = match state {
+                ContentState::Drifted => true,
+                _ => block_on(ws.content_state(&path))? == ContentState::Intact,
+            };
+            eprintln!(
+                "{}: stamped {}",
+                path.display(),
+                stamp_summary(&ctx, timestamp, hashed)
+            );
+            println!("{}", path.display());
+            if state == ContentState::Unrecorded {
+                seeded += 1;
+            } else {
+                stamped += 1;
+            }
+        } else {
+            // `record_content_update` self-gates on the same two questions, so
+            // it can decline what `content_state` waved through — a workspace
+            // whose fixity tier does not cover this document's kind, with no
+            // `updated` field configured either. Nothing to write, and nothing
+            // wrong.
+            if named {
+                eprintln!(
+                    "{}: this workspace records neither a checksum nor a timestamp for it",
+                    path.display()
+                );
+            }
+            skipped += 1;
+        }
+    }
+
+    if all {
+        let verb = if dry_run { "would stamp" } else { "stamped" };
+        eprintln!(
+            "{verb} {stamped} drifted document(s), seeded {seeded} that had no checksum; \
+{skipped} unchanged"
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Which stamps a write landed, for one narration line.
+fn stamp_summary(ctx: &Ctx, timestamp: Option<(&str, &str)>, hashed: bool) -> String {
+    match (hashed, timestamp) {
+        (true, Some(_)) => format!("`{}` + checksum", ctx.config.updated),
+        (true, None) => "checksum".into(),
+        (false, Some(_)) => format!("`{}`", ctx.config.updated),
+        // `record_content_update` reported a write, so something moved; the
+        // only remaining possibility is a timestamp field this narration was
+        // not given. Unreachable in practice, and not worth a panic.
+        (false, None) => "nothing".into(),
+    }
+}
+
 /// The current time as an RFC 3339 UTC timestamp with microsecond precision
 /// (`2026-07-16T14:30:00.123456Z`) — the machine-standard value prov stores for
 /// provenance fields like `updated` and a history event's `created` (DESIGN §2:
@@ -1374,7 +1566,24 @@ fn edit_file(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn cmd_check(root: Option<&Path>, fix: Option<FixModeArg>) -> CmdResult {
+/// `check` — walk the workspace and report what is wrong with it.
+///
+/// `only` filters the *results*; it never narrows the walk. The findings that
+/// matter most about a single document are the relational ones — nothing links
+/// to it, its parent dropped it, an inbound label went stale — and every one of
+/// those is discovered from somewhere else in the graph. Narrowing the walk to
+/// reach them faster would be narrowing it past the evidence, and the command
+/// would report a file clean because it could not see the three things wrong
+/// with it. So `--only` costs a full check, and says so.
+///
+/// Narration to stderr; stdout carries the machine value — one finding per
+/// line, or the whole set as a JSON array under `--json`.
+fn cmd_check(
+    root: Option<&Path>,
+    fix: Option<FixModeArg>,
+    only: Option<&Path>,
+    as_json: bool,
+) -> CmdResult {
     // `check` reports config issues in full (Finding::ConfigIssue), so skip the
     // one-line find_root warning that would just duplicate them.
     let mut ctx = find_root_quiet()?;
@@ -1392,6 +1601,21 @@ fn cmd_check(root: Option<&Path>, fix: Option<FixModeArg>) -> CmdResult {
         Some(r) => ws_rel(&ctx, r)?,
         None => ctx.root_doc.clone(),
     };
+    // A subject that is not there would filter every finding away and report
+    // the file clean — the one failure mode a per-file check must not have, and
+    // an unreadable one at that, since "no findings" is exactly what a correct
+    // run of this command usually prints. A typo is caught here instead.
+    let only = only.map(|o| ws_rel(&ctx, o)).transpose()?;
+    if let Some(subject) = &only
+        && !ctx.root_dir.join(subject).exists()
+    {
+        return Err(format!(
+            "{}: no such document — `--only` filters findings by subject, so a \
+path that is not in the workspace would report clean",
+            subject.display()
+        )
+        .into());
+    }
     let mut ws = workspace(&ctx)?;
     let mut findings = block_on(ws.check(&root))?;
     // The generated page is checked alongside the graph, so "run `check` before
@@ -1404,18 +1628,32 @@ fn cmd_check(root: Option<&Path>, fix: Option<FixModeArg>) -> CmdResult {
             findings.push(finding);
         }
     }
+    if let Some(subject) = &only {
+        findings.retain(|f| f.subject() == subject);
+    }
     let findings = findings;
     if let Some(mode) = fix {
-        return cmd_check_fix(&mut ctx, &mut ws, &root, &findings, mode);
+        return cmd_check_fix(&mut ctx, &mut ws, &root, &findings, mode, only.as_deref());
     }
-    for finding in &findings {
-        println!("{finding}");
+    if as_json {
+        print!(
+            "{}",
+            json::J::Arr(findings.iter().map(json::finding).collect()).render()
+        );
+    } else {
+        for finding in &findings {
+            println!("{finding}");
+        }
     }
+    let scope = match &only {
+        Some(subject) => format!(" for {}", subject.display()),
+        None => String::new(),
+    };
     if findings.is_empty() {
-        eprintln!("ok: no findings");
+        eprintln!("ok: no findings{scope}");
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!("{} finding(s)", findings.len());
+        eprintln!("{} finding(s){scope}", findings.len());
         Ok(ExitCode::FAILURE)
     }
 }
@@ -1556,6 +1794,7 @@ fn cmd_check_fix(
     root: &Path,
     findings: &[prov::Finding],
     mode: FixModeArg,
+    only: Option<&Path>,
 ) -> CmdResult {
     let mut applied = 0usize;
     let mut needs_attention = 0usize;
@@ -1688,7 +1927,13 @@ fn cmd_check_fix(
     // any of them ran. Only a second walk can say what actually changed, and only
     // the three buckets can separate what these fixes repaired from what they
     // broke from what was already wrong.
-    let after = block_on(ws.check(root))?;
+    let mut after = block_on(ws.check(root))?;
+    // Scope the second walk the way the first one was scoped, or the diff would
+    // compare a filtered before against an unfiltered after and read every
+    // untouched finding elsewhere in the workspace as newly introduced.
+    if let Some(subject) = only {
+        after.retain(|f| f.subject() == subject);
+    }
     let diff = prov::CheckDiff::between(findings, &after);
 
     for finding in &diff.introduced {
