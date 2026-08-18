@@ -785,6 +785,16 @@ pub(crate) enum Command {
         /// workspace unchanged writes nothing, whatever is said about it.
         #[arg(short = 'm', long, value_name = "TEXT")]
         message: Option<String>,
+        /// List what a capture would record — and, separately, what it would
+        /// not — without writing anything or hashing a byte.
+        ///
+        /// The second list is the point. A capture set is drawn from the
+        /// *reachable* graph, so a file nothing links to is not captured and
+        /// history will not bring it back. That omission is otherwise silent:
+        /// a folder of notes nobody linked looks exactly like a folder of notes
+        /// that are safe. Linking the file is the repair.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show this device's fixity cache for the workspace: where it lives and how
     /// many files it remembers.

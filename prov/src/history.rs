@@ -271,5 +271,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
+mod uncaptured;
+pub use uncaptured::{Omission, Uncaptured};
+
 #[cfg(all(test, feature = "yaml"))]
 mod tests;

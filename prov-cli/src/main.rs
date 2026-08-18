@@ -208,9 +208,11 @@ fn main() -> ExitCode {
         } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
         Command::About { check, print } => cmd_about(check, print),
-        Command::HistoryCapture { label, message } => {
-            cmd_history_capture(label.as_deref(), message.as_deref())
-        }
+        Command::HistoryCapture {
+            label,
+            message,
+            dry_run,
+        } => cmd_history_capture(label.as_deref(), message.as_deref(), dry_run),
         Command::Cache { clear } => cmd_cache(clear),
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
@@ -2244,7 +2246,7 @@ fn diff_path_display(ctx: &Ctx, path: Option<&Path>) -> String {
 /// capture of a known-broken workspace is still useful (it is a pre-image of
 /// whatever is there), but a silently-dirty "safe rollback point" is false
 /// confidence.
-fn cmd_history_capture(label: Option<&str>, message: Option<&str>) -> CmdResult {
+fn cmd_history_capture(label: Option<&str>, message: Option<&str>, dry_run: bool) -> CmdResult {
     let ctx = find_root()?;
     if !ctx.config.history.captures() {
         return Err("history is off for this workspace — enable it with \
@@ -2256,6 +2258,9 @@ fn cmd_history_capture(label: Option<&str>, message: Option<&str>) -> CmdResult 
             .into());
     }
     let mut ws = workspace(&ctx)?;
+    if dry_run {
+        return report_capture_set(&ws, &ctx);
+    }
     // What this device remembers of the workspace's digests, so a capture reads
     // and hashes the files whose stat changed rather than all of them. Absent
     // under `--no-cache`, or when there is nowhere on this machine to keep one.
@@ -2700,6 +2705,56 @@ fn cmd_history_show(id: &str) -> CmdResult {
 /// The subject is an id wherever one exists, because that is what survives a
 /// rename. A path is used only when the document carries no id, and the fallback
 /// is called out on stderr rather than passed off as equivalent.
+/// `history-capture --dry-run`: what a capture would take, and what it would not.
+///
+/// Nothing is hashed and nothing is written — the capture set is a walk, and the
+/// point of asking is to see it before paying for it.
+///
+/// The second list is why this exists. Everything in the first is safe; a file
+/// in the second is sitting in the workspace believing otherwise.
+fn report_capture_set(ws: &Workspace<StdFs, Minter, FileIndex>, ctx: &Ctx) -> CmdResult {
+    let captured = block_on(ws.history_capture_set(&ctx.root_doc))?;
+    for path in &captured {
+        println!("{}", path.display());
+    }
+    eprintln!("{} file(s) would be captured", captured.len());
+
+    let missed = block_on(ws.uncaptured(&ctx.root_doc))?;
+    let unreached: Vec<&PathBuf> = missed
+        .iter()
+        .filter(|u| u.reason == prov::Omission::Unreached)
+        .map(|u| &u.path)
+        .collect();
+    let bookkeeping = missed.len() - unreached.len();
+
+    if !unreached.is_empty() {
+        eprintln!("\n{} file(s) would NOT be captured:", unreached.len());
+        for path in &unreached {
+            eprintln!("  {}", path.display());
+        }
+        eprintln!(
+            "\nA capture records what the workspace *reaches*, so nothing links these \
+             and history will not bring them back. Link one — from a parent's \
+             `contents`, or with `prov attach` if it is a payload — and the next \
+             capture takes it."
+        );
+    }
+    if bookkeeping > 0 {
+        // Counted, not listed: these are excluded by decision, and naming every
+        // blob would bury the list above, which is the one that needs reading.
+        eprintln!(
+            "\n({bookkeeping} more excluded on purpose — prov's own byte-parking stores \
+             and its generated page.)"
+        );
+    }
+    // Silence would read as "everything is covered", and here that happens to be
+    // true, so say it rather than leaving it to be inferred.
+    if unreached.is_empty() {
+        eprintln!("\nnothing in this workspace is left out of a capture");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Compare two captures.
 ///
 /// The whole comparison is in the library and is pure; what lives here is

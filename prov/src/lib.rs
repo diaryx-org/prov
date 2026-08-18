@@ -180,8 +180,9 @@ pub use fig_schema::FieldType;
 pub use fixity::FixityCache;
 pub use history::{
     CaptureNote, Captured, Change, Conflict, DiffRow, Disposition, Event, FileEntry, Forgotten,
-    HistoryIssue, HistoryStore, Latest, ManifestDiff, Presence, Pruned, RestoreOp, RestorePlan,
-    Retention, Retrieved, Scope, StoreLocation, Subject, Summary, Version, manifest_diff,
+    HistoryIssue, HistoryStore, Latest, ManifestDiff, Omission, Presence, Pruned, RestoreOp,
+    RestorePlan, Retention, Retrieved, Scope, StoreLocation, Subject, Summary, Uncaptured, Version,
+    manifest_diff,
 };
 pub use identity::{
     IdentityPolicy, Minter, NoIdentity, Registration, Trigger, WORKSPACE_NAME_LEN,

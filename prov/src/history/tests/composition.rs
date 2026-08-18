@@ -120,3 +120,83 @@ fn a_cache_from_another_workspace_is_refused() {
     );
     assert!(crate::FixityCache::decode(&bytes, &one).is_some());
 }
+
+/// The silent omission, made visible. A capture set is the *reachable* graph, so
+/// a file nothing links to is not captured and history cannot bring it back —
+/// and until this pass, nothing said so.
+#[test]
+fn uncaptured_names_what_nothing_links_and_excuses_what_prov_parks() {
+    let dir = seed("uncaptured");
+    // Unlinked: a loose note at the top, and a whole directory nobody reaches.
+    write(
+        &dir,
+        "loose.md",
+        "---\ntitle: Loose\n---\nnobody links this\n",
+    );
+    write(
+        &dir,
+        "strays/deep.md",
+        "---\ntitle: Deep\n---\nnor this, a directory down\n",
+    );
+    // Hidden entries are not the workspace's content and never were.
+    write(&dir, ".hidden.md", "---\ntitle: Hidden\n---\nignored\n");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+
+    let found = block_on(ws(&dir).uncaptured(Path::new("index.md"))).unwrap();
+    let unreached: Vec<&Path> = found
+        .iter()
+        .filter(|u| u.reason == crate::Omission::Unreached)
+        .map(|u| u.path.as_path())
+        .collect();
+    assert_eq!(
+        unreached,
+        vec![Path::new("loose.md"), Path::new("strays/deep.md")],
+        "exactly the files a capture would silently leave behind"
+    );
+
+    // Everything a capture *does* take is absent from the report — the two lists
+    // are complements, and a file in both would mean one of them is lying.
+    let captured = block_on(ws(&dir).history_capture_set(Path::new("index.md"))).unwrap();
+    for path in &captured {
+        assert!(
+            !found.iter().any(|u| &u.path == path),
+            "{} is captured and must not be reported as left out",
+            path.display()
+        );
+    }
+
+    // The store's own files are left out by decision, not by oversight: the
+    // store excludes itself, or no capture could ever be empty. Reported as
+    // bookkeeping so the totals add up, never as a thing to go and link.
+    let bookkeeping: Vec<&Path> = found
+        .iter()
+        .filter(|u| u.reason == crate::Omission::Bookkeeping)
+        .map(|u| u.path.as_path())
+        .collect();
+    assert!(
+        bookkeeping.contains(&Path::new("history/index.md")),
+        "the store index is reachable and uncaptured, and is not a stray: {bookkeeping:?}"
+    );
+    // The blob store is named once, not walked: a store holding ten thousand
+    // blobs must not become ten thousand rows.
+    assert!(bookkeeping.contains(&Path::new("history/blobs")));
+    assert!(
+        !bookkeeping
+            .iter()
+            .any(|p| *p != Path::new("history/blobs") && p.starts_with("history/blobs")),
+        "the parked interior is refused by not descending: {bookkeeping:?}"
+    );
+}
+
+/// A workspace that reaches everything it holds says so. Silence would read as
+/// "nothing to report", which is the same output as "I did not look".
+#[test]
+fn uncaptured_is_empty_when_the_graph_reaches_every_file() {
+    let dir = seed("uncaptured-clean");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+    let found = block_on(ws(&dir).uncaptured(Path::new("index.md"))).unwrap();
+    assert!(
+        !found.iter().any(|u| u.reason == crate::Omission::Unreached),
+        "the seed workspace links everything in it: {found:?}"
+    );
+}

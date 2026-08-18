@@ -499,6 +499,36 @@ for content that was never captured live.
 Two verbs make it irreversible again: `history-prune` (§12) by age or count, and
 `history-forget` (§13) for one document deliberately.
 
+### 9.1 `history-capture --dry-run` — what would be taken, and what would not
+
+Lists the capture set and writes nothing. No file is read and no hash computed:
+the capture set is a walk (§2), and the point of asking is to see it before
+paying for it.
+
+The **second** list is why the flag exists. A capture set is drawn from the
+reachable graph, so a file nothing links to is not captured and no restore can
+bring it back — and that omission is otherwise completely silent. A directory of
+four hundred unlinked notes looks exactly like a directory of four hundred notes
+that are safe. The repair is to link the file, after which it is captured like
+everything else.
+
+The two lists are complements over one walk of the tree, and everything not in
+the first appears in the second under one of two reasons:
+
+- **unreached** — nothing the workspace links resolves to it. The only kind
+  worth acting on.
+- **bookkeeping** — prov's own: the history store (which excludes *itself* from
+  the capture set, since otherwise no capture could ever be empty and an exact
+  restore would delete every event newer than the one restored), the recycle
+  bin's `items/`, and the generated `about` page. Counted rather than listed,
+  since naming them would bury the list that needs reading.
+
+Hidden entries are skipped — a dotfile is not the workspace's content — and a
+parked store is **named without being descended into**, so a store holding ten
+thousand blobs is one line and not ten thousand. A directory a manifest covers
+(`docs/manifests.md`) is likewise accounted for in bulk rather than listed
+photograph by photograph.
+
 ## 10. Reading the store
 
 Four read-only queries. None writes anything, and all work regardless of the
