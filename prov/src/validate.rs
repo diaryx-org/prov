@@ -596,6 +596,121 @@ pub enum Finding {
     },
 }
 
+impl Finding {
+    /// The document this finding is lodged against — **the file to open to act
+    /// on it**.
+    ///
+    /// Every finding names several paths (a link has a source and a target, a
+    /// manifest has a node and a directory), so "which file is this about" is a
+    /// choice, not a field. The rule here is the one a person uses: the document
+    /// a repair rewrites, or, where no repair is offered, the file they have to
+    /// go and look at. That makes it a total function — every finding has
+    /// exactly one — which is what lets a caller group findings by file, or
+    /// filter them to one.
+    ///
+    /// Three of them are worth naming, because the obvious field is not the
+    /// answer:
+    ///
+    /// - [`MissingInverse`](Self::MissingInverse) reports a *parent* whose child
+    ///   does not link back, and its `doc` is that parent — but
+    ///   [`AddInverse`](crate::remedy::Fix::AddInverse) writes the **child**, so
+    ///   the child is the subject.
+    /// - [`ManifestMismatch`](Self::ManifestMismatch) is a corrupted file inside
+    ///   a covered directory: the **file**, not the node that pinned it.
+    /// - [`HistoryStoreUnlinked`](Self::HistoryStoreUnlinked) is repaired by
+    ///   re-declaring the pointer in the **root**, not by touching the store.
+    ///
+    /// **This is not "every finding that mentions the file".** A broken link in
+    /// `a.md` pointing at `b.md` is `a.md`'s finding, because `a.md` is what a
+    /// repair rewrites — asking for `b.md`'s findings will not surface it. Which
+    /// is the honest answer: nothing is wrong with `b.md`.
+    ///
+    /// A repair may still write a *derived* companion alongside the subject —
+    /// the registry for [`RegisterId`](crate::remedy::Fix::RegisterId), the
+    /// manifest for [`RegenerateManifest`](crate::remedy::Fix::RegenerateManifest)
+    /// — since those are caches of the subject rather than documents in their
+    /// own right.
+    pub fn subject(&self) -> &Path {
+        match self {
+            Finding::BrokenLink { doc, .. }
+            | Finding::CaseMismatch { doc, .. }
+            | Finding::DuplicateContainment { doc, .. }
+            | Finding::Unreadable { doc, .. }
+            | Finding::MalformedId { doc, .. }
+            | Finding::DanglingId { doc, .. }
+            | Finding::AmbiguousAlias { doc, .. }
+            | Finding::StaleLabel { doc, .. }
+            | Finding::IdMismatch { doc, .. }
+            | Finding::UnregisteredId { doc, .. }
+            | Finding::UnstampedId { doc, .. }
+            | Finding::Orphan { doc, .. }
+            | Finding::MissingContainment { doc, .. }
+            | Finding::FixityMismatch { doc, .. }
+            | Finding::ConfigIssue { doc, .. }
+            | Finding::ConfigSpecAhead { doc, .. }
+            | Finding::MalformedStore { doc, .. }
+            | Finding::UnknownTerm { doc, .. }
+            | Finding::TermNearMiss { doc, .. }
+            | Finding::ManifestConflict { doc }
+            | Finding::ManifestMalformed { doc, .. } => doc,
+            // The child is what gains the back-link; `doc` is the parent that
+            // reported it missing.
+            Finding::MissingInverse { child, .. } => child,
+            Finding::HistoryIndexStale { index, .. } => index,
+            // The bin index holds the record; the path it was deleted *from* is
+            // by definition not on disk.
+            Finding::RecycledBytesMissing { index, .. } => index,
+            Finding::HistoryBlobMissing { store, .. }
+            | Finding::HistoryBlobOrphaned { store, .. } => store,
+            // The pointer that needs re-declaring lives in the root.
+            Finding::HistoryStoreUnlinked { root, .. } => root,
+            Finding::AboutStale { path, .. } => path,
+            Finding::ManifestDrift { node, .. } => node,
+            // The one corrupted file, not the node covering ten thousand.
+            Finding::ManifestMismatch { path, .. } => path,
+        }
+    }
+
+    /// A stable snake_case name for this finding's kind — the discriminant on
+    /// its own, for a consumer that branches on the kind rather than reading the
+    /// prose. Matches the variant name, so the two never have to be reconciled
+    /// by hand.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Finding::BrokenLink { .. } => "broken_link",
+            Finding::CaseMismatch { .. } => "case_mismatch",
+            Finding::DuplicateContainment { .. } => "duplicate_containment",
+            Finding::MissingInverse { .. } => "missing_inverse",
+            Finding::Unreadable { .. } => "unreadable",
+            Finding::MalformedId { .. } => "malformed_id",
+            Finding::DanglingId { .. } => "dangling_id",
+            Finding::AmbiguousAlias { .. } => "ambiguous_alias",
+            Finding::StaleLabel { .. } => "stale_label",
+            Finding::IdMismatch { .. } => "id_mismatch",
+            Finding::UnregisteredId { .. } => "unregistered_id",
+            Finding::UnstampedId { .. } => "unstamped_id",
+            Finding::Orphan { .. } => "orphan",
+            Finding::MissingContainment { .. } => "missing_containment",
+            Finding::FixityMismatch { .. } => "fixity_mismatch",
+            Finding::ConfigIssue { .. } => "config_issue",
+            Finding::ConfigSpecAhead { .. } => "config_spec_ahead",
+            Finding::MalformedStore { .. } => "malformed_store",
+            Finding::UnknownTerm { .. } => "unknown_term",
+            Finding::TermNearMiss { .. } => "term_near_miss",
+            Finding::HistoryIndexStale { .. } => "history_index_stale",
+            Finding::RecycledBytesMissing { .. } => "recycled_bytes_missing",
+            Finding::HistoryBlobMissing { .. } => "history_blob_missing",
+            Finding::HistoryBlobOrphaned { .. } => "history_blob_orphaned",
+            Finding::HistoryStoreUnlinked { .. } => "history_store_unlinked",
+            Finding::AboutStale { .. } => "about_stale",
+            Finding::ManifestConflict { .. } => "manifest_conflict",
+            Finding::ManifestMalformed { .. } => "manifest_malformed",
+            Finding::ManifestDrift { .. } => "manifest_drift",
+            Finding::ManifestMismatch { .. } => "manifest_mismatch",
+        }
+    }
+}
+
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
