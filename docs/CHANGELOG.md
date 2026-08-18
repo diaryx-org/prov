@@ -28,6 +28,28 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.6.1 — 2026-08-18
+
+### Added
+
+- **mutate** — a removal can skip the census nobody was reading ([`4209b27`](https://github.com/diaryx-org/prov/commit/4209b27f1d7c09a48db22c6df89fce3f0128beb3))
+- **release** — the release page says what the changelog says ([`41adccc`](https://github.com/diaryx-org/prov/commit/41adccccb53548947d72bcbae34cbf3bebcf0d95))
+
+### Fixed
+
+- **ci** — publish with a token that reaches every crate ([`f7ea95b`](https://github.com/diaryx-org/prov/commit/f7ea95b2a13b19023d9b70dcad2d8f2326218121))
+
+### Behavioural changes
+
+- `delete` and `recycle` are unchanged, and new
+`delete_with`/`recycle_with` take a `Diagnosis`. One ordering did move: `delete`
+now resolves the separated-body refusal *before* walking up to the spanning
+root, since that walk belongs to the diagnosis. A delete naming the body half of
+a separated pair in a workspace whose root document is also unreadable now
+reports the body refusal, where it previously surfaced the root error first.
+Both are errors and neither writes anything; only which one is named changed.
+
+
 ## v0.6.0 — 2026-08-18
 
 ### Added

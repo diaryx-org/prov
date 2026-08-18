@@ -6,7 +6,7 @@ resolver = "2"
 members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov-history", "prov", "prov-cli", "xtask"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 # Minimum supported Rust version. Edition 2024 needs 1.85, but the crate also uses
 # `if let … && let …` let-chains in stable positions, stabilized in 1.88 — so 1.88
@@ -67,23 +67,23 @@ twig-doc = "3"
 moid = "1"
 
 # Internal crate.
-prov = { path = "prov", version = "0.6.0" }
+prov = { path = "prov", version = "0.6.1" }
 # Read-only graph and storage ports.
-prov-graph = { path = "prov-graph", version = "0.6.0", default-features = false }
+prov-graph = { path = "prov-graph", version = "0.6.1", default-features = false }
 # The write halves of those ports: `Storage`, the metadata editor, the ID registries.
-prov-store = { path = "prov-store", version = "0.6.0", default-features = false }
+prov-store = { path = "prov-store", version = "0.6.1", default-features = false }
 # Identity registration policies and ID minting.
-prov-identity = { path = "prov-identity", version = "0.6.0", default-features = false }
+prov-identity = { path = "prov-identity", version = "0.6.1", default-features = false }
 # Content fixity policy, digests, and the device-local cache.
-prov-fixity = { path = "prov-fixity", version = "0.6.0" }
+prov-fixity = { path = "prov-fixity", version = "0.6.1" }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
-prov-transaction = { path = "prov-transaction", version = "0.6.0", default-features = false }
+prov-transaction = { path = "prov-transaction", version = "0.6.1", default-features = false }
 # History bounded context: immutable events, blob storage, and history verbs.
-prov-history = { path = "prov-history", version = "0.6.0", default-features = false }
+prov-history = { path = "prov-history", version = "0.6.1", default-features = false }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
-prov-views = { path = "prov-views", version = "0.6.0", default-features = false }
+prov-views = { path = "prov-views", version = "0.6.1", default-features = false }
 # Gated egress sets: a view composed with a gate, judged as an export plan.
-prov-exports = { path = "prov-exports", version = "0.6.0", default-features = false }
+prov-exports = { path = "prov-exports", version = "0.6.1", default-features = false }
 # Workspace configuration policy, codecs, diagnostics, and vocabularies.
-prov-config = { path = "prov-config", version = "0.6.0", default-features = false }
+prov-config = { path = "prov-config", version = "0.6.1", default-features = false }
