@@ -420,6 +420,19 @@ pub struct Version {
     pub label: Option<String>,
     /// What that event's manifest said about the document.
     pub state: Presence,
+    /// Whether reaching this point meant **inferring** a rename the manifests
+    /// did not record — the tracked path vanished from this capture and exactly
+    /// one path appeared in it carrying exactly those bytes.
+    ///
+    /// Only ever set on a path-keyed lineage. An id-keyed one has the answer in
+    /// the `id` column and never guesses, which is the whole reason the column
+    /// is there.
+    ///
+    /// Carried rather than folded into [`Presence`] because it is a fact about
+    /// *how the query got here*, not about what the manifest said — and because
+    /// a display that presented an inference with the same confidence as a
+    /// recorded id would be claiming more than the store knows.
+    pub inferred: bool,
 }
 
 /// The newest event in a store, named without reading the rest of it.

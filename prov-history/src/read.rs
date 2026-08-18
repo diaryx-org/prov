@@ -494,7 +494,14 @@ impl<H: HistoryReadHost> HistoryStore<H> {
     ///
     /// An event that does not mention the subject records [`Presence::Gone`], but
     /// only once the document has been seen, so a lineage starts where its
-    /// document does rather than with a run of absences. Events are walked in
+    /// document does rather than with a run of absences.
+    ///
+    /// A path-keyed lineage does not simply stop at a rename. When the tracked
+    /// path leaves a capture set, [`infer_rename`] asks whether the manifests
+    /// already say where it went — and when they do so unambiguously, the
+    /// lineage follows, with that point marked [`inferred`](Version::inferred)
+    /// so a display never presents a guess with the confidence of a recorded id.
+    /// An id-keyed lineage never infers: the `id` column is the answer. Events are walked in
     /// capture order (`created`, then id), so concurrent captures on two devices
     /// interleave rather than branching — this is a display, and `history-list`
     /// is where forks are named.
@@ -503,12 +510,44 @@ impl<H: HistoryReadHost> HistoryStore<H> {
     /// honest price of storing by consistent cut and querying by document, and it
     /// is why this is a query rather than an index.
     pub async fn log(&self, root_doc: &Path, subject: &Subject) -> Result<Vec<Version>> {
+        let events = self.list(root_doc).await?;
         let mut log: Vec<Version> = Vec::new();
-        for event in self.list(root_doc).await? {
-            let row = event.files.iter().find(|file| match subject {
-                Subject::Id(id) => file.id.as_ref() == Some(id),
-                Subject::Path(path) => &file.path == path,
-            });
+        // The path a path-keyed lineage is currently following, which a rename
+        // moves. `None` for an id-keyed one: the `id` column is the answer, so
+        // there is nothing to track and nothing to guess.
+        let mut tracked = match subject {
+            Subject::Path(path) => Some(path.clone()),
+            Subject::Id(_) => None,
+        };
+        let mut earlier: Option<&Event> = None;
+
+        for event in &events {
+            // A path that has left this capture set may have been renamed rather
+            // than deleted. Asked only when it is absent — the ordinary event,
+            // where the row is right there, never pays for the inference.
+            let inferred = match (&tracked, earlier) {
+                (Some(path), Some(earlier))
+                    if !event.files.iter().any(|file| &file.path == path) =>
+                {
+                    match infer_rename(earlier, event, path) {
+                        Some(moved) => {
+                            tracked = Some(moved);
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                _ => false,
+            };
+
+            let row = match &tracked {
+                Some(path) => event.files.iter().find(|file| &file.path == path),
+                None => event.files.iter().find(|file| match subject {
+                    Subject::Id(id) => file.id.as_ref() == Some(id),
+                    // Unreachable: a path subject always tracks.
+                    Subject::Path(path) => &file.path == path,
+                }),
+            };
             let state = match row {
                 Some(file) => Presence::At {
                     path: file.path.clone(),
@@ -517,6 +556,7 @@ impl<H: HistoryReadHost> HistoryStore<H> {
                 },
                 None => Presence::Gone,
             };
+            earlier = Some(event);
             match log.last() {
                 // The document did not exist yet when this capture was taken.
                 None if state == Presence::Gone => continue,
@@ -524,14 +564,59 @@ impl<H: HistoryReadHost> HistoryStore<H> {
                 _ => {}
             }
             log.push(Version {
-                event: event.id,
-                created: event.created,
-                label: event.label,
+                event: event.id.clone(),
+                created: event.created.clone(),
+                label: event.label.clone(),
                 state,
+                inferred,
             });
         }
         Ok(log)
     }
+}
+
+/// The path `path` was renamed to between `earlier` and `later`, if the two
+/// manifests say so unambiguously.
+///
+/// The manifests already carry what is needed: a path that disappears and a path
+/// that appears carrying **the same hash** in the same event is a rename, since a
+/// move leaves the bytes byte-identical. That recovers lineage across a rename
+/// for every document with no id — which, in an archive of any age, is nearly all
+/// of them.
+///
+/// ## Why it must be one-to-one
+///
+/// The pairing is only sound when it is unambiguous, and the tempting weaker rule
+/// is wrong in a way a real workspace produces on day one: **every empty file
+/// shares one digest**, as does every copy of the same boilerplate. If two paths
+/// carrying that digest left and three appeared, any pairing is a guess, and a
+/// guess presented as lineage is worse than the honest break — so exactly one
+/// must have gone and exactly one arrived, and the one that went must be the
+/// document being followed.
+///
+/// What survives that rule is a residual false positive nothing in the store can
+/// rule out: one file deleted and one unrelated file created with byte-identical
+/// content in the same capture. It is indistinguishable from a rename *in the
+/// data*, which is why the point it produces is marked
+/// [`inferred`](Version::inferred) rather than presented as a recorded fact.
+fn infer_rename(earlier: &Event, later: &Event, path: &Path) -> Option<PathBuf> {
+    // The bytes the tracked document had when it was last seen. Absent means it
+    // was already gone, and a lineage does not resume by inference.
+    let hash = &earlier.files.iter().find(|f| f.path == path)?.hash;
+    let held = |event: &Event, path: &Path| event.files.iter().any(|f| f.path == path);
+
+    let mut gone = earlier
+        .files
+        .iter()
+        .filter(|f| &f.hash == hash && !held(later, &f.path));
+    let mut arrived = later
+        .files
+        .iter()
+        .filter(|f| &f.hash == hash && !held(earlier, &f.path));
+
+    let (left, came) = (gone.next()?, arrived.next()?);
+    (left.path == path && gone.next().is_none() && arrived.next().is_none())
+        .then(|| came.path.clone())
 }
 
 /// Format the paths [`HistoryStore::events_in`] could not read, for a refusal

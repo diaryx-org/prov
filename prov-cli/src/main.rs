@@ -2774,6 +2774,10 @@ fn cmd_history_log(target: &str) -> CmdResult {
     let mut rows = Vec::with_capacity(log.len());
     let mut previous: Option<PathBuf> = None;
     let mut seen = false;
+    // Whether any point was reached by inferring a rename rather than reading an
+    // id — which the footer has to say plainly, since it is the one thing here
+    // the store does not actually know.
+    let mut guessed = false;
     // An id the *manifests* recorded at this path, even though the live registry
     // has none — the path query telling the caller a stronger one exists.
     let mut recorded_id = None;
@@ -2781,11 +2785,16 @@ fn cmd_history_log(target: &str) -> CmdResult {
         match &point.state {
             prov::Presence::At { path, id, hash } => {
                 let note = match &previous {
+                    // An inferred move is labelled as inferred wherever it is
+                    // shown. The row is where a reader looks, so the row is
+                    // where the weaker claim has to be made.
+                    Some(old) if old != path && point.inferred => "  (moved — inferred)",
                     Some(old) if old != path => "  (moved)",
                     Some(_) => "",
                     None if seen => "  (restored)",
                     None => "  (first captured)",
                 };
+                guessed |= point.inferred;
                 rows.push(format!(
                     "{}  {}  {}{}{note}",
                     point.event,
@@ -2815,14 +2824,25 @@ fn cmd_history_log(target: &str) -> CmdResult {
         // (a deleted document, a damaged registry), hand over the better query.
         match recorded_id {
             Some(id) => eprintln!(
-                "note: this lineage is keyed by path, so it stops at any rename. \
-                 The manifests record {id} at this path — `prov history-log id:{id}` \
-                 follows the document across moves."
+                "note: this lineage is keyed by path. The manifests record {id} at \
+                 this path — `prov history-log id:{id}` follows the document by its \
+                 identity rather than by where it sat."
             ),
             None => eprintln!(
                 "note: no capture recorded an id at this path, so this lineage is \
-                 keyed by path and stops at any rename."
+                 keyed by path — a move is followed only where the manifests make \
+                 it unambiguous."
             ),
+        }
+        if guessed {
+            // Said once, at the end, in the terms that let someone judge it:
+            // what the evidence was, and what it cannot rule out.
+            eprintln!(
+                "note: a point marked `inferred` crossed a rename this store never \
+                 recorded — one path left that capture with exactly those bytes and \
+                 one arrived with them. That is nearly always a move, but two \
+                 unrelated files with identical content would look the same."
+            );
         }
     }
     Ok(ExitCode::SUCCESS)

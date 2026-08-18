@@ -352,10 +352,11 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
     };
     assert_eq!(first, second, "a rename leaves the bytes identical");
 
-    // The same document asked for by its old *path*: the lineage fragments at
-    // the move, which is the nature of a path key. But the row it does find
-    // still remembers the id — which is what lets the weaker query hand the
-    // caller the stronger one instead of quietly under-reporting.
+    // The same document asked for by its old *path*. The id column is not what
+    // carries it across the move here — the manifests are: one path left with
+    // those exact bytes and one arrived with them, so the rename is inferred and
+    // the lineage stays whole. The row it finds still remembers the id, which is
+    // what lets the weaker query hand the caller the stronger one.
     let by_path = block_on(w.log(
         Path::new("index.md"),
         &Subject::Path(PathBuf::from("notes/a.md")),
@@ -365,10 +366,20 @@ fn a_lineage_follows_an_id_through_a_rename_no_path_key_could() {
         &by_path[0].state,
         Presence::At { id: Some(found), .. } if *found == id
     ));
-    assert_eq!(
+    assert_ne!(
         by_path.last().unwrap().state,
         Presence::Gone,
-        "a path-keyed lineage sees the move as the document disappearing"
+        "the inferred rename must keep a path-keyed lineage from ending at the move"
+    );
+    assert_eq!(
+        by_path.iter().map(|v| v.inferred).collect::<Vec<_>>(),
+        vec![false, true, false],
+        "only the point that crossed the rename is an inference"
+    );
+    // Inferred or recorded, the two keys agree on the answer.
+    assert_eq!(
+        by_path.iter().map(|v| &v.state).collect::<Vec<_>>(),
+        log.iter().map(|v| &v.state).collect::<Vec<_>>(),
     );
 }
 
@@ -621,5 +632,169 @@ fn a_cat_names_forgotten_bytes_as_forgotten_rather_than_missing() {
             .files
             .iter()
             .any(|f| f.path == Path::new("notes/photo.jpg"))
+    );
+}
+
+/// The payoff: a document with **no id at all** keeps its lineage across a
+/// rename. That is nearly every document in an archive of any age — and exactly
+/// the population a sync transport damages, so the weaker key needed to stop
+/// being quite this weak.
+#[test]
+fn a_lineage_infers_a_rename_for_a_document_with_no_id() {
+    let dir = seed("log-infer");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+
+    // A move and nothing else: the bytes are byte-identical either side, which
+    // is the whole basis of the inference.
+    std::fs::rename(dir.join("notes/a.md"), dir.join("notes/moved.md")).unwrap();
+    relink(&dir, &["notes/moved.md", "notes/photo.jpg.yaml"]);
+    capture(&dir, "2026-07-31T10:00:00Z", None);
+
+    // …then an edit at the new path, to prove the lineage kept following rather
+    // than merely surviving the one event.
+    write(
+        &dir,
+        "notes/moved.md",
+        "---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n",
+    );
+    capture(&dir, "2026-07-31T11:00:00Z", None);
+
+    let log = block_on(store(&dir).log(
+        Path::new("index.md"),
+        &Subject::Path(PathBuf::from("notes/a.md")),
+    ))
+    .unwrap();
+
+    let paths: Vec<&Path> = log
+        .iter()
+        .map(|v| match &v.state {
+            Presence::At { path, .. } => path.as_path(),
+            Presence::Gone => Path::new("(gone)"),
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            Path::new("notes/a.md"),
+            Path::new("notes/moved.md"),
+            Path::new("notes/moved.md"),
+        ],
+        "the lineage must cross the rename and keep going"
+    );
+    assert_eq!(
+        log.iter().map(|v| v.inferred).collect::<Vec<_>>(),
+        vec![false, true, false],
+        "the inference is marked at the point that used it, and nowhere else"
+    );
+    // No id was ever recorded, so nothing but the hashes could have carried it.
+    assert!(
+        log.iter()
+            .all(|v| matches!(&v.state, Presence::At { id: None, .. } | Presence::Gone))
+    );
+}
+
+/// The guard that keeps the inference honest, tested against the case a real
+/// workspace produces immediately: **identical bytes are not a unique name.**
+/// Two documents sharing a digest — boilerplate, or the empty file every vault
+/// has several of — move in one capture, and no pairing between them is
+/// evidence. The lineage breaks rather than guessing.
+#[test]
+fn an_ambiguous_move_is_not_inferred_as_a_rename() {
+    let dir = seed("log-ambiguous");
+    let twin = "---\ntitle: Twin\npart_of: '../index.md'\n---\nsame\n";
+    write(&dir, "notes/x.md", twin);
+    write(&dir, "notes/y.md", twin);
+    relink(
+        &dir,
+        &[
+            "notes/a.md",
+            "notes/photo.jpg.yaml",
+            "notes/x.md",
+            "notes/y.md",
+        ],
+    );
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+
+    // Both twins move in the same capture. Either could be either.
+    std::fs::rename(dir.join("notes/x.md"), dir.join("notes/p.md")).unwrap();
+    std::fs::rename(dir.join("notes/y.md"), dir.join("notes/q.md")).unwrap();
+    relink(
+        &dir,
+        &[
+            "notes/a.md",
+            "notes/photo.jpg.yaml",
+            "notes/p.md",
+            "notes/q.md",
+        ],
+    );
+    capture(&dir, "2026-07-31T10:00:00Z", None);
+
+    let log = block_on(store(&dir).log(
+        Path::new("index.md"),
+        &Subject::Path(PathBuf::from("notes/x.md")),
+    ))
+    .unwrap();
+    assert_eq!(
+        log.last().unwrap().state,
+        Presence::Gone,
+        "two candidates is not one candidate; an ambiguous pairing must not be claimed"
+    );
+    assert!(
+        log.iter().all(|v| !v.inferred),
+        "nothing here was inferred, so nothing may be marked as inferred"
+    );
+
+    // The unambiguous half of the same store still works: `notes/a.md` never
+    // moved, so the guard costs the ordinary case nothing.
+    let steady = block_on(store(&dir).log(
+        Path::new("index.md"),
+        &Subject::Path(PathBuf::from("notes/a.md")),
+    ))
+    .unwrap();
+    assert!(matches!(steady.last().unwrap().state, Presence::At { .. }));
+}
+
+/// A document that moves twice is followed twice: the tracked path is *where the
+/// lineage is now*, not where it started, so each rename is inferred against the
+/// capture immediately before it.
+#[test]
+fn a_lineage_follows_more_than_one_inferred_rename() {
+    let dir = seed("log-infer-twice");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+
+    // Distinct timestamps, because these two events *must* order: same-minute
+    // ids tie-break on a content digest, which is arbitrary by design.
+    for (from, to, now) in [
+        ("notes/a.md", "notes/b.md", "2026-07-31T10:00:00Z"),
+        ("notes/b.md", "notes/c.md", "2026-07-31T11:00:00Z"),
+    ] {
+        std::fs::rename(dir.join(from), dir.join(to)).unwrap();
+        relink(&dir, &[to, "notes/photo.jpg.yaml"]);
+        capture(&dir, now, None);
+    }
+
+    let log = block_on(store(&dir).log(
+        Path::new("index.md"),
+        &Subject::Path(PathBuf::from("notes/a.md")),
+    ))
+    .unwrap();
+    let paths: Vec<&Path> = log
+        .iter()
+        .map(|v| match &v.state {
+            Presence::At { path, .. } => path.as_path(),
+            Presence::Gone => Path::new("(gone)"),
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            Path::new("notes/a.md"),
+            Path::new("notes/b.md"),
+            Path::new("notes/c.md"),
+        ],
+    );
+    assert_eq!(
+        log.iter().map(|v| v.inferred).collect::<Vec<_>>(),
+        vec![false, true, true],
     );
 }

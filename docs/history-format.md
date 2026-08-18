@@ -515,8 +515,26 @@ one pass over every event.
 - **A path is the fallback**, for the documents that carry no id — the config
   document, the registry, the recycle-bin index, an attachment payload. Those are
   disproportionately what a sync transport damages, so the weaker key has to
-  exist. A path-keyed lineage stops at any rename; when the rows it *does* find
-  carry an id, the query says so and names the stronger one.
+  exist. When the rows it finds carry an id, the query says so and names the
+  stronger one.
+- **A path-keyed lineage infers a rename** rather than stopping at one. The
+  manifests already hold the evidence: a move leaves the bytes byte-identical, so
+  a path that disappears and a path that appears carrying the same hash in the
+  same event is a rename. When the tracked path leaves a capture set, the pairing
+  is taken **only if it is one-to-one** — exactly one path with that hash left,
+  exactly one arrived, and the one that left is the document being followed.
+  Anything else is a guess between candidates, and the lineage breaks honestly
+  instead. The weaker rule is wrong on day one in a real workspace, because
+  *every empty file shares one digest*, as does every copy of the same
+  boilerplate.
+
+  What the rule cannot rule out is one file deleted and one unrelated file
+  created with identical content in the same capture — indistinguishable from a
+  move in the data. So a point reached this way is **marked as inferred**, and a
+  display must not present it with the confidence of a recorded id. This is
+  recovery of lineage for the documents that have no id at all, which in an
+  archive of any age is nearly all of them; it is not a substitute for the `id`
+  column, which never guesses.
 - **Dedupe is on the whole row** — path, id and hash. A rename leaves the bytes
   byte-identical, so deduping on the hash alone would swallow precisely the event
   the `id` column exists to surface. A document acquiring an id is a point too:
