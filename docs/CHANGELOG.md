@@ -27,6 +27,7 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 ### Added
 
 - **check** — a subtree nothing links to stops being invisible ([`c6a2246`](https://github.com/diaryx-org/prov/commit/c6a2246477abc109ee5a3241823a052fccef23ea))
+- **cli** — --version says which commit an untagged build came from ([`4bec2c9`](https://github.com/diaryx-org/prov/commit/4bec2c9ff97be4a5667800186447e4839eff93e8))
 
 ### Fixed
 
@@ -58,6 +59,14 @@ parent now writes the parent's spanning entry when it is missing, where before i
 was a silent no-op — a workspace repaired with `prov reparent` will gain the
 `contents` entries those runs did not make. Reparenting away from a parent that is
 no longer on disk now succeeds instead of failing with an I/O error.
+
+- `prov --version` no longer prints the package version alone.
+A binary built from anything other than this version's release tag now prints
+the version followed by an abbreviated commit hash in parentheses — `prov 0.6.1
+(8cc0436e)`. Builds from the tag, and builds from a source tree with no git
+metadata (the crates.io tarball, docs.rs, distro packaging), are unchanged.
+Anything parsing `--version` should take the first two whitespace-separated
+fields rather than the whole line.
 
 <!-- git-cliff:end -->
 
