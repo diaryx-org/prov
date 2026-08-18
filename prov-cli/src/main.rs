@@ -21,7 +21,7 @@
 //! (`tree`, `check`, `new`, `mv`, `rm`, …) discover a root first.
 
 use std::collections::BTreeSet;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -212,6 +212,7 @@ fn main() -> ExitCode {
         Command::Cache { clear } => cmd_cache(clear),
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
+        Command::HistoryCat { event, target } => cmd_history_cat(&event, &target),
         Command::HistoryLog { target } => cmd_history_log(&target),
         Command::HistoryRestore {
             event,
@@ -2693,6 +2694,66 @@ fn cmd_history_show(id: &str) -> CmdResult {
 /// The subject is an id wherever one exists, because that is what survives a
 /// rename. A path is used only when the document carries no id, and the fallback
 /// is called out on stderr rather than passed off as equivalent.
+/// Write one captured file's bytes to stdout.
+///
+/// The whole verb is a lookup, and the care is all in the failure modes: three
+/// different things can mean "no bytes here", and a script piping this into
+/// `diff` has to be able to tell an empty answer from a wrong one. Every refusal
+/// therefore writes **nothing** to stdout and exits non-zero.
+fn cmd_history_cat(id: &str, target: &str) -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+    let Some(event) = block_on(ws.history_event(&ctx.root_doc, id))? else {
+        return Err(format!(
+            "no history event `{id}` — list what is in the store with `prov history-list`"
+        )
+        .into());
+    };
+    // The same resolution `history-log` and `history-forget` use: an id wherever
+    // one exists, since that is what survives a rename, and a path only for the
+    // documents that carry none.
+    let (subject, name) = history_subject(&ctx, &ws, target)?;
+
+    match block_on(ws.history_cat(&ctx.root_doc, &event, &subject))? {
+        prov::Retrieved::Bytes { path, bytes, .. } => {
+            // Straight to the raw handle: a captured file is bytes, not a line
+            // sequence, and `println!` would append a newline no capture held.
+            let mut out = std::io::stdout().lock();
+            out.write_all(&bytes)?;
+            out.flush()?;
+            // The captured path on stderr, so a redirect keeps the bytes clean
+            // while an interactive reader still learns *which* row answered —
+            // which is not obvious when an id was followed across a rename.
+            if path != Path::new(&name) {
+                eprintln!("({} at {})", path.display(), event.id);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        prov::Retrieved::Unrecorded => Err(format!(
+            "{} names no file in {} — `prov history-show {}` lists what that capture \
+             held, and `prov history-log {target}` finds the events that did capture it",
+            name, event.id, event.id
+        )
+        .into()),
+        prov::Retrieved::NoBytes { path, .. } => Err(format!(
+            "{} was captured in {} but its bytes are not in this store yet — an event \
+             document and the blobs it names travel separately, so this is ordinarily \
+             a sync still in flight rather than loss",
+            path.display(),
+            event.id
+        )
+        .into()),
+        prov::Retrieved::Forgotten { path, .. } => Err(format!(
+            "{} was captured in {}, but those bytes were deliberately destroyed by \
+             `prov history-forget`. The manifest still records that it existed, at \
+             that path, with that hash — the record outlives the bytes",
+            path.display(),
+            event.id
+        )
+        .into()),
+    }
+}
+
 fn cmd_history_log(target: &str) -> CmdResult {
     let ctx = find_root()?;
     let ws = workspace(&ctx)?;

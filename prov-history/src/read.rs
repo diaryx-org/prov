@@ -8,7 +8,7 @@ use prov_graph::error::{Error, Result};
 use super::docs::Authoring;
 use super::event_id::comparable;
 use super::layout::{StoreLocation, blob_path, event_path, id_stamp_of, store_dir};
-use super::model::{Event, Latest, Presence, Subject, Summary, Version};
+use super::model::{Event, Latest, Presence, Retrieved, Subject, Summary, Version};
 use super::paths::{path_sort_key, under};
 use super::{EVENTS_DIR, HISTORY_DIR, HistoryReadHost, HistoryStore};
 
@@ -407,6 +407,72 @@ impl<H: HistoryReadHost> HistoryStore<H> {
             }
         }
         Ok(missing)
+    }
+
+    /// The bytes one captured file held at `event` — the pre-image its manifest
+    /// row names, read straight out of the blob store.
+    ///
+    /// The primitive the other read verbs were missing. [`event`](Self::event)
+    /// reports what a capture *recorded*; this produces what it *holds*, which is
+    /// what makes the store usable with tools that are not prov at all:
+    ///
+    /// ```text
+    /// prov history-cat <event> notes.md | diff - notes.md
+    /// ```
+    ///
+    /// A lookup, not a reconstruction. A manifest row names a content-addressed
+    /// blob directly, so the cost is one read and does not grow with the number
+    /// of events between that capture and now — the payoff for storing full
+    /// manifests that a delta log would have had to fold to match.
+    ///
+    /// The subject is a [`Subject`] rather than a bare path for the reason
+    /// [`log`](Self::log) takes one: an id reaches a document that has since
+    /// moved, where a path-keyed lookup silently misses it and reports the
+    /// document as never captured. A [`Subject::Path`] is matched against the
+    /// path the manifest **recorded** — what the document was called at that
+    /// capture, which is not necessarily what it is called now.
+    ///
+    /// Absence comes back in three kinds rather than as one error; see
+    /// [`Retrieved`], and `HistoryIssue::BlobMissing` for why the distinction is
+    /// worth carrying.
+    pub async fn cat(
+        &self,
+        root_doc: &Path,
+        event: &Event,
+        subject: &Subject,
+    ) -> Result<Retrieved> {
+        let Some(file) = event.files.iter().find(|file| match subject {
+            Subject::Id(id) => file.id.as_ref() == Some(id),
+            Subject::Path(path) => &file.path == path,
+        }) else {
+            return Ok(Retrieved::Unrecorded);
+        };
+        let (path, hash) = (file.path.clone(), file.hash.clone());
+
+        let (store_index, _) = self.store_index(root_doc).await?;
+        // A hash prov could not have parked names no blob that could be found —
+        // the same judgement `missing_blobs` makes about a foreign or mangled
+        // digest: absent, rather than an error that fails the whole read.
+        let Ok(blob) = blob_path(&store_index, &hash) else {
+            return self.absent(root_doc, path, hash).await;
+        };
+        if !self.host().graph().exists(&blob).await? {
+            return self.absent(root_doc, path, hash).await;
+        }
+        let bytes = self.host().graph().read_bytes(&blob).await?;
+        Ok(Retrieved::Bytes { path, hash, bytes })
+    }
+
+    /// Which kind of absence: destroyed on purpose, or not arrived yet.
+    ///
+    /// The tombstone list is the only thing that tells them apart, and it is read
+    /// **only once the bytes are known to be gone** — so the ordinary path, where
+    /// the blob is right there, pays nothing for a distinction it does not need.
+    async fn absent(&self, root_doc: &Path, path: PathBuf, hash: String) -> Result<Retrieved> {
+        Ok(match self.forgotten(root_doc).await?.contains(&hash) {
+            true => Retrieved::Forgotten { path, hash },
+            false => Retrieved::NoBytes { path, hash },
+        })
     }
 
     /// One document's lineage across every capture, oldest first: pull its row

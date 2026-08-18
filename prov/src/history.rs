@@ -95,8 +95,8 @@ use prov_store::index::IndexStore;
 pub use prov_history::{
     BLOBS_DIR, Captured, Conflict, Disposition, EVENTS_DIR, Event, FORGOTTEN_STEM, FileEntry,
     Forgotten, HISTORY_DIR, HistoryIssue, HistoryStore, Latest, Presence, Pruned, RestoreOp,
-    RestorePlan, Retention, Scope, StoreLocation, Subject, Summary, TRIGGER_MANUAL, Version,
-    blob_path, event_path, shard_of, store_dir,
+    RestorePlan, Retention, Retrieved, Scope, StoreLocation, Subject, Summary, TRIGGER_MANUAL,
+    Version, blob_path, event_path, shard_of, store_dir,
 };
 
 /// The compatibility surface: one forward per verb, through
@@ -147,6 +147,17 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         event: &Event,
     ) -> Result<BTreeSet<PathBuf>> {
         self.history_store().missing_blobs(root_doc, event).await
+    }
+
+    /// The bytes one captured file held at `event`. See
+    /// `prov_history::HistoryStore::cat`.
+    pub async fn history_cat(
+        &self,
+        root_doc: &Path,
+        event: &Event,
+        subject: &Subject,
+    ) -> Result<Retrieved> {
+        self.history_store().cat(root_doc, event, subject).await
     }
 
     /// One document's lineage across every capture. See

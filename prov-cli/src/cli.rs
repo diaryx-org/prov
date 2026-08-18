@@ -813,6 +813,35 @@ pub(crate) enum Command {
         /// directly, with no index consulted.
         event: String,
     },
+    /// Write one captured file's bytes to standard output — the pre-image
+    /// exactly as it stood at that capture.
+    ///
+    /// A lookup, not a reconstruction: the manifest row names a
+    /// content-addressed blob, so this costs one read however many captures have
+    /// happened since. It is what makes the store work with tools that are not
+    /// prov —
+    ///
+    ///     prov history-cat 2026-07-31-0915-4f2a9c1e notes.md | diff - notes.md
+    ///
+    /// Bytes are written verbatim and are not necessarily text: a capture set
+    /// holds whatever the workspace holds. Redirect to a file for an attachment.
+    ///
+    /// Exits non-zero, writing nothing to stdout, when the event has no such row
+    /// or its bytes are not in the store — so a pipeline fails rather than
+    /// silently comparing against an empty file.
+    ///
+    /// Works regardless of the `history` config axis.
+    HistoryCat {
+        /// The event id, as `history-list` prints it.
+        event: String,
+        /// The document: a path, or `id:<id>` to follow an id directly.
+        ///
+        /// A path is resolved to its id when the workspace has one, which is
+        /// what reaches a document that has been renamed since the capture. A
+        /// path that no longer exists is matched against the manifest as
+        /// written — which is how a *deleted* document's bytes come back.
+        target: String,
+    },
     /// Print one document's lineage across every capture: the events where its
     /// bytes or its path changed, newest first.
     ///

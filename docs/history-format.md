@@ -478,7 +478,7 @@ Two verbs make it irreversible again: `history-prune` (§12) by age or count, an
 
 ## 10. Reading the store
 
-Two read-only queries. Neither writes anything, and both work regardless of the
+Three read-only queries. None writes anything, and all work regardless of the
 config axis (§8) — including on a workspace whose store arrived entirely from
 another device.
 
@@ -526,6 +526,37 @@ one pass over every event.
   starts where its document does.
 - **Forks interleave rather than branch.** This is a display; `history-list` is
   where a concurrent capture on another device is named as a fork.
+
+### 10.3 `history-cat <id> <target>` — one captured file's bytes
+
+Resolve the subject's row in the event's manifest and write the blob its `hash`
+names (§5) to standard output, verbatim.
+
+A **lookup, not a reconstruction**: a manifest row addresses its bytes directly,
+so the cost is one read however many captures have happened since. This is the
+other half of what full manifests buy — §10.1 prints what a capture *recorded*,
+and this produces what it *holds*, which is what makes the store usable from
+outside prov entirely:
+
+    prov history-cat <id> notes.md | diff - notes.md
+
+Bytes, not text. A capture set holds whatever the workspace holds, and an
+attachment payload is not UTF-8; nothing is transcoded, and no trailing newline
+is added that the capture did not have.
+
+- **The subject follows §10.2's rule** — an id wherever one exists, a path
+  otherwise. A path is matched against the path the manifest **recorded**, which
+  is what the document was called at that capture and not necessarily what it is
+  called now. A path that no longer exists on disk therefore still answers, which
+  is how a deleted document's bytes come back.
+- **Absence is reported in three kinds, never as one.** A subject the manifest
+  has no row for (the document did not exist, or was outside the capture set); a
+  row whose blob is not on disk (§10.1's ordinary in-flight state, not damage);
+  and a row whose blob was deliberately destroyed (§13 — the tombstone is what
+  separates the two, and the record outliving the bytes is that verb's stated
+  bargain). Collapsing them would report a routinely half-synced event as loss.
+- **Every refusal writes nothing to standard output** and exits non-zero, so a
+  pipeline fails rather than silently comparing against an empty file.
 
 ## 11. Restoring from the store
 

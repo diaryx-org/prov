@@ -340,6 +340,52 @@ impl Forgotten {
     }
 }
 
+/// What the store could produce for one captured file's bytes — the four
+/// answers [`cat`](super::HistoryStore::cat) has to keep apart.
+///
+/// Absence is not one thing. A row the manifest never held, bytes still in
+/// flight, and bytes destroyed on purpose are three different facts about the
+/// store, and collapsing them would report a routinely half-synced event as data
+/// loss. It is the same distinction `history-show` marks per row and a
+/// [`RestorePlan`] carries as [`Disposition::NoBytes`] — made once more here,
+/// because this is the verb a script pipes into something else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retrieved {
+    /// The captured bytes, and the row they came from.
+    Bytes {
+        /// Where the document lived at that capture, workspace-relative. Not
+        /// necessarily where it lives now — following a [`Subject::Id`] to an
+        /// event predating a rename is exactly how this differs from `path`.
+        path: PathBuf,
+        /// The digest of the returned bytes, spelled `sha256:<hex>`.
+        hash: String,
+        /// The pre-image, verbatim. Bytes rather than text: a capture set holds
+        /// whatever the workspace holds, and an attachment is not UTF-8.
+        bytes: Vec<u8>,
+    },
+    /// The event's manifest has no row for this subject — the document did not
+    /// exist, or was not in the capture set, when the event was taken.
+    Unrecorded,
+    /// The row is there and its blob is not. Ordinary in-flight state rather
+    /// than damage: an event document and the bytes it names travel over a
+    /// transport independently, and a small document routinely lands first.
+    NoBytes {
+        /// The captured path.
+        path: PathBuf,
+        /// The digest whose blob is absent.
+        hash: String,
+    },
+    /// The row is there and its blob was deliberately destroyed by
+    /// [`forget`](super::HistoryStore::forget). The record outliving the bytes
+    /// is the bargain that verb states rather than a fault to report.
+    Forgotten {
+        /// The captured path.
+        path: PathBuf,
+        /// The tombstoned digest.
+        hash: String,
+    },
+}
+
 /// What one event's manifest said about one document — the unit a lineage
 /// reports a change in.
 #[derive(Debug, Clone, PartialEq, Eq)]

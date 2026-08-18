@@ -439,3 +439,187 @@ fn an_id_less_document_still_has_a_lineage_by_path() {
         .is_empty()
     );
 }
+
+/// `cat`'s whole contract: the bytes a capture *held*, not the bytes on disk
+/// now. The distinction is the point of the verb — a workspace whose file has
+/// since changed is exactly when anyone asks.
+#[test]
+fn a_cat_returns_the_pre_image_not_the_current_file() {
+    let dir = seed("cat-preimage");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+    let first = event_ids(&dir).pop().unwrap();
+
+    // The workspace moves on: prose edited, payload replaced.
+    write(
+        &dir,
+        "notes/a.md",
+        "---\ntitle: A\npart_of: '../index.md'\n---\nrevised\n",
+    );
+    write(&dir, "notes/photo.jpg", "OTHERBYTES");
+    capture(&dir, "2026-07-31T10:00:00Z", None);
+
+    let w = store(&dir);
+    let event = block_on(w.event(Path::new("index.md"), &first))
+        .unwrap()
+        .unwrap();
+    let get = |target: &str| {
+        block_on(w.cat(
+            Path::new("index.md"),
+            &event,
+            &Subject::Path(PathBuf::from(target)),
+        ))
+        .unwrap()
+    };
+
+    let Retrieved::Bytes { path, hash, bytes } = get("notes/a.md") else {
+        panic!("the first event captured notes/a.md");
+    };
+    assert_eq!(
+        String::from_utf8(bytes.clone()).unwrap(),
+        "---\ntitle: A\npart_of: '../index.md'\n---\nalpha\n",
+        "the bytes must be the ones that were captured, not the ones on disk"
+    );
+    assert_eq!(path, PathBuf::from("notes/a.md"));
+    // The returned bytes hash to the digest the manifest recorded — which is the
+    // only thing that makes them evidence rather than a copy of something.
+    assert_eq!(hash, digest(&bytes));
+
+    // Not text, and not treated as text: a capture set holds whatever the
+    // workspace holds, and the attachment is why `cat` yields bytes.
+    let Retrieved::Bytes { bytes, .. } = get("notes/photo.jpg") else {
+        panic!("the first event captured the payload");
+    };
+    assert_eq!(bytes, b"JPEGBYTES");
+}
+
+/// Following an id reaches a document across a rename — the same property
+/// `log` has, and for the same reason: a path-keyed lookup would report the
+/// document as never captured, which is the one wrong answer available here.
+#[test]
+fn a_cat_follows_an_id_to_the_path_the_capture_recorded() {
+    let dir = seed("cat-rename");
+    let mut w = store(&dir);
+    let id = Id("b7k2m".into());
+    w.host_mut()
+        .index_mut()
+        .register(&id, Path::new("notes/a.md"));
+    block_on(w.capture(Path::new("index.md"), "2026-07-31T09:00:00Z", None)).unwrap();
+    let first = event_ids(&dir).pop().unwrap();
+
+    std::fs::rename(dir.join("notes/a.md"), dir.join("notes/b.md")).unwrap();
+    relink(&dir, &["notes/b.md", "notes/photo.jpg.yaml"]);
+    w.host_mut()
+        .index_mut()
+        .set_path(&id, Path::new("notes/b.md"));
+    block_on(w.capture(Path::new("index.md"), "2026-07-31T10:00:00Z", None)).unwrap();
+
+    let event = block_on(w.event(Path::new("index.md"), &first))
+        .unwrap()
+        .unwrap();
+    let Retrieved::Bytes { path, .. } =
+        block_on(w.cat(Path::new("index.md"), &event, &Subject::Id(id.clone()))).unwrap()
+    else {
+        panic!("the id was captured in the first event, under its old path");
+    };
+    assert_eq!(
+        path,
+        PathBuf::from("notes/a.md"),
+        "the reported path is the one that capture recorded, not the current one"
+    );
+
+    // The path the document has *now* was not in that capture at all, which is
+    // precisely the miss the id key exists to avoid.
+    assert_eq!(
+        block_on(w.cat(
+            Path::new("index.md"),
+            &event,
+            &Subject::Path(PathBuf::from("notes/b.md")),
+        ))
+        .unwrap(),
+        Retrieved::Unrecorded
+    );
+}
+
+/// The three absences, kept apart. A row that never existed, bytes still in
+/// flight, and bytes destroyed on purpose are three different facts, and a
+/// caller piping this into `diff` has to be able to tell them apart.
+#[test]
+fn a_cat_tells_the_three_absences_apart() {
+    let dir = seed("cat-absent");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+    let id = event_ids(&dir).pop().unwrap();
+    let w = store(&dir);
+    let event = block_on(w.event(Path::new("index.md"), &id))
+        .unwrap()
+        .unwrap();
+    let get = |target: &str| {
+        block_on(w.cat(
+            Path::new("index.md"),
+            &event,
+            &Subject::Path(PathBuf::from(target)),
+        ))
+        .unwrap()
+    };
+
+    // Never captured — the document did not exist when the event was taken.
+    assert_eq!(get("notes/never.md"), Retrieved::Unrecorded);
+
+    // Captured, bytes not here: the ordinary half-synced event. Reported as its
+    // own kind rather than as loss, because it resolves itself.
+    let payload = blob_of(b"JPEGBYTES");
+    std::fs::remove_file(dir.join(&payload)).unwrap();
+    assert_eq!(
+        get("notes/photo.jpg"),
+        Retrieved::NoBytes {
+            path: PathBuf::from("notes/photo.jpg"),
+            hash: digest(b"JPEGBYTES"),
+        }
+    );
+}
+
+/// Deliberate destruction reads as deliberate. `forget` states its bargain —
+/// the record outlives the bytes — and a read verb that called the result
+/// "missing" would report a completed operation as damage.
+#[test]
+fn a_cat_names_forgotten_bytes_as_forgotten_rather_than_missing() {
+    let dir = seed("cat-forgotten");
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+    let id = event_ids(&dir).pop().unwrap();
+
+    // Forgetting a document still in the capture set needs `force`: the next
+    // capture would only park it again.
+    block_on(store(&dir).forget(
+        Path::new("index.md"),
+        &Subject::Path(PathBuf::from("notes/photo.jpg")),
+        "2026-07-31T10:00:00Z",
+        true,
+    ))
+    .unwrap();
+
+    let w = store(&dir);
+    let event = block_on(w.event(Path::new("index.md"), &id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        block_on(w.cat(
+            Path::new("index.md"),
+            &event,
+            &Subject::Path(PathBuf::from("notes/photo.jpg")),
+        ))
+        .unwrap(),
+        Retrieved::Forgotten {
+            path: PathBuf::from("notes/photo.jpg"),
+            hash: digest(b"JPEGBYTES"),
+        },
+        "the tombstone is what separates destroyed-on-purpose from not-here-yet"
+    );
+
+    // The event still records that the file existed, at that path, with that
+    // hash — the record the bargain promises to keep.
+    assert!(
+        event
+            .files
+            .iter()
+            .any(|f| f.path == Path::new("notes/photo.jpg"))
+    );
+}
