@@ -1034,6 +1034,30 @@ fn footer_section(ctx: &AboutContext) -> String {
 
 // ─── the metadata block ──────────────────────────────────────────────────────
 
+/// The metadata key prov signs its derived prose with, and the tool name it
+/// writes there — `generated_by: prov 0.5.0`.
+///
+/// The byline is prose for the reader, but it is also the page's *only*
+/// self-description as derived, and one caller reads it back:
+/// [`is_generated`], which is how root discovery tells a generated page from a
+/// root document (both carry metadata and no `part_of`).
+const GENERATED_BY: &str = "generated_by";
+const GENERATED_BY_TOOL: &str = "prov";
+
+/// Whether `meta` says **prov** generated the document it came from.
+///
+/// True for the byline [`generate`] writes (`generated_by: prov <version>`) and
+/// for a bare `generated_by: prov`; false for another tool's byline, so a
+/// `README.md` a site generator stamped is still a root document. Only the first
+/// word is compared — the version moves and must not be matched on, exactly as
+/// [`same_body`] refuses to compare it.
+pub(crate) fn is_generated(meta: &Value) -> bool {
+    meta.get(GENERATED_BY)
+        .and_then(Value::as_str)
+        .and_then(|by| by.split_whitespace().next())
+        == Some(GENERATED_BY_TOOL)
+}
+
 /// Attach the page's own metadata block, in whatever the workspace's embedding
 /// convention is — **including nothing at all**.
 ///
@@ -1043,9 +1067,12 @@ fn footer_section(ctx: &AboutContext) -> String {
 /// exists for and the sidecar would carry nothing prov reads back. The `title`
 /// survives as the page's `# ` heading, and the byline as the footer.
 ///
-/// Nothing depends on the block being present: staleness is detected by
-/// comparing the *body*, so the page needs no marker to be recognized as
-/// generated (see the `AboutStale` finding).
+/// Staleness does not depend on the block being present: it is detected by
+/// comparing the *body*, so the page needs no marker to be recognized as stale
+/// (see the `AboutStale` finding). Root discovery does read the block's
+/// [`GENERATED_BY`] byline — but only to *exclude* the page from the root
+/// candidates, and a content-only page has no metadata at all, which excludes
+/// it just as surely.
 fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext) -> Result<String> {
     if config.embed_style == EmbedStyle::Separate {
         return Ok(body.to_string());
@@ -1074,8 +1101,8 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     // off the files themselves*, which is checkable — and which `check` does in
     // fact check.
     mapping.insert(
-        "generated_by".into(),
-        Value::String(format!("prov {}", ctx.version)),
+        GENERATED_BY.into(),
+        Value::String(format!("{GENERATED_BY_TOOL} {}", ctx.version)),
     );
     // A blank line between the block and the `# ` heading — the body is prose in
     // the workspace's content format, and prose starts after the block, not

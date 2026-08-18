@@ -78,7 +78,8 @@ fn stem_is(name: &Path, want: &str) -> bool {
 ///
 /// In each directory a **root candidate** is a document — a content document
 /// (Markdown/Djot/HTML), or a whole-file metadata document stemmed `index`/
-/// `readme` (a *separated* root's node) — with metadata and no `part_of`. A file
+/// `readme` (a *separated* root's node) — with metadata, no `part_of`, and no
+/// prov byline marking it as generated (see [`is_root_candidate`]). A file
 /// stemmed `index` wins, then `readme`, then a lone candidate; two or more
 /// unnamed candidates are [`Discovery::Ambiguous`]. The first ancestor with a
 /// winner is the root; a walk that reaches the filesystem top with none is
@@ -105,7 +106,7 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
             let Ok(doc) = Document::parse(path, &text) else {
                 continue;
             };
-            if declares_no_parent(&doc)
+            if is_root_candidate(&doc)
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
             {
                 candidates.push(name.to_string());
@@ -145,9 +146,22 @@ fn can_be_root(path: &Path) -> bool {
     is_meta_ext && (stem_is(path, "index") || stem_is(path, "readme"))
 }
 
-/// The other half: a root document has metadata and says nothing contains it.
-fn declares_no_parent(doc: &Document) -> bool {
-    doc.has_meta() && doc.meta.get("part_of").is_none()
+/// The other half: a root document has metadata, says nothing contains it, and
+/// is not a page prov itself derived.
+///
+/// The third clause is what keeps a workspace from being bricked by its own
+/// `about` page. Generated prose is machinery-shaped — reached one way from the
+/// root, carrying no `part_of` and no id (spec §4) — and that is *precisely* the
+/// shape of a root candidate. In a workspace whose root is stemmed `index` or
+/// `readme` the tie breaks by name and nothing is noticed; in one whose root is
+/// named anything else, `prov about` writes a second candidate into the root
+/// directory and every later command refuses to guess which is the root. The
+/// page cannot say `part_of` — the spec forbids the back-link, and prov would
+/// have to census the page as a tree member — so what settles it is the byline
+/// it already carries: a file prov generated is derived *from* the root and so
+/// can never be the root.
+fn is_root_candidate(doc: &Document) -> bool {
+    doc.has_meta() && doc.meta.get("part_of").is_none() && !crate::about::is_generated(&doc.meta)
 }
 
 /// Pick the root from a directory's candidates: an `index` stem wins, then
@@ -196,7 +210,7 @@ impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Worksp
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
-            if declares_no_parent(&doc) {
+            if is_root_candidate(&doc) {
                 candidates.push(name.to_string());
             }
         }
@@ -336,6 +350,52 @@ mod tests {
         assert_eq!(
             block_on(probe(&root).root_document()).unwrap(),
             Some(PathBuf::from("index.md"))
+        );
+    }
+
+    #[test]
+    fn the_generated_page_is_never_a_root_candidate() {
+        // The bug this pins: a workspace whose root is named anything but
+        // `index`/`readme` used to brick itself the first time it wrote its own
+        // `about` page. The page carries metadata and — as spec §4 requires —
+        // no `part_of`, so it tied with the real root and every later command
+        // refused to guess between them.
+        let root = tmp("generated-page");
+        std::fs::write(
+            root.join("root.md"),
+            "---\ntitle: Home\nabout: about.md\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("about.md"),
+            "---\ntitle: How this workspace is organized\ngenerated_by: prov 0.5.0\n---\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            block_on(probe(&root).root_document()).unwrap(),
+            Some(PathBuf::from("root.md"))
+        );
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_doc, PathBuf::from("root.md")),
+            other => panic!("expected root.md, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn another_tool_s_byline_does_not_disqualify_a_root() {
+        // Only *prov's* byline is read as "derived from the root". A README a
+        // site generator stamped is still an ordinary document, and excluding it
+        // would be a second way to lose a workspace's root.
+        let root = tmp("foreign-byline");
+        std::fs::write(
+            root.join("readme.md"),
+            "---\ntitle: Home\ngenerated_by: some-site-generator 2.0\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            block_on(probe(&root).root_document()).unwrap(),
+            Some(PathBuf::from("readme.md"))
         );
     }
 
