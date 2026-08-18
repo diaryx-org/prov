@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "prov"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "fig",
  "fig-schema",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "prov-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "clap",
  "cliclack",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "prov-config"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "fig",
  "fig-schema",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "prov-exports"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "prov-graph",
  "prov-views",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "prov-fixity"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "proptest",
  "prov-graph",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "prov-graph"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "fig",
  "indexmap",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "prov-history"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "fig",
  "prov-config",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "prov-identity"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "moid",
  "proptest",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "prov-store"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "fig",
  "proptest",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "prov-transaction"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "prov-graph",
  "prov-store",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "prov-views"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "prov-graph",
 ]

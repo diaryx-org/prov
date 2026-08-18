@@ -24,6 +24,12 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.6.2 — 2026-08-18
+
 ### Added
 
 - **check** — a subtree nothing links to stops being invisible ([`c6a2246`](https://github.com/diaryx-org/prov/commit/c6a2246477abc109ee5a3241823a052fccef23ea))
@@ -33,6 +39,10 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 - **cli** — the one diagnostic that finds unreachable files runs with history off ([`6b84744`](https://github.com/diaryx-org/prov/commit/6b8474447b7850e632af7010d4d7dd37f311cb88))
 - **mutate** — reparent writes the half that is missing instead of reporting success ([`af74603`](https://github.com/diaryx-org/prov/commit/af7460369f9f551f189d19dc92fe1beba321c019))
+
+### Changed
+
+- **mutate** — the body guard opened a folder of notes to ask a question about paths ([`40bd85d`](https://github.com/diaryx-org/prov/commit/40bd85d184f0d0dc263d85163cb1640463179758))
 
 ### Behavioural changes
 
@@ -68,7 +78,15 @@ metadata (the crates.io tarball, docs.rs, distro packaging), are unchanged.
 Anything parsing `--version` should take the first two whitespace-separated
 fields rather than the whole line.
 
-<!-- git-cliff:end -->
+- `delete` and `recycle` no longer refuse the prose half of a
+separated pair when the owning node is a markdown document with a `content:` key
+in its frontmatter — a pair prov's own verbs will neither create nor combine.
+Where the node is a whole-file metadata document, which is every pair `separate`
+or `attach` produces, the refusal is unchanged. Callers see fewer reads: the
+guard opens only whole-file neighbours, so a `Storage` that counts reads, or one
+whose reads have side effects, sees one per sidecar in the directory rather than
+one per document.
+
 
 ## v0.6.1 — 2026-08-18
 
