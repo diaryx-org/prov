@@ -30,6 +30,17 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 - **mutate** — a document can be asked whether its bytes still match its checksum ([`1136036`](https://github.com/diaryx-org/prov/commit/11360365b7a64bdaca068c741ccbcd48a41c21ca))
 - **cli** — stamp, and a check that answers about one document ([`ecb9111`](https://github.com/diaryx-org/prov/commit/ecb91113458554e8bfa293410600b4897be0fdeb))
 
+### Fixed
+
+- **cli** — check --json narrated to a stream nobody was reading ([`04bb0eb`](https://github.com/diaryx-org/prov/commit/04bb0eb7dc64f4242404e426a8c927d120f5eb50))
+
+### Behavioural changes
+
+- `prov check --json` no longer writes the "N finding(s)" /
+  "ok: no findings" summary to stderr. Anything parsing that line for a count
+  under `--json` should read the array's length; the summary is unchanged in
+  every other mode.
+
 <!-- git-cliff:end -->
 
 ## v0.6.2 — 2026-08-18
