@@ -2254,18 +2254,28 @@ fn diff_path_display(ctx: &Ctx, path: Option<&Path>) -> String {
 /// confidence.
 fn cmd_history_capture(label: Option<&str>, message: Option<&str>, dry_run: bool) -> CmdResult {
     let ctx = find_root()?;
+    let mut ws = workspace(&ctx)?;
+    // Before the gate, deliberately. `--dry-run` writes nothing and grows no
+    // store, so `history: off` has nothing to refuse — and its second list is
+    // the only thing in prov that names the files the workspace does not reach
+    // (`check` is reachability-bounded and cannot see them by construction).
+    // Gating the one diagnostic that finds unreachable content behind enabling
+    // the feature you are diagnosing is backwards; it is a question about the
+    // workspace, not about history.
+    if dry_run {
+        return report_capture_set(&ws, &ctx);
+    }
     if !ctx.config.history.captures() {
         return Err("history is off for this workspace — enable it with \
              `prov config history manual`\n\
              \n  Leave it off if you sync with git: git already stores every \
              pre-image, dedupes by\n  content, and reconciles concurrent \
              histories. History earns its keep on Dropbox,\n  Syncthing, iCloud \
-             and synced network shares, where the transport keeps none."
+             and synced network shares, where the transport keeps none.\n\
+             \n  `prov history-capture --dry-run` works either way: it writes \
+             nothing, and its\n  second list is what a capture would leave \
+             behind — which is worth reading even\n  when there is no store."
             .into());
-    }
-    let mut ws = workspace(&ctx)?;
-    if dry_run {
-        return report_capture_set(&ws, &ctx);
     }
     // What this device remembers of the workspace's digests, so a capture reads
     // and hashes the files whose stat changed rather than all of them. Absent
@@ -2717,13 +2727,23 @@ fn cmd_history_show(id: &str) -> CmdResult {
 /// point of asking is to see it before paying for it.
 ///
 /// The second list is why this exists. Everything in the first is safe; a file
-/// in the second is sitting in the workspace believing otherwise.
+/// in the second is sitting in the workspace believing otherwise. That makes
+/// this a reachability report as much as a capture preview, which is why it runs
+/// under `history: off` too — it just says so, so the first list is not read as
+/// a promise nothing is going to keep.
 fn report_capture_set(ws: &Workspace<StdFs, Minter, FileIndex>, ctx: &Ctx) -> CmdResult {
     let captured = block_on(ws.history_capture_set(&ctx.root_doc))?;
     for path in &captured {
         println!("{}", path.display());
     }
     eprintln!("{} file(s) would be captured", captured.len());
+    if !ctx.config.history.captures() {
+        eprintln!(
+            "(history is off for this workspace, so no capture is going to take them — \
+             this is what one would take if you turned it on with \
+             `prov config history manual`.)"
+        );
+    }
 
     let missed = block_on(ws.uncaptured(&ctx.root_doc))?;
     let unreached: Vec<&PathBuf> = missed

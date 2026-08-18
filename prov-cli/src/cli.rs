@@ -793,6 +793,10 @@ pub(crate) enum Command {
         /// history will not bring it back. That omission is otherwise silent:
         /// a folder of notes nobody linked looks exactly like a folder of notes
         /// that are safe. Linking the file is the repair.
+        ///
+        /// Works under `history: off` too — it writes nothing, so the axis has
+        /// nothing to refuse, and asking what the workspace fails to reach is a
+        /// question about the workspace rather than about history.
         #[arg(long)]
         dry_run: bool,
     },

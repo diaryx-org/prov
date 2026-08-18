@@ -480,6 +480,13 @@ correctness depends on `parent`, so a hole in the display ancestry is cosmetic.
   gated behind re-enabling a setting, least of all on the machine that just
   suffered the damage. `check` validates an existing store regardless — it
   validates what is reachable, and the store is reachable.
+- **`--dry-run` is not gated either** (§9.1). It writes nothing and grows no
+  store, so there is nothing for `off` to refuse — and its second list is the
+  only place prov names the files the workspace does not reach, which is a
+  question about the *workspace*, not about history. Gating the one diagnostic
+  that finds unreachable content behind enabling the feature being diagnosed is
+  backwards; under `off` it says so, so the first list is not read as a promise
+  nothing is going to keep.
 - **When the transport is git, leave it off.** git already stores every
   pre-image, dedupes by content, and reconciles concurrent histories. This
   feature earns its keep where the transport keeps no history: Dropbox,
@@ -511,6 +518,13 @@ bring it back — and that omission is otherwise completely silent. A directory 
 four hundred unlinked notes looks exactly like a directory of four hundred notes
 that are safe. The repair is to link the file, after which it is captured like
 everything else.
+
+This list, and `check`'s `MissingContainment` finding, are the two halves of the
+same question asked from opposite ends. `check` reports an unreached document
+that **names** a parent in the tree — a precise claim with a derived repair, but
+silent about a folder that claims nothing. This list names every unreached file
+whatever it claims, at the cost of being a list rather than a finding. A
+workspace wants both.
 
 The two lists are complements over one walk of the tree, and everything not in
 the first appears in the second under one of two reasons:
