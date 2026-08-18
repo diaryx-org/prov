@@ -94,6 +94,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         style: prov_graph::link::LinkStyle,
         recursive: bool,
     ) -> Result<Vec<PathBuf>> {
+        // A recursive sweep reads the subtree twice: `spanning_subtree` loads
+        // every document to find the children, and `restyle_document` loads each
+        // one again to rewrite it. One scope halves that.
+        let _scope = self.read_scope();
         let file = link::normalize(file);
         if !self.exists(&file).await? {
             return Err(Error::NotFound(file.to_path_buf()));
@@ -214,6 +218,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         recursive: bool,
         force: bool,
     ) -> Result<Vec<PathBuf>> {
+        // The heaviest sweep here, and the one with the most passes over one
+        // document: `spanning_subtree` to find the targets, `plan_transcode` per
+        // target, the inbound census, and a load per source it rewrites. One
+        // scope covers all four.
+        let _scope = self.read_scope();
         let file = link::normalize(file);
         if !self.exists(&file).await? {
             return Err(Error::NotFound(file.to_path_buf()));
@@ -426,6 +435,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         axis: ReformatAxis,
         recursive: bool,
     ) -> Result<Vec<PathBuf>> {
+        // Both metadata axes come through here, and both read the subtree twice
+        // — once to find it, once to re-emit each document. See
+        // `convert_link_style`.
+        let _scope = self.read_scope();
         let file = link::normalize(file);
         if !self.exists(&file).await? {
             return Err(Error::NotFound(file.to_path_buf()));

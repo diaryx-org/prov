@@ -43,6 +43,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// documents *unreachable* from that root are not seen (a malformed tree,
     /// which `check` reports separately).
     pub async fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
+        // `collect_inbound_rewrites` censuses the whole reachable graph and then
+        // loads each source it found in order to rewrite it — two reads of every
+        // document that links here, and one of everything else. The scope makes
+        // the second read free.
+        let _scope = self.read_scope();
         let from = link::normalize(from);
         let to = link::normalize(to);
 
@@ -410,6 +415,42 @@ mod tests {
     use super::*;
     use crate::identity::Trigger;
     use prov_graph::index::IdIndex;
+
+    /// A verb is a pass and then some named reads, and without a scope the same
+    /// document is opened for each: the census descends into `leaf.md`, the
+    /// inverse check opens it again as `mid.md`'s child, and the inbound rewrite
+    /// opens it a third time to retarget its `part_of`. Three reads to move one
+    /// file — which on a synced workspace is three round trips to the sync
+    /// daemon, per document, per verb.
+    #[test]
+    fn renaming_reads_each_document_once() {
+        let dir = tempdir("rename-memo");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- mid.md\n---\n",
+        );
+        write(
+            &dir,
+            "mid.md",
+            "---\ntitle: Mid\npart_of: index.md\ncontents:\n- leaf.md\n---\n",
+        );
+        write(&dir, "leaf.md", "---\ntitle: Leaf\npart_of: mid.md\n---\n");
+
+        let fs = crate::fs_faults::CountingFs::default();
+        let mut workspace = Workspace::builder(fs.clone()).root(&dir).build();
+        block_on(workspace.rename(Path::new("mid.md"), Path::new("sub/mid.md"))).unwrap();
+
+        // The rewrite landed — the memo must not have served stale bytes to it.
+        assert!(read(&dir, "leaf.md").contains("part_of: /sub/mid.md"));
+        for doc in ["index.md", "mid.md", "leaf.md"] {
+            assert_eq!(
+                fs.doc_reads(&dir, doc),
+                1,
+                "{doc} was read more than once inside one rename"
+            );
+        }
+    }
 
     #[test]
     fn rename_maintains_parent_children_and_own_links() {

@@ -44,7 +44,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::document::Document;
 
@@ -143,28 +143,44 @@ impl ReadMemo {
 /// An open read scope. Hold it for the operation; dropping it leaves the scope,
 /// and dropping the outermost one drops everything the operation remembered.
 ///
-/// Obtained from [`Graph::read_scope`](crate::graph::Graph::read_scope)(crate::graph::Graph::read_scope).
+/// Obtained from [`Graph::read_scope`](crate::graph::Graph::read_scope).
+///
+/// ## Why it holds the memo rather than borrowing it
+///
+/// A guard that borrowed its graph would be unusable from the operations that
+/// need it most. A mutating verb reads (a census, a subtree walk), *then*
+/// stages and commits — and `commit` takes `&mut self`, which an outstanding
+/// `&self` borrow forbids. Every verb in `prov`'s `mutate` is that shape, so a
+/// borrowing guard could only be held across the read half and dropped before
+/// the writes, which in most of them is before the expensive pass has even
+/// started. Sharing the memo instead is what lets one scope cover a whole verb.
+///
+/// The lifetime tie was also a (weak) argument that a scope cannot be stashed
+/// and left open — "a memo with no end is a cache". That argument is now
+/// discipline rather than a type: hold the guard in a local, for one operation.
+/// What has not changed is that nothing outlives it — dropping the outermost
+/// guard clears the memo, whether or not the graph is still around.
 #[must_use = "a read scope ends the moment its guard is dropped"]
-pub struct ReadScope<'a>(pub(crate) &'a Mutex<ReadMemo>);
+pub struct ReadScope(Arc<Mutex<ReadMemo>>);
 
-impl<'a> ReadScope<'a> {
+impl ReadScope {
     /// Enter the scope guarded by `memo`.
-    pub(crate) fn open(memo: &'a Mutex<ReadMemo>) -> Self {
+    pub(crate) fn open(memo: &Arc<Mutex<ReadMemo>>) -> Self {
         lock(memo).enter();
-        ReadScope(memo)
+        ReadScope(Arc::clone(memo))
     }
 }
 
-impl Drop for ReadScope<'_> {
+impl Drop for ReadScope {
     fn drop(&mut self) {
-        lock(self.0).leave();
+        lock(&self.0).leave();
     }
 }
 
-impl std::fmt::Debug for ReadScope<'_> {
+impl std::fmt::Debug for ReadScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReadScope")
-            .field("depth", &lock(self.0).depth)
+            .field("depth", &lock(&self.0).depth)
             .finish()
     }
 }

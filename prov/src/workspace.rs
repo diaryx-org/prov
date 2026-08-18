@@ -380,7 +380,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// # }
     /// ```
     #[must_use = "the scope ends the moment its guard is dropped"]
-    pub fn read_scope(&self) -> ReadScope<'_> {
+    pub fn read_scope(&self) -> ReadScope {
         self.graph.read_scope()
     }
 
@@ -1219,15 +1219,21 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
 
     /// The census of every forward link reachable from `start`, with prov's own
     /// parked directories excluded from the nominal scan.
+    /// Scoped, like the two below it: locating the parked directories reads the
+    /// root once per pointer it follows, and the pass that follows reads it
+    /// again as the first node it visits. Three reads of the root document for
+    /// one census, before the walk's own scope has a say.
     pub async fn census(&self, start: impl AsRef<Path>) -> Result<Vec<CensusEntry>> {
+        let _scope = self.read_scope();
         let start = start.as_ref();
         let parked = self.parked_dirs(start).await?;
         self.graph.census_within(start, &parked).await
     }
 
     /// The shared spanning-tree walk behind [`census`](Self::census) and the
-    /// structural findings.
+    /// structural findings. Scoped for the reason [`census`](Self::census) is.
     pub(crate) async fn walk(&self, start: &Path) -> Result<Walk> {
+        let _scope = self.read_scope();
         let parked = self.parked_dirs(start).await?;
         self.graph.walk(start, &parked).await
     }
@@ -1255,7 +1261,9 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     }
 
     /// Every file the workspace reaches from `start` that is actually on disk.
+    /// Scoped for the reason [`census`](Self::census) is.
     pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
+        let _scope = self.read_scope();
         let start = start.as_ref();
         let parked = self.parked_dirs(start).await?;
         self.graph.reachable_files_within(start, &parked).await

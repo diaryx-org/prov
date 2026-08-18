@@ -190,6 +190,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// across a rename (the payload travels with it), and a manifest's node
     /// cannot.
     pub async fn manifest_node_covering(&self, dir: &Path) -> Result<Option<PathBuf>> {
+        // The walk loads every reachable document, and the loop below asks each
+        // of them for its manifest — which loads it again. One scope makes the
+        // census a whole workspace pays for once, not twice.
+        let _scope = self.read_scope();
         let dir = link::normalize(dir);
         if let Some(node) = self.manifest_node_for(&dir).await? {
             return Ok(Some(node));

@@ -56,6 +56,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// one inconsistency in this set that `check` does *not* look for, so it is
     /// deliberately the last write rather than the first.
     pub async fn reparent(&mut self, child: &Path, parent: &Path) -> Result<()> {
+        // The cycle check walks up from the new parent loading every rung, and
+        // the parent — the first rung — is loaded again below for its title and
+        // its spanning entry. A deep tree pays that walk once now.
+        let _scope = self.read_scope();
         let child = link::normalize(child);
         let parent = link::normalize(parent);
         if child == parent {

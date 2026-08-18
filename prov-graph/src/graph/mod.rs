@@ -100,7 +100,7 @@ pub use shadow::sidecar_candidates;
 pub use tree::{Node, NodeKind, TreeOptions};
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::identity::IdStorage;
 use crate::memo::{ReadMemo, ReadScope};
@@ -168,7 +168,7 @@ pub struct Graph<FS, Ix> {
     /// Interior mutability because the passes that benefit take `&self`: a
     /// census is a read-only operation, and making it `&mut` to let it remember
     /// what it read would be the tail wagging the dog.
-    memo: Mutex<ReadMemo>,
+    memo: Arc<Mutex<ReadMemo>>,
 }
 
 impl<FS, Ix> Graph<FS, Ix> {
@@ -179,7 +179,7 @@ impl<FS, Ix> Graph<FS, Ix> {
             root: root.into(),
             index,
             settings,
-            memo: Mutex::new(ReadMemo::default()),
+            memo: Arc::new(Mutex::new(ReadMemo::default())),
         }
     }
 
@@ -237,7 +237,7 @@ impl<FS, Ix> Graph<FS, Ix> {
 
     /// Open a read scope: within it, a document read twice is parsed once. See
     /// [`crate::memo`].
-    pub fn read_scope(&self) -> ReadScope<'_> {
+    pub fn read_scope(&self) -> ReadScope {
         ReadScope::open(&self.memo)
     }
 

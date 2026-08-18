@@ -38,6 +38,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// are not rewritten here yet (a follow-up; a `StaleLabel` finding can flag
     /// them in the meantime).
     pub async fn retitle(&mut self, path: &Path, new_title: &str) -> Result<usize> {
+        // `collect_inbound_relabels` censuses the reachable graph and then loads
+        // every source that links here a second time, to relabel it — the same
+        // double read `rename` makes, for the same reason.
+        let _scope = self.read_scope();
         let path = link::normalize(path);
         if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));

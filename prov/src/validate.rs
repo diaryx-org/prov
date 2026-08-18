@@ -1584,6 +1584,33 @@ mod tests {
         assert_eq!(fs.doc_reads(&dir, "index.md"), 1);
     }
 
+    /// A bare walk — no `check`, no verb, nothing composed on top — still reads
+    /// each document three times without a scope: once to descend into it, once
+    /// as the inverse check reads every spanning child to see whether it points
+    /// back, and once more when a `[[alias]]` link sends the title index over
+    /// the reached directories. So the walk opens its own scope rather than
+    /// waiting for a caller to think of it.
+    #[test]
+    fn a_walk_reads_each_document_once() {
+        let dir = tempdir("memo-walk");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n---\nsee [[A]]\n",
+        );
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+        let fs = crate::fs_faults::CountingFs::default();
+        let ws = Workspace::builder(fs.clone()).root(&dir).build();
+
+        block_on(ws.backlinks_to("index.md", "a.md")).unwrap();
+        assert_eq!(
+            fs.doc_reads(&dir, "a.md"),
+            1,
+            "a document was read more than once inside one walk"
+        );
+        assert_eq!(fs.doc_reads(&dir, "index.md"), 1);
+    }
+
     /// The scope is bounded by the operation, so a second `check` re-reads
     /// everything. That is the property that lets the memo have no invalidation
     /// policy at all: it never outlives the operation that opened it.

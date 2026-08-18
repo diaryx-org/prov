@@ -370,7 +370,18 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// be spanning and so drive descent, the single-parent check, and the
     /// inverse check; body wikilinks are always overlay references —
     /// censused, never spanning.
+    ///
+    /// "One pass" describes what it *reports*, not how many times it opens a
+    /// file: descent reads each document, the inverse check reads every spanning
+    /// child again to see whether it points back, and a workspace using
+    /// `[[alias]]` links pays a third read per document for the title index.
+    /// Three reads of everything, for one walk. So the walk opens a scope of its
+    /// own rather than waiting to be given one — a caller with no interest in
+    /// memos still gets a walk that reads each document once, and a caller that
+    /// already opened one (`check`, a `mutate` verb) nests inside it and keeps
+    /// everything the walk read.
     pub async fn walk(&self, start: &Path, parked: &[PathBuf]) -> Result<Walk> {
+        let _scope = self.read_scope();
         let mut census = Vec::new();
         let mut structural = Vec::new();
         // Prose bodies reached through a separated node's `content` pointer.

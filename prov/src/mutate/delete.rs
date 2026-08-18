@@ -47,6 +47,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// rewritten: a link records intent, and there is no new target to send it
     /// to; the caller decides what to do with the diagnosis.
     pub async fn delete(&mut self, path: &Path, force: bool) -> Result<Vec<Finding>> {
+        // Same shape as `recycle`: the dangler census reads every reachable
+        // document, and the subject, its parent and the root are read again by
+        // name on either side of it. One scope, one read apiece.
+        let _scope = self.read_scope();
         let path = link::normalize(path);
         let (spanning, inverse) = self.spanning_pair()?;
         let (_, doc) = self.load(&path).await?;

@@ -59,6 +59,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         force: bool,
         at: Option<&str>,
     ) -> Result<Vec<Finding>> {
+        // The census below loads every reachable document, and the subject, its
+        // parent, the root and the bin index are all among them — each of which
+        // this verb then goes back for by name. One scope makes that one read
+        // apiece instead of two.
+        let _scope = self.read_scope();
         let path = link::normalize(path);
         let (spanning, inverse) = self.spanning_pair()?;
         let (_, doc) = self.load(&path).await?;

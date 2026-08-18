@@ -150,6 +150,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         options: TreeOptions,
         parked: &[PathBuf],
     ) -> Result<Node> {
+        // Two passes over the same documents whenever the workspace uses
+        // `[[alias]]` links: the descent reads each node, and the title index it
+        // builds on meeting the first alias reads every document in the reached
+        // directories — most of them the same ones. Scoped here for the same
+        // reason [`walk`](Self::walk) is: a caller should not have to know that
+        // materializing a tree is more than one read of each document.
+        let _scope = self.read_scope();
         let start = link::normalize(start);
         // The title index is built lazily — only if a nominal (`[[alias]]`) link
         // is actually encountered. A path/id workspace never needs it, so it never

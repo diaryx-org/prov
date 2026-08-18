@@ -129,6 +129,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// occupies, not a vendored subtree or a nested prov workspace. The
     /// counterpart to the bounded orphan check (DESIGN §8).
     pub async fn loose_attachments_in(&self, start: &Path) -> Result<Vec<PathBuf>> {
+        // Two passes over the same documents: the census that establishes what is
+        // reachable, and `manifest_roots`, which loads each reachable document
+        // again to ask whether it declares a manifest.
+        let _scope = self.read_scope();
         // The reachable set: `start` plus every path a census link resolves to.
         let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
         reachable.insert(link::normalize(start));

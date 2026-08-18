@@ -32,6 +32,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// registered ID follows it. Returns the metadata file's path. The inverse of
     /// [`combine`](Workspace::combine).
     pub async fn separate(&mut self, path: &Path) -> Result<PathBuf> {
+        // Retargeting inbound links costs a census plus a load of every source
+        // it turns up — see `rename`, which shares the collector.
+        let _scope = self.read_scope();
         let path = link::normalize(path);
         if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));
@@ -110,6 +113,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// are retargeted to the combined file. Returns the combined file's path. The
     /// inverse of [`separate`](Workspace::separate).
     pub async fn combine(&mut self, path: &Path) -> Result<PathBuf> {
+        // As in `separate`: retargeting the inbound links costs a census plus a
+        // load of every source it turns up.
+        let _scope = self.read_scope();
         let path = link::normalize(path);
         let (_, doc) = self.load(&path).await?;
         let Some(content) = content_target(&doc, &path) else {
