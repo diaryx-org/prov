@@ -29,6 +29,7 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 - **validate** — a finding can name the document it is filed against ([`b5b5ace`](https://github.com/diaryx-org/prov/commit/b5b5acecb653a9dbfe4f768491c4981d21bf2934))
 - **mutate** — a document can be asked whether its bytes still match its checksum ([`1136036`](https://github.com/diaryx-org/prov/commit/11360365b7a64bdaca068c741ccbcd48a41c21ca))
 - **cli** — stamp, and a check that answers about one document ([`ecb9111`](https://github.com/diaryx-org/prov/commit/ecb91113458554e8bfa293410600b4897be0fdeb))
+- **workspace** — a node's children, without the subtree underneath them ([`2d9ad18`](https://github.com/diaryx-org/prov/commit/2d9ad18d14601ad1ba6d1dc9e53daba79ee08a07))
 
 ### Fixed
 
