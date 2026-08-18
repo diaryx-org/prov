@@ -388,6 +388,13 @@ only where it is an *explicit* import — `content_documents`/`plan_mirror` for
 `init --adopt mirror`, and `attach --all --recursive` — never in steady-state
 validation.
 
+Lifting the bound is not the same as having none: `attach --all --recursive`
+still refuses to descend into the directories `parked_dirs` names — the history
+store's `events/` and `blobs/`, and the recycle bin's `items/`. Those are
+unreached because they are prov's own bookkeeping (§4's byte-parking stores),
+not because nobody has got round to linking them, and a sidecar minted beside a
+blob is an orphan whose payload `history-prune` is entitled to collect.
+
 **The title index is bounded too.** It is built *lazily* — only when a
 `[[alias]]` link is actually encountered, so a path/id workspace (the diaryx
 default) never scans at all — and when it is built, it is scoped to the reached

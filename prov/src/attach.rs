@@ -95,9 +95,29 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     ///
     /// This is the `--recursive` escape hatch for `attach --all`; the bounded
     /// [`loose_attachments_in`](Self::loose_attachments_in) is the safer default.
+    ///
+    /// **Prov's own byte-parking stores are excluded even here.** The bounded
+    /// scan never reaches them because nothing links into them, and that is not
+    /// an accident of the layout — a history blob and a binned file are
+    /// bookkeeping the workspace is meant to be blind to
+    /// ([`parked_dirs`](Self::parked_dirs)). `--recursive` lifts the
+    /// reachability bound, which is a statement about the *documents* a
+    /// workspace has not linked yet, not a licence to mint a sidecar beside
+    /// every blob — those sidecars are orphans the moment they exist, and
+    /// `history-prune` would collect the payloads out from under them. The root
+    /// is located here rather than passed in because it is wanted only to
+    /// resolve the store pointers: this scan is deliberately *not* bounded by
+    /// what the root reaches, and taking a start document would imply it was.
     pub async fn loose_attachments(&self) -> Result<Vec<PathBuf>> {
+        // No discoverable root means no pointers to follow and so no known
+        // stores — the scan is then exactly what it was before, over a
+        // workspace that has no history or bin to walk into anyway.
+        let parked = match self.root_document().await? {
+            Some(root_doc) => self.parked_dirs(&root_doc).await?,
+            None => Vec::new(),
+        };
         let mut found = Vec::new();
-        self.scan_loose(PathBuf::new(), &mut found).await?;
+        self.scan_loose(PathBuf::new(), &parked, &mut found).await?;
         found.sort();
         Ok(found)
     }
@@ -137,10 +157,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     }
 
     /// Recursively collect opaque files lacking a sidecar under `rel_dir`. Same
-    /// walk shape as the content/id scans; unreadable and hidden entries skipped.
+    /// walk shape as the content/id scans; unreadable, hidden, `parked` and
+    /// manifest-covered entries skipped.
     fn scan_loose<'a>(
         &'a self,
         rel_dir: PathBuf,
+        parked: &'a [PathBuf],
         out: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
@@ -164,6 +186,13 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                     rel_dir.join(&name)
                 };
                 if entry.file_type().is_dir() {
+                    // A store's interior is prov's own bookkeeping, never the
+                    // workspace's files — the one place this sweep stops short
+                    // of the whole tree. Refused by *not descending*, so a
+                    // thousand blobs are never listed only to be discarded.
+                    if parked.iter().any(|dir| rel.starts_with(dir)) {
+                        continue;
+                    }
                     // A covered directory is accounted for in bulk. Probed
                     // directory-locally (the `<dir>.<ext>` convention, confirmed
                     // by the manifest's own `root`) rather than from a census,
@@ -173,7 +202,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                     if self.manifest_node_for(&rel).await?.is_some() {
                         continue;
                     }
-                    self.scan_loose(rel, out).await?;
+                    self.scan_loose(rel, parked, out).await?;
                 } else if entry.file_type().is_file()
                     && is_opaque_payload(&rel)
                     && self.attachment_for(&rel).await?.is_none()
@@ -738,6 +767,35 @@ mod tests {
                 TitleMatch::Ambiguous(paths) if paths.contains(&PathBuf::from("note.md"))
             ),
             "a separated body is still a document the scans read"
+        );
+    }
+
+    #[test]
+    fn the_parked_stores_are_invisible_to_the_recursive_sweep() {
+        // `--recursive` lifts the *reachability* bound, and a byte-parking store
+        // is unreached on purpose rather than by oversight (spec §4, and
+        // `parked_dirs`). Sweeping into one mints a `.yaml` beside every history
+        // blob and every binned file — sidecars that are orphans the instant
+        // they exist, and whose payloads `history-prune` then collects out from
+        // under them.
+        let dir = tempdir("parked");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\nhistory: history/index.md\nrecycle_bin: recyclebin/index.md\n---\n",
+        );
+        write(&dir, "history/index.md", b"---\ntitle: History\n---\n");
+        write(&dir, "recyclebin/index.md", b"---\ntitle: Bin\n---\n");
+        // A blob (content-addressed, so extensionless and opaque), a binned
+        // attachment, and one genuinely loose file to prove the sweep still runs.
+        write(&dir, "history/blobs/ab/cdef", b"parked bytes");
+        write(&dir, "recyclebin/items/binned.jpg", &[0xff, 0xd8]);
+        write(&dir, "loose.pdf", b"%PDF-1.7\n");
+
+        assert_eq!(
+            block_on(ws(&dir).loose_attachments()).unwrap(),
+            vec![PathBuf::from("loose.pdf")],
+            "the recursive sweep walks into no store prov parks bytes in"
         );
     }
 
