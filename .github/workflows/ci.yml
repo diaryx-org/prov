@@ -1,11 +1,17 @@
 name: CI
 # Build, lint, and test the prov workspace on every push and pull request.
 #
-# prov's parser dependencies (`fig`, `twig-doc`) are Zig-backed — their
-# build.rs runs `zig build` — so every job that *compiles* code needs the pinned
-# Zig toolchain, exactly as the release (Homebrew) workflow does. The `fmt` job is
-# the one exception: `cargo fmt --check` only parses, never builds, so it needs no
-# Zig. The Zig version and the toolchain setup mirror `.github/workflows/homebrew.yml`.
+# There is deliberately almost nothing here. Every job is `cargo xtask <id>`, and
+# the list of jobs comes from `cargo xtask ci-matrix` rather than from this file,
+# so changing CI — adding a job, renaming one, changing what a job runs — is an
+# edit to `xtask/src/main.rs` alone. `cargo xtask ci` runs the same jobs locally,
+# in the same order.
+#
+# What the runner still owns is the toolchain, because only it knows how to
+# install one: stable Rust, the components a job asks for, and — for jobs that
+# compile — the pinned Zig, since prov's `fig` and `twig-doc` dependencies are
+# Zig-backed and their build.rs runs `zig build`. The Zig version mirrors
+# `.github/workflows/homebrew.yml`.
 on:
   push: { branches: [main] }
   pull_request: null
@@ -20,98 +26,38 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fmt:
-    name: Format
+  # Ask xtask what CI consists of. Needs no Zig and no cache: it builds the
+  # dependency-free xtask crate and nothing else.
+  plan:
+    name: Plan
     runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.plan.outputs.jobs }}
     steps:
     - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
-      with: { components: rustfmt }
-    - run: cargo fmt --all --check
+    - id: plan
+      run: echo "jobs=$(cargo xtask ci-matrix)" >> "$GITHUB_OUTPUT"
 
-  clippy:
-    name: Clippy
+  # One runner per job in that table. `name` is the job's own, so these appear as
+  # `CI / Format`, `CI / Clippy`, … — rename a job in xtask and the required
+  # status check is renamed with it.
+  run:
+    name: ${{ matrix.job.name }}
+    needs: plan
     runs-on: ubuntu-latest
+    strategy:
+      # One red job should not hide the state of the others.
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.plan.outputs.jobs) }}
     steps:
     - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
-      with: { components: clippy }
+      with: { components: "${{ matrix.job.components }}" }
     - uses: mlugg/setup-zig@v2
+      if: matrix.job.builds
       with: { version: "0.16.0" }
     - uses: Swatinem/rust-cache@v2
-    - run: cargo clippy --workspace --all-targets -- -D warnings
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo test --workspace
-
-  # The getting-started guide's command transcript, executed against a freshly
-  # built binary so the docs can never drift from the CLI (see
-  # ci/check-getting-started.sh and the note at the top of the guide).
-  docs:
-    name: Getting-started transcript
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo build -p prov-cli
-    - run: ci/check-getting-started.sh
-
-  # Workspace feature unification means `cargo check --workspace` can pass even
-  # when a crate can't compile on its own — some other member's feature
-  # selection quietly fills the gap. These checks build each crate in
-  # isolation (or with a single explicit format feature) to catch that before
-  # it becomes a publish-time surprise.
-  package-isolation:
-    name: Package isolation
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo check -p prov-graph
-    - run: cargo check -p prov-store
-    - run: cargo check -p prov-identity
-    - run: cargo check -p prov-fixity
-    - run: cargo check -p prov-transaction
-    - run: cargo check -p prov-config
-    - run: cargo check -p prov-history
-    - run: cargo check -p prov-cli
-    - run: cargo check -p prov --no-default-features --features yaml
-    - run: cargo check -p prov --no-default-features --features json
-    - run: cargo check -p prov --no-default-features --features toml
-    - run: cargo check -p prov --no-default-features --features fig-lang
-
-  # Build on the crate's declared minimum supported Rust version. A build, not a
-  # test run: MSRV is a promise about who can *compile* prov, and the
-  # dev-dependencies/test tooling need not hold to it. The version is read from
-  # `workspace.package.rust-version` in Cargo.toml, so the pin can never drift
-  # from the declared floor — bump it there and this job follows.
-  msrv:
-    name: MSRV
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
-    - id: msrv
-      run: |
-        version=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-        echo "version=$version" >> "$GITHUB_OUTPUT"
-        echo "MSRV from Cargo.toml: $version"
-    - uses: dtolnay/rust-toolchain@master
-      with: { toolchain: "${{ steps.msrv.outputs.version }}" }
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo build --workspace
+      if: matrix.job.builds
+    - run: cargo xtask ${{ matrix.job.id }}

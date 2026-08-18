@@ -1,0 +1,13 @@
+# prov's CI, as a program. Not a published crate — `publish = false` keeps it out
+# of any `cargo publish` sweep, and it deliberately has no dependencies: every job
+# in the workspace needs `cargo xtask` to build before it can do anything, so the
+# cost of building it is paid on every CI job and in every developer's first run.
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

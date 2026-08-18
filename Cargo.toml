@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov-history", "prov", "prov-cli"]
+# `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
+# workflow runs nothing else. It is a member so `cargo test --workspace` checks
+# it, and `publish = false` keeps it off crates.io.
+members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov-history", "prov", "prov-cli", "xtask"]
 
 [workspace.package]
 version = "0.5.0"

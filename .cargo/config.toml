@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask <job>` runs one CI job; see xtask/src/main.rs.
+xtask = "run --quiet --package xtask --"

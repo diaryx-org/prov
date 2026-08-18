@@ -31,6 +31,13 @@ A *self-describing plaintext workspace*: a set of documents whose structure live
 
 - **`prov/`** — the library. Documents, relations, identity, and the workspace seam.
 - **`prov-cli/`** — a thin command-line companion (the installed binary is `prov`).
+- **`xtask/`** — CI, as a program. Each job is `cargo xtask <job>`.
+
+## Development
+
+`cargo xtask ci` runs everything CI runs, in the order CI runs it; `cargo xtask` on its own lists the individual jobs. The [workflow](.github/workflows/ci.yml) does nothing but ask `cargo xtask ci-matrix` what the jobs are and run each one, so changing CI means editing [`xtask/src/main.rs`](xtask/src/main.rs) and nothing else.
+
+Building needs [Zig](https://ziglang.org) 0.16 on `PATH` — prov's `fig` and `twig-doc` dependencies are Zig-backed, and their build scripts run `zig build`. `nix develop` provides it, as does the `flake.nix` dev shell.
 
 ## Status
 
