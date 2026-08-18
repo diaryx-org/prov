@@ -220,6 +220,12 @@ fn main() -> ExitCode {
         Command::HistoryDiff { a, b, patch, paths } => {
             cmd_history_diff(a.as_deref(), b.as_deref(), patch, &paths)
         }
+        Command::HistoryExport {
+            event,
+            to,
+            id,
+            paths,
+        } => cmd_history_export(&event, &to, id.as_deref(), &paths),
         Command::HistoryLog { target } => cmd_history_log(&target),
         Command::HistoryRestore {
             event,
@@ -2753,6 +2759,128 @@ fn report_capture_set(ws: &Workspace<StdFs, Minter, FileIndex>, ctx: &Ctx) -> Cm
         eprintln!("\nnothing in this workspace is left out of a capture");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Write a capture out to a directory somewhere else.
+///
+/// Deliberately **not** a mode of `history-restore`. A restore writes over the
+/// workspace and is guarded accordingly — plans, conflict checks, an `--exact`
+/// confirmation; this writes into a directory that was empty a moment ago, where
+/// there is nothing to lose and so nothing to guard. Keeping them separate means
+/// the dangerous verb keeps saying "restore".
+///
+/// It also bypasses the change set entirely, which it must: `ChangeSet` and the
+/// journal are rooted at the workspace, and this writes outside it. Journalling
+/// buys crash-atomicity for a tree that has no prior state to be torn between —
+/// a half-finished export is a directory you delete.
+fn cmd_history_export(id: &str, to: &Path, doc_id: Option<&str>, paths: &[PathBuf]) -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+    // One memo for the whole export: every row would otherwise re-resolve the
+    // store through the root document, which is one load per captured file.
+    let _scope = ws.read_scope();
+
+    let Some(event) = block_on(ws.history_event(&ctx.root_doc, id))? else {
+        return Err(format!(
+            "no history event `{id}` — list what is in the store with `prov history-list`"
+        )
+        .into());
+    };
+
+    // Never merge into an existing tree. An export that landed on top of one
+    // would produce a directory that is neither the capture nor what was there,
+    // and nothing afterwards could tell which file came from which.
+    if to.exists()
+        && std::fs::read_dir(to)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
+        return Err(format!(
+            "{} already holds something — export writes a fresh copy and never merges \
+             into an existing directory",
+            to.display()
+        )
+        .into());
+    }
+
+    let scope: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| ws_rel(&ctx, p))
+        .collect::<Result<_, _>>()?;
+    let rows: Vec<&prov::FileEntry> = event
+        .files
+        .iter()
+        .filter(|f| match doc_id {
+            Some(want) => f.id.as_ref().is_some_and(|id| id.0 == want),
+            None => scope.is_empty() || scope.iter().any(|dir| prov::history::under(&f.path, dir)),
+        })
+        .collect();
+    if rows.is_empty() {
+        return Err(format!(
+            "nothing in {} matches — `prov history-show {}` lists what that capture held",
+            event.id, event.id
+        )
+        .into());
+    }
+
+    std::fs::create_dir_all(to)?;
+    let mut written = 0usize;
+    let mut skipped = Vec::new();
+    for row in rows {
+        match block_on(ws.history_cat(
+            &ctx.root_doc,
+            &event,
+            &prov::Subject::Path(row.path.clone()),
+        ))? {
+            prov::Retrieved::Bytes { bytes, .. } => {
+                let dest = to.join(&row.path);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dest, &bytes)?;
+                written += 1;
+            }
+            // Absent bytes keep their two meanings all the way out here: one is
+            // a sync still in flight, the other a deliberate destruction.
+            prov::Retrieved::Forgotten { path, .. } => skipped.push((path, "forgotten")),
+            prov::Retrieved::NoBytes { path, .. } => {
+                skipped.push((path, "bytes not in this store"))
+            }
+            // Unreachable — the subject came out of this event's own manifest —
+            // but silently writing nothing is the wrong way to be wrong.
+            prov::Retrieved::Unrecorded => skipped.push((row.path.clone(), "no manifest row")),
+        }
+    }
+
+    println!("{}", to.display());
+    eprintln!(
+        "wrote {written} file(s) from {} to {}",
+        event.id,
+        to.display()
+    );
+    if ws_rel(&ctx, to).is_ok() {
+        eprintln!(
+            "note: that is inside this workspace. Nothing links it, so a capture will \
+             not take it — `prov history-capture --dry-run` will list it as left out \
+             until you move it or link it."
+        );
+    }
+    if written == event.files.len() {
+        eprintln!(
+            "note: this is a whole capture, so its root still declares a `history` \
+             pointer and the store was not copied — that link dangles in the export. \
+             The bytes are verbatim, which is the point."
+        );
+    }
+    if skipped.is_empty() {
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Non-zero: an export quietly missing files is one somebody archives.
+    eprintln!("\n{} file(s) could not be written:", skipped.len());
+    for (path, why) in &skipped {
+        eprintln!("  {}  ({why})", path.display());
+    }
+    Ok(ExitCode::FAILURE)
 }
 
 /// Compare two captures.

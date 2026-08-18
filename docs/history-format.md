@@ -782,6 +782,40 @@ O(file count) of journal rather than a second copy of every byte. A
 content-addressed blob is exactly the immutable referent that makes replaying
 such a reference deterministic — the path is the digest of the contents.
 
+### 11.6 `history-export <id> --to <dir>` — a capture, somewhere else
+
+Write a capture's bytes into a directory of its own and leave the workspace
+alone. Deliberately a **separate verb**, not a mode of restore: a restore writes
+over the workspace and carries the guards that go with that — a plan, both
+directions of `registration_conflict`, an `--exact` confirmation — while this
+writes into a directory that was empty a moment ago, where there is nothing to
+lose and so nothing to guard. Keeping them apart means the dangerous verb goes
+on saying *restore*.
+
+This is what makes "look at the old state" cheap. Comparing a March vault
+against today, salvaging one paragraph, or handing someone a copy no longer
+requires overwriting anything.
+
+- **It never merges.** A target that already holds something is refused, because
+  an export landing on top of an existing tree yields a directory that is neither
+  the capture nor what was there, with nothing afterwards able to tell which file
+  came from where.
+- **Scoping** is the same shape as a restore's: whole by default, `--id` for one
+  document wherever the capture found it, paths after `--` for a subtree.
+- **Bytes are verbatim**, and one consequence is stated rather than smoothed
+  over: a whole-event export is a workspace whose root still declares a `history`
+  pointer, and the store is not copied, so that link dangles there. Rewriting it
+  would make the export something other than what the capture holds, which is the
+  one property worth keeping.
+- **It bypasses the change set**, necessarily — `ChangeSet` and its journal are
+  rooted at the workspace and this writes outside it. Nothing is lost by that:
+  journalling buys crash-atomicity against a prior state, and a half-finished
+  export is a directory you delete.
+- **A row it cannot write is named, and the command exits non-zero.** Missing
+  bytes keep their two meanings here as everywhere (§10.1, §13.4): a sync still
+  in flight, or a deliberate `history-forget`. An export quietly short of files is
+  one somebody archives.
+
 ## 12. Pruning
 
 `history-prune (--keep <n> | --before <date>)` drops the oldest captures and

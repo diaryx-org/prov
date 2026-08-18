@@ -927,6 +927,39 @@ pub(crate) enum Command {
         /// still works for a document that has since been deleted.
         target: String,
     },
+    /// Write a capture out to a directory somewhere else, leaving the workspace
+    /// untouched.
+    ///
+    /// The safe way to look at an old state. `history-restore` writes over the
+    /// workspace and is the tool for undoing damage; this copies the captured
+    /// bytes somewhere new and changes nothing you already have — so comparing,
+    /// salvaging one paragraph, or just seeing what a vault looked like in March
+    /// costs nothing and risks nothing.
+    ///
+    /// Bytes are written **verbatim**, exactly as the capture holds them. One
+    /// consequence worth stating: a whole-event export is a workspace whose root
+    /// still declares a `history` pointer, and the store is not copied, so that
+    /// link dangles there. That is the honest result — these are the captured
+    /// bytes, not a workspace prov has adjusted — and `prov check` in the export
+    /// will say so.
+    ///
+    /// Works regardless of the `history` config axis.
+    HistoryExport {
+        /// The event id, as `history-list` prints it.
+        event: String,
+        /// Where to write it. Created if missing; refused if it already holds
+        /// anything, since an export never merges into an existing tree.
+        #[arg(long, value_name = "DIR")]
+        to: PathBuf,
+        /// Export only the row carrying this document id, wherever the capture
+        /// found it — the way to reach a document whose path has since changed.
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+        /// Limit the export to these captured paths; naming a directory covers
+        /// the subtree it held. After `--`, as in `history-diff`.
+        #[arg(last = true)]
+        paths: Vec<PathBuf>,
+    },
     /// Write a captured state back over the workspace: additive by default,
     /// exact on request.
     ///
