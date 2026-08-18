@@ -798,3 +798,139 @@ fn a_lineage_follows_more_than_one_inferred_rename() {
         vec![false, true, true],
     );
 }
+
+/// A diff's four kinds, over two real captures. The one worth checking hardest
+/// is the move: it is the difference between a diff a person can read and a
+/// wall of paired deletions and creations.
+#[test]
+fn a_diff_names_what_changed_moved_arrived_and_went() {
+    let dir = seed("diff-kinds");
+    let note = |title: &str, body: &str| {
+        format!("---\ntitle: {title}\npart_of: '../index.md'\n---\n{body}\n")
+    };
+    write(&dir, "notes/keep.md", &note("Keep", "kept"));
+    write(&dir, "notes/mover.md", &note("Mover", "travelling"));
+    relink(
+        &dir,
+        &[
+            "notes/a.md",
+            "notes/photo.jpg.yaml",
+            "notes/keep.md",
+            "notes/mover.md",
+        ],
+    );
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+
+    write(&dir, "notes/a.md", &note("A", "revised"));
+    std::fs::rename(dir.join("notes/mover.md"), dir.join("notes/moved.md")).unwrap();
+    std::fs::remove_file(dir.join("notes/keep.md")).unwrap();
+    write(&dir, "notes/new.md", &note("New", "arrived"));
+    relink(
+        &dir,
+        &[
+            "notes/a.md",
+            "notes/photo.jpg.yaml",
+            "notes/moved.md",
+            "notes/new.md",
+        ],
+    );
+    capture(&dir, "2026-07-31T10:00:00Z", None);
+
+    let events = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
+    let diff = manifest_diff(&events[0], &events[1]);
+    assert_eq!(diff.from, events[0].id);
+    assert_eq!(diff.to, events[1].id);
+
+    let row = |p: &str| {
+        diff.rows
+            .iter()
+            .find(|r| r.path == Path::new(p))
+            .unwrap_or_else(|| panic!("no diff row for {p}"))
+            .change
+            .clone()
+    };
+    assert!(matches!(row("notes/a.md"), Change::Changed { .. }));
+    assert_eq!(
+        row("notes/moved.md"),
+        Change::Moved {
+            from: PathBuf::from("notes/mover.md"),
+            hash: digest(note("Mover", "travelling").as_bytes()),
+        },
+        "identical bytes at a new path is a move, not a deletion beside a creation"
+    );
+    assert!(matches!(row("notes/new.md"), Change::Added { .. }));
+    assert!(matches!(row("notes/keep.md"), Change::Removed { .. }));
+
+    // A moved path appears once, under its new name only — the old name must
+    // not also be reported as removed.
+    assert!(
+        !diff
+            .rows
+            .iter()
+            .any(|r| r.path == Path::new("notes/mover.md")),
+        "the move already accounts for the old path"
+    );
+    // Unchanged files are absent entirely; a diff lists differences.
+    assert!(
+        !diff
+            .rows
+            .iter()
+            .any(|r| r.path == Path::new("notes/photo.jpg"))
+    );
+
+    // Rows read changed, moved, added, removed — the order the question is asked.
+    let ranks: Vec<u8> = diff.rows.iter().map(|r| r.change.rank()).collect();
+    assert!(
+        ranks.windows(2).all(|w| w[0] <= w[1]),
+        "{ranks:?} is not sorted"
+    );
+
+    // An event against itself differs in nothing.
+    assert!(manifest_diff(&events[1], &events[1]).is_empty());
+}
+
+/// The pairing rule is shared with `history-log`'s rename inference, so it fails
+/// the same way: identical bytes are not a unique name, and an ambiguous move is
+/// reported as what can actually be seen — a removal and an arrival.
+#[test]
+fn an_ambiguous_move_is_not_paired_in_a_diff() {
+    let dir = seed("diff-ambiguous");
+    let twin = "---\ntitle: Twin\npart_of: '../index.md'\n---\nsame\n";
+    write(&dir, "notes/x.md", twin);
+    write(&dir, "notes/y.md", twin);
+    fn all<'a>(a: &'a str, b: &'a str) -> Vec<&'a str> {
+        vec!["notes/a.md", "notes/photo.jpg.yaml", a, b]
+    }
+    relink(&dir, &all("notes/x.md", "notes/y.md"));
+    capture(&dir, "2026-07-31T09:00:00Z", None);
+
+    std::fs::rename(dir.join("notes/x.md"), dir.join("notes/p.md")).unwrap();
+    std::fs::rename(dir.join("notes/y.md"), dir.join("notes/q.md")).unwrap();
+    relink(&dir, &all("notes/p.md", "notes/q.md"));
+    capture(&dir, "2026-07-31T10:00:00Z", None);
+
+    let events = block_on(store(&dir).list(Path::new("index.md"))).unwrap();
+    let diff = manifest_diff(&events[0], &events[1]);
+    let kind = |p: &str| {
+        diff.rows
+            .iter()
+            .find(|r| r.path == Path::new(p))
+            .map(|r| r.change.clone())
+    };
+    for gone in ["notes/x.md", "notes/y.md"] {
+        assert!(
+            matches!(kind(gone), Some(Change::Removed { .. })),
+            "{gone} should read as removed, since which arrival it became is a guess"
+        );
+    }
+    for arrived in ["notes/p.md", "notes/q.md"] {
+        assert!(matches!(kind(arrived), Some(Change::Added { .. })));
+    }
+    assert!(
+        !diff
+            .rows
+            .iter()
+            .any(|r| matches!(r.change, Change::Moved { .. })),
+        "no pairing here is unambiguous, so none may be claimed"
+    );
+}

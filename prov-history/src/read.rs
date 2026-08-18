@@ -8,7 +8,10 @@ use prov_graph::error::{Error, Result};
 use super::docs::Authoring;
 use super::event_id::comparable;
 use super::layout::{StoreLocation, blob_path, event_path, id_stamp_of, store_dir};
-use super::model::{Event, Latest, Presence, Retrieved, Subject, Summary, Version};
+use super::model::{
+    Change, DiffRow, Event, FileEntry, Latest, ManifestDiff, Presence, Retrieved, Subject, Summary,
+    Version,
+};
 use super::paths::{path_sort_key, under};
 use super::{EVENTS_DIR, HISTORY_DIR, HistoryReadHost, HistoryStore};
 
@@ -603,20 +606,134 @@ fn infer_rename(earlier: &Event, later: &Event, path: &Path) -> Option<PathBuf> 
     // The bytes the tracked document had when it was last seen. Absent means it
     // was already gone, and a lineage does not resume by inference.
     let hash = &earlier.files.iter().find(|f| f.path == path)?.hash;
-    let held = |event: &Event, path: &Path| event.files.iter().any(|f| f.path == path);
+    let (left, came) = unique_pair(earlier, later, hash)?;
+    (left == path).then(|| came.to_path_buf())
+}
 
+/// The one path carrying `hash` that left `earlier`, and the one that arrived in
+/// `later` — **only** when there is exactly one of each.
+///
+/// The whole pairing rule, in one place, because two callers depend on it and a
+/// rule that drifted between them would let `history-log` and `history-diff`
+/// disagree about whether a document moved. [`infer_rename`] asks it about one
+/// document; [`manifest_diff`] asks it about every hash in the manifest.
+///
+/// Returning `None` on any ambiguity is the load-bearing half: identical bytes
+/// are not a unique name. Every empty file in a workspace shares one digest, as
+/// does every copy of the same boilerplate, so a pairing chosen from several
+/// candidates is a guess — and a guess is worse here than an honest break.
+fn unique_pair<'a>(
+    earlier: &'a Event,
+    later: &'a Event,
+    hash: &str,
+) -> Option<(&'a Path, &'a Path)> {
+    let held = |event: &Event, path: &Path| event.files.iter().any(|f| f.path == path);
     let mut gone = earlier
         .files
         .iter()
-        .filter(|f| &f.hash == hash && !held(later, &f.path));
+        .filter(|f| f.hash == hash && !held(later, &f.path));
     let mut arrived = later
         .files
         .iter()
-        .filter(|f| &f.hash == hash && !held(earlier, &f.path));
+        .filter(|f| f.hash == hash && !held(earlier, &f.path));
 
     let (left, came) = (gone.next()?, arrived.next()?);
-    (left.path == path && gone.next().is_none() && arrived.next().is_none())
-        .then(|| came.path.clone())
+    (gone.next().is_none() && arrived.next().is_none())
+        .then_some((left.path.as_path(), came.path.as_path()))
+}
+
+/// How two events' manifests differ, as rows rather than as counts.
+///
+/// Pure, and a *comparison* rather than a fold: both manifests are complete, so
+/// nothing between them is read and the two need not be adjacent — or even from
+/// the same device. `Event::diff`'s counts answer "how much changed" for a
+/// capture's own summary line; this answers "what changed", which is the
+/// question anyone actually asks of a history.
+///
+/// Moves are paired by [`unique_pair`] before anything is called added or
+/// removed, so a directory rename reads as the one intention it was instead of
+/// hundreds of deletions beside hundreds of creations.
+pub fn manifest_diff(earlier: &Event, later: &Event) -> ManifestDiff {
+    let before: BTreeMap<&Path, &FileEntry> = earlier
+        .files
+        .iter()
+        .map(|f| (f.path.as_path(), f))
+        .collect();
+    let after: BTreeMap<&Path, &FileEntry> =
+        later.files.iter().map(|f| (f.path.as_path(), f)).collect();
+
+    // Pair the moves first: a path settled here is neither an addition nor a
+    // removal, and both halves have to agree about that.
+    let mut moved_to: BTreeMap<&Path, &Path> = BTreeMap::new();
+    let mut moved_from: BTreeSet<&Path> = BTreeSet::new();
+    for entry in later
+        .files
+        .iter()
+        .filter(|f| !before.contains_key(f.path.as_path()))
+    {
+        if let Some((left, came)) = unique_pair(earlier, later, &entry.hash)
+            && came == entry.path
+        {
+            moved_to.insert(came, left);
+            moved_from.insert(left);
+        }
+    }
+
+    let mut rows = Vec::new();
+    for entry in &later.files {
+        let path = entry.path.as_path();
+        let change = match before.get(path) {
+            Some(was) if was.hash == entry.hash => continue,
+            Some(was) => Change::Changed {
+                from: was.hash.clone(),
+                to: entry.hash.clone(),
+            },
+            None => match moved_to.get(path) {
+                Some(from) => Change::Moved {
+                    from: from.to_path_buf(),
+                    hash: entry.hash.clone(),
+                },
+                None => Change::Added {
+                    hash: entry.hash.clone(),
+                },
+            },
+        };
+        rows.push(DiffRow {
+            path: entry.path.clone(),
+            // The later manifest's id where there is one, since that is the
+            // identity the document carries *now*.
+            id: entry
+                .id
+                .clone()
+                .or_else(|| before.get(path).and_then(|w| w.id.clone())),
+            change,
+        });
+    }
+    for entry in &earlier.files {
+        let path = entry.path.as_path();
+        if after.contains_key(path) || moved_from.contains(path) {
+            continue;
+        }
+        rows.push(DiffRow {
+            path: entry.path.clone(),
+            id: entry.id.clone(),
+            change: Change::Removed {
+                hash: entry.hash.clone(),
+            },
+        });
+    }
+
+    rows.sort_by(|a, b| {
+        a.change
+            .rank()
+            .cmp(&b.change.rank())
+            .then_with(|| path_sort_key(&a.path).cmp(&path_sort_key(&b.path)))
+    });
+    ManifestDiff {
+        from: earlier.id.clone(),
+        to: later.id.clone(),
+        rows,
+    }
 }
 
 /// Format the paths [`HistoryStore::events_in`] could not read, for a refusal

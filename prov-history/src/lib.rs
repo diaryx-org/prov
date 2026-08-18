@@ -60,7 +60,7 @@ pub use event_id::*;
 pub use layout::*;
 pub use model::*;
 pub use paths::*;
-pub use read::describe_unreadable;
+pub use read::{describe_unreadable, manifest_diff};
 
 /// Read capabilities a host must supply for [`HistoryStore`]'s read-side verbs.
 ///

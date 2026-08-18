@@ -386,6 +386,99 @@ pub enum Retrieved {
     },
 }
 
+/// How one path differs between two manifests.
+///
+/// A move is its own kind rather than a removal beside an addition. A directory
+/// rename is one intention and hundreds of rows, and a diff that reported it as
+/// hundreds of deletions and hundreds of creations would bury the one fact worth
+/// reading. Pairing is the same one-to-one rule a path-keyed lineage infers a
+/// rename by, applied across the whole manifest at once — see
+/// [`Version::inferred`] for what it can and cannot establish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// Present in the later manifest only.
+    Added {
+        /// Its content digest there.
+        hash: String,
+    },
+    /// Present in the earlier manifest only, and not paired with an arrival.
+    /// **Omission is deletion** — a full manifest keeps no removal list.
+    Removed {
+        /// Its content digest in the earlier manifest.
+        hash: String,
+    },
+    /// The same path, different bytes.
+    Changed {
+        /// The digest in the earlier manifest.
+        from: String,
+        /// The digest in the later one.
+        to: String,
+    },
+    /// The same bytes at a different path — inferred, never recorded.
+    Moved {
+        /// Where the earlier manifest held it.
+        from: PathBuf,
+        /// The digest both manifests carry, which is *why* the two were paired.
+        hash: String,
+    },
+}
+
+impl Change {
+    /// Sort order for a diff: what changed, then what moved, then what arrived,
+    /// then what went. Read top to bottom, the rows answer "what happened here?"
+    /// in the order the question is usually asked.
+    pub fn rank(&self) -> u8 {
+        match self {
+            Change::Changed { .. } => 0,
+            Change::Moved { .. } => 1,
+            Change::Added { .. } => 2,
+            Change::Removed { .. } => 3,
+        }
+    }
+}
+
+/// One path's difference between two manifests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffRow {
+    /// The path in the **later** manifest — or, for a
+    /// [`Removed`](Change::Removed) row, the path the earlier one held, since
+    /// that is the only path such a row has.
+    pub path: PathBuf,
+    /// The id the manifests recorded for it, when either did.
+    pub id: Option<Id>,
+    /// What happened to it.
+    pub change: Change,
+}
+
+/// How two events' manifests differ.
+///
+/// Both are full manifests, so this is a comparison and not a fold: no
+/// intervening event is read, and the two need not be adjacent or even related.
+/// Comparing an event with one from a device whose history never reached here
+/// works exactly as well, which is the property full manifests were chosen for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestDiff {
+    /// The earlier event's id.
+    pub from: String,
+    /// The later event's id.
+    pub to: String,
+    /// Every path that differs, sorted by [`Change::rank`] then path. A pair of
+    /// identical manifests yields none.
+    pub rows: Vec<DiffRow>,
+}
+
+impl ManifestDiff {
+    /// Whether the two manifests describe the same file set, byte for byte.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// How many rows carry a change of this shape.
+    pub fn count(&self, rank: u8) -> usize {
+        self.rows.iter().filter(|r| r.change.rank() == rank).count()
+    }
+}
+
 /// What one event's manifest said about one document — the unit a lineage
 /// reports a change in.
 #[derive(Debug, Clone, PartialEq, Eq)]

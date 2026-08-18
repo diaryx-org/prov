@@ -842,6 +842,47 @@ pub(crate) enum Command {
         /// written — which is how a *deleted* document's bytes come back.
         target: String,
     },
+    /// Compare two captures: what changed, what moved, what arrived, what went.
+    ///
+    /// Both events hold full manifests, so this is a comparison rather than a
+    /// fold — nothing between them is read, and the two need not be adjacent or
+    /// even from the same device.
+    ///
+    /// With no arguments, compares the newest capture against its parent: what
+    /// the last capture recorded. With one, does the same for that event. With
+    /// two, compares them directly, oldest-first regardless of the order given.
+    ///
+    /// A move is reported as a move, not as a deletion beside a creation, when
+    /// the pairing is unambiguous — one path left with exactly those bytes and
+    /// one arrived with them. A directory rename is then one intention and not
+    /// several hundred rows. The inference is the same one `history-log` uses
+    /// and carries the same limit: two unrelated files with identical content
+    /// look like a move, and identical content is common (every empty file
+    /// shares a digest), so an ambiguous pairing is never claimed.
+    ///
+    /// Works regardless of the `history` config axis.
+    HistoryDiff {
+        /// The earlier event, or the only event when `b` is omitted (in which
+        /// case its parent is the other side). Defaults to the newest capture.
+        a: Option<String>,
+        /// The later event. Omit to compare `a` against its parent.
+        b: Option<String>,
+        /// Show a unified diff of every **changed** text file, not just the
+        /// summary rows.
+        ///
+        /// Only changed files: an added or removed file's whole content is
+        /// `prov history-cat`'s job, and dumping it here would print an entire
+        /// workspace for a first capture. A file whose captured bytes are not
+        /// valid UTF-8, or whose pre-image is not in this store, is named and
+        /// skipped rather than mangled.
+        #[arg(long)]
+        patch: bool,
+        /// Limit the comparison to these paths — naming a directory covers the
+        /// subtree. After `--`, as in `git diff`, since the positional
+        /// arguments before it are event ids.
+        #[arg(last = true)]
+        paths: Vec<PathBuf>,
+    },
     /// Print one document's lineage across every capture: the events where its
     /// bytes or its path changed, newest first.
     ///

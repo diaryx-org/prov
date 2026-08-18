@@ -478,7 +478,7 @@ Two verbs make it irreversible again: `history-prune` (§12) by age or count, an
 
 ## 10. Reading the store
 
-Three read-only queries. None writes anything, and all work regardless of the
+Four read-only queries. None writes anything, and all work regardless of the
 config axis (§8) — including on a workspace whose store arrived entirely from
 another device.
 
@@ -575,6 +575,39 @@ is added that the capture did not have.
   bargain). Collapsing them would report a routinely half-synced event as loss.
 - **Every refusal writes nothing to standard output** and exits non-zero, so a
   pipeline fails rather than silently comparing against an empty file.
+
+### 10.4 `history-diff [<a>] [<b>] [-- <path>...]` — two captures compared
+
+Both events hold full manifests, so this is a **comparison, not a fold**: no
+intervening event is read, and the two need not be adjacent, in the same line, or
+from the same device. That is the property §3.1's choice was made for, and this
+is where it is spent.
+
+With neither event named, the newest is compared against its parent — what the
+last capture recorded. With one, the same for that event. With two, they are
+compared directly, ordered oldest-first by normalized `created` (§3.2) whatever
+order they were given in, since the sides of a diff are an order and not a pair.
+An event with no parent (the first in its line, or one whose parent never
+arrived) is compared against an **empty manifest**: everything it holds arrived
+at that capture.
+
+Each differing path is reported as changed, moved, added or removed, in that
+order. **A move is paired before anything is called added or removed**, by
+§10.2's rule: exactly one path with that hash left, exactly one arrived. A
+directory rename is then the one intention it was, rather than several hundred
+deletions beside several hundred creations. The pairing carries §10.2's limit
+unchanged, and is labelled as inferred wherever it is shown.
+
+Paths after `--` scope the comparison; a directory covers its subtree. A moved
+row is kept when **either** end is in scope, since asking about a directory a
+file left should not conceal that it left.
+
+`--patch` adds a unified diff of each **changed** text file. Changed only: an
+added or removed file's whole content is §10.3's job, and emitting it here would
+print an entire workspace the first time anyone diffed a first event. A moved row
+has nothing to patch — its bytes are identical, which is why it was paired at
+all. A pre-image that is not valid UTF-8, or that this store does not hold, is
+named and skipped rather than mangled.
 
 ## 11. Restoring from the store
 

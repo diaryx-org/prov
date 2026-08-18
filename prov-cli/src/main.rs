@@ -213,6 +213,9 @@ fn main() -> ExitCode {
         Command::HistoryList => cmd_history_list(),
         Command::HistoryShow { event } => cmd_history_show(&event),
         Command::HistoryCat { event, target } => cmd_history_cat(&event, &target),
+        Command::HistoryDiff { a, b, patch, paths } => {
+            cmd_history_diff(a.as_deref(), b.as_deref(), patch, &paths)
+        }
         Command::HistoryLog { target } => cmd_history_log(&target),
         Command::HistoryRestore {
             event,
@@ -2694,6 +2697,191 @@ fn cmd_history_show(id: &str) -> CmdResult {
 /// The subject is an id wherever one exists, because that is what survives a
 /// rename. A path is used only when the document carries no id, and the fallback
 /// is called out on stderr rather than passed off as equivalent.
+/// Compare two captures.
+///
+/// The whole comparison is in the library and is pure; what lives here is
+/// choosing the two sides from what the user did or did not name, and rendering
+/// rows a person can read.
+fn cmd_history_diff(a: Option<&str>, b: Option<&str>, patch: bool, paths: &[PathBuf]) -> CmdResult {
+    let ctx = find_root()?;
+    let ws = workspace(&ctx)?;
+
+    let load = |id: &str| -> Result<prov::Event, AnyError> {
+        block_on(ws.history_event(&ctx.root_doc, id))?.ok_or_else(|| {
+            format!("no history event `{id}` — list what is in the store with `prov history-list`")
+                .into()
+        })
+    };
+    // Naming one event means "what did this capture change", so the other side
+    // is its parent; naming none means the newest. Two named events are compared
+    // as given, oldest first — the sides of a diff are an order, not a pair, and
+    // getting it backwards would invert every row.
+    let (earlier, later) = match (a, b) {
+        (Some(a), Some(b)) => {
+            let (a, b) = (load(a)?, load(b)?);
+            match prov::history::comparable(&a.created) <= prov::history::comparable(&b.created) {
+                true => (Some(a), b),
+                false => (Some(b), a),
+            }
+        }
+        (Some(a), None) => {
+            let later = load(a)?;
+            let earlier = match &later.parent {
+                Some(parent) => block_on(ws.history_event(&ctx.root_doc, parent))?,
+                None => None,
+            };
+            (earlier, later)
+        }
+        (None, _) => {
+            let mut events = block_on(ws.history_list(&ctx.root_doc))?;
+            let Some(later) = events.pop() else {
+                eprintln!("no captures in this store — `prov history-capture` makes the first");
+                return Ok(ExitCode::SUCCESS);
+            };
+            (events.pop(), later)
+        }
+    };
+
+    // No parent — the first event in its line, or one whose parent never reached
+    // this device. Diffing against an empty manifest is the honest reading:
+    // everything it holds arrived at that capture.
+    let genesis = prov::Event {
+        id: String::new(),
+        path: PathBuf::new(),
+        created: String::new(),
+        trigger: String::new(),
+        label: None,
+        parent: None,
+        files: Vec::new(),
+    };
+    let earlier = earlier.unwrap_or(genesis);
+
+    let mut diff = prov::manifest_diff(&earlier, &later);
+    if !paths.is_empty() {
+        let scope: Vec<PathBuf> = paths
+            .iter()
+            .map(|p| ws_rel(&ctx, p))
+            .collect::<Result<_, _>>()?;
+        // A moved row is kept when *either* end is in scope: asking about a
+        // directory a file left should not hide the fact that it left.
+        diff.rows.retain(|row| {
+            scope.iter().any(|dir| {
+                prov::history::under(&row.path, dir)
+                    || matches!(&row.change, prov::Change::Moved { from, .. } if prov::history::under(from, dir))
+            })
+        });
+    }
+
+    let name = |id: &str| match id.is_empty() {
+        true => "(nothing — no parent event)".to_string(),
+        false => id.to_string(),
+    };
+    println!("--- {}", name(&diff.from));
+    println!("+++ {}", name(&diff.to));
+    for row in &diff.rows {
+        let id = row
+            .id
+            .as_ref()
+            .map(|id| format!("  {id}"))
+            .unwrap_or_default();
+        match &row.change {
+            prov::Change::Changed { from, to } => println!(
+                "changed  {}  {} -> {}{id}",
+                row.path.display(),
+                short_hash(from),
+                short_hash(to)
+            ),
+            prov::Change::Moved { from, hash } => println!(
+                "moved    {} -> {}  {}{id}  (inferred)",
+                from.display(),
+                row.path.display(),
+                short_hash(hash)
+            ),
+            prov::Change::Added { hash } => {
+                println!("added    {}  {}{id}", row.path.display(), short_hash(hash))
+            }
+            prov::Change::Removed { hash } => {
+                println!("removed  {}  {}{id}", row.path.display(), short_hash(hash))
+            }
+        }
+    }
+
+    if patch {
+        patch_changed_rows(&ws, &ctx, &earlier, &later, &diff)?;
+    }
+
+    if diff.is_empty() {
+        eprintln!("the two captures describe the same file set, byte for byte");
+        return Ok(ExitCode::SUCCESS);
+    }
+    eprintln!(
+        "{} changed, {} moved, {} added, {} removed",
+        diff.count(0),
+        diff.count(1),
+        diff.count(2),
+        diff.count(3)
+    );
+    if diff
+        .rows
+        .iter()
+        .any(|r| matches!(r.change, prov::Change::Moved { .. }))
+    {
+        eprintln!(
+            "note: a move is inferred from identical bytes at a new path, not recorded. \
+             Two unrelated files with the same content would look the same."
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Append a unified diff for every changed text row.
+///
+/// Changed rows only. An added or removed file's whole content is
+/// `history-cat`'s job, and dumping it here would print an entire workspace the
+/// first time anyone diffed a genesis event. A moved row is skipped because its
+/// bytes are identical by construction — that is *why* it was paired.
+fn patch_changed_rows(
+    ws: &Workspace<StdFs, Minter, FileIndex>,
+    ctx: &Ctx,
+    earlier: &prov::Event,
+    later: &prov::Event,
+    diff: &prov::ManifestDiff,
+) -> Result<(), AnyError> {
+    for row in &diff.rows {
+        let prov::Change::Changed { .. } = &row.change else {
+            continue;
+        };
+        let subject = prov::Subject::Path(row.path.clone());
+        let side = |event: &prov::Event| -> Result<Option<String>, AnyError> {
+            Ok(
+                match block_on(ws.history_cat(&ctx.root_doc, event, &subject))? {
+                    // Not UTF-8 is not a failure: a capture set holds whatever
+                    // the workspace holds, and an attachment has no patch.
+                    prov::Retrieved::Bytes { bytes, .. } => String::from_utf8(bytes).ok(),
+                    _ => None,
+                },
+            )
+        };
+        let (Some(before), Some(after)) = (side(earlier)?, side(later)?) else {
+            println!("\n# {} — no textual diff available", row.path.display());
+            println!("# (binary content, or a pre-image this store does not hold)");
+            continue;
+        };
+        println!();
+        print!(
+            "{}",
+            similar::TextDiff::from_lines(&before, &after)
+                .unified_diff()
+                .context_radius(3)
+                .header(
+                    &format!("a/{}", row.path.display()),
+                    &format!("b/{}", row.path.display())
+                )
+        );
+    }
+    Ok(())
+}
+
 /// Write one captured file's bytes to stdout.
 ///
 /// The whole verb is a lookup, and the care is all in the failure modes: three
