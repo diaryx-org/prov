@@ -71,6 +71,15 @@ lost on the next write. A release **intro** — for a release that wants a
 narrative rather than a list — goes in the released section below the end
 marker, where regeneration cannot reach it.
 
+`--write` also answers to the tag list, not just to the region: any `v*` tag
+with no `## <tag> —` section of its own gets one, generated from its commit
+range and folded in at its place in the order. That is what a tag cut *after*
+the fact needs — v0.5.0 was tagged once its crates were already on crates.io,
+and until the backfill existed, tagging it made those commits vanish from the
+file entirely: no longer unreleased, and in no section either. `--check` reports
+a missing section the same way it reports a stale region. Existing sections are
+never rewritten, so a handwritten intro survives every write.
+
 There is no CI job checking the region for staleness, unlike twig and fig: it is
 regenerated as part of every release, and git-cliff is not on the runners.
 

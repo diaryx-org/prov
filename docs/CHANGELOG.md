@@ -13,99 +13,35 @@ list. **Behavioural changes** is generated too, from `Behavioural-change:`
 trailers on the commits themselves; write one on any commit a consumer would
 notice after upgrading without editing a line of their own code.
 
-One gap this file cannot close on its own: **0.5.0 was published to crates.io on
-2026-08-17 without a `v0.5.0` tag**. git-cliff sections history by tag, so the
-commits that made 0.5.0 are not in a section of their own — they are listed
-under whichever release first tags them.
+One irregularity, recorded rather than tidied away: **0.5.0 went to crates.io on
+2026-08-17 before it was tagged**, from a laptop rather than the release
+workflow. The tag was added afterwards, at `1b27f4e` — the commit the published
+crates name in their own `.cargo_vcs_info.json`, verified against the packaged
+sources. Five of the eleven crates were packaged one commit earlier, at
+`837e13f`, which differs from it by one line of `.gitignore` and nothing else.
 
 ## Unreleased
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-### Breaking
-
-- **views** — select and group are two things; add `where:` conditions ([`f78bea4`](https://github.com/diaryx-org/prov/commit/f78bea4261a51705834fed64fd1c69dfeb7f3325))
-- **views** — a grain is any coarsening, and `nest` says when it can file ([`1fbeb0d`](https://github.com/diaryx-org/prov/commit/1fbeb0d6a29e57850541e4757cc808627f2d94a6))
-
 ### Added
 
-- **config** — a workspace can say what it calls itself ([`86adf63`](https://github.com/diaryx-org/prov/commit/86adf632822bfa7238f3611fe4d153b07940977c))
-- **link** — `id:`<workspace>`/`<id>``, and a predicate that means what the rewrites need ([`4fe4045`](https://github.com/diaryx-org/prov/commit/4fe40458c12c868d05d66956297ae7798c85617b))
-- **workspace** — resolve a foreign reference by refusing to ([`66c9ad0`](https://github.com/diaryx-org/prov/commit/66c9ad02dbdd0a07f378fdf612a84e119ed99650))
-- **cli** — a device-local peer map, and `prov peer` to drive it ([`28f8914`](https://github.com/diaryx-org/prov/commit/28f8914b3e45597ee8f7df04da2f03de0a489fab))
-- **history** — extract prov-history bounded context crate ([`78eca5d`](https://github.com/diaryx-org/prov/commit/78eca5d1d7b62db5d74feff2328d55846b47838e))
-- **views** — a view format that does not know what a date is ([`0393378`](https://github.com/diaryx-org/prov/commit/0393378d9ff6270ae2d362f94c76df6f3222d21a))
-- **config** — `views:` becomes a config axis, not an app's private block ([`34b74e6`](https://github.com/diaryx-org/prov/commit/34b74e61054da1c64f82aea12fcfccc8fdd41572))
-- **cli** — `prov views` — ask the workspace what lenses it declares ([`f43dea5`](https://github.com/diaryx-org/prov/commit/f43dea535c7a3f97ed04995838d933521821fea5))
-- **cli** — `prov id --workspace` — name the workspace, or have prov name it ([`3566b7d`](https://github.com/diaryx-org/prov/commit/3566b7ddddfba406d5fa44b478c2fcd141a5ca45))
-- **exports** — prov-exports — a gate is a position, not a kind of filter ([`205cf2e`](https://github.com/diaryx-org/prov/commit/205cf2e6d6ffa021a8746f45255702cfe44089aa))
-- **config** — the `exports:` axis — declared beside `views:`, judged by prov-exports ([`925c3af`](https://github.com/diaryx-org/prov/commit/925c3af71bbb17a9ca62acae6648ded8f902968d))
-- **cli** — `prov exports` — list the declared exports, or preview one's plan ([`415b76e`](https://github.com/diaryx-org/prov/commit/415b76e9d5d0fb338dac8e5b6a235445a524f8ec))
-- **link** — sub-document locators on reference targets ([`62ab021`](https://github.com/diaryx-org/prov/commit/62ab021eed9ec5b35de0ac3e9e1ae9336c2fe2f7))
-- **proposals** — provenance proposal ([`11c8397`](https://github.com/diaryx-org/prov/commit/11c8397ed63acfc2734c4724c04ffb1d64d5fb3a))
-- **convert** — body content format, the fourth axis ([`cccc3b5`](https://github.com/diaryx-org/prov/commit/cccc3b57093c5062c89849a48912c1fb1bb6d750))
-- upgrade Twig to v3 and cover detached definition nodes ([`319e687`](https://github.com/diaryx-org/prov/commit/319e687af38cf6520268c8ee6927ecd23d0eab2c))
-- **graph** — a manifest, so one node can stand for ten thousand files ([`3972a0f`](https://github.com/diaryx-org/prov/commit/3972a0f0b31a3e716b0bbd00ac187514f1f3c832))
-- **manifest** — attach, refresh and check a directory of files ([`4629ac7`](https://github.com/diaryx-org/prov/commit/4629ac7f48f59627405ce99772d7bcec67d85cd2))
-- **mutate** — move and delete a manifest node without moving the archive ([`82e9324`](https://github.com/diaryx-org/prov/commit/82e9324592c3cea6f9dce7e5f61b65e87f79470b))
-- **cli** — attach --manifest, and a verb to report, refresh and verify one ([`cd4e028`](https://github.com/diaryx-org/prov/commit/cd4e028644c62ea38471cb50860620aecd39bb13))
-- **mutate** — a manifest node has no copy, and the archive stays out of history ([`a63f1d9`](https://github.com/diaryx-org/prov/commit/a63f1d9ad922bbb40839a702268fbb4f32a47730))
-- **peer** — a port for where another workspace lives, and a check on the answer ([`837e13f`](https://github.com/diaryx-org/prov/commit/837e13f0f13574117586f5b409d49e9c1f918b58))
 - **history** — a verb for the bytes a capture is still holding ([`5bbc59e`](https://github.com/diaryx-org/prov/commit/5bbc59e1ff5fdd64221913cdad1a60cd61a688dc))
 - **history** — a lineage that crosses the rename its manifests already show ([`7dc37c5`](https://github.com/diaryx-org/prov/commit/7dc37c57da05f72f8b57d95433816f9d7a0739e8))
 - **history** — two captures compared, with the move told from the churn ([`e7b3a5a`](https://github.com/diaryx-org/prov/commit/e7b3a5a1a7e644c856c58ccd19d3a75bf47c6a99))
 - **history** — room to say why a capture was taken ([`8a5f05c`](https://github.com/diaryx-org/prov/commit/8a5f05c6a5c10339a747b7311b8e6c80e716c72f))
 - **history** — say what a capture is leaving behind ([`4b699bf`](https://github.com/diaryx-org/prov/commit/4b699bfad1454961567663d76fbe9fda64c86977))
 - **history** — a capture written somewhere it cannot do any harm ([`0948a0f`](https://github.com/diaryx-org/prov/commit/0948a0fa2a5a3010577d32e917be5c15d3dd0c0b))
+- **release** — one command to cut a release, and a changelog to cut from ([`3217119`](https://github.com/diaryx-org/prov/commit/32171198f19081448d5fbf252c1f8a25ccbec3e0))
 
 ### Fixed
 
-- **link, mutate, index, ...** — proptesting findings ([`96febb4`](https://github.com/diaryx-org/prov/commit/96febb426ae790bba66998b7b76e8c8ab8c9b854))
-- give format-sensitive crates independent-check isolation ([`5f5bc05`](https://github.com/diaryx-org/prov/commit/5f5bc05e1c40acfe742b21f70237bbaee9803c7c))
-- **prov** — re-export JOURNAL_NAME, which the crate split made crate-private ([`e9106f8`](https://github.com/diaryx-org/prov/commit/e9106f87a336927ae67fd9744374067d720b12eb))
-- **rename** — retarget every inbound reference, not just the first ([`d28f44b`](https://github.com/diaryx-org/prov/commit/d28f44ba5ffe06ae4a1432ecd269112e5c5713e7))
-- **rename** — consult the workspace's path style, not just relative ([`88885cf`](https://github.com/diaryx-org/prov/commit/88885cffd598ed2efd477884a9200db898dd414b))
-- **maintain** — a spanning walk that never moved is not a root ([`44eb8db`](https://github.com/diaryx-org/prov/commit/44eb8db2b9e8652089c8cab92440e0ec7310afc8))
-- **graph** — an alias with a locator is still an alias ([`9c40201`](https://github.com/diaryx-org/prov/commit/9c40201b93c2ab3485157146f00cd38f337fd32d))
-- **attach** — a covered directory is not a pile of loose files ([`5e2604f`](https://github.com/diaryx-org/prov/commit/5e2604f5338025b83275b52615ecba9f08933050))
 - **discovery** — a page prov generated cannot be the root it was generated from ([`6500d7d`](https://github.com/diaryx-org/prov/commit/6500d7deaf957762f0fb60051103896e71c973a3))
 - **attach** — the recursive sweep stops at the stores prov parks bytes in ([`5664bb1`](https://github.com/diaryx-org/prov/commit/5664bb1511af5dcf2fd7ebce7126cc3da72f9966))
 
 ### Changed
 
-- **tree, workspace** — a stat before every read, and a walk whose answer is already known ([`7bcdf67`](https://github.com/diaryx-org/prov/commit/7bcdf67416b64588ca79a2aa2b69f202140ce532))
-- **graph, change, validate, ...** — one module reads, one module writes, the rest are views ([`4ed5fe7`](https://github.com/diaryx-org/prov/commit/4ed5fe77247214961fc8e430da443ba61d6d1301))
-- **validate, remedy** — a finding is a statement, not an instruction ([`2738b60`](https://github.com/diaryx-org/prov/commit/2738b606f2e3f8007870a0d4478475a62892af21))
-- **workspace, cli** — ten knobs the builder had to hand-copy four times ([`661e520`](https://github.com/diaryx-org/prov/commit/661e520c25e54ce75293926451e5d91972dfafae))
-- **fs, index, graph** — the read core says so in its own bounds ([`2aaaee0`](https://github.com/diaryx-org/prov/commit/2aaaee0e455d21adcdc85d4b044f012e8f3d64cb))
-- **prov-graph** — the read core moves out, and a consumer proves it ([`ffa94aa`](https://github.com/diaryx-org/prov/commit/ffa94aa2a0671410fd3cb5f418bdf51589157fa4))
-- extract fixity module into prov-fixity crate ([`f716acb`](https://github.com/diaryx-org/prov/commit/f716acbfd983266f8dc567ed55779b33da670eaf))
-- extract identity policy into prov-identity crate ([`1541ad2`](https://github.com/diaryx-org/prov/commit/1541ad2d3bf26b131098d85cda0f91517a7ab84f))
-- extract prov-config crate for workspace policy types ([`0c7a186`](https://github.com/diaryx-org/prov/commit/0c7a186281616e1db8fcb7d95d9ffbcfeef80449))
-- move history's pure core into prov-history ([`7ed17b9`](https://github.com/diaryx-org/prov/commit/7ed17b97cbbeaba4707c89e19aa2102ab2839885))
-- make HistoryStore generic over its host value ([`3f85f17`](https://github.com/diaryx-org/prov/commit/3f85f1746ea3dfb3e8e7ccca6f057ef49df94727))
-- move history's read-side verbs into prov-history ([`714bd5b`](https://github.com/diaryx-org/prov/commit/714bd5bfc328a2e60db8cbba20dcc5b01893f9f2))
-- move history's write-side verbs into prov-history ([`27b2944`](https://github.com/diaryx-org/prov/commit/27b294438078634f40e8111f1c05d441f8ad201c))
-- collapse prov/src/history to integration code ([`94c6b2a`](https://github.com/diaryx-org/prov/commit/94c6b2a72d56cac79eaf9b959809919990f8c7f7))
-- **history** — move prov history tests into prov-history ([`fc3958d`](https://github.com/diaryx-org/prov/commit/fc3958dd431c9db7bd0d9f24705b0f7621df45a2))
-- extract prov-store crate for the write surface ([`7db0fbb`](https://github.com/diaryx-org/prov/commit/7db0fbbd94f5e1a8a54e301bdae838f0a12d8da2))
-- move history/mod.rs -> history.rs ([`ba92c42`](https://github.com/diaryx-org/prov/commit/ba92c423d54dace8a1d029245b2e67944ff1f6f5))
-- move versioning to main Cargo.toml ([`1f7ea79`](https://github.com/diaryx-org/prov/commit/1f7ea797a7d5fed7d945473ee2fdcedecf9f575b))
-- use fig 3.1's fig::Value helpers ([`dc29d74`](https://github.com/diaryx-org/prov/commit/dc29d74127bdb23a9351fcc37a4ac9e335b2ee6f))
-- **manifest** — report drift in the house register ([`ea0b32a`](https://github.com/diaryx-org/prov/commit/ea0b32ae060eeefdfbea18d8ac7ef2b3235d541d))
-- refactor(ci): make homebrew workflow depend on shared diaryx-org
-homebrew workflow ([`868d2e2`](https://github.com/diaryx-org/prov/commit/868d2e2e18d6b097fb930cefecc8383ae72ceb83))
 - **ci** — the workflow asks a program what CI is instead of holding it ([`5ac43f4`](https://github.com/diaryx-org/prov/commit/5ac43f4e446d191d9de8da58bf634ffbefeaed08))
-
-### Uncategorised — triage before release
-
-- Extract transaction and journal recovery into `prov-transaction`
-
-- Move change.rs and journal.rs from prov into new crate, re-exporting for compat
-- Complete crash-atomic transactions: on-disk journal now recovers mid-set crashes
-- Add fs_faults test harness; make journal helpers public
-- Forward format features through workspace Cargo.toml ([`f625f83`](https://github.com/diaryx-org/prov/commit/f625f839eaac8ad498fc3f2a9993efd1a2afdcef))
-- Update .gitignore ([`1b27f4e`](https://github.com/diaryx-org/prov/commit/1b27f4e20d60b10bf42adb6d73dbb1c2c96836e8))
 
 ### Behavioural changes
 
@@ -141,6 +77,84 @@ take `CaptureNote<'_>` where they took `label: Option<&str>`. A caller passing
 a label updates to `CaptureNote::labelled(label)`, and one passing `None` to
 
 <!-- git-cliff:end -->
+
+## v0.5.0 — 2026-08-17
+
+### Breaking
+
+- **views** — select and group are two things; add `where:` conditions ([`f78bea4`](https://github.com/diaryx-org/prov/commit/f78bea4261a51705834fed64fd1c69dfeb7f3325))
+- **views** — a grain is any coarsening, and `nest` says when it can file ([`1fbeb0d`](https://github.com/diaryx-org/prov/commit/1fbeb0d6a29e57850541e4757cc808627f2d94a6))
+
+### Added
+
+- **config** — a workspace can say what it calls itself ([`86adf63`](https://github.com/diaryx-org/prov/commit/86adf632822bfa7238f3611fe4d153b07940977c))
+- **link** — `id:`<workspace>`/`<id>``, and a predicate that means what the rewrites need ([`4fe4045`](https://github.com/diaryx-org/prov/commit/4fe40458c12c868d05d66956297ae7798c85617b))
+- **workspace** — resolve a foreign reference by refusing to ([`66c9ad0`](https://github.com/diaryx-org/prov/commit/66c9ad02dbdd0a07f378fdf612a84e119ed99650))
+- **cli** — a device-local peer map, and `prov peer` to drive it ([`28f8914`](https://github.com/diaryx-org/prov/commit/28f8914b3e45597ee8f7df04da2f03de0a489fab))
+- **history** — extract prov-history bounded context crate ([`78eca5d`](https://github.com/diaryx-org/prov/commit/78eca5d1d7b62db5d74feff2328d55846b47838e))
+- **views** — a view format that does not know what a date is ([`0393378`](https://github.com/diaryx-org/prov/commit/0393378d9ff6270ae2d362f94c76df6f3222d21a))
+- **config** — `views:` becomes a config axis, not an app's private block ([`34b74e6`](https://github.com/diaryx-org/prov/commit/34b74e61054da1c64f82aea12fcfccc8fdd41572))
+- **cli** — `prov views` — ask the workspace what lenses it declares ([`f43dea5`](https://github.com/diaryx-org/prov/commit/f43dea535c7a3f97ed04995838d933521821fea5))
+- **cli** — `prov id --workspace` — name the workspace, or have prov name it ([`3566b7d`](https://github.com/diaryx-org/prov/commit/3566b7ddddfba406d5fa44b478c2fcd141a5ca45))
+- **exports** — prov-exports — a gate is a position, not a kind of filter ([`205cf2e`](https://github.com/diaryx-org/prov/commit/205cf2e6d6ffa021a8746f45255702cfe44089aa))
+- **config** — the `exports:` axis — declared beside `views:`, judged by prov-exports ([`925c3af`](https://github.com/diaryx-org/prov/commit/925c3af71bbb17a9ca62acae6648ded8f902968d))
+- **cli** — `prov exports` — list the declared exports, or preview one's plan ([`415b76e`](https://github.com/diaryx-org/prov/commit/415b76e9d5d0fb338dac8e5b6a235445a524f8ec))
+- **link** — sub-document locators on reference targets ([`62ab021`](https://github.com/diaryx-org/prov/commit/62ab021eed9ec5b35de0ac3e9e1ae9336c2fe2f7))
+- **proposals** — provenance proposal ([`11c8397`](https://github.com/diaryx-org/prov/commit/11c8397ed63acfc2734c4724c04ffb1d64d5fb3a))
+- **convert** — body content format, the fourth axis ([`cccc3b5`](https://github.com/diaryx-org/prov/commit/cccc3b57093c5062c89849a48912c1fb1bb6d750))
+- upgrade Twig to v3 and cover detached definition nodes ([`319e687`](https://github.com/diaryx-org/prov/commit/319e687af38cf6520268c8ee6927ecd23d0eab2c))
+- **graph** — a manifest, so one node can stand for ten thousand files ([`3972a0f`](https://github.com/diaryx-org/prov/commit/3972a0f0b31a3e716b0bbd00ac187514f1f3c832))
+- **manifest** — attach, refresh and check a directory of files ([`4629ac7`](https://github.com/diaryx-org/prov/commit/4629ac7f48f59627405ce99772d7bcec67d85cd2))
+- **mutate** — move and delete a manifest node without moving the archive ([`82e9324`](https://github.com/diaryx-org/prov/commit/82e9324592c3cea6f9dce7e5f61b65e87f79470b))
+- **cli** — attach --manifest, and a verb to report, refresh and verify one ([`cd4e028`](https://github.com/diaryx-org/prov/commit/cd4e028644c62ea38471cb50860620aecd39bb13))
+- **mutate** — a manifest node has no copy, and the archive stays out of history ([`a63f1d9`](https://github.com/diaryx-org/prov/commit/a63f1d9ad922bbb40839a702268fbb4f32a47730))
+- **peer** — a port for where another workspace lives, and a check on the answer ([`837e13f`](https://github.com/diaryx-org/prov/commit/837e13f0f13574117586f5b409d49e9c1f918b58))
+
+### Fixed
+
+- **link, mutate, index, ...** — proptesting findings ([`96febb4`](https://github.com/diaryx-org/prov/commit/96febb426ae790bba66998b7b76e8c8ab8c9b854))
+- give format-sensitive crates independent-check isolation ([`5f5bc05`](https://github.com/diaryx-org/prov/commit/5f5bc05e1c40acfe742b21f70237bbaee9803c7c))
+- **prov** — re-export JOURNAL_NAME, which the crate split made crate-private ([`e9106f8`](https://github.com/diaryx-org/prov/commit/e9106f87a336927ae67fd9744374067d720b12eb))
+- **rename** — retarget every inbound reference, not just the first ([`d28f44b`](https://github.com/diaryx-org/prov/commit/d28f44ba5ffe06ae4a1432ecd269112e5c5713e7))
+- **rename** — consult the workspace's path style, not just relative ([`88885cf`](https://github.com/diaryx-org/prov/commit/88885cffd598ed2efd477884a9200db898dd414b))
+- **maintain** — a spanning walk that never moved is not a root ([`44eb8db`](https://github.com/diaryx-org/prov/commit/44eb8db2b9e8652089c8cab92440e0ec7310afc8))
+- **graph** — an alias with a locator is still an alias ([`9c40201`](https://github.com/diaryx-org/prov/commit/9c40201b93c2ab3485157146f00cd38f337fd32d))
+- **attach** — a covered directory is not a pile of loose files ([`5e2604f`](https://github.com/diaryx-org/prov/commit/5e2604f5338025b83275b52615ecba9f08933050))
+
+### Changed
+
+- **tree, workspace** — a stat before every read, and a walk whose answer is already known ([`7bcdf67`](https://github.com/diaryx-org/prov/commit/7bcdf67416b64588ca79a2aa2b69f202140ce532))
+- **graph, change, validate, ...** — one module reads, one module writes, the rest are views ([`4ed5fe7`](https://github.com/diaryx-org/prov/commit/4ed5fe77247214961fc8e430da443ba61d6d1301))
+- **validate, remedy** — a finding is a statement, not an instruction ([`2738b60`](https://github.com/diaryx-org/prov/commit/2738b606f2e3f8007870a0d4478475a62892af21))
+- **workspace, cli** — ten knobs the builder had to hand-copy four times ([`661e520`](https://github.com/diaryx-org/prov/commit/661e520c25e54ce75293926451e5d91972dfafae))
+- **fs, index, graph** — the read core says so in its own bounds ([`2aaaee0`](https://github.com/diaryx-org/prov/commit/2aaaee0e455d21adcdc85d4b044f012e8f3d64cb))
+- **prov-graph** — the read core moves out, and a consumer proves it ([`ffa94aa`](https://github.com/diaryx-org/prov/commit/ffa94aa2a0671410fd3cb5f418bdf51589157fa4))
+- extract fixity module into prov-fixity crate ([`f716acb`](https://github.com/diaryx-org/prov/commit/f716acbfd983266f8dc567ed55779b33da670eaf))
+- extract identity policy into prov-identity crate ([`1541ad2`](https://github.com/diaryx-org/prov/commit/1541ad2d3bf26b131098d85cda0f91517a7ab84f))
+- extract prov-config crate for workspace policy types ([`0c7a186`](https://github.com/diaryx-org/prov/commit/0c7a186281616e1db8fcb7d95d9ffbcfeef80449))
+- move history's pure core into prov-history ([`7ed17b9`](https://github.com/diaryx-org/prov/commit/7ed17b97cbbeaba4707c89e19aa2102ab2839885))
+- make HistoryStore generic over its host value ([`3f85f17`](https://github.com/diaryx-org/prov/commit/3f85f1746ea3dfb3e8e7ccca6f057ef49df94727))
+- move history's read-side verbs into prov-history ([`714bd5b`](https://github.com/diaryx-org/prov/commit/714bd5bfc328a2e60db8cbba20dcc5b01893f9f2))
+- move history's write-side verbs into prov-history ([`27b2944`](https://github.com/diaryx-org/prov/commit/27b294438078634f40e8111f1c05d441f8ad201c))
+- collapse prov/src/history to integration code ([`94c6b2a`](https://github.com/diaryx-org/prov/commit/94c6b2a72d56cac79eaf9b959809919990f8c7f7))
+- **history** — move prov history tests into prov-history ([`fc3958d`](https://github.com/diaryx-org/prov/commit/fc3958dd431c9db7bd0d9f24705b0f7621df45a2))
+- extract prov-store crate for the write surface ([`7db0fbb`](https://github.com/diaryx-org/prov/commit/7db0fbbd94f5e1a8a54e301bdae838f0a12d8da2))
+- move history/mod.rs -> history.rs ([`ba92c42`](https://github.com/diaryx-org/prov/commit/ba92c423d54dace8a1d029245b2e67944ff1f6f5))
+- move versioning to main Cargo.toml ([`1f7ea79`](https://github.com/diaryx-org/prov/commit/1f7ea797a7d5fed7d945473ee2fdcedecf9f575b))
+- use fig 3.1's fig::Value helpers ([`dc29d74`](https://github.com/diaryx-org/prov/commit/dc29d74127bdb23a9351fcc37a4ac9e335b2ee6f))
+- **manifest** — report drift in the house register ([`ea0b32a`](https://github.com/diaryx-org/prov/commit/ea0b32ae060eeefdfbea18d8ac7ef2b3235d541d))
+- refactor(ci): make homebrew workflow depend on shared diaryx-org
+homebrew workflow ([`868d2e2`](https://github.com/diaryx-org/prov/commit/868d2e2e18d6b097fb930cefecc8383ae72ceb83))
+
+### Uncategorised — triage before release
+
+- Extract transaction and journal recovery into `prov-transaction`
+
+- Move change.rs and journal.rs from prov into new crate, re-exporting for compat
+- Complete crash-atomic transactions: on-disk journal now recovers mid-set crashes
+- Add fs_faults test harness; make journal helpers public
+- Forward format features through workspace Cargo.toml ([`f625f83`](https://github.com/diaryx-org/prov/commit/f625f839eaac8ad498fc3f2a9993efd1a2afdcef))
+- Update .gitignore ([`1b27f4e`](https://github.com/diaryx-org/prov/commit/1b27f4e20d60b10bf42adb6d73dbb1c2c96836e8))
 
 ## v0.4.0 — 2026-08-06
 

@@ -226,6 +226,124 @@ fn generated(sh: &Sh) -> Result<String> {
     })
 }
 
+/// The commits a tag covers, rendered the same way the unreleased region is.
+///
+/// The range starts at the previous tag, or — for the first tag ever — at the
+/// repository's root commit, which is the closest thing to "before everything"
+/// that git-cliff will accept as a range.
+fn tagged(sh: &Sh, previous: Option<&str>, tag: &str) -> Result<String> {
+    let root;
+    let start = match previous {
+        Some(previous) => previous,
+        None => {
+            root = sh.capture("git", &["rev-list", "--max-parents=0", "HEAD"])?;
+            root.trim()
+        }
+    };
+    let rendered = sh
+        .capture(
+            "git-cliff",
+            &[
+                "--config",
+                CLIFF_CONFIG,
+                "--strip",
+                "all",
+                &format!("{start}..{tag}"),
+            ],
+        )
+        .unwrap_or_default();
+    let body = rendered.trim();
+    Ok(if body.is_empty() {
+        "_Nothing recorded._".to_string()
+    } else {
+        body.to_string()
+    })
+}
+
+/// Every `v*` tag, oldest first — the same pattern `.config/cliff.toml` sections
+/// history by.
+fn tags(sh: &Sh) -> Result<Vec<String>> {
+    Ok(sh
+        .capture("git", &["tag", "--sort=v:refname", "--list", "v[0-9]*"])?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Tags with no section of their own, rendered and dated, newest first.
+///
+/// A tag can appear after the fact — v0.5.0 was cut long after the commits it
+/// names, once the release it stood for had already gone to crates.io — and
+/// before this, those commits simply left the file: no longer unreleased, and
+/// in no section either. So the tag list, not the last write, decides what the
+/// changelog owes.
+fn missing_sections(sh: &Sh, text: &str) -> Result<Vec<String>> {
+    let tags = tags(sh)?;
+    let mut sections = Vec::new();
+    for (index, tag) in tags.iter().enumerate() {
+        if text
+            .lines()
+            .any(|line| section_tag(line) == Some(tag.as_str()))
+        {
+            continue;
+        }
+        let previous = index.checked_sub(1).map(|i| tags[i].as_str());
+        let body = tagged(sh, previous, tag)?;
+        let date = sh.capture("git", &["log", "-1", "--format=%cs", tag])?;
+        sections.push(format!("## {tag} — {}\n\n{body}\n", date.trim()));
+    }
+    Ok(sections)
+}
+
+/// `## v0.5.0 — 2026-08-17` -> `v0.5.0`, and anything else -> `None`.
+fn section_tag(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("## ")?;
+    let tag = rest.split_whitespace().next()?;
+    tag.strip_prefix('v')
+        .filter(|version| version.starts_with(|c: char| c.is_ascii_digit()))
+        .map(|_| tag)
+}
+
+/// Put sections in their place: newest first, and an older one folded in above
+/// the first section it outranks rather than appended to the end.
+fn insert_sections(text: &str, sections: Vec<String>) -> String {
+    if sections.is_empty() {
+        return text.to_string();
+    }
+    let order = |tag: &str| Version::parse(tag.trim_start_matches('v')).ok();
+
+    let mut out = String::with_capacity(text.len());
+    let mut pending: Vec<String> = sections;
+    for line in text.lines() {
+        if let Some(tag) = section_tag(line)
+            && let Some(here) = order(tag)
+        {
+            // Everything newer than the section starting on this line goes in
+            // ahead of it.
+            let (newer, rest): (Vec<String>, Vec<String>) = pending.into_iter().partition(|s| {
+                section_tag(s.lines().next().unwrap_or_default())
+                    .and_then(order)
+                    .is_some_and(|candidate| candidate.ordered() > here.ordered())
+            });
+            for section in newer {
+                out.push_str(&section);
+                out.push('\n');
+            }
+            pending = rest;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    // Whatever is older than every section already in the file lands at the end.
+    for section in pending {
+        out.push_str(&section);
+        out.push('\n');
+    }
+    out
+}
+
 fn region(body: &str) -> String {
     format!("{BEGIN}\n\n{body}\n\n{END}")
 }
@@ -278,9 +396,22 @@ pub fn changelog(sh: &Sh, args: &[&str]) -> Result<()> {
     }
 
     let current = sh.read(CHANGELOG)?;
-    let spliced = rewrite(&current, &body, None)?;
+    // Two jobs, because a tag can arrive after the commits it names: refresh the
+    // unreleased region, and give any tag still without a section one.
+    let missing = missing_sections(sh, &current)?;
+    let named: Vec<String> = missing
+        .iter()
+        .filter_map(|s| section_tag(s.lines().next().unwrap_or_default()).map(str::to_owned))
+        .collect();
+    let spliced = insert_sections(&rewrite(&current, &body, None)?, missing);
 
     if mode == "check" {
+        if !named.is_empty() {
+            return Err(format!(
+                "{CHANGELOG} has no section for {}\nhint: run `cargo xtask changelog --write`",
+                named.join(", ")
+            ));
+        }
         if spliced != current {
             return Err(format!(
                 "{CHANGELOG}'s generated region is stale\nhint: run `cargo xtask changelog --write`"
@@ -291,6 +422,9 @@ pub fn changelog(sh: &Sh, args: &[&str]) -> Result<()> {
     }
 
     sh.write(CHANGELOG, &spliced)?;
+    for tag in &named {
+        println!("{CHANGELOG} -> new section `## {tag}`");
+    }
     println!("wrote {CHANGELOG}");
     Ok(())
 }
@@ -776,6 +910,45 @@ path = "."
             "newest release first"
         );
         assert!(cut.contains(EMPTY_REGION));
+    }
+
+    /// A tag section is recognised by its heading and nothing else, so that a
+    /// handwritten intro under one is never mistaken for a heading — and a
+    /// heading that is prose (`## Unreleased`) is never mistaken for a tag.
+    #[test]
+    fn tag_headings_are_told_from_prose_ones() {
+        assert_eq!(section_tag("## v0.5.0 — 2026-08-17"), Some("v0.5.0"));
+        assert_eq!(section_tag("## v0.5.0"), Some("v0.5.0"));
+        assert_eq!(section_tag("## Unreleased"), None);
+        assert_eq!(section_tag("## verify the build"), None);
+        assert_eq!(section_tag("### Added"), None);
+        assert_eq!(section_tag("- **cli** — ## v1.0.0 in a bullet"), None);
+    }
+
+    /// A tag can be cut long after the commits it names — v0.5.0 was — so a
+    /// backfilled section has to land in version order rather than on top.
+    #[test]
+    fn backfilled_sections_land_in_version_order() {
+        let text = "## v0.6.0 — c\n\nsix\n\n## v0.4.0 — a\n\nfour\n";
+        let merged = insert_sections(
+            text,
+            vec![
+                "## v0.5.0 — b\n\nfive\n".to_string(),
+                "## v0.3.0 — z\n\nthree\n".to_string(),
+            ],
+        );
+        let order: Vec<&str> = merged.lines().filter_map(section_tag).collect();
+        assert_eq!(order, ["v0.6.0", "v0.5.0", "v0.4.0", "v0.3.0"]);
+        // Nothing already in the file is rewritten on the way past.
+        for kept in ["six", "four"] {
+            assert_eq!(merged.matches(kept).count(), 1);
+        }
+    }
+
+    #[test]
+    fn nothing_missing_leaves_the_file_untouched() {
+        let text = "## v0.6.0 — c\n\nsix\n";
+        assert_eq!(insert_sections(text, vec![]), text);
     }
 
     #[test]
