@@ -231,6 +231,8 @@ fn main() -> ExitCode {
         ["bump", spec] => release::bump(&sh, spec),
         ["changelog", ref rest @ ..] => release::changelog(&sh, rest),
         ["publish", ref rest @ ..] => release::publish(&sh, rest),
+        ["release-notes"] => release::release_notes(&sh, None),
+        ["release-notes", tag] => release::release_notes(&sh, Some(tag)),
         ["release", spec, ref rest @ ..] => release::release(&sh, spec, rest),
         // Both take a version, and neither should guess one.
         [command @ ("bump" | "release")] => Err(format!(
@@ -324,6 +326,10 @@ const RELEASE_COMMANDS: &[(&str, &str)] = &[
     (
         "publish",
         "publish every crate crates.io is missing (--list)",
+    ),
+    (
+        "release-notes [tag]",
+        "that release's changelog section, for the GitHub release body",
     ),
 ];
 

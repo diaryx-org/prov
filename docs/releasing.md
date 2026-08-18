@@ -19,7 +19,14 @@ Pushing `vX.Y.Z` starts two workflows, and neither can be undone:
   registry is missing, in dependency order. A crates.io version number can be
   yanked but never reused.
 - **`homebrew.yml`** builds the release binaries, attaches a WASI build, cuts
-  the GitHub release, and writes the formula into `diaryx-org/homebrew-tap`.
+  the GitHub release, writes the formula into `diaryx-org/homebrew-tap`, and
+  then sets the release body to that version's section of the changelog —
+  `cargo xtask release-notes <tag>`, which reads `docs/CHANGELOG.md` rather than
+  re-rendering it, so the release page and the repository say the same thing,
+  intro and all. That job runs after the rest, because attaching the first
+  binary is what creates the release to write notes on. If the tag carries no
+  section for its own version the job fails and nothing else does: write the
+  section, and re-run it.
 
 That is why `release` stops at the local tag unless it is given `--push`: every
 step before the push is a commit you can amend or throw away, and the push is
@@ -50,10 +57,19 @@ green.
 | `cargo xtask changelog --check` | fail if that region is stale |
 | `cargo xtask publish --list` | the publish order, derived from the manifests |
 | `cargo xtask publish` | publish every crate crates.io is missing |
+| `cargo xtask release-notes [tag]` | that release's changelog section, as the GitHub release body |
 
 `publish` is idempotent per crate — it asks the registry before each upload — so
 a release that died halfway (say `prov` up, `prov-cli` failed) is finished by
 running it again, locally or by re-running the workflow.
+
+**Every crate needs its own Trusted Publisher entry** before its first release
+through the workflow. The token `publish.yml` mints is scoped per crate, so an
+unregistered one answers `403 … token is not valid for crate <name>` — which is
+what v0.6.0 hit, the workspace having gained nine crates that had never been
+published from CI. For each name in `cargo xtask publish --list`: crates.io →
+that crate → Settings → Trusted Publishing → Add, owner `diaryx-org`, repository
+`prov`, workflow `publish.yml`, environment blank.
 
 ## The changelog
 

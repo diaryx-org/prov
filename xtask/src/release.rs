@@ -429,6 +429,49 @@ pub fn changelog(sh: &Sh, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// One release's section of the changelog, without its heading — the body of a
+/// GitHub release, for the notes job in `homebrew.yml`.
+///
+/// Read from `docs/CHANGELOG.md` rather than rendered from the commits, and
+/// deliberately: the tag's tree already carries the section `release` cut, so
+/// the notes a reader finds on the release page are byte-identical to the ones
+/// the repository ships, and the runner needs no git-cliff to produce them.
+pub fn release_notes(sh: &Sh, tag: Option<&str>) -> Result<()> {
+    let tag = match tag {
+        Some(tag) => tag.to_string(),
+        None => format!("v{}", workspace_version(sh)?),
+    };
+    let changelog = sh.read(CHANGELOG)?;
+    let body = section(&changelog, &tag).ok_or_else(|| {
+        format!(
+            "{CHANGELOG} has no section for {tag}\n\
+             hint: `cargo xtask changelog --write`, commit, and re-run — a tag whose \
+             changelog section is missing is a tag cut without one"
+        )
+    })?;
+
+    println!("{body}");
+    println!(
+        "\n---\n\n\
+         Every change in this release and the ones before it: \
+         [docs/CHANGELOG.md](https://github.com/diaryx-org/prov/blob/{tag}/docs/CHANGELOG.md)."
+    );
+    Ok(())
+}
+
+/// The lines under `## <tag> — …`, up to the next `##` heading. A `###` group
+/// heading is part of the section, so the search is for that heading level
+/// exactly — and so a handwritten release intro, which sits directly under the
+/// heading, comes along with the generated groups.
+fn section(changelog: &str, tag: &str) -> Option<String> {
+    let mut lines = changelog
+        .lines()
+        .skip_while(|line| section_tag(line) != Some(tag));
+    lines.next()?;
+    let body: Vec<&str> = lines.take_while(|line| !line.starts_with("## ")).collect();
+    Some(body.join("\n").trim().to_string())
+}
+
 /// Turn the unreleased region into a released section headed `## vX.Y.Z — date`,
 /// and reset the region. Called by `release`, between the version bump and the
 /// commit, so the release commit carries both.
@@ -619,7 +662,22 @@ pub fn publish(sh: &Sh, args: &[&str]) -> Result<()> {
         // No manual wait between crates: cargo blocks until a freshly published
         // version is visible on the index before it returns, which is exactly
         // what the next crate in the order needs.
-        sh.cargo(&["publish", "-p", name])?;
+        sh.cargo(&["publish", "-p", name]).map_err(|e| {
+            // The one failure worth naming: the OIDC token publish.yml mints is
+            // scoped to the crates this workflow is a registered Trusted
+            // Publisher for, one crate at a time. A crate nobody registered gets
+            // a 403 that says nothing about registration, and the workspace
+            // gained nine crates that had never been published before.
+            format!(
+                "{e}\n\n\
+                 if that was `403 … token is not valid for crate {name}`, crates.io has no \
+                 Trusted Publisher for it yet:\n  \
+                 crates.io -> {name} -> Settings -> Trusted Publishing -> Add\n  \
+                 owner `diaryx-org`, repository `prov`, workflow `publish.yml`, no environment\n\n\
+                 Every crate needs its own entry. Re-running this job afterwards picks up where \
+                 it stopped."
+            )
+        })?;
     }
     Ok(())
 }
@@ -949,6 +1007,47 @@ path = "."
     fn nothing_missing_leaves_the_file_untouched() {
         let text = "## v0.6.0 — c\n\nsix\n";
         assert_eq!(insert_sections(text, vec![]), text);
+    }
+
+    /// The release body is a slice of the changelog, so the slice has to end
+    /// where the next release begins — and not at a group heading inside it.
+    #[test]
+    fn a_release_section_stops_at_the_next_release() {
+        let changelog = "\
+# Changelog
+
+## Unreleased
+
+nothing
+
+## v0.5.0 — 2026-08-17
+
+An intro, handwritten.
+
+### Added
+
+- a thing
+
+## v0.4.0 — 2026-08-06
+
+### Added
+
+- an older thing
+";
+        let body = section(changelog, "v0.5.0").unwrap();
+        assert!(body.starts_with("An intro, handwritten."), "{body}");
+        assert!(body.contains("### Added") && body.contains("- a thing"));
+        assert!(
+            !body.contains("older"),
+            "the next release is not part of it"
+        );
+        assert!(!body.contains("## v0.4.0"));
+
+        assert_eq!(
+            section(changelog, "v0.4.0").unwrap(),
+            "### Added\n\n- an older thing"
+        );
+        assert_eq!(section(changelog, "v9.9.9"), None, "a tag with no section");
     }
 
     #[test]

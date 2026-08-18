@@ -1,7 +1,9 @@
-name: Homebrew
-# Release the `prov` CLI to Homebrew. The build/attach/render/push mechanics are
-# shared with twig, fig, and moid and live in diaryx-org/.github; only what makes
-# prov different is below.
+name: Release
+# The binary half of a release: the `prov` CLI to Homebrew, a WASI build, and the
+# notes on the GitHub release itself. (Its sibling, publish.yml, does the
+# registry half.) The build/attach/render/push mechanics are shared with twig,
+# fig, and moid and live in diaryx-org/.github; only what makes prov different is
+# below.
 #
 # prov is a Rust workspace: the CLI is the `prov-cli` crate, whose binary is
 # named `prov` — hence `cargo-package` and `name` differing. The aarch64-linux
@@ -37,3 +39,35 @@ jobs:
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
       TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
+
+  # The release body: this version's section of docs/CHANGELOG.md, which the tag
+  # already carries — `cargo xtask release` writes the section, commits it, and
+  # tags that commit. Read rather than re-rendered, so the notes on the release
+  # page are the same bytes the repository ships, a handwritten release intro
+  # comes along with them, and the runner needs no git-cliff. No Zig either: the
+  # xtask crate has no dependencies, so `cargo xtask` builds on its own.
+  #
+  # It runs after the shared workflow rather than beside it because that workflow
+  # is what *creates* the release (softprops/action-gh-release, when it attaches
+  # the first binary) — there would be nothing to write notes on before then.
+  # A tag whose changelog section is missing fails this job and only this job:
+  # the binaries are already attached, and the fix is to write the section and
+  # re-run.
+  notes:
+    name: Release notes
+    needs: homebrew
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # edit the release body
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo xtask release-notes "$TAG" > notes.md
+      env:
+        TAG: ${{ github.ref_name }}
+    - run: gh release edit "$TAG" --notes-file notes.md
+      env:
+        TAG: ${{ github.ref_name }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
