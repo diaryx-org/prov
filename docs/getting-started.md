@@ -612,6 +612,18 @@ $ prov check --json
 []
 ```
 
+Stderr stays empty in this mode — the count line is for a person, and the array
+already says how many it holds. The **exit code** does not change, though:
+findings still exit non-zero, which is what lets `check` stand as a CI gate. If
+your shell treats a non-zero exit as a failed pipeline (nushell does), capture
+the status rather than piping through it:
+
+```nu
+# nushell: `prov check --json | from json` yields nothing when there are
+# findings, because the pipeline aborts on the non-zero exit.
+(prov check --json | complete).stdout | from json
+```
+
 ---
 
 ## Command reference

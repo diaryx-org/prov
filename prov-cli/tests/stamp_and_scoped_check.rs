@@ -271,7 +271,11 @@ fn check_json_is_parseable_and_carries_kind_subject_and_message() {
     ok(&dir, &["stamp", "alpha.md"]);
     edit_externally(&dir, "alpha.md");
 
-    let (_, out, _) = run(&dir, &["check", "--json"]);
+    let (_, out, err) = run(&dir, &["check", "--json"]);
+    // Nothing on stderr: the count line is narration for a person, and this is
+    // the mode where there isn't one. A shell that shows stderr inline would
+    // otherwise print it over the top of a pipeline's result.
+    assert_eq!(err, "", "--json narrates nothing: {err:?}");
     // No JSON parser in the test deps either, so this checks the shape the flag
     // promises rather than re-implementing one: the three common keys, the
     // variant's own fields, and a bracketed array around them.
@@ -286,9 +290,26 @@ fn check_json_is_parseable_and_carries_kind_subject_and_message() {
     // Clean prints `[]`, not nothing — so a consumer can tell a clean run from
     // a run that produced no output for some other reason.
     ok(&dir, &["stamp", "alpha.md"]);
-    let (success, out, _) = run(&dir, &["check", "--json"]);
+    let (success, out, err) = run(&dir, &["check", "--json"]);
     assert!(success);
     assert_eq!(out.trim(), "[]", "{out:?}");
+    assert_eq!(err, "", "a clean run is silent too: {err:?}");
+}
+
+#[test]
+fn check_json_still_exits_non_zero_on_findings() {
+    let dir = workspace("json-exit");
+    ok(&dir, &["new", "Alpha", "--in", "index.md"]);
+    ok(&dir, &["stamp", "alpha.md"]);
+    edit_externally(&dir, "alpha.md");
+
+    // `--json` silences the narration but not the verdict: findings still fail
+    // the exit code, which is what lets `prov check` stand as a CI gate. A shell
+    // that treats a non-zero exit as a failed pipeline (nushell) has to capture
+    // the status rather than pipe through it.
+    let (success, out, _) = run(&dir, &["check", "--json"]);
+    assert!(!success, "findings still exit non-zero under --json");
+    assert!(out.contains("fixity_mismatch"), "{out:?}");
 }
 
 #[test]

@@ -1645,15 +1645,30 @@ path that is not in the workspace would report clean",
             println!("{finding}");
         }
     }
-    let scope = match &only {
-        Some(subject) => format!(" for {}", subject.display()),
-        None => String::new(),
-    };
+    // The count line is narration for a person reading a terminal, and `--json`
+    // is the mode where nobody is: the array says how many it holds, and says it
+    // to the program that asked. Errors still go to stderr — this silences the
+    // summary, not the diagnostics.
+    if !as_json {
+        let scope = match &only {
+            Some(subject) => format!(" for {}", subject.display()),
+            None => String::new(),
+        };
+        if findings.is_empty() {
+            eprintln!("ok: no findings{scope}");
+        } else {
+            eprintln!("{} finding(s){scope}", findings.len());
+        }
+    }
+    // Unchanged by `--json`: findings mean a non-zero exit, which is what lets
+    // `prov check` stand as a CI gate. Worth knowing in a shell that treats a
+    // non-zero exit as a failed pipeline (nushell does) — there, capture the
+    // status rather than letting it abort the pipe:
+    //
+    //     (prov check --json | complete).stdout | from json
     if findings.is_empty() {
-        eprintln!("ok: no findings{scope}");
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!("{} finding(s){scope}", findings.len());
         Ok(ExitCode::FAILURE)
     }
 }

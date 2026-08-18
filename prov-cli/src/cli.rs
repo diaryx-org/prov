@@ -398,8 +398,17 @@ pub(crate) enum Command {
         /// Print findings to stdout as a JSON array instead of one line each —
         /// `kind`, `subject`, the human `message`, and the finding's own
         /// fields. Empty findings print `[]`, so "clean" and "no output" stay
-        /// distinguishable. Not available with `--fix`, whose stdout means
-        /// something else (the findings a repair introduced).
+        /// distinguishable.
+        ///
+        /// Nothing is written to stderr in this mode: the count line is
+        /// narration for a person, and the array already says how many it holds.
+        /// The exit code is unchanged, though — findings still exit non-zero, so
+        /// `check` keeps working as a CI gate. In a shell that aborts a pipeline
+        /// on a non-zero exit (nushell), capture the status instead of piping
+        /// through it: `(prov check --json | complete).stdout | from json`.
+        ///
+        /// Not available with `--fix`, whose stdout means something else (the
+        /// findings a repair introduced).
         #[arg(long, conflicts_with = "fix")]
         json: bool,
     },
