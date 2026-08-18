@@ -1316,6 +1316,59 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.tree_within(start, options, &parked).await
     }
 
+    /// The documents `parent` directly contains: its spanning children,
+    /// resolved and loaded, in declaration order.
+    ///
+    /// **The bounded counterpart to [`tree`](Self::tree)** — one generation, one
+    /// read each, and never a walk. `tree` materializes everything reachable,
+    /// which is what a caller rendering a sidebar or auditing a subtree wants;
+    /// a caller looking for *one* child among a node's children wants this, and
+    /// reaching for `tree` to get it pays the whole subtree to read one
+    /// generation of it. That cost is invisible on a local disk and dominant on
+    /// a synced or remote [`Storage`], where each read is a round trip — which
+    /// is exactly why [`plan_route`](Self::plan_route) descends a segment at a
+    /// time rather than walking.
+    ///
+    /// Each child arrives **with its parsed document**, because the read that
+    /// resolves a child is the same read that answers whatever was being asked
+    /// about it. Handing back paths alone would make every caller read the
+    /// generation a second time, which is the cost this exists to remove.
+    ///
+    /// # What is left out
+    ///
+    /// A child that resolves off-workspace (an external URL), to an id nothing
+    /// registers, or to an ambiguous alias, and one whose document will not load
+    /// or parse, is **omitted**. This is the one real difference from
+    /// [`tree`](Self::tree), which marks each of those as a
+    /// [`NodeKind`](prov_graph::graph::NodeKind) so a walk can report it: a
+    /// caller diagnosing a workspace wants that and should use `tree` or
+    /// [`check`](Self::check); a caller resolving a name through the tree wants
+    /// a broken sibling to be a reason to keep looking, not a reason to fail.
+    ///
+    /// Nothing is skipped for being *parked* (a history store's interior, the
+    /// recycle bin). Those bound a walk because a walk would descend into them;
+    /// one generation of declared children cannot wander in, and a document that
+    /// genuinely declares a parked path as its child is stating something the
+    /// caller asked to be told.
+    pub async fn spanning_children(
+        &self,
+        parent: impl AsRef<Path>,
+    ) -> Result<Vec<(PathBuf, Document)>> {
+        let parent = parent.as_ref();
+        let (_, doc) = self.load(parent).await?;
+        let mut out = Vec::new();
+        for raw in self.relations().children(&fig::Value::from(&doc.meta)) {
+            let Target::Path(path) = self.resolve_link(parent, &Link::parse(&raw)) else {
+                continue;
+            };
+            let Ok((_, child)) = self.load(&path).await else {
+                continue;
+            };
+            out.push((path, child));
+        }
+        Ok(out)
+    }
+
     /// The full title index — every document under the root.
     pub async fn title_index(&self) -> Result<TitleIndex> {
         self.graph.title_index().await
@@ -1638,5 +1691,133 @@ mod tests {
         // A config always yields an explicit reference style, which is why the
         // legacy `id_links` axis stays at its default and is never consulted.
         assert_eq!(ws.reference_style(), config.reference_style());
+    }
+}
+
+/// [`Workspace::spanning_children`] over a real filesystem — separate from the
+/// builder tests above, which need no disk, and read-counting because the whole
+/// claim is about what is *not* read.
+#[cfg(test)]
+mod spanning_children_tests {
+    use super::*;
+    use crate::fs_faults::CountingFs;
+    use prov_graph::exec::block_on;
+
+    fn tempdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prov-children-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(dir: &Path, rel: &str, text: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// **One generation, and the documents that resolved it.**
+    ///
+    /// Declaration order is kept — a caller matching children against an
+    /// ordered vocabulary, or reporting the first match, is entitled to the
+    /// order the parent wrote. The grandchild is the point of the read count:
+    /// `tree` would have materialized it to answer this, and on a synced
+    /// backend that read is a round trip nobody asked for.
+    #[test]
+    fn reads_one_generation_and_hands_back_what_it_read() {
+        let dir = tempdir("bounded");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- a.md\n- b.md\n- deep/index.md\n---\n",
+        );
+        write(&dir, "a.md", "---\ntitle: A\npart_of: index.md\n---\n");
+        write(&dir, "b.md", "---\ntitle: B\npart_of: index.md\n---\n");
+        write(
+            &dir,
+            "deep/index.md",
+            "---\ntitle: Deep\npart_of: /index.md\ncontents:\n- child.md\n---\n",
+        );
+        write(
+            &dir,
+            "deep/child.md",
+            "---\ntitle: Grandchild\npart_of: /deep/index.md\n---\n",
+        );
+
+        let fs = CountingFs::default();
+        let ws = Workspace::builder(fs.clone()).root(&dir).build();
+        let children = block_on(ws.spanning_children("index.md")).expect("children");
+
+        let named: Vec<(String, String)> = children
+            .iter()
+            .map(|(path, doc)| {
+                (
+                    path.display().to_string(),
+                    doc.meta
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("a.md".to_string(), "A".to_string()),
+                ("b.md".to_string(), "B".to_string()),
+                ("deep/index.md".to_string(), "Deep".to_string()),
+            ],
+            "the parent's declared children, in the order it declared them, each parsed"
+        );
+
+        assert_eq!(
+            fs.doc_reads(&dir, "deep/child.md"),
+            0,
+            "a generation below the one asked for was read"
+        );
+        for rel in ["index.md", "a.md", "b.md", "deep/index.md"] {
+            assert_eq!(fs.doc_reads(&dir, rel), 1, "{rel} was read more than once");
+        }
+    }
+
+    /// A broken sibling is a reason to keep looking, never a reason to fail —
+    /// the resilience the route walk had, now where every caller inherits it.
+    /// `check` is what reports these; a caller resolving a name through the tree
+    /// wants the children it *can* see.
+    #[test]
+    fn a_child_that_cannot_be_resolved_or_read_is_left_out_rather_than_raised() {
+        let dir = tempdir("broken");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- gone.md\n- '[Elsewhere](https://example.com/)'\n- ok.md\n---\n",
+        );
+        write(&dir, "ok.md", "---\ntitle: OK\npart_of: index.md\n---\n");
+
+        let ws = Workspace::builder(CountingFs::default()).root(&dir).build();
+        let children =
+            block_on(ws.spanning_children("index.md")).expect("a broken sibling is not an error");
+
+        assert_eq!(children.len(), 1, "{children:?}");
+        assert_eq!(children[0].0, Path::new("ok.md"));
+    }
+
+    /// A leaf has no children and costs one read to say so. Not a special case
+    /// in the implementation — worth a test because it is the answer every
+    /// descent terminates on.
+    #[test]
+    fn a_node_declaring_no_containment_has_no_children() {
+        let dir = tempdir("leaf");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+
+        let fs = CountingFs::default();
+        let ws = Workspace::builder(fs.clone()).root(&dir).build();
+        assert!(
+            block_on(ws.spanning_children("index.md"))
+                .expect("children")
+                .is_empty()
+        );
+        assert_eq!(fs.doc_reads(&dir, "index.md"), 1);
     }
 }

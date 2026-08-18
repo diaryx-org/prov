@@ -34,6 +34,12 @@
 //! every title up front), but it does not: a route descends from a *known* node
 //! one segment at a time, so only the children of the nodes actually on the route
 //! are ever read. Those are index nodes, which are small.
+//!
+//! That bound is [`Workspace::spanning_children`], not something this module
+//! keeps to itself. It was written here and it was never about titles: any
+//! caller looking for one child among a node's children wants the same
+//! generation-at-a-time read, and reaching for [`Workspace::tree`] to get it
+//! pays for the whole subtree to look at one layer of it.
 
 use std::path::{Path, PathBuf};
 
@@ -43,8 +49,7 @@ use crate::workspace::Workspace;
 use prov_graph::content::ContentFormat;
 use prov_graph::document::MetaCarrier;
 use prov_graph::error::{Error, Result};
-use prov_graph::graph::Target;
-use prov_graph::link::{self, Link};
+use prov_graph::link;
 use prov_graph::meta::Value;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -169,23 +174,14 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// unresolvable ambiguity [`NodeKind::AmbiguousAlias`](prov_graph::graph::NodeKind)
     /// marks in a walk and [`Finding::AmbiguousAlias`](crate::validate::Finding)
     /// reports in a check.
+    ///
+    /// A title predicate over
+    /// [`spanning_children`](Workspace::spanning_children), which is where the
+    /// bounded descent and the resilience to a broken sibling now live — this
+    /// was their first caller, and they were never specific to titles.
     async fn child_titled(&self, parent: &Path, segment: &str) -> Result<Option<PathBuf>> {
-        let (_, doc) = self.load(parent).await?;
         let mut matches: Vec<PathBuf> = Vec::new();
-        for raw in self.relations().children(&fig::Value::from(&doc.meta)) {
-            let link = Link::parse(&raw);
-            // A target that cannot be resolved to a path cannot be title-matched:
-            // an external URL has no document, and an unresolved id or ambiguous
-            // alias is already broken — `check`'s business, not the route's.
-            let Target::Path(path) = self.resolve_link(parent, &link) else {
-                continue;
-            };
-            // A child that has gone missing or unreadable is likewise `check`'s
-            // problem; skipping it keeps the route walk resilient the way `tree`'s
-            // is, rather than dying on a broken sibling of the node we want.
-            let Ok((_, child)) = self.load(&path).await else {
-                continue;
-            };
+        for (path, child) in self.spanning_children(parent).await? {
             if child.meta.get("title").and_then(title_text).as_deref() == Some(segment) {
                 matches.push(path);
             }

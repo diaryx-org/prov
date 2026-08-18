@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use prov::fs::{DirEntry, Metadata};
 use prov::{
-    Capabilities, ChangeSet, Discovery, Durability, Error, InMemoryFs, InMemoryIndex, Minter,
-    ReadStorage, RelationSet, StdFs, Storage, Workspace, block_on,
+    Capabilities, ChangeSet, Discovery, Document, Durability, Error, InMemoryFs, InMemoryIndex,
+    Minter, ReadStorage, RelationSet, StdFs, Storage, Workspace, block_on,
 };
 
 fn tmp(name: &str) -> PathBuf {
@@ -56,6 +56,19 @@ fn a_workspace_can_be_built_and_traversed_through_the_public_api() {
     assert!(
         findings.is_empty(),
         "consistent workspace has no findings: {findings:?}"
+    );
+
+    // The bounded counterpart to the walk, and the `Document` it hands back:
+    // both have to be nameable from out here, or the API is only usable by the
+    // crate that defined it.
+    let children: Vec<(PathBuf, Document)> =
+        block_on(ws.spanning_children("index.md")).expect("children");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].0, Path::new("child.md"));
+    assert_eq!(
+        children[0].1.meta.get("title").and_then(|v| v.as_str()),
+        Some("Child"),
+        "the document arrives parsed, so a caller need not read it again"
     );
 }
 
