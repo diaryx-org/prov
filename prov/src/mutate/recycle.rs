@@ -17,13 +17,14 @@ use crate::validate::Finding;
 use crate::workspace::Workspace;
 use prov_graph::document::Document;
 use prov_graph::error::{Error, Result};
-use prov_graph::graph::{LinkSite, Resolution, Target};
+use prov_graph::graph::Target;
 use prov_graph::link::{self, Link};
 use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
+use super::delete::Diagnosis;
 use super::maintain::paired_file;
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
@@ -53,16 +54,39 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// `at` is an optional caller-supplied deletion timestamp recorded on the
     /// tombstone (the CLI passes the current time). The library takes it as an
     /// argument rather than reading a clock so the op stays deterministic.
+    ///
+    /// The returned diagnosis is a whole-workspace census, and it is most of
+    /// what a recycle costs — see [`recycle_with`](Self::recycle_with) for the
+    /// caller that does not want it.
     pub async fn recycle(
         &mut self,
         path: &Path,
         force: bool,
         at: Option<&str>,
     ) -> Result<Vec<Finding>> {
-        // The census below loads every reachable document, and the subject, its
-        // parent, the root and the bin index are all among them — each of which
-        // this verb then goes back for by name. One scope makes that one read
-        // apiece instead of two.
+        self.recycle_with(path, force, at, Diagnosis::Report).await
+    }
+
+    /// [`recycle`](Self::recycle), told whether to work out what it breaks.
+    ///
+    /// `Diagnosis::Report` is exactly `recycle`. [`Diagnosis::Skip`] returns an
+    /// empty list and skips the census behind it, which on any workspace past a
+    /// few hundred documents is the whole of the wait. The bin, the tombstone,
+    /// the parent edit and the refusals are untouched — the file goes to exactly
+    /// the same place, and [`restore`](Self::restore) brings it back the same
+    /// way.
+    pub async fn recycle_with(
+        &mut self,
+        path: &Path,
+        force: bool,
+        at: Option<&str>,
+        diagnosis: Diagnosis,
+    ) -> Result<Vec<Finding>> {
+        // Under `Report` the census loads every reachable document, and the
+        // subject, its parent, the root and the bin index are all among them —
+        // each of which this verb then goes back for by name. One scope makes
+        // that one read apiece instead of two. Under `Skip` there is no census,
+        // and the scope covers the handful of reads that are left.
         let _scope = self.read_scope();
         let path = link::normalize(path);
         let (spanning, inverse) = self.spanning_pair()?;
@@ -105,50 +129,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         }
 
-        // Inbound references the move leaves dangling — the same diagnosis
-        // `delete` returns, since a binned document is out of the live graph.
-        let mut danglers: Vec<Finding> = self
-            .census(&root)
-            .await?
-            .into_iter()
-            .filter(|e| e.resolution.resolved_path() == Some(&path))
-            .filter(|e| {
-                e.source != path
-                    && !(Some(&e.source) == parent.as_ref()
-                        && matches!(&e.site, LinkSite::Relation(r) if *r == spanning))
-            })
-            .map(|e| match e.resolution {
-                Resolution::Id { id, .. } => Finding::DanglingId {
-                    doc: e.source,
-                    site: e.site,
-                    id,
-                    tombstoned: true,
-                },
-                _ => Finding::BrokenLink {
-                    doc: e.source,
-                    site: e.site,
-                    target: e.target_text,
-                },
-            })
-            .collect();
-
-        // A forced body recycle strands its node's `content` pointer, and the
-        // census cannot report it (`content` is neither a relation nor a body
-        // link). Reported here so the verb's diagnosis covers the separated
-        // shape too — see `delete`, which does the same.
-        if let Some(owner) = owner {
-            let target = self
-                .load(&owner)
-                .await
-                .ok()
-                .and_then(|(_, doc)| doc.content_attr().map(str::to_string))
-                .unwrap_or_else(|| path.to_string_lossy().into_owned());
-            danglers.push(Finding::BrokenLink {
-                doc: owner,
-                site: LinkSite::Relation("content".to_string()),
-                target,
-            });
-        }
+        // What the move breaks — the same diagnosis `delete` returns, since a
+        // binned document is out of the live graph, and gathered by the same
+        // helper so the two verbs cannot come to differ about it. All of it
+        // behind `diagnosis`.
+        //
+        // `root` above is not this call's to reuse: the helper walks its own,
+        // because under `Skip` even that walk should not happen. Under `Report`
+        // the second walk reads nothing — the scope has it.
+        let danglers = self
+            .removal_danglers(diagnosis, &path, parent.as_deref(), owner.as_deref())
+            .await?;
 
         // Locate the bin, or plan to bootstrap it on this first deletion.
         let format = self.default_embed_format();
@@ -568,6 +559,62 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 mod tests {
     use super::super::support::*;
     use super::*;
+    use prov_graph::graph::LinkSite;
+
+    /// Skipping the diagnosis skips the diagnosis and nothing else. The bin
+    /// entry, the tombstone record and the parent edit are what `restore` reads
+    /// to undo the delete, so a recycle that quietly did less of that would be a
+    /// document the user could not get back — the one failure a "faster delete"
+    /// must not be able to cause.
+    #[test]
+    fn a_skipped_diagnosis_still_bins_a_document_restore_can_return() {
+        let dir = tempdir("recycle-skip");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- note.md\n- sub/linker.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
+        );
+        write(
+            &dir,
+            "sub/linker.md",
+            "---\npart_of: /index.md\nlinks:\n- /note.md\n---\n",
+        );
+
+        let fs = crate::fs_faults::CountingFs::default();
+        let mut workspace = Workspace::builder(fs.clone()).root(&dir).build();
+        let danglers = block_on(workspace.recycle_with(
+            Path::new("note.md"),
+            false,
+            Some("2026-08-18T00:00:00Z"),
+            Diagnosis::Skip,
+        ))
+        .unwrap();
+
+        assert!(danglers.is_empty(), "{danglers:?}");
+        assert_eq!(
+            fs.doc_reads(&dir, "sub/linker.md"),
+            0,
+            "a skipped diagnosis still censused the workspace"
+        );
+        assert!(!dir.join("note.md").exists(), "moved out of its place");
+        assert!(
+            !read(&dir, "index.md").contains("note.md"),
+            "parent entry removed"
+        );
+
+        // And back again, from the record the skipped recycle still wrote.
+        block_on(workspace.restore(Path::new("note.md"), Path::new("index.md"))).unwrap();
+        assert_eq!(
+            read(&dir, "note.md"),
+            "---\ntitle: Note\npart_of: index.md\n---\nbody\n"
+        );
+        assert!(read(&dir, "index.md").contains("note.md"), "re-linked");
+    }
 
     #[test]
     fn recycling_a_parentless_document_does_not_resurrect_it() {

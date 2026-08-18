@@ -67,7 +67,7 @@
 mod adopt;
 mod convert;
 mod create;
-mod delete;
+pub(crate) mod delete;
 mod duplicate;
 pub(crate) mod maintain;
 mod recycle;
@@ -78,6 +78,7 @@ mod save;
 mod separate;
 
 pub use create::Created;
+pub use delete::Diagnosis;
 
 #[cfg(all(test, feature = "yaml"))]
 mod support;

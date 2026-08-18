@@ -23,10 +23,13 @@ use std::path::{Path, PathBuf};
 use fig::Segment;
 
 use crate::identity::IdentityPolicy;
+use crate::validate::Finding;
 use crate::workspace::Workspace;
+
+use super::delete::Diagnosis;
 use prov_graph::document::Document;
 use prov_graph::error::{Error, Result};
-use prov_graph::graph::{Resolution, Target};
+use prov_graph::graph::{LinkSite, Resolution, Target};
 use prov_graph::link::{self, Link, LinkStyle};
 use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
@@ -629,6 +632,94 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
         Ok(None)
+    }
+
+    /// The inbound references a removal of `path` would leave dangling —
+    /// [`delete`](Workspace::delete)'s diagnosis and
+    /// [`recycle`](Workspace::recycle)'s, which are the same diagnosis because a
+    /// binned document is as far out of the live graph as a destroyed one.
+    ///
+    /// Every link that resolves to `path`, minus two that are not danglers: the
+    /// document's references to itself, and the parent's spanning entry, which
+    /// the verb removes rather than strands. An id-form reference becomes a
+    /// [`Finding::DanglingId`] against the tombstone, everything else a
+    /// [`Finding::BrokenLink`]. `owner` — set only when the caller forced away
+    /// the body half of a separated pair — contributes the one finding the
+    /// census structurally cannot see: `content` is neither a relation nor a
+    /// body link, so no census entry exists for it.
+    ///
+    /// ## Cost, and why it is the caller's to spend
+    ///
+    /// "Which documents link here?" has one honest answer in a workspace with no
+    /// backlink index, and it is a census of the whole reachable graph — every
+    /// document read, to keep the handful of entries that name `path`. On a
+    /// 2438-document archive that was the entire cost of a delete: 2383 document
+    /// reads to move one file to the bin, where the move itself reads six.
+    ///
+    /// prov will not keep an index to make it cheap (DESIGN §8 — the census is
+    /// ground truth precisely because nothing stores a second copy of it to
+    /// drift), and it will not silently stop answering. So the choice is the
+    /// caller's, and [`Diagnosis::Skip`] is for the caller that already ignores
+    /// the answer — a GUI that deletes on a click and shows no diagnosis has
+    /// been paying a whole-workspace pass per click to build a `Vec` it drops.
+    /// Skipping costs nothing but the diagnosis: `check` reports exactly the
+    /// same dangling references whenever it is next run.
+    ///
+    /// The root the census is anchored to is walked *here*, so `Skip` provably
+    /// spends nothing — not the pass, and not the walk up to the document it
+    /// starts from.
+    pub(super) async fn removal_danglers(
+        &self,
+        diagnosis: Diagnosis,
+        path: &Path,
+        parent: Option<&Path>,
+        owner: Option<&Path>,
+    ) -> Result<Vec<Finding>> {
+        if diagnosis == Diagnosis::Skip {
+            return Ok(Vec::new());
+        }
+        let (spanning, inverse) = self.spanning_pair()?;
+        let root = self.spanning_root(path, &inverse).await?;
+        let mut danglers: Vec<Finding> = self
+            .census(&root)
+            .await?
+            .into_iter()
+            .filter(|e| e.resolution.resolved_path().map(PathBuf::as_path) == Some(path))
+            .filter(|e| {
+                e.source != path
+                    && !(Some(e.source.as_path()) == parent
+                        && matches!(&e.site, LinkSite::Relation(r) if *r == spanning))
+            })
+            .map(|e| match e.resolution {
+                Resolution::Id { id, .. } => Finding::DanglingId {
+                    doc: e.source,
+                    site: e.site,
+                    id,
+                    tombstoned: true,
+                },
+                _ => Finding::BrokenLink {
+                    doc: e.source,
+                    site: e.site,
+                    target: e.target_text,
+                },
+            })
+            .collect();
+
+        // The forced-body case the census cannot reach, as above.
+        if let Some(owner) = owner {
+            let target = self
+                .load(owner)
+                .await
+                .ok()
+                .and_then(|(_, doc)| doc.content_attr().map(str::to_string))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            danglers.push(Finding::BrokenLink {
+                doc: owner.to_path_buf(),
+                site: LinkSite::Relation("content".to_string()),
+                target,
+            });
+        }
+        Ok(danglers)
     }
 }
 
