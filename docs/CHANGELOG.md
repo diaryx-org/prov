@@ -24,6 +24,12 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.6.3 — 2026-08-18
+
 ### Added
 
 - **validate** — a finding can name the document it is filed against ([`b5b5ace`](https://github.com/diaryx-org/prov/commit/b5b5acecb653a9dbfe4f768491c4981d21bf2934))
@@ -42,7 +48,6 @@ sources. Five of the eleven crates were packaged one commit earlier, at
   under `--json` should read the array's length; the summary is unchanged in
   every other mode.
 
-<!-- git-cliff:end -->
 
 ## v0.6.2 — 2026-08-18
 
