@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use crate::workspace::Workspace;
-use prov_graph::error::Result;
+use prov_graph::error::{Error, Result};
 use prov_graph::link;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -185,11 +185,27 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// The one place that rule is written down for the write path, so
     /// [`stamped`](Self::stamped) and [`content_state`](Self::content_state)
     /// cannot drift apart on what a hash is *of*.
+    ///
+    /// Refuses a manifest node outright rather than guessing: its hash covers
+    /// the manifest document, not its own (nonexistent) body, and rebuilding
+    /// that manifest means re-reading every file it lists — a directory-wide
+    /// cost `stamp` was never meant to spend.
+    /// [`update_manifest`](crate::workspace::Workspace::update_manifest) —
+    /// `prov manifest --update` — is the verb that pays it on purpose.
     async fn covered_digest(
         &self,
         path: &Path,
         doc: &prov_graph::document::Document,
     ) -> Result<String> {
+        if doc.is_manifest_node() {
+            return Err(Error::Structure(format!(
+                "{} is a manifest node — its checksum covers the manifest document \
+                 it declares, which `prov manifest {} --update` rebuilds (a \
+                 directory-wide rehash); `stamp` does not cover it",
+                path.display(),
+                path.display(),
+            )));
+        }
         Ok(match doc.content_attr() {
             Some(raw) => {
                 let dir = path.parent().unwrap_or(Path::new(""));
@@ -410,6 +426,39 @@ mod tests {
             block_on(w.content_state("photo.jpg.yaml")).unwrap(),
             ContentState::Drifted
         );
+    }
+
+    #[test]
+    fn a_manifest_node_is_refused_rather_than_hashed_as_a_body() {
+        // A manifest node's checksum covers the manifest document it declares,
+        // not its own (nonexistent) body — `stamp` cannot restamp it the way it
+        // restamps an ordinary document, and must say so rather than silently
+        // comparing against the wrong bytes (or, under `full`, overwriting a
+        // correct pin with a wrong one).
+        let dir = tempdir("content-state-manifest");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        std::fs::create_dir_all(dir.join("photos")).unwrap();
+        std::fs::write(dir.join("photos/a.jpg"), b"original").unwrap();
+
+        let mut w = ws(&dir);
+        block_on(w.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+
+        let err = block_on(w.content_state("photos.yaml")).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("prov manifest photos.yaml --update"),
+            "{err}"
+        );
+
+        // The write path agrees, under the tier where it would otherwise reach
+        // `covered_digest` at all.
+        use crate::config::Fixity;
+        let mut full = Workspace::builder(StdFs)
+            .root(&dir)
+            .fixity(Fixity::Full)
+            .build();
+        let err = block_on(full.restamp_fixity("photos.yaml")).unwrap_err();
+        assert!(err.to_string().contains("manifest"), "{err}");
     }
 
     #[test]

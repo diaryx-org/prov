@@ -425,6 +425,12 @@ pub(crate) enum Command {
     /// Idempotent: with a checksum on record, the stamps land only when the
     /// bytes actually drifted, so re-running changes nothing and this is safe
     /// in a sync hook.
+    ///
+    /// Refuses a manifest node by name: its checksum covers the manifest
+    /// document, rebuilding which means re-reading every file it lists —
+    /// `prov manifest <target> --update` is the verb that pays that cost on
+    /// purpose. `--all` skips a manifest node it meets rather than paying it
+    /// unasked.
     Stamp {
         /// The document to stamp. An attachment's payload is covered through
         /// its sidecar, so either handle works. Omit with `--all`.
