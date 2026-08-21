@@ -193,9 +193,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fig"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f84d99fae44645b7c4e353a0f40e3cb4efc394b32dc48389df7b0d02e93b4fd3"
+checksum = "3fd7354f2adee6aaac1510aef0b6bfcb710bdfc08eb39af74ebfa009b8684f75"
 dependencies = [
  "fig-macros",
  "fig-sys",
@@ -205,9 +205,9 @@ dependencies = [
 
 [[package]]
 name = "fig-macros"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd2811abd0b6d8d658328424cc23df77cf46856ba6c87a3cea620d26bf653561"
+checksum = "84786ad538936e6f9fb71dbb7a9f8294d103fe715cb6f4efae555ad79dc14c7e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -216,18 +216,18 @@ dependencies = [
 
 [[package]]
 name = "fig-schema"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd93cd9eb16ad50671cb35b6a5ec6afd2243d41da3dcae9b8a79e0fffa386e32"
+checksum = "3a6d5a023302f4d1de6eb21fded30ea7e72343d3c9d0397ebac6da0380707939"
 dependencies = [
  "fig",
 ]
 
 [[package]]
 name = "fig-sys"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04a4d7f69e4c9449585ef2858e852e174a1721abb955139a45d55f86464646b6"
+checksum = "083869cc5ef3cdbb4e884fcaac210496cd58c935695bbaeecd14eef4e8c09397"
 dependencies = [
  "fig-sys-linux-arm64-gnu",
  "fig-sys-linux-x64-gnu",
@@ -238,33 +238,33 @@ dependencies = [
 
 [[package]]
 name = "fig-sys-linux-arm64-gnu"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb8d7c066ed1e927f4d2fb7fde0d8dd9c2e9f20c077a94b680531d95b460c808"
+checksum = "fe24e59e27a43cc0268ca2060756f35c402126135e693ca6d49081f77867ee4a"
 
 [[package]]
 name = "fig-sys-linux-x64-gnu"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bd504a39193ce53940bb6236904149c9cb0aedbc77d6e575c0f68961ac4b2b"
+checksum = "243f1453f1f089fd87310366112428b8383ef7d6899af4b47e66d32f2c110446"
 
 [[package]]
 name = "fig-sys-macos-arm64"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f4f57236ea8254bb9b78d44242f044bf2fe281e8ee4786eea832fe7a40f1237"
+checksum = "dc06bd40ad454f9a3a8e7a16182c3ec7995b0a0e78fddfca6f579b0dcddf2962"
 
 [[package]]
 name = "fig-sys-wasm32"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "963828d8f7b0e75f1110b4affb6cdf5e05f7ce84a43cbd00005f41813c20cbb1"
+checksum = "cd29d91aad036aba1070f24355e45b28ff7cd9acceb692f064431b3880ac19c2"
 
 [[package]]
 name = "fig-sys-windows-x64-msvc"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b66a5e08369ece4e6480321a7b5e72369fef17bbd62a49a1950b2c4db253e045"
+checksum = "fc487e2d21ed0507e27a5b70435b18008cd01b2ec1a8a8bb35b5304b729d303c"
 
 [[package]]
 name = "fnv"

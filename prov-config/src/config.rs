@@ -238,6 +238,11 @@ pub fn field_type_as_config_str(ty: FieldType) -> Option<&'static str> {
         FieldType::Extended(ExtKind::LocalDate) => "date",
         FieldType::Extended(ExtKind::LocalTime) => "time",
         FieldType::Null | FieldType::Extended(_) => return None,
+        // `FieldType` is `#[non_exhaustive]` upstream, so a version of
+        // fig-schema newer than this one may name a type prov has no config
+        // spelling for. That is the same case as `Null`: no spelling, so it is
+        // dropped rather than written as something that would not read back.
+        _ => return None,
     })
 }
 
