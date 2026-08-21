@@ -28,6 +28,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.6.4 — 2026-08-20
+
+### Fixed
+
+- **stamp** — a manifest node was hashed as if its checksum covered a body ([`c49d725`](https://github.com/diaryx-org/prov/commit/c49d725d81ede34b33d0b80fd25bc2961243d35c))
+
+### Behavioural changes
+
+- `prov stamp `<manifest-node>`` now exits non-zero
+with an error instead of silently exiting 0 having stamped nothing
+(and, under `Fixity::Full`, no longer overwrites the node's
+`content_hash` with the hash of its empty body).
+
+
 ## v0.6.3 — 2026-08-18
 
 ### Added
