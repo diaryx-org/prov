@@ -24,9 +24,19 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.7.0 — 2026-08-21
+
 ### Breaking
 
 - **history** — retire the event store; the skiplist scopes historica ([`6d4b7f4`](https://github.com/diaryx-org/prov/commit/6d4b7f4312bc65063e55eadfcaf6982b5f938b1c))
+
+### Uncategorised — triage before release
+
+- Update Cargo.lock ([`37541b7`](https://github.com/diaryx-org/prov/commit/37541b73bf765edc759466032d5675183779088f))
 
 ### Behavioural changes
 
@@ -53,7 +63,6 @@ sources. Five of the eleven crates were packaged one commit earlier, at
   keeps its spellings (`off`/`manual`) but now gates `history-skips
   --write` instead of capture.
 
-<!-- git-cliff:end -->
 
 ## v0.6.4 — 2026-08-20
 
