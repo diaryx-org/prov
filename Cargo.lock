@@ -425,6 +425,8 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "historica"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64b150996aae07c616042fb0a5ee6d79becac5ce95693508cb20997c2ae1cf21"
 dependencies = [
  "getrandom 0.4.3",
  "jiff",
