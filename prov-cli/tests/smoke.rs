@@ -112,37 +112,28 @@ fn every_command_runs_end_to_end() {
     ok(&dir, &["rm", "zig-copy.md"]);
     ok(&dir, &["empty-bin"]);
 
-    // ── history: capture → read → restore ──
+    // ── history: the skiplist that scopes a historica store to the graph ──
+    // Planning without a store is a refusal that names the repair.
+    let (planned, out) = run(&dir, &["history-skips"]);
+    assert!(!planned, "history-skips needs a store: {out}");
+    assert!(out.contains("historica init"), "{out}");
+    // With a store: the plan prints, writing is gated on the axis, and once
+    // the axis says `manual` the region lands in the store's own file.
+    historica::store::Store::init(dir.join("history")).unwrap();
+    std::fs::write(dir.join("loose.md"), "a note nothing links\n").unwrap();
+    let plan = ok(&dir, &["history-skips"]);
+    assert!(plan.contains("skip loose.md"), "{plan}");
+    let (wrote, out) = run(&dir, &["history-skips", "--write"]);
+    assert!(!wrote, "writing must be gated on the history axis: {out}");
     ok(&dir, &["config", "history", "manual"]);
-    let event = ok(&dir, &["history-capture", "--label", "smoke"])
-        .lines()
-        .next()
-        .expect("capture prints the event id")
-        .to_string();
-    ok(&dir, &["history-list"]);
-    ok(&dir, &["history-show", &event]);
-    ok(&dir, &["history-log", "index.md"]);
-    ok(&dir, &["history-restore", &event, "--dry-run"]);
-    std::fs::write(dir.join("notes/rust.md"), "clobbered by a sync conflict").unwrap();
-    let restored = ok(&dir, &["history-restore", &event]);
-    assert!(
-        restored.contains("notes/rust.md"),
-        "restore names what it wrote back: {restored}"
-    );
-    ok(&dir, &["history-restore", &event, "--exact", "--yes"]);
-    ok(&dir, &["history-prune", "--keep", "5", "--dry-run"]);
-    ok(&dir, &["history-prune", "--keep", "1", "--yes"]);
-    // The bound is required: a verb that deletes bytes must not have a default.
-    let (bounded, out) = run(&dir, &["history-prune"]);
-    assert!(!bounded, "history-prune needs a bound: {out}");
-    // Forget refuses a live document, then works once it is gone for good.
-    let (live, out) = run(&dir, &["history-forget", "notes/rust.md", "--yes"]);
-    assert!(
-        !live,
-        "forget must refuse a document still in the workspace: {out}"
-    );
-    ok(&dir, &["rm", "notes/rust.md", "--purge"]);
-    ok(&dir, &["history-forget", "notes/rust.md", "--yes"]);
+    ok(&dir, &["history-skips", "--write"]);
+    let skipped = std::fs::read_to_string(dir.join("history/skipped.txt")).unwrap();
+    assert!(skipped.contains("skip loose.md"), "{skipped}");
+    // The loose note deleted, the next write empties the region again.
+    std::fs::remove_file(dir.join("loose.md")).unwrap();
+    ok(&dir, &["history-skips", "--write"]);
+    let skipped = std::fs::read_to_string(dir.join("history/skipped.txt")).unwrap();
+    assert!(!skipped.contains("skip loose.md"), "{skipped}");
     ok(&dir, &["check"]);
 
     // ── config: read, write, materialize ──

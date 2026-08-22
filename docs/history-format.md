@@ -3,16 +3,19 @@ part_of: '[prov](/README.md)'
 ---
 # The history store — format specification
 
-> The compatibility contract for `prov history-*`. Event documents are
-> **immutable**: once written they are never rewritten, so nothing here can be
-> retrofitted. Everything in this file is normative; the reasoning behind it is
-> in [the proposal](/docs/proposals/history/proposal-history-v3.md).
+> **Superseded.** prov no longer writes this store: recording moved to
+> [historica](https://crates.io/crates/historica), and prov's contribution is
+> the skiplist that scopes a historica store to the workspace's graph (`prov
+> history-skips`, the `prov-history` crate). This document remains what it
+> always was for the stores already on disk — the contract that makes them
+> readable by hand, with tools that are not prov, forever. Nothing writes new
+> events; everything below still describes the old ones exactly.
 
-Implemented in `prov/src/history.rs`. Phase 0 of the proposal covers the store,
-`history-capture` and `history-list`; Phase 1 adds the read-only queries over it
-(`history-show`, `history-log`, §10) and `history-restore` (§11).
-Phase 2 adds the blob findings, `history-prune` (§12) and `history-forget`
-(§13).
+> The compatibility contract for the retired `prov history-*` verbs. Event
+> documents are **immutable**: once written they were never rewritten, so
+> nothing here could be retrofitted. Everything in this file is normative for
+> existing stores; the reasoning behind it is in
+> [the proposal](/docs/proposals/history/proposal-history-v3.md).
 
 ## 1. Where the store lives
 

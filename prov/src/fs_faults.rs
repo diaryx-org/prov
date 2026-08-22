@@ -142,10 +142,8 @@ pub(crate) struct RecordingFs {
 /// the pass returns. Delegates everything to [`StdFs`], so timestamps, atomic
 /// writes and durability all behave like the real thing.
 ///
-/// Documents only — `prov-history` keeps its own copy that also tallies raw
-/// byte reads, which is what a capture spends and what its fixity-cache tests
-/// watch. The two are separate because sharing one would mean a crate exporting
-/// a test double from its public surface.
+/// Documents only: nothing here tallies raw byte reads, because no pass of
+/// prov's spends them wholesale any more.
 #[derive(Clone, Default, Debug)]
 pub(crate) struct CountingFs {
     /// `read_to_string` — documents. What the traversal passes spend.

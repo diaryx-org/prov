@@ -91,22 +91,6 @@ pub(crate) struct Cli {
     /// vault without `cd`-ing into it. Relative path arguments resolve here too.
     #[arg(short = 'C', long = "root", value_name = "DIR")]
     pub(crate) root: Option<PathBuf>,
-    /// Keep this device's fixity cache here instead of the default location
-    /// (`prov cache` prints the file in use). Also settable via
-    /// `PROV_CACHE_DIR`, or `XDG_CACHE_HOME`; the flag wins. The cache lets
-    /// `history-capture` skip reading and hashing files whose timestamp and size
-    /// say they have not changed — it is disposable, lives outside the
-    /// workspace, and deleting it costs one slow capture.
-    #[arg(long = "cache-dir", value_name = "DIR")]
-    pub(crate) cache_dir: Option<PathBuf>,
-    /// Ignore the fixity cache: read and hash every file, and remember nothing.
-    /// For reproducing a capture from scratch, or for not writing to disk on a
-    /// machine you would rather leave no trace on.
-    ///
-    /// Not needed for integrity: `check` never consults the cache in the first
-    /// place, since bit-rot is precisely the change a timestamp cannot see.
-    #[arg(long = "no-cache")]
-    pub(crate) no_cache: bool,
     /// Read this device's map of other workspaces from here instead of the
     /// default location (`prov peer list` prints the file in use). Also settable
     /// via `PROV_PEERS`, or `XDG_CONFIG_HOME`; the flag wins. The map says where
@@ -835,354 +819,32 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "check")]
         print: bool,
     },
-    /// Capture the workspace into the history store: hash every reachable file,
-    /// park any bytes not already stored, and write one immutable event
-    /// document recording the complete file set at this moment.
+    /// Maintain the skiplist that scopes a historica store to this
+    /// workspace's graph.
     ///
-    /// The safety net for damage an external sync transport does to the
-    /// workspace's *structure* — a rename, move or delete touches several files
-    /// at once, and a transport reconciling bytes has no idea about prov's
-    /// graph. An event is a consistent cut across every file it captured
-    /// together, so a later restore puts the whole set back rather than one
-    /// file's bytes.
+    /// Recording history is historica's job (`historica record`, in this same
+    /// folder). What prov contributes is *which files are the workspace*: the
+    /// graph's reachable walk, minus prov's own bookkeeping and what a
+    /// manifest claims in bulk. This command computes the skip rules that
+    /// difference implies and — with `--write` — rewrites one marker-fenced
+    /// region of `history/skipped.txt` to say exactly that, leaving
+    /// historica's defaults and any hand-written rules untouched.
     ///
-    /// Adds files only (plus the current month's rebuildable index), so two
-    /// devices capturing concurrently never conflict. If nothing has changed
-    /// since the newest event, nothing is written.
+    /// Without `--write` it prints the plan: the rules the region should
+    /// hold, which are new, which stand but no longer belong, plus two
+    /// reports — a rule *withheld* because it would cover a path historica is
+    /// tracking (skipping a tracked path stops recording cold; link the file
+    /// back or drop it from history), and a hand-written rule *shadowing* a
+    /// file the graph reaches.
     ///
-    /// Requires `history: manual` in the workspace config. Leave it off when
-    /// the transport is git — git already keeps every pre-image.
-    HistoryCapture {
-        /// A short note recorded on the event and slugged into its id
-        /// (`pre-sync`, `nightly`, `pre-migration`). Free-form.
-        ///
-        /// It lands in a filename that is never rewritten, so keep it short.
-        /// The reason for the capture belongs in `--message`.
-        #[arg(long, value_name = "TEXT")]
-        label: Option<String>,
-        /// Why this capture was taken, in as many words as it deserves —
-        /// written into the event document's own prose.
-        ///
-        /// The event id is a digest of the manifest and the label, never of the
-        /// body, so a message costs the id nothing and can be as long as you
-        /// like. It is also why `--label` stays short: one is a filename, the
-        /// other is a note to whoever reads this event later.
-        ///
-        /// A message cannot make an event on its own. A capture that finds the
-        /// workspace unchanged writes nothing, whatever is said about it.
-        #[arg(short = 'm', long, value_name = "TEXT")]
-        message: Option<String>,
-        /// List what a capture would record — and, separately, what it would
-        /// not — without writing anything or hashing a byte.
-        ///
-        /// The second list is the point. A capture set is drawn from the
-        /// *reachable* graph, so a file nothing links to is not captured and
-        /// history will not bring it back. That omission is otherwise silent:
-        /// a folder of notes nobody linked looks exactly like a folder of notes
-        /// that are safe. Linking the file is the repair.
-        ///
-        /// Works under `history: off` too — it writes nothing, so the axis has
-        /// nothing to refuse, and asking what the workspace fails to reach is a
-        /// question about the workspace rather than about history.
+    /// Requires a store (`historica init .` creates one). Writing requires
+    /// `history: manual` in the workspace config; planning does not — asking
+    /// what the workspace fails to reach is a question about the workspace.
+    HistorySkips {
+        /// Rewrite the generated region to match the plan. Without this,
+        /// nothing is touched.
         #[arg(long)]
-        dry_run: bool,
-    },
-    /// Show this device's fixity cache for the workspace: where it lives and how
-    /// many files it remembers.
-    ///
-    /// The cache is what lets `history-capture` skip files whose timestamp and
-    /// size say they have not changed, instead of reading and hashing the whole
-    /// workspace every time. It is device-local, deliberately outside the
-    /// workspace (it is not part of what the archive says about itself), and
-    /// entirely disposable — losing it costs one slow capture and nothing else.
-    ///
-    /// It is never consulted by `check`. Bit-rot is a change to the bytes that
-    /// leaves the timestamp alone, so a cache keyed on timestamps would vouch
-    /// for exactly the file that rotted.
-    Cache {
-        /// Delete it. The next capture reads and hashes everything, and starts a
-        /// new one.
-        #[arg(long)]
-        clear: bool,
-    },
-    /// List the captures in the history store, newest first: id, timestamp,
-    /// label, and how many files changed since each event's parent.
-    ///
-    /// Works regardless of the `history` config axis — recovery must never be
-    /// gated behind re-enabling a setting, least of all on the machine that just
-    /// suffered the damage.
-    HistoryList,
-    /// Print one event: its metadata, and the complete manifest of the file set
-    /// exactly as it stood at that capture — each row marked when the pre-image
-    /// bytes it names are not in the store.
-    ///
-    /// There is nothing to reconstruct: a full manifest *is* the effective
-    /// state, which is what this format buys over a delta log. A manifest and
-    /// its blobs travel over a sync transport separately, so an event whose
-    /// bytes have not all arrived is ordinary rather than broken — and legible
-    /// here, before anyone asks a restore to act on it.
-    ///
-    /// Works regardless of the `history` config axis.
-    HistoryShow {
-        /// The event id, as `history-list` prints it — for example
-        /// `2026-07-31-0915-pre-sync-4f2a9c1e`. Resolves to its document
-        /// directly, with no index consulted.
-        event: String,
-    },
-    /// Write one captured file's bytes to standard output — the pre-image
-    /// exactly as it stood at that capture.
-    ///
-    /// A lookup, not a reconstruction: the manifest row names a
-    /// content-addressed blob, so this costs one read however many captures have
-    /// happened since. It is what makes the store work with tools that are not
-    /// prov —
-    ///
-    ///     prov history-cat 2026-07-31-0915-4f2a9c1e notes.md | diff - notes.md
-    ///
-    /// Bytes are written verbatim and are not necessarily text: a capture set
-    /// holds whatever the workspace holds. Redirect to a file for an attachment.
-    ///
-    /// Exits non-zero, writing nothing to stdout, when the event has no such row
-    /// or its bytes are not in the store — so a pipeline fails rather than
-    /// silently comparing against an empty file.
-    ///
-    /// Works regardless of the `history` config axis.
-    HistoryCat {
-        /// The event id, as `history-list` prints it.
-        event: String,
-        /// The document: a path, or `id:<id>` to follow an id directly.
-        ///
-        /// A path is resolved to its id when the workspace has one, which is
-        /// what reaches a document that has been renamed since the capture. A
-        /// path that no longer exists is matched against the manifest as
-        /// written — which is how a *deleted* document's bytes come back.
-        target: String,
-    },
-    /// Compare two captures: what changed, what moved, what arrived, what went.
-    ///
-    /// Both events hold full manifests, so this is a comparison rather than a
-    /// fold — nothing between them is read, and the two need not be adjacent or
-    /// even from the same device.
-    ///
-    /// With no arguments, compares the newest capture against its parent: what
-    /// the last capture recorded. With one, does the same for that event. With
-    /// two, compares them directly, oldest-first regardless of the order given.
-    ///
-    /// A move is reported as a move, not as a deletion beside a creation, when
-    /// the pairing is unambiguous — one path left with exactly those bytes and
-    /// one arrived with them. A directory rename is then one intention and not
-    /// several hundred rows. The inference is the same one `history-log` uses
-    /// and carries the same limit: two unrelated files with identical content
-    /// look like a move, and identical content is common (every empty file
-    /// shares a digest), so an ambiguous pairing is never claimed.
-    ///
-    /// Works regardless of the `history` config axis.
-    HistoryDiff {
-        /// The earlier event, or the only event when `b` is omitted (in which
-        /// case its parent is the other side). Defaults to the newest capture.
-        a: Option<String>,
-        /// The later event. Omit to compare `a` against its parent.
-        b: Option<String>,
-        /// Show a unified diff of every **changed** text file, not just the
-        /// summary rows.
-        ///
-        /// Only changed files: an added or removed file's whole content is
-        /// `prov history-cat`'s job, and dumping it here would print an entire
-        /// workspace for a first capture. A file whose captured bytes are not
-        /// valid UTF-8, or whose pre-image is not in this store, is named and
-        /// skipped rather than mangled.
-        #[arg(long)]
-        patch: bool,
-        /// Limit the comparison to these paths — naming a directory covers the
-        /// subtree. After `--`, as in `git diff`, since the positional
-        /// arguments before it are event ids.
-        #[arg(last = true)]
-        paths: Vec<PathBuf>,
-    },
-    /// Print one document's lineage across every capture: the events where its
-    /// bytes or its path changed, newest first.
-    ///
-    /// Following an id is rename-robust — a move shows as one document that
-    /// changed path, where a path-keyed history shows two unrelated lineages
-    /// that happen to abut. A path argument naming a registered document is
-    /// therefore followed by its id. A path with no id (the config document,
-    /// the registry, an attachment payload) is followed by path, which is the
-    /// best there is for a document that carries no identity.
-    ///
-    /// A derived query over the manifests, not a stored per-document chain: it
-    /// reads every event in the store and writes nothing.
-    ///
-    /// Works regardless of the `history` config axis.
-    HistoryLog {
-        /// The document: a path, or `id:<id>` to follow an id directly — which
-        /// still works for a document that has since been deleted.
-        target: String,
-    },
-    /// Write a capture out to a directory somewhere else, leaving the workspace
-    /// untouched.
-    ///
-    /// The safe way to look at an old state. `history-restore` writes over the
-    /// workspace and is the tool for undoing damage; this copies the captured
-    /// bytes somewhere new and changes nothing you already have — so comparing,
-    /// salvaging one paragraph, or just seeing what a vault looked like in March
-    /// costs nothing and risks nothing.
-    ///
-    /// Bytes are written **verbatim**, exactly as the capture holds them. One
-    /// consequence worth stating: a whole-event export is a workspace whose root
-    /// still declares a `history` pointer, and the store is not copied, so that
-    /// link dangles there. That is the honest result — these are the captured
-    /// bytes, not a workspace prov has adjusted — and `prov check` in the export
-    /// will say so.
-    ///
-    /// Works regardless of the `history` config axis.
-    HistoryExport {
-        /// The event id, as `history-list` prints it.
-        event: String,
-        /// Where to write it. Created if missing; refused if it already holds
-        /// anything, since an export never merges into an existing tree.
-        #[arg(long, value_name = "DIR")]
-        to: PathBuf,
-        /// Export only the row carrying this document id, wherever the capture
-        /// found it — the way to reach a document whose path has since changed.
-        #[arg(long, value_name = "ID")]
-        id: Option<String>,
-        /// Limit the export to these captured paths; naming a directory covers
-        /// the subtree it held. After `--`, as in `history-diff`.
-        #[arg(last = true)]
-        paths: Vec<PathBuf>,
-    },
-    /// Write a captured state back over the workspace: additive by default,
-    /// exact on request.
-    ///
-    /// An event is a *consistent cut*. If a bad merge corrupted a renamed file
-    /// and its parent's child list, both were hashed in the same capture, so
-    /// restoring the whole event puts the set back together — which is what
-    /// actually undoes the damage. Restoring one file out of it does not:
-    /// writing one file's old bytes back without the rest of the same
-    /// corruption's footprint can reintroduce the inconsistency history exists
-    /// to fix. Scope this to paths or an id when a sync clobbered one file's
-    /// prose; leave it whole when the graph broke.
-    ///
-    /// The default writes every captured path and deletes nothing. That leaves
-    /// a gap on purpose: bad-merge damage is characteristically additive (a
-    /// `.sync-conflict` copy, a rename-vs-rename landing both names), and none
-    /// of it goes away by writing captured bytes over the top. `--exact` is the
-    /// honest "undo this merge entirely" tool — see its own help.
-    ///
-    /// Restore does not repair links or the registry. It runs `check` before and
-    /// after and reports the difference in three buckets — fixed, introduced,
-    /// pre-existing — because you are restoring precisely when something is
-    /// already broken, and a bare list of findings afterwards cannot tell you
-    /// which of them you just caused. A non-empty *introduced* bucket exits
-    /// non-zero; `prov check --fix` is the explicit next step.
-    ///
-    /// The history store itself is never written or deleted, and the root's
-    /// `history` pointer is never removed — a captured root predating the store
-    /// must not strand it unreachable.
-    ///
-    /// Works regardless of the `history` config axis: recovery must never be
-    /// gated behind re-enabling a setting, least of all on the machine that just
-    /// suffered the damage.
-    HistoryRestore {
-        /// The event id, as `history-list` prints it — for example
-        /// `2026-07-31-0915-pre-sync-4f2a9c1e`.
-        event: String,
-        /// Restore only these captured paths (a directory restores everything
-        /// the capture held beneath it). Content recovery, not structural
-        /// repair — see the command help. Omit to restore the whole capture.
-        #[arg(value_name = "PATH")]
-        paths: Vec<String>,
-        /// Restore only the document the capture recorded under this id, wherever
-        /// it lived at the time. Rename-robust where a path is not.
-        #[arg(long, value_name = "ID", conflicts_with = "paths")]
-        id: Option<String>,
-        /// Also remove every reachable file the capture does not contain, so the
-        /// tree *matches* the event rather than merely including it.
-        ///
-        /// This is what undoes an additive bad merge — and the same pass discards
-        /// legitimate work done since the capture. It restores the whole event by
-        /// definition, so it cannot be combined with a scope, and it lists what it
-        /// would remove and asks first on a terminal.
-        #[arg(long)]
-        exact: bool,
-        /// Proceed even though restoring would displace a registration: an id the
-        /// registry now binds to a different document, or a path it now binds to a
-        /// different id. Refused by default — two documents claiming one id is
-        /// something only their author can arbitrate.
-        #[arg(long)]
-        force: bool,
-        /// Print the plan — what would be created, overwritten, left alone, left
-        /// unrecoverable for want of bytes, and removed — and write nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Skip the confirmation `--exact` asks before removing files.
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-    /// Drop the oldest captures and collect the bytes no surviving capture
-    /// references. Manual, never automatic, and irreversible.
-    ///
-    /// With full manifests this is delete plus garbage collection and nothing
-    /// else: every event is self-contained, so dropping one cannot make another
-    /// unreadable. What it *can* do is destroy the only copy of some content —
-    /// including content another device captured and this one never had live —
-    /// so it lists what it would drop and asks first.
-    ///
-    /// Exactly one bound is required. There is no default: an operation that
-    /// deletes bytes should not do so because a flag was forgotten.
-    ///
-    /// The blob sweep is the same one `check` reports as orphaned, taken against
-    /// the survivors — so a prune also collects blobs that were already
-    /// unreferenced, which is what that finding points here for.
-    ///
-    /// Works regardless of the `history` config axis: turning the feature off
-    /// must not strand bytes you can no longer clean up.
-    HistoryPrune {
-        /// Keep the newest N captures and drop everything older.
-        #[arg(long, value_name = "N")]
-        keep: Option<usize>,
-        /// Drop every capture taken strictly before this date (`2026-06-01`) or
-        /// RFC 3339 instant. A capture *on* the named day is kept.
-        #[arg(long, value_name = "DATE", conflicts_with = "keep")]
-        before: Option<String>,
-        /// Print what would be dropped and collected, and delete nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Skip the confirmation.
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
-    /// Destroy one document's captured bytes, and record that it was deliberate.
-    ///
-    /// History extends retention of everything ever captured: if any event caught
-    /// a document while it was live, its bytes are in the store, and neither
-    /// `empty-bin` nor `rm --purge` touches them. This is the tool that makes that
-    /// irreversible on purpose.
-    ///
-    /// Two limits, both load-bearing. It destroys **only bytes nothing else
-    /// names** — a hash shared with another captured path survives, because
-    /// content addressing means forgetting one document cannot reach into
-    /// another's history. And it destroys **bytes, not the record**: event
-    /// documents are immutable, so every manifest still names the path, the id and
-    /// the hash. If what has to disappear is the name, this is not that tool.
-    ///
-    /// The forgotten hashes are recorded in `history/forgotten.<ext>` so `check`
-    /// can tell deliberate destruction from loss, and so the read verbs can say
-    /// "forgotten" rather than "missing".
-    ///
-    /// Works regardless of the `history` config axis.
-    HistoryForget {
-        /// The document: a path, or `id:<id>` to follow an id directly — which
-        /// still works for a document that has since been deleted, and is the
-        /// rename-robust key.
-        target: String,
-        /// Forget even though the document is still in the workspace. Refused by
-        /// default, because the next capture would simply park its bytes again.
-        #[arg(long)]
-        force: bool,
-        /// Skip the confirmation.
-        #[arg(long, short = 'y')]
-        yes: bool,
+        write: bool,
     },
 }
 

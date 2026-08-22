@@ -59,8 +59,8 @@ use prov_store::index::IndexStore;
 ///
 /// **Never deletes bytes.** A fix may drop a link — a broken entry, a dangling
 /// reference — but files, blobs, and recycle-bin records are outside its reach.
-/// Destroying data is what a deliberate verb (`rm`, `history-prune`,
-/// `empty-bin`) is for, on request and by name.
+/// Destroying data is what a deliberate verb (`rm`, `empty-bin`) is for, on
+/// request and by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fix {
     /// Repair a [`Finding::MissingInverse`]: declare `relation` in `doc` pointing
@@ -99,16 +99,6 @@ pub enum Fix {
     /// when the change was *not* intended, is the one thing prov cannot decide
     /// for you, which is why this is never applied without confirmation.
     RestampFixity { doc: PathBuf, hash: String },
-    /// Repair a [`Finding::HistoryIndexStale`] by rebuilding `index` from the
-    /// directory it describes. Safe because a history index is a *derived* cache
-    /// — the immutable event documents are the authority — so the rebuild is a
-    /// pure function of that one directory's listing, and touches no other shard.
-    RebuildHistoryIndex { index: PathBuf },
-    /// Repair a [`Finding::HistoryStoreUnlinked`] by declaring the `history`
-    /// pointer in `root` again, at the store that is already there. Metadata-only,
-    /// and the target is the one the finding found rather than anything this fix
-    /// decides — it re-declares a store, it never adopts one.
-    LinkHistoryStore { root: PathBuf, store: PathBuf },
     /// Rewrite the generated page whole. Carries the content rather than
     /// recomputing it: the finding already generated it to detect the drift, and
     /// carrying it keeps `apply_fix` free of any dependency on configuration —
@@ -258,21 +248,6 @@ impl fmt::Display for Fix {
                     f,
                     "re-stamp the content checksum in {} to the current bytes",
                     doc.display()
-                )
-            }
-            Fix::RebuildHistoryIndex { index } => {
-                write!(
-                    f,
-                    "rebuild {} from the events in its directory",
-                    index.display()
-                )
-            }
-            Fix::LinkHistoryStore { root, store } => {
-                write!(
-                    f,
-                    "declare the history store at {} in {}",
-                    store.display(),
-                    root.display()
                 )
             }
             Fix::RegenerateAbout { path, .. } => {
@@ -746,8 +721,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Empty means prov genuinely has nothing to do — either because the repair
     /// is outside prov (bytes a transport has not delivered yet, a `spec` newer
     /// than this build) or because performing it would destroy the evidence of
-    /// what went wrong ([`Finding::RecycledBytesMissing`],
-    /// [`Finding::HistoryBlobMissing`]).
+    /// what went wrong ([`Finding::RecycledBytesMissing`]).
     ///
     /// Where more than one repair is defensible, they are all here and the caller
     /// picks; see [`Remedy`] for why that replaced a single-answer signature.
@@ -890,30 +864,6 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 )]),
                 _ => Ok(Vec::new()),
             },
-            // Rebuild the drifted index from its own directory. Unambiguous: the
-            // event documents are the authority and the index only caches them,
-            // so there is no competing claim to weigh.
-            Finding::HistoryIndexStale { index, .. } => Ok(vec![Remedy::new(
-                RemedyKind::Rebuild,
-                Warrant::Derived,
-                format!("rebuild {} from its own directory", index.display()),
-                Fix::RebuildHistoryIndex {
-                    index: index.clone(),
-                },
-            )]),
-            // Re-declare the store the root has stopped pointing at. Unambiguous
-            // because the finding never guessed: it fires only for a store at the
-            // conventional path, so the pointer goes back to the one place prov
-            // would have put it.
-            Finding::HistoryStoreUnlinked { root, store } => Ok(vec![Remedy::new(
-                RemedyKind::Link,
-                Warrant::Derived,
-                format!("declare the history store at {}", store.display()),
-                Fix::LinkHistoryStore {
-                    root: root.clone(),
-                    store: store.clone(),
-                },
-            )]),
             // Rewrite the derived page. Unambiguous for the same reason as the
             // index rebuild: configuration is the authority and the page only
             // restates it, so there is no competing claim to weigh.
@@ -1364,21 +1314,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     fig::Value::Str(hash.clone()),
                 )?;
                 cs.write(doc, updated);
-            }
-            // Rebuild the index from its own directory. Wholesale rather than a
-            // surgical edit, because the index is derived: the events are the
-            // authority, so the repaired file is byte-identical to one a fresh
-            // capture would have written.
-            Fix::RebuildHistoryIndex { index } => {
-                let text = self.history_index_text(index).await?;
-                cs.write(index, text);
-            }
-            // One frontmatter key, set the way a bootstrap capture would have set
-            // it — the same `history_pointer_text` path, so a re-declared pointer
-            // is spelled identically to an originally-declared one.
-            Fix::LinkHistoryStore { root, store } => {
-                let text = self.history_pointer_text(root, store).await?;
-                cs.write(root, text);
             }
             // Wholesale, like the index rebuild and for the same reason: the page
             // is derived, so the repaired file is byte-identical to one a fresh

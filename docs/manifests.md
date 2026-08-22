@@ -190,15 +190,16 @@ so a covered directory can never quietly acquire a second manifest.
 behind is an uncovered directory — exactly what it was before anything described
 it.
 
-**A history capture parks the manifest, not the photographs.** Covered files are
-not in the reachable set: they are opaque bytes, never orphan candidates, and
-adding ten thousand paths to every walk would make an archive pay on each of them
-for a check none can fail. So damage to a covered file stays **detectable** —
-every hash is on record in the captured manifest — but is not undoable from
-`history/blobs/`. The alternative was duplicating the whole archive into the
-history store on its first capture, which is a worse default for the only
-workspaces this feature exists for. Keep the bytes safe the way the rest of an
-archive is kept safe: a backup, on separate media.
+**History records the manifest, not the photographs.** Covered files are not
+in the reachable set: they are opaque bytes, never orphan candidates, and adding
+ten thousand paths to every walk would make an archive pay on each of them for a
+check none can fail. The skiplist says the same thing to historica — a claimed
+directory is one `skip photos/` rule — so damage to a covered file stays
+**detectable** (every hash is on record in the recorded manifest) but is not
+undoable from the store. The alternative was duplicating the whole archive into
+history on its first record, which is a worse default for the only workspaces
+this feature exists for. Keep the bytes safe the way the rest of an archive is
+kept safe: a backup, on separate media.
 
 ## 7. Commands
 

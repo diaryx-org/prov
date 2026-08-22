@@ -1,214 +1,257 @@
+//! Talking to the historica store: what stands, and rewriting the region.
+//!
+//! Everything here goes through the `historica` library rather than
+//! re-deriving its formats — the store's own `Skipped::parse` reads the rules,
+//! its `Rule` renders the lines this crate writes, and the tracked set is the
+//! merged tree at the store's current heads, computed by the store. What this
+//! module adds is the one convention historica does not have: a **generated
+//! region** inside `skipped.txt`, fenced by marker comments, regenerated whole
+//! the way a changelog's generated region is. Everything outside the markers
+//! belongs to the person and is preserved line for line.
+//!
+//! The markers are `#` comment lines, so a historica that has never heard of
+//! prov reads the file unchanged — the region is a convention *within* the
+//! format, not an extension of it.
+
 use std::collections::BTreeSet;
+use std::fmt;
+use std::fs;
+use std::io;
 use std::path::Path;
 
-use prov_graph::content::ContentFormat;
-use prov_graph::document::MetaCarrier;
-use prov_graph::error::{Error, Result};
-use prov_graph::link;
-use prov_transaction::ChangeSet;
+use historica::store::{MaterialiseError, STORE_DIR, Store, StoreError};
+use historica::working::{MalformedSkip, Rule, SKIPPED_FILE, Skipped};
 
-use super::docs::{Authoring, render_month_index, render_store_index, render_year_index};
-use super::layout::{is_event_id, shard_parts};
-use super::{EVENTS_DIR, HistoryReadHost, HistoryStore};
+use crate::Skiplist;
 
-impl<H: HistoryReadHost> HistoryStore<H> {
-    /// Stage an index write only when it would change the file — see
-    /// [`prune`](Self::prune) on why a prune must not churn indexes it has no
-    /// reason to touch.
-    pub(crate) async fn stage_index_text(
-        &self,
-        cs: &mut ChangeSet,
-        index: &Path,
-        text: String,
-    ) -> Result<()> {
-        let unchanged =
-            matches!(self.host().graph().load(index).await, Ok((current, _)) if current == text);
-        if !unchanged {
-            cs.write(index, text);
-        }
-        Ok(())
-    }
+/// The line opening the generated region. Matched by prefix, so later
+/// wording changes do not orphan older regions.
+pub const REGION_BEGIN: &str = "# prov:begin — computed from the workspace graph and regenerated whole; \
+     edits between the markers are overwritten";
 
-    /// Stage the removal of an index whose directory no longer holds any event —
-    /// but only if it is actually there.
-    pub(crate) async fn stage_index_removal(&self, cs: &mut ChangeSet, index: &Path) -> Result<()> {
-        if self.host().graph().exists(index).await? {
-            cs.remove(index);
-        }
-        Ok(())
-    }
+/// The line closing the generated region.
+pub const REGION_END: &str = "# prov:end";
 
-    /// A captured root document's text, with its `history` pointer restored if the
-    /// capture carried none — the one edit a restore makes to bytes it is putting
-    /// back verbatim.
+fn is_begin(line: &str) -> bool {
+    line.trim_end().starts_with("# prov:begin")
+}
+
+fn is_end(line: &str) -> bool {
+    line.trim_end() == REGION_END
+}
+
+/// What the store already says, read once so planning is pure.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Standing {
+    /// The rules outside the region — historica's defaults and whatever the
+    /// person added by hand. Theirs; never rewritten.
+    pub hand: Vec<Rule>,
+    /// The rules the region holds now, in file order.
+    pub region: Vec<Rule>,
+    /// Every path the store's tree holds at its current heads. A rule may
+    /// never cover one: historica refuses to record while it does.
+    pub tracked: BTreeSet<String>,
+}
+
+impl Standing {
+    /// Read the store beside the workspace at `root`.
     ///
-    /// Absence is the only case it corrects. A pointer naming some *other* store
-    /// index is what the workspace looked like at that capture, and rewriting it
-    /// would be the restore substituting its own opinion for the manifest's.
-    pub(crate) fn rooted_at_store(
-        &self,
-        root_doc: &Path,
-        text: &str,
-        store_index: &Path,
-    ) -> Result<String> {
-        let Some(relation) = self.host().history_relation() else {
-            return Ok(text.to_string());
+    /// The store's absence is an error rather than an empty answer — a
+    /// skiplist with nowhere to land is a prompt to run `historica init`, and
+    /// pretending otherwise would compute a plan nothing can apply.
+    pub fn read(root: &Path) -> Result<Self, StandingError> {
+        let store = Store::open(root.join(STORE_DIR))?;
+        let text = read_skipped(root)?;
+        let split = split_region(&text)?;
+        let mut hand = rules_of(&split.before).map_err(StandingError::Skip)?;
+        hand.extend(rules_of(&split.after).map_err(StandingError::Skip)?);
+        let region = rules_of(&split.region).map_err(StandingError::Skip)?;
+
+        let history = store.history();
+        let superseded = history.superseded();
+        let heads: Vec<_> = history
+            .heads()
+            .into_iter()
+            .filter(|head| !superseded.contains(head))
+            .collect();
+        let tracked = match heads.is_empty() {
+            true => BTreeSet::new(),
+            false => store
+                .merged_tree_of(&heads)?
+                .tree
+                .files()
+                .map(|(_, path)| path.to_owned())
+                .collect(),
         };
-        let relation = relation.to_string();
-        let doc = prov_graph::document::Document::parse(root_doc, text)?;
-        if doc.meta.get(&relation).is_some() {
-            return Ok(text.to_string());
+
+        Ok(Self {
+            hand,
+            region,
+            tracked,
+        })
+    }
+}
+
+/// Rewrite the generated region of `skipped.txt` to say what `skiplist`
+/// computed, leaving every line outside the markers as it stands.
+///
+/// A file with no markers yet gains the region at its end; a plan with no
+/// rules and no region to empty writes nothing at all. The result is parsed
+/// with historica's own reader before it is written — this crate never leaves
+/// behind a file the store would refuse — and lands by rename, so a crash
+/// leaves the old file, not half of a new one.
+pub fn apply(root: &Path, skiplist: &Skiplist) -> Result<(), StandingError> {
+    let path = root.join(STORE_DIR).join(SKIPPED_FILE);
+    let text = read_skipped(root)?;
+    let split = split_region(&text)?;
+    if skiplist.rules.is_empty() && !split.found {
+        return Ok(());
+    }
+
+    let mut out = String::new();
+    out.push_str(&split.before);
+    out.push_str(REGION_BEGIN);
+    out.push('\n');
+    for skip in &skiplist.rules {
+        out.push_str(&skip.rule.to_string());
+        out.push('\n');
+    }
+    out.push_str(REGION_END);
+    out.push('\n');
+    out.push_str(&split.after);
+
+    Skipped::parse(&out).map_err(StandingError::Skip)?;
+    let staged = path.with_file_name(format!("{SKIPPED_FILE}.new"));
+    fs::write(&staged, &out)?;
+    fs::rename(&staged, &path)?;
+    Ok(())
+}
+
+fn read_skipped(root: &Path) -> Result<String, StandingError> {
+    match fs::read_to_string(root.join(STORE_DIR).join(SKIPPED_FILE)) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn rules_of(text: &str) -> Result<Vec<Rule>, MalformedSkip> {
+    Ok(Skipped::parse(text)?.rules().cloned().collect())
+}
+
+/// The file cut at its markers. Line endings are normalised to one `\n` per
+/// line; `region` is the text strictly between the marker lines.
+struct SplitRegion {
+    before: String,
+    region: String,
+    after: String,
+    found: bool,
+}
+
+fn split_region(text: &str) -> Result<SplitRegion, StandingError> {
+    let mut before = String::new();
+    let mut region = String::new();
+    let mut after = String::new();
+    let mut state = State::Before;
+    for (index, line) in text.lines().enumerate() {
+        let at = index + 1;
+        match state {
+            State::Before if is_begin(line) => state = State::Within,
+            State::Before if is_end(line) => {
+                return Err(StandingError::Region {
+                    at,
+                    because: "an end marker stands before any begin marker",
+                });
+            }
+            State::Before => push_line(&mut before, line),
+            State::Within if is_end(line) => state = State::After,
+            State::Within if is_begin(line) => {
+                return Err(StandingError::Region {
+                    at,
+                    because: "a second begin marker stands inside the region",
+                });
+            }
+            State::Within => push_line(&mut region, line),
+            State::After if is_begin(line) || is_end(line) => {
+                return Err(StandingError::Region {
+                    at,
+                    because: "only one region: a second marker stands after the region closed",
+                });
+            }
+            State::After => push_line(&mut after, line),
         }
-        self.with_history_pointer(root_doc, text, doc.carrier, store_index)
     }
-
-    /// The root document's text with its `history` pointer at the store index —
-    /// authored the first time only, in the host's own path style (the same
-    /// shape `recycle` gives the bin pointer), comment- and format-preservingly.
-    ///
-    /// Computed rather than staged directly so the capture can hash *this* text
-    /// into its own manifest, and so the pointer still lands in the same
-    /// [`ChangeSet`] as the event — a store written without the pointer would be
-    /// unreachable, and invisible to `check`.
-    pub async fn pointer_text(&self, root_doc: &Path, store_index: &Path) -> Result<String> {
-        let (text, doc) = self.host().graph().load(root_doc).await?;
-        self.with_history_pointer(root_doc, &text, doc.carrier, store_index)
+    match state {
+        State::Within => Err(StandingError::Region {
+            at: text.lines().count(),
+            because: "the begin marker has no end marker after it",
+        }),
+        found => Ok(SplitRegion {
+            before,
+            region,
+            after,
+            found: matches!(found, State::After),
+        }),
     }
+}
 
-    /// `text` — a root document's — with its `history` pointer set to
-    /// `store_index`. Text in, text out: the capture edits the root it is about to
-    /// hash, and the restore edits a root it is about to write back out of a blob,
-    /// neither of which is what is on disk.
-    fn with_history_pointer(
-        &self,
-        root_doc: &Path,
-        text: &str,
-        carrier: Option<MetaCarrier>,
-        store_index: &Path,
-    ) -> Result<String> {
-        let relation = self
-            .host()
-            .history_relation()
-            .ok_or_else(|| Error::Structure("no history relation configured".into()))?
-            .to_string();
-        let pointer = link::path_text(self.host().history_link_style(), root_doc, store_index);
-        prov_store::edit::set_in_text(
-            text,
-            carrier,
-            &relation,
-            prov_store::edit::infer_scalar(&pointer),
-        )
-    }
+enum State {
+    Before,
+    Within,
+    After,
+}
 
-    /// The event ids in one shard directory: every `*.<ext>` file that is not the
-    /// shard's own index. Directory-driven, so it sees exactly what is there.
-    pub async fn shard_event_ids(&self, shard: &Path, ext: &str) -> Result<BTreeSet<String>> {
-        let suffix = format!(".{ext}");
-        let index = format!("index.{ext}");
-        let mut ids = BTreeSet::new();
-        let Ok(entries) = self.host().graph().listing(shard).await else {
-            return Ok(ids);
-        };
-        for entry in entries {
-            let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if !entry.file_type().is_file() || name.starts_with('.') || name == index {
-                continue;
+fn push_line(text: &mut String, line: &str) {
+    text.push_str(line);
+    text.push('\n');
+}
+
+/// What reading or rewriting the store can refuse.
+#[derive(Debug)]
+pub enum StandingError {
+    /// The store could not be opened or read — including its absence, which
+    /// is a prompt to run `historica init` rather than a state to plan over.
+    Store(StoreError),
+    /// The tracked set could not be replayed from the store's documents.
+    Materialise(MaterialiseError),
+    /// `skipped.txt` holds a line historica's own reader refuses.
+    Skip(MalformedSkip),
+    /// The region's markers do not delimit one region.
+    Region { at: usize, because: &'static str },
+    /// Reading or writing the file itself failed.
+    Io(io::Error),
+}
+
+impl fmt::Display for StandingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StandingError::Store(error) => write!(f, "{error}"),
+            StandingError::Materialise(error) => write!(f, "{error}"),
+            StandingError::Skip(error) => write!(f, "skipped.txt: {error}"),
+            StandingError::Region { at, because } => {
+                write!(f, "skipped.txt line {at}: {because}")
             }
-            if let Some(stem) = name.strip_suffix(&suffix)
-                && is_event_id(stem)
-            {
-                ids.insert(stem.to_string());
-            }
+            StandingError::Io(error) => write!(f, "{error}"),
         }
-        Ok(ids)
     }
+}
 
-    /// The immediate subdirectory names of `dir`, sorted. An unreadable or absent
-    /// directory is empty, not an error — the store is grown lazily.
-    pub async fn subdirs(&self, dir: &Path) -> Result<BTreeSet<String>> {
-        let mut names = BTreeSet::new();
-        let Ok(entries) = self.host().graph().listing(dir).await else {
-            return Ok(names);
-        };
-        for entry in entries {
-            let Some(name) = entry.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if entry.file_type().is_dir() && !name.starts_with('.') {
-                names.insert(name.to_string());
-            }
-        }
-        Ok(names)
+impl std::error::Error for StandingError {}
+
+impl From<StoreError> for StandingError {
+    fn from(error: StoreError) -> Self {
+        StandingError::Store(error)
     }
+}
 
-    /// The text one history index document *should* hold, rebuilt from the
-    /// directory it describes — the repair behind `Fix::RebuildHistoryIndex`.
-    ///
-    /// Takes only the index's own path: which of the three index kinds it is
-    /// falls out of where it sits relative to the store's `events/` directory, so
-    /// the repair needs neither the root document nor the `history` pointer —
-    /// which matters, because a workspace whose *store index* was mangled is
-    /// exactly when you want to rebuild without depending on it.
-    ///
-    /// Per-shard by construction: a mangled `2026/07/index.<ext>` is rebuilt from
-    /// that one directory's listing, touching no other month.
-    pub async fn index_text(&self, index: &Path) -> Result<String> {
-        let index = link::normalize(index);
-        // The index's own extension, not the root's: this repair is reached
-        // without the root document on purpose (a workspace whose *store index*
-        // was mangled is exactly when you want to rebuild without depending on
-        // it), so the file being repaired is the only thing that can say what
-        // grammar the store is authored in.
-        let style = Authoring {
-            ext: index
-                .extension()
-                .and_then(|e| e.to_str())
-                .ok_or_else(|| Error::Structure(format!("{} has no extension", index.display())))?
-                .to_string(),
-            content: ContentFormat::from_extension(&index).unwrap_or(ContentFormat::Markdown),
-            embed: self.embed()?,
-        };
-        let ext = style.ext.as_str();
-        let dir = index.parent().unwrap_or(Path::new(""));
+impl From<MaterialiseError> for StandingError {
+    fn from(error: MaterialiseError) -> Self {
+        StandingError::Materialise(error)
+    }
+}
 
-        // Locate the store's `events/` directory by name, walking up from the
-        // index. Its absence means this *is* the store index.
-        let depth_below_events = dir
-            .components()
-            .rev()
-            .position(|c| c.as_os_str() == EVENTS_DIR);
-        match depth_below_events {
-            // `<store>/events/<year>/<month>/index.<ext>`
-            Some(2) => {
-                let (year, month) = shard_parts(
-                    dir.parent()
-                        .and_then(|p| p.parent())
-                        .map(|events| dir.strip_prefix(events).unwrap_or(dir))
-                        .unwrap_or(dir),
-                )?;
-                render_month_index(
-                    &year,
-                    &month,
-                    &self.shard_event_ids(dir, ext).await?,
-                    &style,
-                )
-            }
-            // `<store>/events/<year>/index.<ext>`
-            Some(1) => {
-                let year = dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                render_year_index(&year, &self.event_months(dir, ext).await?, &style)
-            }
-            // `<store>/index.<ext>` — the store index itself.
-            _ => render_store_index(
-                &self.event_years(&dir.join(EVENTS_DIR), ext).await?,
-                self.forgotten_link(&index).await?.as_deref(),
-                &style,
-            ),
-        }
+impl From<io::Error> for StandingError {
+    fn from(error: io::Error) -> Self {
+        StandingError::Io(error)
     }
 }

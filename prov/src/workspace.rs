@@ -24,11 +24,9 @@ use prov_graph::fs::{DirEntry, Metadata};
 use prov_graph::graph::{Backlink, CensusEntry, Graph, Node, ReadSettings, TreeOptions, Walk};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use crate::change::{ChangeSet, FileOp};
 use crate::config::{Fixity, History, IdStorage};
-use crate::fixity::FixityCache;
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use prov_graph::document::EmbedStyle;
 use prov_graph::error::{Error, Result};
@@ -36,7 +34,7 @@ use prov_graph::fs::ReadStorage;
 use prov_graph::graph::Target;
 use prov_graph::index::{Collision, IdIndex, NoIndex};
 use prov_graph::link::{self, Addressing, Link, LinkStyle, ReferenceStyle, Wrapper};
-use prov_graph::memo::{ReadScope, lock};
+use prov_graph::memo::ReadScope;
 use prov_graph::meta::Value;
 use prov_graph::relation::RelationSet;
 use prov_graph::title::TitleIndex;
@@ -169,25 +167,15 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     /// document's id and the registry entry for it land in the same crash-atomic
     /// write — never one without the other.
     pending_stamps: Vec<(PathBuf, prov_graph::identity::Id)>,
-    /// What this device remembers of the workspace's file digests. Absent until
-    /// a host supplies one — see [`crate::fixity::FixityCache`], which is also
-    /// where the rule about who may consult it is written down.
-    fixity_cache: Mutex<Option<FixityCache>>,
 }
 
-/// Hand-written rather than derived, because the two memories carry different
-/// answers to "what does a second handle on this workspace inherit?".
+/// Hand-written rather than derived, because the read memo carries its own
+/// answer to "what does a second handle on this workspace inherit?".
 ///
 /// The **read memo** starts empty, with no scope open — a requirement, not a
 /// preference. A [`ReadScope`] guard points at the memo it opened, and a clone
 /// has no guard pointing at it; inheriting a nonzero depth would leave the copy
 /// permanently scoped, remembering reads with nothing left to close it.
-///
-/// The **fixity cache** is copied, because it is a memory of the disk and both
-/// handles are looking at the same disk. Two clones that both learn things do
-/// diverge, and whichever is persisted last is the one that keeps what it
-/// learned — which costs a re-hash and nothing else, since every entry is
-/// validated against the file's own stat before it is believed.
 impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
     fn clone(&self) -> Self {
         Self {
@@ -195,7 +183,6 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
             identity: self.identity.clone(),
             settings: self.settings.clone(),
             pending_stamps: self.pending_stamps.clone(),
-            fixity_cache: Mutex::new(lock(&self.fixity_cache).clone()),
         }
     }
 }
@@ -218,104 +205,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             identity: NoIdentity,
             index: NoIndex,
             settings: Settings::default(),
-            fixity_cache: None,
         }
-    }
-}
-
-impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
-    /// Construct the history service for this workspace.
-    ///
-    /// Existing verb methods remain available below as compatibility
-    /// forwarding methods while history moves behind this host boundary.
-    pub fn history_store(&self) -> crate::history::HistoryStore<&Self> {
-        crate::history::HistoryStore::new(self)
-    }
-
-    /// The history service over a *mutable* borrow — what the four mutating
-    /// verbs need, since landing a change set is a mutation of the workspace.
-    pub fn history_store_mut(&mut self) -> crate::history::HistoryStore<&mut Self> {
-        crate::history::HistoryStore::new(self)
-    }
-}
-
-impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryReadHost for Workspace<FS, Id, Ix> {
-    type Fs = FS;
-    type Ix = Ix;
-
-    fn graph(&self) -> &Graph<Self::Fs, Self::Ix> {
-        self.graph()
-    }
-
-    fn embed_style(&self) -> EmbedStyle {
-        self.embed_style()
-    }
-
-    fn default_embed_format(&self) -> fig::Format {
-        self.default_embed_format()
-    }
-
-    fn history_captures(&self) -> bool {
-        self.history().captures()
-    }
-
-    fn history_relation(&self) -> Option<&str> {
-        self.relations().history_relation()
-    }
-
-    fn history_link_style(&self) -> LinkStyle {
-        match self.relations().history_relation() {
-            Some(relation) => self.reference_style_for(relation).path_style,
-            None => self.link_style(),
-        }
-    }
-
-    async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
-        self.history_path(root_doc).await
-    }
-
-    async fn reachable_files(&self, root_doc: &Path) -> Result<BTreeSet<PathBuf>> {
-        self.reachable_files(root_doc).await
-    }
-
-    async fn history_exclusions(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
-        // The two the store cannot know about: where the bin parks the bytes a
-        // user has already consigned, and which page prov derives rather than the
-        // author writing. Both are prefixes; a file names only itself.
-        let mut excluded = Vec::new();
-        if let Some(index) = self.recycle_bin_path(root_doc).await? {
-            excluded.push(crate::history::store_dir(&index).join("items"));
-        }
-        if let Some(about) = self.about_path(root_doc).await? {
-            excluded.push(about);
-        }
-        Ok(excluded)
-    }
-
-    fn registration_conflict(
-        &self,
-        id: &prov_graph::identity::Id,
-        path: &Path,
-    ) -> Option<Collision> {
-        self.registration_conflict(id, path)
-    }
-}
-
-impl<FS: Storage, Id, Ix: IndexStore> prov_history::HistoryWriteHost for Workspace<FS, Id, Ix> {
-    fn change(&mut self) -> ChangeSet {
-        self.change()
-    }
-
-    async fn commit(&mut self, cs: ChangeSet) -> Result<()> {
-        self.commit(cs).await
-    }
-
-    fn fixity_cached(&self, path: &Path, meta: &Metadata) -> Option<String> {
-        self.fixity_cached(path, meta)
-    }
-
-    fn fixity_remember(&self, path: &Path, meta: &Metadata, hash: &str) {
-        self.fixity_remember(path, meta, hash)
     }
 }
 
@@ -384,66 +274,16 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         self.graph.read_scope()
     }
 
-    /// Give this workspace a [`FixityCache`] to hash through, or `None` to take
-    /// the one it has away.
-    ///
-    /// prov never reads or writes the cache's file — it has no notion of a
-    /// location outside the workspace, and the cache belongs outside it. The
-    /// host decodes the bytes, hands the cache over, and takes it back with
-    /// [`take_fixity_cache`](Self::take_fixity_cache) to persist whatever was
-    /// learned.
-    pub fn set_fixity_cache(&mut self, cache: Option<FixityCache>) {
-        *lock(&self.fixity_cache) = cache;
-    }
-
-    /// Take back the [`FixityCache`], with everything this workspace learned
-    /// while it held it. Check [`FixityCache::is_dirty`] before writing it out:
-    /// a run that learned nothing should not rewrite the file to say so.
-    pub fn take_fixity_cache(&mut self) -> Option<FixityCache> {
-        lock(&self.fixity_cache).take()
-    }
-
-    /// The remembered digest for the workspace-relative `path`, if the cache
-    /// still describes the file `meta` stat'ed.
-    pub(crate) fn fixity_cached(
-        &self,
-        path: &Path,
-        meta: &prov_graph::fs::Metadata,
-    ) -> Option<String> {
-        lock(&self.fixity_cache)
-            .as_ref()?
-            .get(path, meta)
-            .map(str::to_string)
-    }
-
-    /// Remember that `path` hashed to `hash` at the stat `meta` describes.
-    /// Silently nothing when no cache is attached.
-    pub(crate) fn fixity_remember(&self, path: &Path, meta: &prov_graph::fs::Metadata, hash: &str) {
-        if let Some(cache) = lock(&self.fixity_cache).as_mut() {
-            cache.put(path, meta, hash);
-        }
-    }
-
-    /// Forget everything `cs` is about to change, in both the operation's read
-    /// memo and the fixity cache.
+    /// Forget everything `cs` is about to change in the operation's read memo.
     ///
     /// Called before the set lands rather than after, because forgetting is
     /// never the wrong answer: a set that then fails and rolls back has cost one
     /// re-read, where the other order would have left a memo describing bytes
     /// that no longer exist.
-    ///
-    /// For the fixity cache this is tidiness, not the safety mechanism. An entry
-    /// is validated against the file's own stat, so *any* write — by prov, an
-    /// editor, or a sync daemon — retires it whether or not prov thought to say
-    /// so. The read memo has no such backstop, which is why it needs this.
     fn forget_written(&self, cs: &ChangeSet) {
         let mut memo = self.graph.memo_lock();
-        let mut cache = lock(&self.fixity_cache);
         let mut forget = |path: &Path| {
             memo.forget(path);
-            if let Some(cache) = cache.as_mut() {
-                cache.forget(path);
-            }
         };
         for op in cs.ops() {
             match op {
@@ -489,15 +329,12 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         self.settings.fixity
     }
 
-    /// Whether this workspace keeps a history store, and on what trigger.
+    /// Whether this workspace maintains a historica store's skiplist.
     ///
-    /// Gating *capture* is the CLI's job, but the axis has to reach the library
-    /// for the opposite reason: a workspace that declares `manual` has said it
-    /// wants a safety net, so `check` can tell "no store yet" from "a store is
-    /// sitting there and the root has stopped pointing at it"
-    /// ([`Finding::HistoryStoreUnlinked`](crate::validate::Finding::HistoryStoreUnlinked)).
-    /// With the axis off there is nothing to be missing, and the pass stays
-    /// silent.
+    /// The axis gates *writing* — `history-skips --write` refuses under `off`,
+    /// so a workspace that has not asked for a store never has one's scoping
+    /// maintained — while computing and showing the plan stays free, the same
+    /// division the retired capture verbs drew.
     pub fn history(&self) -> History {
         self.settings.history
     }
@@ -681,11 +518,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         }
     }
 
-    /// The history-store index document this root declares via the history
-    /// pointer relation (§6, the same reachability move as the registry). `None`
-    /// when the vocabulary has no history relation or the root declares none —
-    /// the workspace has no history store yet, so the first
-    /// [`history_capture`](Self::history_capture) bootstraps one.
+    /// The retired event store's index document, if this root still declares
+    /// one via the history pointer relation (§6). `None` when the vocabulary
+    /// has no history relation or the root declares none — which every
+    /// migrated workspace is: the pointer survives only so an unmigrated
+    /// store stays parked ([`parked_dirs`](Self::parked_dirs)) and the about
+    /// page can still name it.
     pub async fn history_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
         match self.relations().history_relation() {
             Some(relation) => self.pointer_target(root_doc, relation).await,
@@ -693,33 +531,37 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         }
     }
 
-    /// The directories a **byte-parking store** keeps its contents under — the
-    /// history store's interior and the recycle bin's `items/`.
+    /// The directories a **byte-parking store** keeps its contents under — a
+    /// historica store beside the root, and the recycle bin's `items/`.
     ///
-    /// These are prov's own machinery, not the workspace's documents, and the
-    /// distinction is the one this returns: a store's *index* is a document like
-    /// any other (the root points at it, `check` validates it, a reader can open
-    /// it and learn what the store holds), while everything beneath it is
-    /// bookkeeping the workspace should be blind to.
-    ///
-    /// The line matters most for **names**. A shard index is titled
-    /// `"{Month} {Year}"` and a binned document keeps the title it had, so a
-    /// workspace that indexes these subtrees will resolve `[[January 2026]]` to a
-    /// history shard, and `[[Some Note]]` to a copy of a note the author deleted
-    /// — silently, since neither is anywhere the reader can see. Worse than a
-    /// dead link, which at least reads as broken.
+    /// These are machinery, not the workspace's documents, and every walk is
+    /// blind to them by decision. The line matters most for **names**: a
+    /// binned document keeps the title it had, so a workspace that indexed
+    /// these subtrees would resolve `[[Some Note]]` to a copy of a note the
+    /// author deleted — silently, since it is nowhere the reader can see.
+    /// Worse than a dead link, which at least reads as broken.
     ///
     /// Naming the directories rather than filtering paths afterwards is what
     /// keeps the *cost* out too: a scan that never descends does not read a
-    /// thousand event documents in order to discard them.
+    /// thousand revision documents in order to discard them.
     pub(crate) async fn parked_dirs(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
         let mut dirs = Vec::new();
+        // A historica store beside the root, identified by its marker file
+        // rather than its name — a folder merely called `history` is content.
+        // Parked whole: nothing links into it, historica excludes it from its
+        // own recording, and a walk that descended it would title-index
+        // another tool's document store.
+        let marker = Path::new(prov_history::STORE_DIR).join(prov_history::HEADER_FILE);
+        if self.graph.stat(&marker).await.is_ok() {
+            dirs.push(PathBuf::from(prov_history::STORE_DIR));
+        }
+        // A retired prov event store the root still points at. The `history`
+        // pointer and this parking survive the store's retirement so an
+        // unmigrated workspace keeps its scans out of the event archive; both
+        // go when nothing declares such a store any more.
         if let Some(index) = self.history_path(root_doc).await? {
-            // The store's interior, not the store: the index document itself
-            // stays reachable, so the `history` pointer is not a broken link and
-            // the orphan sweep goes on ignoring what it never reached.
-            dirs.push(crate::history::store_dir(&index).join(crate::history::EVENTS_DIR));
-            dirs.push(crate::history::store_dir(&index).join(crate::history::BLOBS_DIR));
+            dirs.push(crate::history::store_dir(&index).join("events"));
+            dirs.push(crate::history::store_dir(&index).join("blobs"));
         }
         if let Some(index) = self.recycle_bin_path(root_doc).await? {
             dirs.push(crate::history::store_dir(&index).join("items"));
@@ -1414,21 +1256,9 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     identity: Id,
     index: Ix,
     settings: Settings,
-    fixity_cache: Option<FixityCache>,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
-    /// Hash through a [`FixityCache`], so an operation that would otherwise read
-    /// and hash every file in the workspace reads only the ones whose stat says
-    /// they changed.
-    ///
-    /// Off by default: the cache is device-local state prov cannot locate for
-    /// itself, so a workspace gets one only from a host that knows where it
-    /// lives. Equivalent to [`Workspace::set_fixity_cache`] after the fact.
-    pub fn fixity_cache(mut self, cache: FixityCache) -> Self {
-        self.fixity_cache = Some(cache);
-        self
-    }
     /// Set the workspace root.
     pub fn root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
@@ -1462,9 +1292,8 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
-    /// Set whether this workspace keeps a history store. Off by default; see
-    /// [`Workspace::history`] for what the library does with it (it does not gate
-    /// capture — that is the caller's call).
+    /// Set whether this workspace maintains a historica store's skiplist. Off
+    /// by default; see [`Workspace::history`].
     pub fn history(mut self, history: History) -> Self {
         self.settings.history = history;
         self
@@ -1531,7 +1360,6 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             identity,
             index: self.index,
             settings: self.settings,
-            fixity_cache: self.fixity_cache,
         }
     }
 
@@ -1543,7 +1371,6 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             identity: self.identity,
             index,
             settings: self.settings,
-            fixity_cache: self.fixity_cache,
         }
     }
 
@@ -1564,7 +1391,6 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             identity: self.identity,
             settings: self.settings,
             pending_stamps: Vec::new(),
-            fixity_cache: Mutex::new(self.fixity_cache),
         }
     }
 }

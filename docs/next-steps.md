@@ -138,10 +138,12 @@ twig has no wikilink concept, so a wikilink span is lexical either way.
 
 Still open here:
 
-- **`RestoreFromHistory` for `FixityMismatch`.** Its doc comment says restoring
-  from backup is the arm prov cannot decide, and `history_restore` can actually
-  perform it — needs a single-path `history_restore_plan` and an event picker.
-  Until then `FixityMismatch` offers only the re-stamp, marked `Judgment`.
+- **Restore-from-history for `FixityMismatch`.** Restoring from backup is the
+  arm prov cannot decide, and the historica store beside the workspace can
+  actually perform it (`historica cat`) — but recording is historica's now,
+  so the honest shape is a finding message that names the command rather than
+  a `Fix` that shells out. Until then `FixityMismatch` offers only the
+  re-stamp, marked `Judgment`.
 - **`DemoteEntry`** — spanning → overlay, contested containment's third answer.
 - **`MalformedStore`** — migrating a markdown store to a whole-file carrier
   creates a file and rewrites a pointer, so it is a mutation verb, not a fix.
@@ -613,10 +615,10 @@ claims a parent that is *gone* (the claim has to land in the reachable set to be
 evidence of anything, and a dangling one is indistinguishable from a stray copy of
 someone else's document). Finding those still needs the opt-in unbounded report
 (`check --unreached`?) with a message that says which
-of the two questions it answered. `prov history-capture --dry-run` names them today
-(its second list is every file a capture would leave behind), and it no longer
-refuses under `history: off`, so the one diagnostic that catches them is no longer
-gated behind enabling the feature you are diagnosing.
+of the two questions it answered. `prov history-skips` names them today (an
+unreached file is exactly what earns a skip rule, and the plan prints without
+a gate), so the one diagnostic that catches them is not hidden behind enabling
+anything.
 
 ## Mutation
 

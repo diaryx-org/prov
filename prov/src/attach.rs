@@ -103,8 +103,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// ([`parked_dirs`](Self::parked_dirs)). `--recursive` lifts the
     /// reachability bound, which is a statement about the *documents* a
     /// workspace has not linked yet, not a licence to mint a sidecar beside
-    /// every blob — those sidecars are orphans the moment they exist, and
-    /// `history-prune` would collect the payloads out from under them. The root
+    /// every blob — those sidecars are orphans the moment they exist, minted
+    /// inside a store another tool owns. The root
     /// is located here rather than passed in because it is wanted only to
     /// resolve the store pointers: this scan is deliberately *not* bounded by
     /// what the root reaches, and taking a start document would imply it was.
@@ -780,8 +780,8 @@ mod tests {
         // is unreached on purpose rather than by oversight (spec §4, and
         // `parked_dirs`). Sweeping into one mints a `.yaml` beside every history
         // blob and every binned file — sidecars that are orphans the instant
-        // they exist, and whose payloads `history-prune` then collects out from
-        // under them.
+        // they exist, minted inside a store the workspace is meant to be blind
+        // to.
         let dir = tempdir("parked");
         write(
             &dir,

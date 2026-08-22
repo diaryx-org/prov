@@ -42,8 +42,7 @@ prov-exports = { workspace = true, default-features = false }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { workspace = true, default-features = false }
 
-# History bounded context. `prov` retains forwarding methods for API
-# compatibility; history itself never depends back on this crate.
+# The skiplist that scopes a historica store to the workspace's graph.
 prov-history = { workspace = true, default-features = false }
 
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs

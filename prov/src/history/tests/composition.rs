@@ -1,202 +1,111 @@
-//! What the history store is composed *with*, which only exists here.
-//!
-//! Each of these turns on a fact `prov-history` is defined not to know: where
-//! the recycle bin parks its items, which directories a workspace treats as
-//! byte-parking interiors rather than documents, and who owns the fixity cache
-//! a capture reads through. The store reaches all three through its host
-//! traits, so what is under test is the answer this crate supplies — not the
-//! use history makes of it, which is tested in `prov-history`.
+//! What `prov` supplies to the skiplist, witnessed through a real workspace
+//! and a real historica store.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use prov_history::{SkipHost, Standing, apply, historica};
 
 use super::support::*;
-use prov_graph::exec::block_on;
 
-/// `history_exclusions` in the direction it was written for: a capture must not
-/// park bytes the user has consigned to the bin. (It emphatically does *not*
-/// make a purge final for content captured while it was live — that is
-/// documented, not tested here, because it is a non-guarantee.)
 #[test]
-fn binned_bytes_are_not_newly_retained_by_a_routine_capture() {
-    let dir = seed("capture-bin");
-    write(
-        &dir,
-        "recyclebin/index.yaml",
-        "title: Recycle Bin\ndeleted: []\n",
+fn the_skiplist_scopes_recording_to_the_graph() {
+    let dir = seed("scopes");
+    historica::store::Store::init(dir.join("history")).unwrap();
+
+    let ws = ws(&dir);
+    let standing = Standing::read(&dir).unwrap();
+    let plan = block_on(ws.skiplist(Path::new("index.md"), &standing)).unwrap();
+    apply(&dir, &plan).unwrap();
+
+    // The rule is drawn from the real reachable walk, and lands in a file
+    // historica itself reads back.
+    let store = historica::store::Store::open(dir.join("history")).unwrap();
+    assert!(
+        store.skipped().skips("notes/loose.md"),
+        "the loose note is not skipped"
     );
-    write(&dir, "recyclebin/items/notes/old.md", "binned bytes\n");
+    assert!(!store.skipped().skips("notes/a.md"));
+    assert!(!store.skipped().skips("index.md"));
+}
+
+#[test]
+fn the_bin_and_the_derived_page_are_bookkeeping() {
+    let dir = tempdir("bookkeeping");
     write(
         &dir,
         "index.md",
-        "---\ntitle: Home\ncontents:\n- notes/a.md\n- notes/photo.jpg.yaml\n\
-         recycle_bin: recyclebin/index.yaml\n---\nroot\n",
+        "---\ntitle: Home\nrecycle_bin: recyclebin/index.md\nabout: about.md\n---\nroot\n",
     );
-    let set = block_on(ws(&dir).history_capture_set(Path::new("index.md"))).unwrap();
-    assert!(
-        set.iter().all(|p| !p.starts_with("recyclebin/items")),
-        "binned bytes must not be captured: {set:?}"
-    );
-    // The bin *index* is captured, though — that is what makes a restore put
-    // a live document back as live.
-    assert!(
-        set.contains(&PathBuf::from("recyclebin/index.yaml")),
-        "the bin index is ordinary structural state: {set:?}"
-    );
-}
+    write(&dir, "recyclebin/index.md", "deleted: []\n");
+    write(&dir, "about.md", "---\ntitle: About\n---\nderived\n");
 
-/// A shard index is titled `"{Month} {Year}"`, which in a journal is an
-/// entirely ordinary thing for a person to have called a note. Before the
-/// stores were excluded, `[[January 2026]]` resolved `Unique` into
-/// `history/events/2026/01/index.md` — a document the reader cannot see in
-/// the tree and never meant to link to.
-#[test]
-fn a_shard_index_never_answers_to_a_name_the_author_might_use() {
-    let dir = seed("titles-history");
-    capture(&dir, "2026-01-15T09:15:22.000000Z", Some("first"));
-    let w = ws(&dir);
+    let ws = ws(&dir);
+    let prefixes = block_on(SkipHost::bookkeeping(&ws, Path::new("index.md"))).unwrap();
 
-    let titles = block_on(w.title_index_scoped(Path::new("index.md"))).unwrap();
-    assert!(
-        matches!(titles.resolve("January 2026"), crate::TitleMatch::Unknown),
-        "a history shard answered to a month-and-year name"
-    );
-    // The store's own index is the deliberate exception, and the boundary is
-    // worth pinning: the root points at it, `check` validates it, and a
-    // reader can open it and learn what the store holds — so it is a
-    // document of the workspace and keeps a name like any other. What is
-    // excluded is its *interior*.
-    assert!(
-        matches!(titles.resolve("History"), crate::TitleMatch::Unique(_)),
-        "the store index is part of the workspace and should still resolve"
-    );
-
-    // The author's *own* documents still resolve — the exclusion is about
-    // prov's bookkeeping, not about narrowing the workspace.
-    assert!(
-        matches!(titles.resolve("A"), crate::TitleMatch::Unique(_)),
-        "an ordinary note stopped resolving"
-    );
-}
-
-/// The same exclusion, in the direction the bin makes vivid: a recycled
-/// document keeps the title it had, so indexing `items/` means `[[A]]` can
-/// resolve to the copy of a note the author deleted — while the live note is
-/// still sitting there under the same name.
-#[test]
-fn a_recycled_document_stops_answering_to_the_name_it_had() {
-    let dir = seed("titles-bin");
-    let mut w = ws(&dir);
-    block_on(w.recycle(Path::new("notes/a.md"), false, Some("2026-01-15T09:15:22Z"))).unwrap();
-
-    let titles = block_on(ws(&dir).title_index_scoped(Path::new("index.md"))).unwrap();
-    assert!(
-        matches!(titles.resolve("A"), crate::TitleMatch::Unknown),
-        "a binned document still answered to its title"
-    );
-}
-
-/// The workspace owns the cache a capture reads through, so it is the workspace
-/// that has to refuse a foreign one. `prov-history` tests what capture *does*
-/// with a warm cache; this is the half above it — that the digests offered are
-/// this workspace's own. The failure would be silent and wrong rather than loud
-/// and wrong, so it is worth its own test even though `decode` is unit-tested.
-#[test]
-fn a_cache_from_another_workspace_is_refused() {
-    let one = seed("cache-foreign-one");
-    let two = seed("cache-foreign-two");
-    let mut first = ws(&one);
-    first.set_fixity_cache(Some(crate::FixityCache::new(&one)));
-    block_on(first.history_capture(
-        Path::new("index.md"),
-        "2026-01-01T00:00:00Z",
-        crate::CaptureNote::default(),
-    ))
-    .unwrap();
-    let bytes = first.take_fixity_cache().unwrap().encode();
-
-    assert!(
-        crate::FixityCache::decode(&bytes, &two).is_none(),
-        "one workspace's digests were offered to another"
-    );
-    assert!(crate::FixityCache::decode(&bytes, &one).is_some());
-}
-
-/// The silent omission, made visible. A capture set is the *reachable* graph, so
-/// a file nothing links to is not captured and history cannot bring it back —
-/// and until this pass, nothing said so.
-#[test]
-fn uncaptured_names_what_nothing_links_and_excuses_what_prov_parks() {
-    let dir = seed("uncaptured");
-    // Unlinked: a loose note at the top, and a whole directory nobody reaches.
-    write(
-        &dir,
-        "loose.md",
-        "---\ntitle: Loose\n---\nnobody links this\n",
-    );
-    write(
-        &dir,
-        "strays/deep.md",
-        "---\ntitle: Deep\n---\nnor this, a directory down\n",
-    );
-    // Hidden entries are not the workspace's content and never were.
-    write(&dir, ".hidden.md", "---\ntitle: Hidden\n---\nignored\n");
-    capture(&dir, "2026-07-31T09:00:00Z", None);
-
-    let found = block_on(ws(&dir).uncaptured(Path::new("index.md"))).unwrap();
-    let unreached: Vec<&Path> = found
-        .iter()
-        .filter(|u| u.reason == crate::Omission::Unreached)
-        .map(|u| u.path.as_path())
-        .collect();
     assert_eq!(
-        unreached,
-        vec![Path::new("loose.md"), Path::new("strays/deep.md")],
-        "exactly the files a capture would silently leave behind"
-    );
-
-    // Everything a capture *does* take is absent from the report — the two lists
-    // are complements, and a file in both would mean one of them is lying.
-    let captured = block_on(ws(&dir).history_capture_set(Path::new("index.md"))).unwrap();
-    for path in &captured {
-        assert!(
-            !found.iter().any(|u| &u.path == path),
-            "{} is captured and must not be reported as left out",
-            path.display()
-        );
-    }
-
-    // The store's own files are left out by decision, not by oversight: the
-    // store excludes itself, or no capture could ever be empty. Reported as
-    // bookkeeping so the totals add up, never as a thing to go and link.
-    let bookkeeping: Vec<&Path> = found
-        .iter()
-        .filter(|u| u.reason == crate::Omission::Bookkeeping)
-        .map(|u| u.path.as_path())
-        .collect();
-    assert!(
-        bookkeeping.contains(&Path::new("history/index.md")),
-        "the store index is reachable and uncaptured, and is not a stray: {bookkeeping:?}"
-    );
-    // The blob store is named once, not walked: a store holding ten thousand
-    // blobs must not become ten thousand rows.
-    assert!(bookkeeping.contains(&Path::new("history/blobs")));
-    assert!(
-        !bookkeeping
-            .iter()
-            .any(|p| *p != Path::new("history/blobs") && p.starts_with("history/blobs")),
-        "the parked interior is refused by not descending: {bookkeeping:?}"
+        prefixes,
+        [
+            Path::new("recyclebin/items").to_path_buf(),
+            Path::new("about.md").to_path_buf()
+        ]
     );
 }
 
-/// A workspace that reaches everything it holds says so. Silence would read as
-/// "nothing to report", which is the same output as "I did not look".
 #[test]
-fn uncaptured_is_empty_when_the_graph_reaches_every_file() {
-    let dir = seed("uncaptured-clean");
-    capture(&dir, "2026-07-31T09:00:00Z", None);
-    let found = block_on(ws(&dir).uncaptured(Path::new("index.md"))).unwrap();
-    assert!(
-        !found.iter().any(|u| u.reason == crate::Omission::Unreached),
-        "the seed workspace links everything in it: {found:?}"
+fn a_manifest_claim_answers_for_its_directory() {
+    let dir = tempdir("claimed");
+    write(&dir, "index.md", "---\ntitle: Home\n---\nroot\n");
+    write(&dir, "photos/a.jpg", "JPEGBYTES");
+
+    let mut workspace = ws(&dir);
+    block_on(workspace.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+
+    assert!(block_on(SkipHost::claimed(&workspace, Path::new("photos"))).unwrap());
+    assert!(!block_on(SkipHost::claimed(&workspace, Path::new("notes"))).unwrap());
+}
+
+#[test]
+fn a_historica_store_is_parked_out_of_every_walk() {
+    let dir = seed("parked");
+    historica::store::Store::init(dir.join("history")).unwrap();
+
+    let workspace = ws(&dir);
+    let parked = block_on(workspace.parked_dirs(Path::new("index.md"))).unwrap();
+    assert!(parked.contains(&Path::new("history").to_path_buf()));
+
+    // Parked means unreached: the store's own documents never enter the
+    // reachable set, so nothing indexes, orphan-sweeps, or records them.
+    let reachable = block_on(workspace.reachable_files("index.md")).unwrap();
+    assert!(reachable.iter().all(|p| !p.starts_with("history")));
+
+    // And a folder merely called `history` is content like any other.
+    let plain = seed("parked-plain");
+    write(
+        &plain,
+        "history/essay.md",
+        "---\ntitle: Essay\n---\nprose\n",
     );
+    let workspace = ws(&plain);
+    let parked = block_on(workspace.parked_dirs(Path::new("index.md"))).unwrap();
+    assert!(!parked.contains(&Path::new("history").to_path_buf()));
+}
+
+#[test]
+fn a_workspace_with_a_store_checks_clean() {
+    let dir = seed("check-clean");
+    historica::store::Store::init(dir.join("history")).unwrap();
+
+    let ws = ws(&dir);
+    let standing = Standing::read(&dir).unwrap();
+    let plan = block_on(ws.skiplist(Path::new("index.md"), &standing)).unwrap();
+    apply(&dir, &plan).unwrap();
+
+    // The store's interior — marker file, skipped.txt, empty shards — raises
+    // nothing: not an orphan, not an unreadable document, not a loose file.
+    let findings = block_on(ws.check("index.md")).unwrap();
+    let about_store: Vec<_> = findings
+        .iter()
+        .filter(|f| f.subject().starts_with("history"))
+        .collect();
+    assert!(about_store.is_empty(), "{about_store:?}");
 }

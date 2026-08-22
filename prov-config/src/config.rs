@@ -246,35 +246,33 @@ pub fn field_type_as_config_str(ty: FieldType) -> Option<&'static str> {
     })
 }
 
-/// Whether the workspace keeps a **history store** — one immutable event
-/// document per capture, plus content-addressed pre-image blobs — and how a
-/// capture is triggered.
+/// Whether the workspace maintains a **historica store's skiplist** — the
+/// generated region of `history/skipped.txt` that scopes what `historica
+/// record` takes to the workspace's reachable graph.
 ///
-/// The feature is a safety net for *structural* damage introduced by an external
-/// sync transport: a rename, move or delete touches several files at once, and a
-/// transport reconciling bytes with no idea about prov's graph can produce a
-/// clean-looking merge that is semantically broken. An event is a consistent cut
-/// across every file it captured together, so restoring one puts the set back.
+/// Recording itself is historica's, not prov's; what prov contributes is
+/// which files are the workspace, and this axis says whether prov is asked to
+/// keep the store's scoping current (`prov history-skips --write`).
 ///
-/// Default **off**, unlike `recycle_bin`: history adds ongoing storage the user
-/// has not asked for, and a manual-only trigger buys nothing until the user is in
-/// the habit anyway. It is also the wrong tool when the transport is **git**,
-/// which already stores every pre-image, dedupes by content, and reconciles
-/// concurrent histories — the feature earns its keep on Dropbox, Syncthing,
-/// iCloud, a synced network share.
+/// Default **off**, unlike `recycle_bin`: a version-control store is ongoing
+/// storage the user has not asked for. It is also the wrong tool when the
+/// transport is **git**, which already stores every pre-image and reconciles
+/// concurrent histories — a historica store earns its keep on Dropbox,
+/// Syncthing, iCloud, a synced network share.
 ///
-/// `off` gates *capture* only. The read and recovery verbs work regardless:
-/// recovery must never be gated behind re-enabling a setting, least of all on the
-/// machine that just suffered the damage.
+/// `off` gates *writing* only. Computing and showing the plan works
+/// regardless: asking what the workspace fails to reach is a question about
+/// the workspace, not about history.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum History {
-    /// No history store is maintained (`off`, the default). `history-capture`
-    /// refuses; an existing store is still readable, restorable and validated.
+    /// The skiplist is not maintained (`off`, the default). `history-skips`
+    /// still shows its plan; `--write` refuses.
     #[default]
     Off,
-    /// Captures happen when the user asks (`manual`) — `prov history-capture`,
-    /// run by hand or by a pre-sync script the user wires up themselves. prov
-    /// does not run the sync, so there is no event for it to hook.
+    /// The skiplist is rewritten when the user asks (`manual`) — `prov
+    /// history-skips --write`, run by hand or by a pre-record script the user
+    /// wires up themselves. prov does not run the recording, so there is no
+    /// event for it to hook.
     Manual,
 }
 
@@ -340,7 +338,7 @@ impl About {
 }
 
 impl History {
-    /// Whether `history-capture` is permitted to write a new event.
+    /// Whether `history-skips --write` is permitted to rewrite the region.
     pub fn captures(self) -> bool {
         matches!(self, History::Manual)
     }

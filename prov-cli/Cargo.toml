@@ -27,14 +27,13 @@ prov.workspace = true
 fig.workspace = true
 # Arg parsing.
 clap = { version = "4.5", features = ["derive"] }
-# Text diffing for `history-diff --patch`, and only for it. A CLI-only
-# dependency by decision (the mocfl/zip/backup precedent): the library reports
-# how two manifests differ, which is a comparison of hashes and needs nothing.
-# Turning two captured pre-images into a readable patch is a presentation
-# concern, and an algorithm crate in `prov` would land on every downstream
-# consumer of the library — diaryx included — to serve one flag.
-similar = { version = "2", default-features = false, features = ["text"] }
 cliclack = "0.5.5"
+
+[dev-dependencies]
+# The store the smoke tests record into. Tests only: the binary never touches
+# a store — `prov history-skips` writes rules for historica's own command to
+# honour, through `prov` and `prov-history`.
+historica.workspace = true
 
 [features]
 # JSON and the native fig dialect ship in the default binary, but a downstream

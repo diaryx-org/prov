@@ -44,7 +44,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::history::HistoryIssue;
 use crate::workspace::Workspace;
 use prov_graph::content::ContentFormat;
 use prov_graph::error::{Error, Result};
@@ -150,35 +149,6 @@ impl From<StructuralFact> for Finding {
                 Finding::BrokenLink { doc, site, target }
             }
             StructuralFact::ManifestConflict { doc } => Finding::ManifestConflict { doc },
-        }
-    }
-}
-
-/// Translate history's bounded-context diagnostics into the global validation
-/// vocabulary. The dependency points one way: history reports its own issues;
-/// validation decides how those issues are presented alongside graph findings.
-impl From<HistoryIssue> for Finding {
-    fn from(issue: HistoryIssue) -> Self {
-        match issue {
-            HistoryIssue::IndexStale {
-                index,
-                missing,
-                extra,
-            } => Finding::HistoryIndexStale {
-                index,
-                missing,
-                extra,
-            },
-            HistoryIssue::BlobMissing { store, hash, paths } => {
-                Finding::HistoryBlobMissing { store, hash, paths }
-            }
-            HistoryIssue::BlobOrphaned { store, blobs } => {
-                Finding::HistoryBlobOrphaned { store, blobs }
-            }
-            HistoryIssue::StoreUnlinked { root, store } => {
-                Finding::HistoryStoreUnlinked { root, store }
-            }
-            HistoryIssue::Unreadable { doc, error } => Finding::Unreadable { doc, error },
         }
     }
 }
@@ -378,26 +348,6 @@ pub enum Finding {
         value: String,
         suggestion: String,
     },
-    /// A history-store index document has drifted from the directory it
-    /// describes: `missing` holds what is on disk but unlinked, `extra` what is
-    /// linked but gone.
-    ///
-    /// The **expected** outcome of a sync transport mangling a derived cache, and
-    /// the reason the store can tolerate having any mutable file at all: the
-    /// index is a rebuildable cache, so a conflicted one is a finding with a
-    /// mechanical autofix
-    /// ([`Fix::RebuildHistoryIndex`](crate::remedy::Fix::RebuildHistoryIndex))
-    /// rather than data loss.
-    /// Authority lives in the immutable event documents, which is why the repair
-    /// can be a pure function of the directory listing.
-    ///
-    /// Raised per shard, so a mangled `2026/07/index.<ext>` is reported — and
-    /// repaired — without touching any other month.
-    HistoryIndexStale {
-        index: PathBuf,
-        missing: Vec<PathBuf>,
-        extra: Vec<PathBuf>,
-    },
     /// A recycle-bin record promises a recovery it cannot deliver: the bytes it
     /// parked under `recyclebin/items/` are not on disk. `index` is the bin
     /// index holding the record, `from` the path the document was deleted from
@@ -425,83 +375,6 @@ pub enum Finding {
         from: PathBuf,
         missing: Vec<PathBuf>,
     },
-    /// An event manifest names a content hash with **no blob behind it**, so the
-    /// files captured under that hash cannot be restored from this store. `store`
-    /// is the store index, `hash` the digest as a manifest spells it, and `paths`
-    /// the captured path(s) that named it, deduped across every event.
-    ///
-    /// Raised per **hash**, not per event: one lost blob is one thing to put back,
-    /// and a store where fifty events all captured the same unchanged file should
-    /// say "these bytes are gone" once rather than fifty times. Which *events* are
-    /// thereby incomplete is [`history-show`]'s question, and it already marks the
-    /// rows.
-    ///
-    /// **Two causes, and the wording must admit both.** Bytes genuinely lost — and
-    /// a sync still in flight, because an event document and the blobs it names
-    /// travel over the transport independently, and a small document routinely
-    /// lands well before a hundred megabytes it points at. A finding that cries
-    /// corruption at a routine, self-resolving state is one users learn to ignore.
-    ///
-    /// **Diagnosis only.** Nothing here can synthesize bytes, and the real repair —
-    /// letting the transport finish, or restoring `blobs/` from a backup — makes
-    /// the finding go away on its own. Deleting the manifest rows that name the
-    /// hash would be the only "fix" available, and it would destroy the record of
-    /// what was captured to silence a report about it: the judgment
-    /// [`RecycledBytesMissing`](Finding::RecycledBytesMissing) also declines.
-    ///
-    /// [`history-show`]: crate::Workspace::history_missing_blobs
-    HistoryBlobMissing {
-        store: PathBuf,
-        hash: String,
-        paths: Vec<PathBuf>,
-    },
-    /// Bytes parked under `blobs/` that **no event manifest names** — storage
-    /// nothing in the store can reach. `store` is the store index, `blobs` the
-    /// unreferenced files, workspace-relative and sorted.
-    ///
-    /// Plain mark-and-sweep, which is what full manifests buy: union every event's
-    /// `files` hashes and subtract the blob listing. Under a delta log the same
-    /// question would require folding ancestry.
-    ///
-    /// **Expected transiently** — a blob can arrive from another device before the
-    /// event that references it — so this is not evidence of damage on its own.
-    /// [`history-prune`](crate::Workspace::history_prune) and `history-forget` are
-    /// the durable producers, and both collect after themselves, which is what
-    /// makes a *persistent* orphan worth reporting.
-    ///
-    /// Anything non-hidden under `blobs/` that is not a referenced blob counts,
-    /// not only well-formed digests: a transport's `.sync-conflict` copy of a blob
-    /// is exactly the cruft this should surface, and it would never match a hash.
-    ///
-    /// **Diagnosis only.** Collecting is destruction, and autofix is metadata-only
-    /// by construction (see [`Fix`](crate::remedy::Fix)) — `history-prune` is
-    /// where bytes are deleted,
-    /// deliberately and on request.
-    HistoryBlobOrphaned { store: PathBuf, blobs: Vec<PathBuf> },
-    /// A history store is on disk at the conventional path, the workspace's
-    /// `history` axis is on, and the **root document does not point at it**.
-    /// `root` is the root, `store` the store index nothing declares.
-    ///
-    /// The store is reached one way only, through that pointer — so a transport
-    /// that mangles a single line of the root takes the whole safety net out of
-    /// prov's view. Every other finding in this family assumes the store was
-    /// found; this is the one that fires when it was not, and without it the
-    /// failure is **completely silent**: `history-list` prints nothing, the walk
-    /// never descends into `history/`, so not even an orphan is reported, and the
-    /// first sign of trouble is a restore that cannot find the event you need.
-    ///
-    /// Conditioned on the axis on purpose. A workspace with `history: off` and a
-    /// leftover `history/` directory has not lost anything — it declared it wants
-    /// no store, and a finding there would be prov nagging about a directory the
-    /// user is entitled to leave lying around. Declaring `manual` is the statement
-    /// that makes a missing pointer a defect rather than a preference.
-    ///
-    /// Autofixable, and one of the few repairs that is unambiguous: the pointer's
-    /// target is not a guess (only the conventional path is ever probed —
-    /// [`StoreLocation`](crate::history::StoreLocation)), the edit is
-    /// metadata-only, and the alternative is a workspace that keeps capturing into
-    /// a store it cannot read back.
-    HistoryStoreUnlinked { root: PathBuf, store: PathBuf },
     /// The generated `about.md` does not match what prov would produce from the
     /// current configuration — or the `about` pointer names a file that is not
     /// there. `path` is the page, `expected` what prov would write, and
@@ -608,7 +481,7 @@ impl Finding {
     /// exactly one — which is what lets a caller group findings by file, or
     /// filter them to one.
     ///
-    /// Three of them are worth naming, because the obvious field is not the
+    /// Two of them are worth naming, because the obvious field is not the
     /// answer:
     ///
     /// - [`MissingInverse`](Self::MissingInverse) reports a *parent* whose child
@@ -617,8 +490,6 @@ impl Finding {
     ///   the child is the subject.
     /// - [`ManifestMismatch`](Self::ManifestMismatch) is a corrupted file inside
     ///   a covered directory: the **file**, not the node that pinned it.
-    /// - [`HistoryStoreUnlinked`](Self::HistoryStoreUnlinked) is repaired by
-    ///   re-declaring the pointer in the **root**, not by touching the store.
     ///
     /// **This is not "every finding that mentions the file".** A broken link in
     /// `a.md` pointing at `b.md` is `a.md`'s finding, because `a.md` is what a
@@ -656,14 +527,9 @@ impl Finding {
             // The child is what gains the back-link; `doc` is the parent that
             // reported it missing.
             Finding::MissingInverse { child, .. } => child,
-            Finding::HistoryIndexStale { index, .. } => index,
             // The bin index holds the record; the path it was deleted *from* is
             // by definition not on disk.
             Finding::RecycledBytesMissing { index, .. } => index,
-            Finding::HistoryBlobMissing { store, .. }
-            | Finding::HistoryBlobOrphaned { store, .. } => store,
-            // The pointer that needs re-declaring lives in the root.
-            Finding::HistoryStoreUnlinked { root, .. } => root,
             Finding::AboutStale { path, .. } => path,
             Finding::ManifestDrift { node, .. } => node,
             // The one corrupted file, not the node covering ten thousand.
@@ -697,11 +563,7 @@ impl Finding {
             Finding::MalformedStore { .. } => "malformed_store",
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
-            Finding::HistoryIndexStale { .. } => "history_index_stale",
             Finding::RecycledBytesMissing { .. } => "recycled_bytes_missing",
-            Finding::HistoryBlobMissing { .. } => "history_blob_missing",
-            Finding::HistoryBlobOrphaned { .. } => "history_blob_orphaned",
-            Finding::HistoryStoreUnlinked { .. } => "history_store_unlinked",
             Finding::AboutStale { .. } => "about_stale",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
@@ -911,25 +773,6 @@ impl fmt::Display for Finding {
                 "{}: `{field}: {value}` is not a known term — did you mean `{suggestion}`?",
                 doc.display(),
             ),
-            Finding::HistoryIndexStale {
-                index,
-                missing,
-                extra,
-            } => {
-                let mut parts = Vec::new();
-                if !missing.is_empty() {
-                    parts.push(format!("{} unlisted", missing.len()));
-                }
-                if !extra.is_empty() {
-                    parts.push(format!("{} listed but gone", extra.len()));
-                }
-                write!(
-                    f,
-                    "{}: history index is stale ({}) — rebuildable from the directory",
-                    index.display(),
-                    parts.join(", ")
-                )
-            }
             Finding::RecycledBytesMissing {
                 index,
                 from,
@@ -942,37 +785,6 @@ impl fmt::Display for Finding {
                     index.display(),
                     from.display(),
                     gone.join(", ")
-                )
-            }
-            Finding::HistoryBlobMissing { store, hash, paths } => {
-                let named: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
-                // Both causes, in the order of likelihood: a store that syncs is
-                // in this state routinely, and only the second reading is damage.
-                write!(
-                    f,
-                    "{}: no bytes for {hash} — {} cannot be restored from this store \
-                     (the blob has not arrived yet, or it is gone)",
-                    store.display(),
-                    named.join(", ")
-                )
-            }
-            Finding::HistoryBlobOrphaned { store, blobs } => {
-                let stray: Vec<String> = blobs.iter().map(|p| p.display().to_string()).collect();
-                write!(
-                    f,
-                    "{}: {} parked blob(s) no event references ({}) — `prov history-prune` collects them",
-                    store.display(),
-                    blobs.len(),
-                    stray.join(", ")
-                )
-            }
-            Finding::HistoryStoreUnlinked { root, store } => {
-                write!(
-                    f,
-                    "{}: a history store at {} is not declared here — it is invisible \
-                     to prov until it is (`prov check --fix` re-declares it)",
-                    root.display(),
-                    store.display()
                 )
             }
             // The expected content is deliberately not printed: it is the whole
@@ -1169,16 +981,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .await?,
         );
         findings.extend(self.stale_label_findings(&census).await?);
-        // The history store's interior is validated from the directories
-        // themselves rather than by this walk — descent is spanning-only, and the
-        // store is reached through the one-way `history` pointer. See
-        // [`history_findings`](Workspace::history_findings).
-        findings.extend(
-            self.history_findings(start)
-                .await?
-                .into_iter()
-                .map(Finding::from),
-        );
+        // A historica store beside the root is parked, not validated: its own
+        // `historica check` is the authority on its documents, exactly as this
+        // walk is the authority on the workspace's.
         Ok(findings)
     }
 

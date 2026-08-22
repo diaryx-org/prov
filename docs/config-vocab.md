@@ -137,7 +137,7 @@ prov:
   identity: lazy              # none (a.k.a. off) | lazy | eager
   fixity: all                # off | attachments | all
   recycle_bin: true          # bool — route delete to the recoverable bin
-  history: off               # off | manual — keep captured pre-images of the workspace
+  history: off               # off | manual — maintain the skiplist scoping a historica store
   about: structure           # off | structure — generate about.md, the page that explains this directory
 ```
 
@@ -425,7 +425,7 @@ applies to path targets only.
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
 | — | `spec: 1` | new version marker |
 | `config`/`registry`/`recycle_bin`/`history` pointers | unchanged, top-level | structure, not policy |
-| — | `history: off` | new axis — captured pre-images, off by default |
+| — | `history: off` | new axis — historica-store skiplist maintenance, off by default |
 | — | `about: structure` | new axis — the generated `about.md`, **on** by default |
 
 ## Linting (`check`)
@@ -561,8 +561,8 @@ in `metadata.format` and embedded per `metadata.embed`, and under
   the first delete, the first capture). Ordinary mutations leave it alone.
 - `check` reports `AboutStale`; `check --fix` rewrites it.
 
-`prov history-capture` deliberately does **not** capture it: the page is a pure
-function of the config the same manifest already records.
+The skiplist (`prov history-skips`) deliberately rules it out of recording:
+the page is a pure function of configuration that is itself recorded.
 
 ### Git
 

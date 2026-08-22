@@ -350,11 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn the_derived_page_is_never_parked_in_the_history_store() {
-        // Capturing it would park a new blob on every config change to store
-        // something the captured config already determines — and the first
-        // capture bootstraps the store, which changes what the page says, so the
-        // captured copy would be one the capture itself invalidated.
+    fn the_derived_page_is_never_recorded_into_history() {
+        // Recording it would write a new revision on every config change to
+        // store something the recorded config already determines — so the page
+        // reaches the skiplist as bookkeeping, and recording never takes it.
         let (dir, config, ctx) = fixture("about-not-captured");
         write(
             &dir,
@@ -364,16 +363,20 @@ mod tests {
         let ws = Workspace::builder(StdFs).root(&dir).build();
         block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
 
-        let set = block_on(ws.history_capture_set(std::path::Path::new("index.md"))).unwrap();
+        let plan = block_on(ws.skiplist(
+            std::path::Path::new("index.md"),
+            &prov_history::Standing::default(),
+        ))
+        .unwrap();
         assert!(
-            !set.iter().any(|p| p == std::path::Path::new("about.md")),
-            "the derived page must stay out of the capture set: {set:?}"
+            plan.rules
+                .iter()
+                .any(|s| s.rule.covers("about.md") && s.reason == crate::Reason::Bookkeeping),
+            "the derived page must be skipped: {:?}",
+            plan.rules
         );
-        // The root itself is still captured — only the derived page is excluded.
-        assert!(
-            set.iter().any(|p| p == std::path::Path::new("index.md")),
-            "{set:?}"
-        );
+        // The root itself is still recorded — only the derived page is ruled.
+        assert!(!plan.rules.iter().any(|s| s.rule.covers("index.md")));
     }
 
     #[test]

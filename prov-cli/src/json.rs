@@ -297,15 +297,6 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("value", s(value)));
             fields.push(("suggestion", s(suggestion)));
         }
-        Finding::HistoryIndexStale {
-            index,
-            missing,
-            extra,
-        } => {
-            fields.push(("index", p(index)));
-            fields.push(("missing", paths(missing)));
-            fields.push(("extra", paths(extra)));
-        }
         Finding::RecycledBytesMissing {
             index,
             from,
@@ -314,19 +305,6 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("index", p(index)));
             fields.push(("from", p(from)));
             fields.push(("missing", paths(missing)));
-        }
-        Finding::HistoryBlobMissing { store, hash, paths } => {
-            fields.push(("store", p(store)));
-            fields.push(("hash", s(hash)));
-            fields.push(("paths", self::paths(paths)));
-        }
-        Finding::HistoryBlobOrphaned { store, blobs } => {
-            fields.push(("store", p(store)));
-            fields.push(("blobs", paths(blobs)));
-        }
-        Finding::HistoryStoreUnlinked { root, store } => {
-            fields.push(("root", p(root)));
-            fields.push(("store", p(store)));
         }
         Finding::AboutStale { path, missing, .. } => {
             fields.push(("path", p(path)));

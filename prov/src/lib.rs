@@ -177,13 +177,7 @@ pub mod exports {
 /// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
 /// different version than the one prov resolves against.
 pub use fig_schema::FieldType;
-pub use fixity::FixityCache;
-pub use history::{
-    CaptureNote, Captured, Change, Conflict, DiffRow, Disposition, Event, FileEntry, Forgotten,
-    HistoryIssue, HistoryStore, Latest, ManifestDiff, Omission, Presence, Pruned, RestoreOp,
-    RestorePlan, Retention, Retrieved, Scope, StoreLocation, Subject, Summary, Uncaptured, Version,
-    manifest_diff,
-};
+pub use history::{Reason, Skip, Skiplist};
 pub use identity::{
     IdentityPolicy, Minter, NoIdentity, Registration, Trigger, WORKSPACE_NAME_LEN,
     mint_workspace_id,

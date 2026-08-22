@@ -363,125 +363,34 @@ fn mechanical_repairs_run_without_a_terminal_and_leave_the_judgment_calls() {
 }
 
 #[test]
-fn the_history_readers_keep_the_manifest_on_stdout_and_the_warning_on_stderr() {
-    // `history-show` and `history-log` are readers over what a capture wrote, and
-    // both carry a *caveat* — "these bytes have not arrived", "this lineage is
-    // keyed by path". The caveat is narration: it must never contaminate the
-    // manifest a script is reading.
-    let dir = sandbox("history");
+fn history_skips_keeps_the_rules_on_stdout_and_the_narration_on_stderr() {
+    // The plan's rules are the file's next content — pipeable, undecorated.
+    // Everything said *about* them (the diff summary, the write prompt, a
+    // withheld or shadowed report) is narration, and narration is stderr.
+    let dir = sandbox("history-skips");
     ok(&dir, &["init", "--yes"]);
-    ok(&dir, &["config", "history", "manual"]);
     ok(&dir, &["new", "Alpha", "--in", "index.md"]);
+    std::fs::write(dir.join("loose.md"), "a note nothing links\n").unwrap();
+    historica::store::Store::init(dir.join("history")).unwrap();
 
-    let (out, _) = ok(&dir, &["history-capture", "--label", "first"]);
-    let event = out.trim().to_string();
-    assert!(!event.is_empty(), "capture stdout is the event id: {out:?}");
-
-    // A fully-synced event: the manifest is the data, and there is nothing to say
-    // about it beyond that.
-    let (out, err) = ok(&dir, &["history-show", &event]);
+    let (out, err) = ok(&dir, &["history-skips"]);
     assert!(
-        out.contains(&event) && out.contains("alpha.md") && out.contains("index.md"),
-        "show puts the manifest on stdout: {out:?}"
+        out.lines().any(|l| l == "skip loose.md"),
+        "the rules are stdout: {out:?}"
     );
     assert!(
-        err.trim().is_empty(),
-        "a complete event warns about nothing: {err:?}"
-    );
-
-    // The half-synced case a sync transport actually produces: the event document
-    // is here, its blobs are not. Still a successful read — the marked-up manifest
-    // on stdout, the warning on stderr.
-    std::fs::remove_dir_all(dir.join("history/blobs")).unwrap();
-    let (out, err) = ok(&dir, &["history-show", &event]);
-    assert!(
-        out.contains("(bytes missing)"),
-        "show marks the unrecoverable rows: {out:?}"
+        !out.contains("rule(s) to add"),
+        "the summary must not leak onto stdout: {out:?}"
     );
     assert!(
-        err.contains("no bytes in this store"),
-        "the half-synced warning is stderr narration: {err:?}"
+        err.contains("rule(s) to add") && err.contains("--write"),
+        "the summary and the prompt are stderr narration: {err:?}"
     );
 
-    // `history-log`: the change points are stdout, the count and the path-key
-    // caveat are stderr.
-    let (out, err) = ok(&dir, &["history-log", "alpha.md"]);
-    assert!(
-        out.contains(&event) && out.contains("alpha.md"),
-        "log puts the lineage on stdout: {out:?}"
-    );
-    assert!(
-        !out.contains("change point"),
-        "the count must not leak onto stdout: {out:?}"
-    );
-    assert!(
-        err.contains("change point"),
-        "log narrates the count on stderr: {err:?}"
-    );
-
-    // A document no capture ever saw: stdout empty, so a pipeline acts on nothing.
-    let (out, err) = ok(&dir, &["history-log", "never.md"]);
-    assert!(out.trim().is_empty(), "an empty lineage is empty: {out:?}");
-    assert!(
-        err.contains("no history event"),
-        "the note is on stderr: {err:?}"
-    );
-}
-
-#[test]
-fn a_restore_puts_the_changed_paths_on_stdout_and_the_plan_on_stderr() {
-    // `history-restore` is a mutation, so stdout is the list of paths it changed —
-    // undecorated, pipeable, and *only* the ones it changed. The annotated plan is
-    // narration: the rows it skipped are what a person needs and what a pipeline
-    // must never be handed.
-    let dir = sandbox("history-restore");
-    ok(&dir, &["init", "--yes"]);
+    // Settled: same rules on stdout, and stderr says there is nothing to do.
     ok(&dir, &["config", "history", "manual"]);
-    ok(&dir, &["new", "Alpha", "--in", "index.md"]);
-    ok(&dir, &["new", "Beta", "--in", "index.md"]);
-    let (out, _) = ok(&dir, &["history-capture", "--label", "first"]);
-    let event = out.trim().to_string();
-
-    std::fs::write(dir.join("alpha.md"), "clobbered by a sync conflict").unwrap();
-
-    // The dry run previews the whole plan on stderr and leaves stdout empty —
-    // nothing changed, so there is nothing for a pipeline to act on. Same rule as
-    // `new --dry-run`.
-    let (out, err) = ok(&dir, &["history-restore", &event, "--dry-run"]);
-    assert!(out.trim().is_empty(), "dry-run stdout is empty: {out:?}");
-    assert!(
-        err.contains("overwrite  alpha.md") && err.contains("unchanged  beta.md"),
-        "the annotated plan is stderr narration: {err:?}"
-    );
-    assert!(
-        err.contains("nothing written (--dry-run)"),
-        "a dry run says so: {err:?}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.join("alpha.md")).unwrap(),
-        "clobbered by a sync conflict",
-        "and writes nothing"
-    );
-
-    let (out, err) = ok(&dir, &["history-restore", &event]);
-    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["alpha.md"]);
-    assert!(
-        !out.contains("overwrite") && !out.contains("to create"),
-        "no verb or summary may leak onto stdout: {out:?}"
-    );
-    assert!(
-        err.contains("ok: no findings"),
-        "a restore ends on what `check` says about it: {err:?}"
-    );
-    assert!(
-        std::fs::read_to_string(dir.join("alpha.md"))
-            .unwrap()
-            .contains("Alpha"),
-        "the captured bytes came back"
-    );
-
-    // Nothing left to do: stdout is empty, so a pipeline acts on nothing.
-    let (out, err) = ok(&dir, &["history-restore", &event]);
-    assert!(out.trim().is_empty(), "a no-op restore is empty: {out:?}");
-    assert!(err.contains("nothing to do"), "and says so: {err:?}");
+    ok(&dir, &["history-skips", "--write"]);
+    let (out, err) = ok(&dir, &["history-skips"]);
+    assert!(out.lines().any(|l| l == "skip loose.md"), "{out:?}");
+    assert!(err.contains("settled"), "{err:?}");
 }

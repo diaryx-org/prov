@@ -66,6 +66,12 @@ twig-doc = "3"
 # no `os`/`js` features — is all it needs. See `prov/src/identity.rs`.
 moid = "1"
 
+# The version control a prov workspace records into. prov never records —
+# `prov-history` computes the skiplist that scopes recording to the graph, and
+# uses this library to read the store's rules and tracked tree rather than
+# re-deriving historica's formats.
+historica = "0.2"
+
 # Internal crate.
 prov = { path = "prov", version = "0.6.4" }
 # Read-only graph and storage ports.
@@ -78,7 +84,7 @@ prov-identity = { path = "prov-identity", version = "0.6.4", default-features = 
 prov-fixity = { path = "prov-fixity", version = "0.6.4" }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { path = "prov-transaction", version = "0.6.4", default-features = false }
-# History bounded context: immutable events, blob storage, and history verbs.
+# The skiplist that scopes a historica store to the workspace's graph.
 prov-history = { path = "prov-history", version = "0.6.4", default-features = false }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
