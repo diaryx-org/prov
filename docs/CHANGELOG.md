@@ -24,7 +24,34 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Breaking
+
+- **history** — retire the event store; the skiplist scopes historica ([`6d4b7f4`](https://github.com/diaryx-org/prov/commit/6d4b7f4312bc65063e55eadfcaf6982b5f938b1c))
+
+### Behavioural changes
+
+- The `history-capture`, `history-list`, `history-show`,
+  `history-cat`, `history-diff`, `history-log`, `history-export`,
+  `history-restore`, `history-prune`, `history-forget`, and `cache`
+  commands are gone, along with the `--cache-dir`/`--no-cache` global
+  flags; `history-skips` is the one history verb left. Existing event
+  stores stay on disk and readable by hand (docs/history-format.md), but
+  no command writes or reads them any more.
+
+- `check` no longer validates a history store. The
+  `HistoryIndexStale`, `HistoryBlobMissing`, `HistoryBlobOrphaned`, and
+  `HistoryStoreUnlinked` findings are gone (with their JSON shapes), as
+  are the `RebuildHistoryIndex` and `LinkHistoryStore` fixes; a
+  historica-marked `history/` directory is parked out of every walk.
+
+- The prov library lost the history verb surface
+  (`HistoryStore`, `history_capture` through `history_forget`,
+  `Uncaptured`/`uncaptured`) and the fixity-cache carriage
+  (`set_fixity_cache`, `take_fixity_cache`, the builder's `fixity_cache`);
+  `prov::history` now exports the skiplist vocabulary (`Skiplist`, `Skip`,
+  `Reason`, `Standing`, `SkipHost`, `apply`). The `history` config axis
+  keeps its spellings (`off`/`manual`) but now gates `history-skips
+  --write` instead of capture.
 
 <!-- git-cliff:end -->
 
