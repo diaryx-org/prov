@@ -51,6 +51,36 @@ pub trait Storage: ReadStorage {
     /// Rename or move a file or directory. Mirrors [`std::fs::rename`].
     fn rename(&self, from: &Path, to: &Path) -> impl Future<Output = io::Result<()>>;
 
+    /// Give `to` the same access permissions `from` has. A `from` that does not
+    /// exist is not an error — there is no prior state to carry over, so the
+    /// call has nothing to do.
+    ///
+    /// This exists for [`write_atomic`](Storage::write_atomic), which publishes
+    /// its bytes by renaming a freshly-created sibling over the target. A new
+    /// file is born with the backend's default permissions, and a rename carries
+    /// those onto the name it replaces — so without this step, replacing a
+    /// document the user had deliberately restricted (`chmod 600` on a private
+    /// journal entry) silently widens it to whatever the umask allows. A
+    /// content replacement must not be a permission change.
+    ///
+    /// What this does *not* close is the window before it: the sibling holds the
+    /// new contents under default permissions from the moment it is written
+    /// until this call narrows it. Shutting that window means creating the file
+    /// with the final mode already on it, which is not something
+    /// [`write`](Storage::write) — a `std::fs::write` mirror — can express. The
+    /// sibling lives in the target's own directory throughout, so whatever gates
+    /// access to the document gates access to it too.
+    ///
+    /// The default is a no-op, which is the *correct* behavior for a backend
+    /// with no permission model at all — [`InMemoryFs`], OPFS, IndexedDB. There
+    /// is nothing there to preserve, and nothing is lost by not preserving it.
+    fn copy_permissions(&self, from: &Path, to: &Path) -> impl Future<Output = io::Result<()>> {
+        async move {
+            let _ = (from, to);
+            Ok(())
+        }
+    }
+
     // ---- durability ----
     //
     // prov spans backends with very different crash guarantees — `std::fs`
@@ -112,10 +142,22 @@ pub trait Storage: ReadStorage {
     /// 1. write the bytes to a temporary sibling;
     /// 2. [`sync`](Storage::sync) that sibling [`Ordered`](Durability::Ordered),
     ///    so the rename cannot be reordered ahead of the bytes it publishes;
-    /// 3. [`rename`](Storage::rename) it over the target — *this* is the atomic
+    /// 3. [`copy_permissions`](Storage::copy_permissions) from the target onto
+    ///    that sibling, so the replacement carries the target's access
+    ///    permissions rather than a fresh file's defaults;
+    /// 4. [`rename`](Storage::rename) it over the target — *this* is the atomic
     ///    instant;
-    /// 4. `sync` the target's **parent directory** [`Durable`](Durability::Durable),
+    /// 5. `sync` the target's **parent directory** [`Durable`](Durability::Durable),
     ///    which is what carries the rename itself through a power cut.
+    ///
+    /// Steps 2 and 3 are in that order because a backend may implement `sync` by
+    /// opening the path, and a mode faithfully copied from the target can be one
+    /// that forbids opening it to read — `0o200` is replaceable but not readable.
+    /// The cost is that the mode change lands after the flush and so is not
+    /// itself durable: a crash in that window can leave the new contents under
+    /// the *default* permissions. That is precisely the outcome every write had
+    /// before step 3 existed, so the window is a smaller bad case, never a new
+    /// one.
     ///
     /// Two flushes, and each one is load-bearing. Neither of the two this
     /// protocol conspicuously does *not* do would buy anything. The bytes are
@@ -159,6 +201,19 @@ pub trait Storage: ReadStorage {
             let staged = async {
                 self.write(&tmp, contents).await?;
                 self.sync(&tmp, Durability::Ordered).await?;
+                // The sibling was just created, so it carries default
+                // permissions rather than the target's. Carry the target's over
+                // before the rename publishes them — a replacement changes
+                // contents, never who may read them. A target that does not
+                // exist yet has nothing to carry, and this is a no-op.
+                //
+                // After the flush, not before: a backend may well implement
+                // `sync` by opening the path (`StdFs` does), and a target whose
+                // mode this faithfully copies can be one that forbids exactly
+                // that — a write-only `0o200` document is replaceable but not
+                // openable for reading. Narrowing the sibling first would make
+                // its own flush fail.
+                self.copy_permissions(path, &tmp).await?;
                 self.rename(&tmp, path).await
             }
             .await;
@@ -205,6 +260,10 @@ impl<S: Storage + ?Sized> Storage for &S {
         (**self).rename(from, to).await
     }
 
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        (**self).copy_permissions(from, to).await
+    }
+
     fn capabilities(&self) -> Capabilities {
         (**self).capabilities()
     }
@@ -237,6 +296,10 @@ impl<S: Storage + ?Sized> Storage for Arc<S> {
 
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         (**self).rename(from, to).await
+    }
+
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        (**self).copy_permissions(from, to).await
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -416,6 +479,26 @@ impl Storage for StdFs {
 
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         std::fs::rename(from, to)
+    }
+
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let perms = match std::fs::metadata(from) {
+            Ok(meta) => meta.permissions(),
+            // Nothing to carry over: `write_atomic` is creating `from` rather
+            // than replacing it, so the new file's default permissions are the
+            // right ones and there is no prior state to lose.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        // Deliberately best-effort. On a filesystem with no permission model —
+        // exFAT or FAT32 on a USB stick, some FUSE mounts — `chmod` refuses
+        // outright, but every file there already reports the same mount-wide
+        // mode, so there was never a permission to preserve and failing the
+        // whole document write over it would be absurd. Where modes *are* real,
+        // this is a chmod on a file this process created moments ago and owns,
+        // which does not fail for any reason a caller could act on.
+        let _ = std::fs::set_permissions(to, perms);
+        Ok(())
     }
 
     fn capabilities(&self) -> Capabilities {

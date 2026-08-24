@@ -110,6 +110,9 @@ impl Storage for FailAtWrite {
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         StdFs.rename(from, to).await
     }
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.copy_permissions(from, to).await
+    }
     // A faithful local filesystem in every respect but the chosen failing write,
     // so a change set applied over it exercises the *real* atomic-write protocol
     // (temp, sync, rename) — the injected failure lands on the staging write and
@@ -204,6 +207,9 @@ impl Storage for CountingFs {
     async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         StdFs.rename(from, to).await
     }
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.copy_permissions(from, to).await
+    }
     fn capabilities(&self) -> Capabilities {
         StdFs.capabilities()
     }
@@ -278,6 +284,13 @@ impl Storage for RecordingFs {
             .push(FsEvent::Rename(from.to_path_buf(), to.to_path_buf()));
         StdFs.rename(from, to).await
     }
+    // Not logged: `FsEvent` records the *durability* steps whose ordering is the
+    // protocol under test, and carrying a mode across is not one of them.
+    // Delegated rather than defaulted so the staging file this recorder leaves
+    // on the real disk has the permissions a real `write_atomic` would give it.
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.copy_permissions(from, to).await
+    }
     fn capabilities(&self) -> Capabilities {
         self.caps
     }
@@ -313,6 +326,9 @@ impl Storage for FailingRename {
     }
     async fn rename(&self, _from: &Path, _to: &Path) -> io::Result<()> {
         Err(io::Error::other("rename failed (test)"))
+    }
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.copy_permissions(from, to).await
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities::LOCAL_FS
@@ -409,6 +425,45 @@ mod tests {
             ],
             "the atomic-replace protocol ran out of order"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_replaces_contents_without_widening_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Replacing a document's contents must not republish it to a wider
+        // audience. The staging sibling is a file this process just created, so
+        // it is born with the umask's default mode; without carrying the
+        // target's mode across, the rename would publish *that* under the
+        // target's name and quietly turn a `chmod 600` private entry into a
+        // world-readable one. Nothing in the atomic protocol would notice, and
+        // nothing the user does afterwards would restore it.
+        let root = tmp("atomic-perms");
+        let target = root.join("private.md");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let fs = RecordingFs::local();
+        block_on(fs.write_atomic(&target, b"new")).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "replacing the contents widened the document's permissions"
+        );
+    }
+
+    #[test]
+    fn a_backend_without_a_permission_model_is_unbothered_by_the_step() {
+        // `copy_permissions` defaults to a no-op, so a backend with nothing to
+        // preserve — `InMemoryFs`, OPFS — runs the same protocol untouched. The
+        // step must not become a precondition for writing at all.
+        let fs = prov_store::fs::InMemoryFs::default();
+        let target = Path::new("/w/doc.md");
+        block_on(fs.write_atomic(target, b"hello")).unwrap();
+        assert_eq!(block_on(fs.read(target)).unwrap(), b"hello");
     }
 
     #[test]

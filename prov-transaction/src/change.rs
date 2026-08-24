@@ -968,6 +968,20 @@ mod tests {
         cs.write("doc.md", "new");
         block_on(cs.apply(&StdFs, &root)).expect("a write-only target is still replaceable");
 
+        // Reading the result back needs the readability restored first: an
+        // atomic write preserves the target's mode, so a write-only document is
+        // still write-only afterwards. That is the point of the mode being
+        // carried across, and it is why this cannot simply read the file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o200,
+                "replacing the contents must not have changed who may read it"
+            );
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
     }
 
