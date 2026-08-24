@@ -709,6 +709,7 @@ version = "0.7.0"
 dependencies = [
  "proptest",
  "prov-graph",
+ "sha2",
 ]
 
 [[package]]

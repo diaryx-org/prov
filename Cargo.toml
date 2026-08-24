@@ -72,6 +72,17 @@ moid = "1"
 # re-deriving historica's formats.
 historica = "0.2"
 
+# SHA-256, for `prov-fixity`. Not a new edge in prov's dependency graph:
+# `historica` already hashes its content-addressed blobs with this crate, and
+# `prov-history` makes that a required dependency of `prov` — so every prov
+# build already compiles it. Fixity used to carry its own scalar implementation
+# alongside it, which meant two SHA-256s in one binary and only one of them
+# reaching SHA-NI / the ARMv8 crypto extensions. This is the one that does.
+#
+# Pure Rust and `no_std`-capable, so it costs no build toolchain and compiles on
+# `wasm32-unknown-unknown` like the rest of the workspace.
+sha2 = "0.11.0"
+
 # Internal crate.
 prov = { path = "prov", version = "0.7.0" }
 # Read-only graph and storage ports.

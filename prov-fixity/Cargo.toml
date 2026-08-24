@@ -13,6 +13,9 @@ categories = ["filesystem"]
 
 [dependencies]
 prov-graph = { workspace = true, default-features = false }
+# The digest itself. See the workspace manifest for why this is not the new
+# dependency it looks like.
+sha2.workspace = true
 
 [dev-dependencies]
 proptest = "1"
