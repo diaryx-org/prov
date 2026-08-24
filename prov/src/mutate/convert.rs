@@ -479,7 +479,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         axis: ReformatAxis,
         named: bool,
     ) -> Result<Option<String>> {
-        let (_, doc) = self.load(path).await?;
+        let (text, doc) = self.load(path).await?;
         let Some(mapping) = doc.meta.as_mapping() else {
             return Ok(None); // no metadata block to convert
         };
@@ -540,8 +540,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 )));
             }
         };
-        Ok(Some(prov_store::edit::reformat_block(
-            &doc.body, mapping, target,
+        // Re-housed in the document's own text, not rebuilt around `doc.body`.
+        // The body is the two host sides concatenated, so rebuilding from it put
+        // an HTML island's `<head>` *below* the island it used to sit above.
+        Ok(Some(prov_store::edit::retype_block(
+            &text, kind, mapping, target,
         )?))
     }
 

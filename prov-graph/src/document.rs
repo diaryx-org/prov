@@ -323,15 +323,23 @@ impl Document {
             });
         }
         let (meta, body, carrier) = match fig::detect(text) {
-            Some(kind) => match fig::split(text, kind) {
-                Some((content, body)) => (
-                    meta::parse_value(content, kind.inner_format())?,
-                    body.to_owned(),
+            Some(kind) => match fig::Embed::extract(text, kind) {
+                Ok(found) => (
+                    meta::parse_value(found.content(), kind.inner_format())?,
+                    // *Both* host sides, in file order. A block at an edge leaves
+                    // one of them empty, which is every markdown document; a
+                    // mid-document block — an HTML `<script>` island below a
+                    // `<head>` — leaves text on both, and taking fig's one-sided
+                    // `body()` view there silently drops everything above the
+                    // island. What that cost: a body write losing the `<head>`,
+                    // and `content_hash` covering a suffix while reporting that
+                    // it covered the document (fig 3.3 exposes both sides).
+                    [found.host_before(), found.host_after()].concat(),
                     Some(MetaCarrier::Fenced(kind)),
                 ),
                 // Detected by its open delimiter but with no matching close:
                 // recognized-but-malformed degrades to "no metadata".
-                None => (Value::Null, text.to_owned(), None),
+                Err(_) => (Value::Null, text.to_owned(), None),
             },
             None => (Value::Null, text.to_owned(), None),
         };
@@ -345,10 +353,19 @@ impl Document {
 
     /// Zero-copy counterpart to [`parse`](Self::parse): locate a fenced
     /// metadata block in `text` without parsing it, returning the
-    /// [`MetaCarrier`] found and the two slices it borrows from `text` —
-    /// `(meta_block, body)`. Mirrors `fig::detect`/`fig::split` composed into
-    /// one step, the same primitives `parse` builds its owned, parsed
-    /// [`Value`] from.
+    /// [`MetaCarrier`] found and the three slices it borrows from `text` —
+    /// `(meta_block, body_before, body_after)`. Mirrors
+    /// `fig::detect`/`fig::Embed::extract` composed into one step, the same
+    /// primitives `parse` builds its owned, parsed [`Value`] from.
+    ///
+    /// The body comes back in **two** pieces because a block need not sit at an
+    /// edge. Frontmatter leaves `body_before` empty and endmatter leaves
+    /// `body_after` empty, but an HTML `<script>` data island below a `<head>`
+    /// has host text on both sides, and a single slice cannot name both — the
+    /// one-sided view this used to return dropped whichever side it could not
+    /// see. Concatenated in order they are [`Document::body`]; a caller
+    /// splicing text back together wants them separate, since only their
+    /// offsets say where the block sat.
     ///
     /// Only recognizes a *fenced* carrier — a whole-file (config) document has
     /// no split to offer, since its entire text already is the metadata; a
@@ -362,10 +379,15 @@ impl Document {
     /// instead; this exists for one who wants to defer parsing to their own
     /// deserializer, or just needs the raw borrowed text (e.g. to detect which
     /// archetype a document uses without allocating).
-    pub fn split(text: &str) -> Option<(MetaCarrier, &str, &str)> {
+    pub fn split(text: &str) -> Option<(MetaCarrier, &str, &str, &str)> {
         let kind = fig::detect(text)?;
-        let (meta, body) = fig::split(text, kind)?;
-        Some((MetaCarrier::Fenced(kind), meta, body))
+        let found = fig::Embed::extract(text, kind).ok()?;
+        Some((
+            MetaCarrier::Fenced(kind),
+            found.content(),
+            found.host_before(),
+            found.host_after(),
+        ))
     }
 
     /// The document's path.
@@ -677,10 +699,12 @@ mod tests {
     #[test]
     fn split_borrows_yaml_frontmatter_and_body_without_parsing() {
         let text = "---\ntitle: Root\n---\n# Body\n\nhello\n";
-        let (carrier, meta, body) = Document::split(text).unwrap();
+        let (carrier, meta, before, after) = Document::split(text).unwrap();
         assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterYaml));
         assert_eq!(meta, "title: Root\n");
-        assert_eq!(body, "# Body\n\nhello\n");
+        assert_eq!(before, "", "frontmatter has no host text above it");
+        assert_eq!(after, "# Body\n\nhello\n");
+        let body = after;
         // Byte-identical to what `parse` extracts, just unparsed and borrowed.
         let doc = Document::parse("x.md", text).unwrap();
         assert_eq!(doc.body, body);
@@ -690,10 +714,11 @@ mod tests {
     #[test]
     fn split_handles_crlf_line_endings() {
         let text = "---\r\ntitle: Root\r\n---\r\nbody\r\n";
-        let (carrier, meta, body) = Document::split(text).unwrap();
+        let (carrier, meta, before, after) = Document::split(text).unwrap();
         assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterYaml));
         assert_eq!(meta, "title: Root\r\n");
-        assert_eq!(body, "body\r\n");
+        assert_eq!(before, "");
+        assert_eq!(after, "body\r\n");
     }
 
     #[test]
@@ -711,20 +736,58 @@ mod tests {
     #[test]
     fn split_recognizes_a_non_yaml_carrier() {
         let text = "```fig\ntitle = prov\n```\n# Body\n";
-        let (carrier, meta, body) = Document::split(text).unwrap();
+        let (carrier, meta, before, after) = Document::split(text).unwrap();
         assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterFig));
         assert_eq!(meta, "title = prov\n");
-        assert_eq!(body, "# Body\n");
+        assert_eq!(before, "");
+        assert_eq!(after, "# Body\n");
     }
 
     #[cfg(feature = "json")]
     #[test]
     fn split_recognizes_json_frontmatter() {
         let text = ";;;\n{\"title\": \"Root\"}\n;;;\nbody\n";
-        let (carrier, meta, body) = Document::split(text).unwrap();
+        let (carrier, meta, before, after) = Document::split(text).unwrap();
         assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterJson));
         assert_eq!(meta, "{\"title\": \"Root\"}\n");
-        assert_eq!(body, "body\n");
+        assert_eq!(before, "");
+        assert_eq!(after, "body\n");
+    }
+
+    /// A `<script>` island below a `<head>` has host text on *both* sides. fig's
+    /// one-sided `body()` view returned only the tail, so the whole document head
+    /// vanished from `doc.body` — and from everything reading it: a separated
+    /// document's prose file, `prov body`, and the bytes `content_hash` covers.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_mid_document_island_keeps_the_host_text_on_both_sides() {
+        let text = concat!(
+            "<!doctype html>\n",
+            "<html><head><title>KEEP ME</title></head>\n",
+            "<body>\n",
+            "<script type=\"application/yaml\">\n",
+            "title: Mid\n",
+            "</script>\n",
+            "<p>tail</p>\n",
+            "</html>\n",
+        );
+        let doc = Document::parse("page.html", text).unwrap();
+        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Mid"));
+        assert!(
+            doc.body.contains("KEEP ME"),
+            "the head above the island was dropped: {:?}",
+            doc.body
+        );
+        assert!(doc.body.contains("<p>tail</p>"), "the tail was dropped");
+
+        // The two sides, in file order, and nothing of the block itself.
+        let (_, meta, before, after) = Document::split(text).unwrap();
+        assert_eq!(doc.body, format!("{before}{after}"));
+        assert!(
+            !doc.body.contains("<script"),
+            "the island leaked into the body"
+        );
+        assert_eq!(meta, "title: Mid\n");
     }
 
     #[cfg(feature = "yaml")]

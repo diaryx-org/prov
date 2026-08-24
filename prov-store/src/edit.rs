@@ -289,13 +289,42 @@ pub fn unset_in_text(text: &str, carrier: Option<MetaCarrier>, dotted: &str) -> 
 /// its content slot.
 ///
 /// The content is spliced verbatim — the same bytes prov's reader
-/// ([`Document::parse`](prov_graph::Document::parse), via [`fig::split`]) hands back to
-/// the format parser, which does not HTML-decode a `<pre><code>` island. Writing
-/// what that reader expects keeps a converted value round-tripping through
+/// ([`Document::parse`](prov_graph::Document::parse)) hands back to the format
+/// parser, which does not HTML-decode a `<pre><code>` island. Writing what that
+/// reader expects keeps a converted value round-tripping through
 /// `prov get`/`check` rather than acquiring stray `&lt;` entities.
 ///
 /// [`serialize_mapping`]: prov_graph::meta::serialize_mapping
 pub fn reformat_block(body: &str, mapping: &Mapping, target: EmbedType) -> Result<String> {
+    // Synthesize an empty `target` block in its canonical place around `body`,
+    // then fill it: fig owns the fences and the placement, we own what goes
+    // between them. Filling is a same-archetype `retype`, which fig documents as
+    // a byte-identical rebuild carrying new content — so the fence bytes come
+    // back exactly as `render` laid them down.
+    let rendered = Embed::open_or_init(body.as_bytes(), target)?
+        .render()?
+        .to_string();
+    retype_block(&rendered, target, mapping, target)
+}
+
+/// Re-house the existing `from` block in `text` as a `target` one carrying
+/// `mapping` — the conversion [`reformat_block`] performs for a document that
+/// has no block yet, for one that does.
+///
+/// Every host byte outside the block survives, **on both sides**, in file order.
+/// That is the difference from rebuilding around a body slice: a document whose
+/// block sits mid-file — an HTML `<script>` island below a `<head>` — has host
+/// text above and below it, and reconstructing from one side silently discarded
+/// the other. fig 3.3's `retype` owns the whole operation, so the placement
+/// rules (a block moves only when the target archetype belongs at the other end
+/// of the file; mid-document to edge is refused outright) are fig's to state
+/// rather than something prov re-derives by arithmetic on spans.
+pub fn retype_block(
+    text: &str,
+    from: EmbedType,
+    mapping: &Mapping,
+    target: EmbedType,
+) -> Result<String> {
     let mut inner = prov_graph::meta::serialize_mapping(mapping, target.inner_format())?;
     // The content slot sits between the opening fence's trailing newline and the
     // closing fence, so the content must end in exactly one newline for the close
@@ -303,18 +332,7 @@ pub fn reformat_block(body: &str, mapping: &Mapping, target: EmbedType) -> Resul
     if !inner.ends_with('\n') {
         inner.push('\n');
     }
-    // Synthesize an empty `target` block in its canonical place around `body`,
-    // then replace its (empty) content slot with the serialized content: fig owns
-    // the fences and placement, we own what goes between them.
-    let rendered = Embed::open_or_init(body.as_bytes(), target)?
-        .render()?
-        .to_string();
-    let content = Embed::extract(&rendered, target)?.region().content;
-    let mut out = String::with_capacity(rendered.len() + inner.len());
-    out.push_str(&rendered[..content.start]);
-    out.push_str(&inner);
-    out.push_str(&rendered[content.end..]);
-    Ok(out)
+    Ok(Embed::retype(text, from, target, &inner)?)
 }
 
 #[cfg(test)]
@@ -739,6 +757,45 @@ mod tests {
             value_at(&doc.meta, "title").and_then(prov_graph::meta::Value::as_str),
             Some("t"),
             "{out}"
+        );
+    }
+
+    /// The conversion `prov convert <file> metadata.embed …` performs, on a
+    /// document whose island sits below a `<head>`. Rebuilding around the body
+    /// slice put the head *below* the island it used to sit above; `retype`
+    /// re-houses the block in place and every host byte keeps its side.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn retyping_a_mid_document_island_keeps_the_head_above_it() {
+        let text = concat!(
+            "<!doctype html>\n",
+            "<html><head><title>KEEP ME</title></head>\n",
+            "<body>\n",
+            "<script type=\"application/yaml\">\n",
+            "title: Mid\n",
+            "</script>\n",
+            "<p>tail</p>\n",
+            "</html>\n",
+        );
+        let doc = prov_graph::document::Document::parse("page.html", text).unwrap();
+        let mapping = doc.meta.as_mapping().unwrap();
+        let out = retype_block(
+            text,
+            EmbedType::HtmlScriptYaml,
+            mapping,
+            EmbedType::HtmlCodeYaml,
+        )
+        .unwrap();
+
+        let head = out.find("KEEP ME").expect("the head survived");
+        let island = out
+            .find("<pre")
+            .expect("the block was re-housed as html_code");
+        assert!(head < island, "the head must stay above the block:\n{out}");
+        assert!(out.contains("<p>tail</p>"), "the tail survived:\n{out}");
+        assert!(
+            !out.contains("<script"),
+            "the old archetype is gone:\n{out}"
         );
     }
 }
