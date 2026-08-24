@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use super::Graph;
-use crate::document::Document;
+use crate::document::{Body, Document};
 use crate::error::{Error, Result};
 use crate::fs::ReadStorage;
 use crate::link;
@@ -50,6 +50,59 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     pub async fn document(&self, path: impl AsRef<Path>) -> Result<Document> {
         let path = link::normalize(path);
         self.load(&path).await.map(|(_, doc)| doc)
+    }
+
+    /// The prose body of the document at `path`, wherever it physically lives —
+    /// the read-side counterpart to the resolution `content_hash` already makes
+    /// (`prov`'s `Workspace::covered_digest`) and the census already makes
+    /// ([`Graph::census`](super::Graph::census)).
+    ///
+    /// For a combined document this is [`Document::body`] and the document's own
+    /// path, so a caller pays one read and gets what it always had. For a
+    /// *separated* one — a whole-file metadata node whose `content` names a
+    /// sibling prose file — it is the sibling's text. [`Document`] is a per-file
+    /// parse and deliberately stays one: it reports what its own file says, and
+    /// the splicing belongs to the layer that can reach the other file.
+    ///
+    /// The `content` target is clamped the same way [`load`](Self::load) clamps
+    /// its own argument, and for the same reason: it is a path read *out of a
+    /// document*, so `content: ../../../etc/passwd` is data naming a file
+    /// outside the workspace and must be refused rather than opened.
+    ///
+    /// An **attachment sidecar** is refused rather than read. Its `content`
+    /// names opaque bytes — a JPEG, a PDF — and `attach --opaque` promises prov
+    /// will never open them as a document; returning them as a `String` would
+    /// break that promise, and on most payloads would fail as invalid UTF-8
+    /// anyway, which is a confusing way to learn the file was never prose.
+    pub async fn body(&self, path: impl AsRef<Path>) -> Result<Body> {
+        let path = link::normalize(path);
+        let (_, doc) = self.load(&path).await?;
+        let Some(content) = doc.content_path(&path) else {
+            return Ok(Body {
+                text: doc.body,
+                path,
+            });
+        };
+        // Clamped before it is classified. `is_attachment` reads the *target's*
+        // extension, so an escaping path is also an opaque-looking one more often
+        // than not (`../../../etc/passwd` has no extension prov reads) — and
+        // "that is a payload, not prose" is a description of the file, offered
+        // where "that file is not yours to name" is the answer.
+        if link::escapes_root(&content) {
+            return Err(Error::Escape(content));
+        }
+        if doc.is_attachment() {
+            return Err(Error::Structure(format!(
+                "{}: attachment sidecar for {} — an opaque payload, not a prose body",
+                path.display(),
+                content.display(),
+            )));
+        }
+        let text = self.read_text(&content).await?;
+        Ok(Body {
+            text,
+            path: content,
+        })
     }
 }
 
@@ -99,5 +152,64 @@ mod tests {
         let dir = tempdir("document-missing");
         let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
         assert!(block_on(ws.document("nope.md")).is_err());
+    }
+
+    #[test]
+    fn body_of_a_combined_document_is_its_own_prose_and_its_own_path() {
+        let dir = tempdir("body-combined");
+        write(&dir, "notes/a.md", "---\ntitle: A\n---\nbody text\n");
+
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let body = block_on(ws.body("notes/a.md")).unwrap();
+        assert_eq!(body.text, "body text\n");
+        assert_eq!(body.path, PathBuf::from("notes/a.md"));
+    }
+
+    /// The gap this method exists to close: the node's *own* body is empty, and
+    /// reading that as the document's prose reports "no prose" for a document
+    /// that has plenty.
+    #[test]
+    fn body_of_a_separated_document_is_the_file_its_content_names() {
+        let dir = tempdir("body-separated");
+        write(&dir, "notes/a.yaml", "title: A\ncontent: a.md\n");
+        write(&dir, "notes/a.md", "# Heading\n\nseparated prose\n");
+
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let node = block_on(ws.document("notes/a.yaml")).unwrap();
+        assert_eq!(node.body, "", "the node's own file carries no prose");
+
+        let body = block_on(ws.body("notes/a.yaml")).unwrap();
+        assert_eq!(body.text, "# Heading\n\nseparated prose\n");
+        assert_eq!(
+            body.path,
+            PathBuf::from("notes/a.md"),
+            "the path a caller asks for the body's grammar"
+        );
+    }
+
+    /// `attach --opaque` promises prov never opens the payload as a document.
+    #[test]
+    fn body_refuses_an_attachment_sidecar_rather_than_reading_its_payload() {
+        let dir = tempdir("body-attachment");
+        write(&dir, "photo.jpg.yaml", "title: Photo\ncontent: photo.jpg\n");
+        write(&dir, "photo.jpg", "not really a jpeg");
+
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let err = block_on(ws.body("photo.jpg.yaml")).unwrap_err();
+        assert!(
+            err.to_string().contains("opaque payload"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `content` is a path read *out of a document*, so it is data and gets the
+    /// clamp every other data-borne path gets.
+    #[test]
+    fn body_refuses_a_content_target_that_escapes_the_root() {
+        let dir = tempdir("body-escape");
+        write(&dir, "a.yaml", "title: A\ncontent: ../../../etc/passwd\n");
+
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        assert!(matches!(block_on(ws.body("a.yaml")), Err(Error::Escape(_))));
     }
 }

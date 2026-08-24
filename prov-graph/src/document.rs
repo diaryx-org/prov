@@ -17,6 +17,26 @@ use crate::meta::{self, Value};
 /// coupling ([`EmbedType::inner_format`]).
 pub use fig::EmbedType;
 
+/// A document's prose body, and the file it was read from.
+///
+/// The two halves travel together because a *separated* document keeps them in
+/// different files: the text comes from the `content` target while the metadata
+/// stays in the node, so a caller that renders the prose needs to know which
+/// path declares its grammar. For a combined document [`path`](Body::path) is
+/// simply the document's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Body {
+    /// The prose itself. Empty for a document that has none — a config
+    /// document standing for itself, or a manifest node standing for a
+    /// directory.
+    pub text: String,
+    /// The file the prose lives in: the document's own path when combined, its
+    /// [`content_path`](Document::content_path) when separated. What
+    /// [`ContentFormat::from_extension`](crate::content::ContentFormat::from_extension)
+    /// should be asked about.
+    pub path: PathBuf,
+}
+
 /// Where a document's metadata physically lives — recorded at parse time so a
 /// write can preserve the original carrier exactly (a ```` ```fig ```` block is
 /// never rewritten as `---` YAML; a bare `.yaml` file never grows fences).
@@ -395,6 +415,36 @@ impl Document {
         self.content_attr().is_some() && self.manifest_attr().is_some()
     }
 
+    /// The path of this document's separated body file — its `content` target
+    /// joined onto its own directory — or `None` for a combined document, whose
+    /// prose is [`self.body`](Document::body).
+    ///
+    /// Plain path joining, deliberately: `content` names a file *beside* the
+    /// node (§5's placement rule), so this is the one link-ish value with no
+    /// root-absolute spelling to honour, and staying free of the workspace-root
+    /// coordinate is what lets a caller holding a real filesystem path — the
+    /// CLI reading a file it was handed — resolve it the same way a caller
+    /// holding a workspace-relative one does. Matches the resolution
+    /// `attach`'s reverse lookup and the mutation verbs already make.
+    pub fn content_path(&self, doc_path: &Path) -> Option<PathBuf> {
+        let dir = doc_path.parent().unwrap_or(Path::new(""));
+        Some(crate::link::normalize(dir.join(self.content_attr()?)))
+    }
+
+    /// The path of the file that actually holds this document's prose: its
+    /// [`content_path`](Document::content_path) when separated, and `doc_path`
+    /// itself when combined.
+    ///
+    /// This is the path whose extension declares the body's grammar
+    /// ([`ContentFormat::from_extension`](crate::content::ContentFormat::from_extension)).
+    /// Reading that off a separated document's *own* path asks a `.yaml` node
+    /// what grammar its prose is in, and the honest answer — "none, a config
+    /// file has no body" — is the wrong question rather than a wrong answer.
+    pub fn body_path(&self, doc_path: &Path) -> PathBuf {
+        self.content_path(doc_path)
+            .unwrap_or_else(|| doc_path.to_path_buf())
+    }
+
     /// `true` when this document is an **attachment sidecar**: a whole-file
     /// metadata document whose `content` points at an [opaque
     /// payload](is_opaque_payload) rather than a prose body. Recognized two ways,
@@ -420,6 +470,43 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn content_path_joins_the_target_onto_the_node_s_own_directory() {
+        let doc = Document::parse("notes/a.yaml", "title: A\ncontent: a.md\n").unwrap();
+        assert_eq!(
+            doc.content_path(Path::new("notes/a.yaml")),
+            Some(PathBuf::from("notes/a.md"))
+        );
+        assert_eq!(
+            doc.body_path(Path::new("notes/a.yaml")),
+            PathBuf::from("notes/a.md")
+        );
+    }
+
+    /// The CLI resolves by real filesystem path, so the join must not assume a
+    /// workspace-root coordinate.
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn content_path_resolves_an_absolute_node_path_as_absolute() {
+        let doc = Document::parse("/vault/notes/a.yaml", "title: A\ncontent: a.md\n").unwrap();
+        assert_eq!(
+            doc.content_path(Path::new("/vault/notes/a.yaml")),
+            Some(PathBuf::from("/vault/notes/a.md"))
+        );
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_combined_document_has_no_content_path_and_is_its_own_body_path() {
+        let doc = Document::parse("notes/a.md", "---\ntitle: A\n---\nprose\n").unwrap();
+        assert_eq!(doc.content_path(Path::new("notes/a.md")), None);
+        assert_eq!(
+            doc.body_path(Path::new("notes/a.md")),
+            PathBuf::from("notes/a.md")
+        );
+    }
 
     #[cfg(feature = "yaml")]
     #[test]

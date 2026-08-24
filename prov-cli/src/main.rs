@@ -756,21 +756,45 @@ fn cmd_get(file: &Path, key: &str) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_body(file: &Path) -> CmdResult {
+/// A document's prose and the file declaring its grammar — [`prov::Body`] for a
+/// caller that reads by real path rather than through a workspace.
+///
+/// `body`/`render` name a file directly and never open a workspace, so the
+/// `content` target is resolved against the file's own directory here rather
+/// than through `Graph::body`. A *separated* document keeps its prose in that
+/// sibling; asking its `.yaml` node for `doc.body` gets the empty string, which
+/// reads as "this document has no prose" and is not what happened.
+fn body_of(file: &Path) -> Result<(String, PathBuf), Box<dyn std::error::Error>> {
     let (_, doc) = load(file)?;
-    print!("{}", doc.body);
+    let Some(content) = doc.content_path(file) else {
+        return Ok((doc.body, file.to_path_buf()));
+    };
+    if doc.is_attachment() {
+        return Err(format!(
+            "{}: attachment sidecar for {} — an opaque payload, not a prose body",
+            file.display(),
+            content.display(),
+        )
+        .into());
+    }
+    Ok((std::fs::read_to_string(&content)?, content))
+}
+
+fn cmd_body(file: &Path) -> CmdResult {
+    let (text, _) = body_of(file)?;
+    print!("{text}");
     Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_render(file: &Path) -> CmdResult {
-    let (_, doc) = load(file)?;
-    let format = prov::ContentFormat::from_extension(file).ok_or_else(|| {
+    let (text, from) = body_of(file)?;
+    let format = prov::ContentFormat::from_extension(&from).ok_or_else(|| {
         format!(
             "{}: not a recognized body format (expected .md/.markdown or .dj/.djot)",
-            file.display()
+            from.display()
         )
     })?;
-    let html = prov::render_html(&doc.body, format)?;
+    let html = prov::render_html(&text, format)?;
     print!("{html}");
     Ok(ExitCode::SUCCESS)
 }

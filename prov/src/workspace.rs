@@ -19,7 +19,7 @@
 //! The filesystem-driven `scan`/traverse/mutate engine ports from `diaryx_core`
 //! next; the seams are in place so that port has somewhere to land.
 
-use prov_graph::document::Document;
+use prov_graph::document::{Body, Document};
 use prov_graph::fs::{DirEntry, Metadata};
 use prov_graph::graph::{Backlink, CensusEntry, Graph, Node, ReadSettings, TreeOptions, Walk};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1016,6 +1016,13 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// The parsed document at a workspace-relative `path`.
     pub async fn document(&self, path: impl AsRef<Path>) -> Result<Document> {
         self.graph.document(path).await
+    }
+
+    /// The prose body of the document at `path`, wherever it physically lives —
+    /// its own file when combined, its `content` target when separated. See
+    /// [`Graph::body`].
+    pub async fn body(&self, path: impl AsRef<Path>) -> Result<Body> {
+        self.graph.body(path).await
     }
 
     /// Whether `path` exists, unclamped and unmemoized.
