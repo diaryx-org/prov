@@ -28,6 +28,12 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.8.0 — 2026-08-25
+
 ### Breaking
 
 - **graph** — a document's body is both sides of its metadata block ([`b418f79`](https://github.com/diaryx-org/prov/commit/b418f798e85d34c0c450a38e2d63e282b112b660))
@@ -195,7 +201,6 @@ separate file.
   `prov_graph::*` now also brings `Fixity` into scope, which will collide with
   a `Fixity` of the caller's own that a glob previously resolved cleanly.
 
-<!-- git-cliff:end -->
 
 ## v0.7.0 — 2026-08-21
 
