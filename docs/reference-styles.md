@@ -353,7 +353,7 @@ re-relativize, restyle and `check --fix` all preserve locators.
   `--unverified`.
 - ✅ **Naming the workspace** (§ "Choosing the name — or not choosing it"): `prov
   id --workspace [NAME]` — manual, idempotent, never a rename — over
-  `prov_identity::mint_workspace_id` (a double-width blade, since a workspace
+  `prov::identity::mint_workspace_id` (a double-width blade, since a workspace
   name has no arbiter to be rejected by). `prov init --workspace-id` and `prov
   config workspace_id` remain the other two ways in.
 - ⏳ **Staged:** `StaleLabel` finding + label refresh in `validate.rs`.

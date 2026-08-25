@@ -23,10 +23,11 @@ fig.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 
-# Opaque document-ID *verification* — the alphabet and check-character
-# arithmetic needed to say whether a string is a well-formed id. Minting (the
-# seeded PRNG, the retry-on-collision policy) is a write concern and stays in
-# `prov`; this crate only ever reads an id someone else issued.
+# Opaque document-ID verification *and* minting — the alphabet, the
+# check-character arithmetic that says whether a string is a well-formed id, and
+# the seeded PRNG that rolls one. Minting is not a write: it is a pure function
+# of a seed and cannot see a workspace. The retry-on-collision loop that turns a
+# mint into a registration *is* a write, and stays in `prov`.
 moid.workspace = true
 
 # Body-prose parsing (Djot/Markdown). Zig-backed (its build.rs runs `zig

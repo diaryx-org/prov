@@ -11,7 +11,6 @@ description = "Workspace configuration policy, codecs, diagnostics, and vocabula
 
 [dependencies]
 prov-graph = { workspace = true, default-features = false }
-prov-identity = { workspace = true, default-features = false }
 prov-fixity.workspace = true
 # The view format. The `views:` axis is declared here because every config axis
 # is, but the vocabulary it is spelled in belongs with the crate that executes
@@ -33,28 +32,24 @@ default = ["yaml"]
 yaml = [
     "fig/yaml",
     "prov-graph/yaml",
-    "prov-identity/yaml",
     "prov-views/yaml",
     "prov-exports/yaml",
 ]
 json = [
     "fig/json",
     "prov-graph/json",
-    "prov-identity/json",
     "prov-views/json",
     "prov-exports/json",
 ]
 toml = [
     "fig/toml",
     "prov-graph/toml",
-    "prov-identity/toml",
     "prov-views/toml",
     "prov-exports/toml",
 ]
 fig-lang = [
     "fig/fig",
     "prov-graph/fig-lang",
-    "prov-identity/fig-lang",
     "prov-views/fig-lang",
     "prov-exports/fig-lang",
 ]

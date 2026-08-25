@@ -617,7 +617,7 @@ pub fn foreign_id_target(workspace: &str, id: &crate::identity::Id) -> String {
 /// [`WORKSPACE_SEPARATOR`] that divides it from the id, the `:` that ends the
 /// scheme, or whitespace (a target is a single scalar; a space would make it
 /// two). Anything else is the user's business — this is a name for humans to
-/// *choose*. `prov_identity::mint_workspace_id` (reached by `prov id
+/// *choose*. [`identity::mint_workspace_id`](crate::identity::mint_workspace_id) (reached by `prov id
 /// --workspace`) can mint an opaque one for an owner with no naming authority
 /// to lean on, but only when asked: a minted name satisfies this predicate like
 /// any other, and nothing here can tell the two apart.

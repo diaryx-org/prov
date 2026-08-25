@@ -533,7 +533,6 @@ dependencies = [
  "prov-exports",
  "prov-fixity",
  "prov-graph",
- "prov-identity",
  "prov-store",
  "prov-views",
  "thiserror",
@@ -561,7 +560,6 @@ dependencies = [
  "prov-exports",
  "prov-fixity",
  "prov-graph",
- "prov-identity",
  "prov-views",
  "thiserror",
 ]
@@ -594,15 +592,6 @@ dependencies = [
  "proptest",
  "thiserror",
  "twig-doc",
-]
-
-[[package]]
-name = "prov-identity"
-version = "0.7.0"
-dependencies = [
- "moid",
- "proptest",
- "prov-graph",
 ]
 
 [[package]]

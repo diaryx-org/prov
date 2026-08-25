@@ -3,7 +3,7 @@ resolver = "2"
 # `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
 # workflow runs nothing else. It is a member so `cargo test --workspace` checks
 # it, and `publish = false` keeps it off crates.io.
-members = ["prov-graph", "prov-store", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
+members = ["prov-graph", "prov-store", "prov-fixity", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
 
 [workspace.package]
 version = "0.7.0"
@@ -81,8 +81,6 @@ prov = { path = "prov", version = "0.7.0" }
 prov-graph = { path = "prov-graph", version = "0.7.0", default-features = false }
 # The write halves of those ports: `Storage`, the metadata editor, the ID registries.
 prov-store = { path = "prov-store", version = "0.7.0", default-features = false }
-# Identity registration policies and ID minting.
-prov-identity = { path = "prov-identity", version = "0.7.0", default-features = false }
 # Content fixity policy, digests, and the device-local cache.
 prov-fixity = { path = "prov-fixity", version = "0.7.0" }
 # Crash-atomic staged filesystem changes and write-ahead recovery, and the

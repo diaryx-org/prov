@@ -33,10 +33,10 @@ use prov_exports::{ExportIssueKind, ExportSpec};
 pub use prov_fixity::Fixity;
 use prov_graph::content::ContentFormat;
 use prov_graph::document::EmbedStyle;
+use prov_graph::identity::{Registration, Trigger};
 use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
-use prov_identity::{Registration, Trigger};
 use prov_views::{ViewIssueKind, ViewSpec};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because
@@ -1827,7 +1827,7 @@ fn registration_str(registration: Registration) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prov_identity::Trigger;
+    use prov_graph::identity::Trigger;
 
     /// A config surface as a `Value::Mapping` from `(key, value)` pairs, values
     /// inferred as bools where they parse.
