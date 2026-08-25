@@ -25,7 +25,95 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Breaking
+
+- **graph** — a document's body is both sides of its metadata block ([`b418f79`](https://github.com/diaryx-org/prov/commit/b418f798e85d34c0c450a38e2d63e282b112b660))
+- **workspace** — an ignore list, in place of the historica skiplist ([`b5475d1`](https://github.com/diaryx-org/prov/commit/b5475d17d7b819f1b9ff1da667efdff9dd06d465))
+
+### Added
+
+- **graph** — a document's body, read from wherever it lives ([`54e3c4d`](https://github.com/diaryx-org/prov/commit/54e3c4d512d0a2b5939ed7df81c126cf2172a48b))
+
+### Fixed
+
+- **store** — keep a document's permissions across an atomic write ([`45ec25e`](https://github.com/diaryx-org/prov/commit/45ec25ec41dd10110a371e681328e3afe80e65d7))
+
+### Changed
+
+- **fixity** — hash through sha2 instead of a local compression loop ([`9f9fd33`](https://github.com/diaryx-org/prov/commit/9f9fd33535b815597ba546208e853d2a6306d2da))
+
+### Behavioural changes
+
+- replacing an existing file through `Storage::write_atomic`
+— which is every document write, `ChangeSet` application, and journal write —
+now leaves the file's access permissions as it found them instead of resetting
+them to the process umask's default. A caller that relied on a save
+normalizing a restrictive mode to a readable one will find the file still
+restricted. Backends that wrap `StdFs` by forwarding each method individually
+should forward `copy_permissions` too; without it they silently take the
+no-op default and keep the old widening behaviour.
+
+- `prov body` on a *separated* document (a whole-file
+metadata node with `content:`) now prints the prose from the file that
+pointer names; it previously printed nothing, since the node's own body is
+empty. `prov render` on one now renders that prose, where it previously
+failed with "not a recognized body format" — it reads the grammar off the
+body file's extension rather than the node's. On an **attachment**
+sidecar, `prov body` now exits 1 with "an opaque payload, not a prose
+body" instead of printing nothing and exiting 0. A combined document is
+unchanged on both commands.
+
+- `prov-graph` gains `Body`, `Graph::body`,
+
+- `Document::split` returns
+`(MetaCarrier, meta, body_before, body_after)` — four elements where it
+returned three. A caller that used the old third element as "the body"
+should concatenate the two new ones; one that spliced text back together
+by offset arithmetic wants them apart. `Document::body` is unchanged in
+type and, for a document whose block sits at an edge, in value.
+
+- for a document whose metadata block sits mid-file (an
+HTML `<script>`/`<pre>`<code>`` island with host text above it), `body` now
+includes that leading text. Consequences on disk: its `content_hash` no
+longer matches, so `check` reports a **fixity mismatch** once and
+`stamp` (or `check --fix`) settles it — the old hash covered a suffix and
+was wrong to claim the document. `prov body` and `prov render` emit the
+whole body, and `convert metadata.embed` keeps the head in place instead
+of moving it below the block. Documents with an edge block — every
+markdown document — are unaffected on all counts.
+
+- converting a mid-document block to an edge archetype
+(an HTML island to `delimited`/`code_block`) is now refused with fig's
+`UnsupportedOperation` rather than silently relocating the host text. The
+paths that still work: convert the host too, or keep the metadata in a
+separate file.
+
+- `prov history-skips` is gone, replaced by `prov
+  ignore`, which needs no store and is gated on nothing. It prints
+  gitignore-syntax rules (`/notes/loose.md`, `/photos/`) rather than
+  historica's `skip …` lines, and writes nothing: a workspace that
+  maintained a generated region of `history/skipped.txt` keeps whatever
+  that file last said, and nothing regenerates it. Feeding the list to
+  historica is now the caller's step.
+
+- The `history` config axis is gone. A config that says
+  `history: off` or `history: manual` now raises a `ConfigIssue` for an
+  unrecognized key, and `prov config history `<value>`` refuses. Remove the
+  key. The `history` *pointer* at the root's top level is unaffected.
+
+- A `history/` directory holding a historica marker is
+  no longer parked out of workspace walks. Its documents can be
+  title-indexed and its files reported by `check` as unreached content;
+  `prov ignore` lists the directory as one rule. Nothing in prov can
+  identify such a store any more.
+
+- The `prov-history` crate is retired and the
+  `historica` dependency is gone. `prov::history` and its exports
+  (`Skiplist`, `Skip`, `Standing`, `StandingError`, `SkipHost`, `apply`,
+  `REGION_BEGIN`, `REGION_END`) are removed; `prov::{Ignore, IgnoreList,
+  Reason}` replace them, `Reason` keeping its four variants. `Settings`
+  and `WorkspaceConfig` lose their `history` field, `Workspace::history`
+  and the builder's `history` setter are gone.
 
 <!-- git-cliff:end -->
 
