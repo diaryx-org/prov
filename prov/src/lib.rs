@@ -60,7 +60,6 @@ pub mod discovery;
 pub use prov_graph::fixity;
 #[cfg(test)]
 mod fs_faults;
-pub mod identity;
 pub mod intake;
 pub mod manifest;
 pub mod mutate;
@@ -77,6 +76,14 @@ pub mod workspace;
 /// only traverses can depend on `prov-graph` directly and link none of the
 /// mutation, history, or config machinery.
 pub use prov_graph;
+/// Identity — the id type, its check-character verification, and the
+/// registration/minting policy.
+///
+/// All of it lives in the read core: none of it touches storage, so none of it
+/// needs to sit above the read boundary. The *write* that consumes a mint,
+/// [`Workspace::register`](workspace::Workspace::register), is in
+/// [`workspace`].
+pub use prov_graph::identity;
 pub use prov_graph::{
     Addressing, Backlink, Body, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat,
     DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id,
