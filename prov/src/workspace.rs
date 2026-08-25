@@ -57,10 +57,9 @@ fn store_dir(store_index: &Path) -> PathBuf {
 /// Every field here answers "how does this workspace author and read
 /// documents?" — the vocabulary, the reference style, where ids live, how far
 /// checksums go. What is *not* here is as deliberate: the filesystem and root
-/// are a location rather than a policy; the identity policy and index store are
-/// type parameters, because [`Workspace`]'s whole "identity is a bolt-on"
-/// design is that they can be compiled out; and the [`FixityCache`] is
-/// device-local memory the workspace is handed, not something it declares.
+/// are a location rather than a policy; and the identity policy and index store
+/// are type parameters, because [`Workspace`]'s whole "identity is a bolt-on"
+/// design is that they can be compiled out.
 ///
 /// It exists as a struct because it was previously ten loose fields, and every
 /// one of them had to be hand-copied through

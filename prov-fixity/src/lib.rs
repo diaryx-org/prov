@@ -31,19 +31,6 @@
 //! vectors, and the tests below pin this crate's output to the NIST vectors and
 //! to what `sha256sum` produces — now testing the binding rather than a local
 //! compression loop, which is exactly what they are for.
-//!
-//! ## Not hashing what has not changed
-//!
-//! Hashing is cheap to describe and expensive to run, and a capture runs it over
-//! every file in the workspace. [`FixityCache`] is the device-local memory that
-//! lets a capture skip the files whose stat says they are untouched — and, just
-//! as importantly, the argument for which passes may consult it and which may
-//! never. See its module documentation; the short version is that the bit-rot
-//! check must not, because bit-rot is exactly the change a stat cannot see.
-
-mod cache;
-
-pub use cache::FixityCache;
 
 use sha2::{Digest, Sha256};
 

@@ -576,7 +576,6 @@ dependencies = [
 name = "prov-fixity"
 version = "0.7.0"
 dependencies = [
- "proptest",
  "prov-graph",
  "sha2",
 ]

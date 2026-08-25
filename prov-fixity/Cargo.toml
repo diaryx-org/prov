@@ -7,7 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
-description = "Content fixity digests, policy, and a device-local validation cache."
+description = "Content fixity digests and coverage policy."
 keywords = ["checksum", "sha256", "integrity"]
 categories = ["filesystem"]
 
@@ -17,8 +17,6 @@ prov-graph = { workspace = true, default-features = false }
 # dependency it looks like.
 sha2.workspace = true
 
-[dev-dependencies]
-proptest = "1"
 
 [features]
 default = ["yaml"]

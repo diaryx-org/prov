@@ -8,12 +8,12 @@ them. Not curated design (that's `DESIGN.md`); this is a scratch backlog.
 
 ## What the property tests turned up
 
-`proptest` is a dev-dependency, and six modules carry a `mod properties` beside
+`proptest` is a dev-dependency, and five modules carry a `mod properties` beside
 their example tests: `link` (reference round-trips, path arithmetic), `mutate`
 (sequences of verbs against `check`), `index` (the id↔path bijection),
-`identity` (the check character), `fixity::cache` (the hand-rolled binary
-frame), and `textdist` (the metric axioms). Each states a claim the prose
-already made and quantifies it.
+`identity` (the check character), and `textdist` (the metric axioms). Each
+states a claim the prose already made and quantifies it. A sixth,
+`fixity::cache` (the hand-rolled binary frame), went with the cache itself.
 
 Five defects found, **all fixed**:
 
