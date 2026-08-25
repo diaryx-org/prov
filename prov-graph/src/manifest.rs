@@ -65,7 +65,7 @@ pub const FILES_KEY: &str = "files";
 pub const PATH_KEY: &str = "path";
 
 /// The per-row key holding the digest, spelled `sha256:<hex>` as
-/// `prov_fixity::digest` produces it. Optional.
+/// [`fixity::digest`](crate::fixity::digest) produces it. Optional.
 pub const HASH_KEY: &str = "hash";
 
 /// The infix a manifest document's name carries, so a node's manifest is found

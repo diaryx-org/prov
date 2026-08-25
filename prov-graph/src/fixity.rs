@@ -3,9 +3,18 @@
 //!
 //! Link validation in the higher-level `prov` crate answers "does the graph
 //! still hold together?"; fixity answers the other archival question: "are the
-//! bytes still the bytes?" A stored hash, recomputed on read and compared, catches the
-//! silent corruption an archive most fears — a flipped bit in a decade-old
-//! attachment that no link check would ever notice.
+//! bytes still the bytes?" A stored hash, recomputed on read and compared,
+//! catches the silent corruption an archive most fears — a flipped bit in a
+//! decade-old attachment that no link check would ever notice.
+//!
+//! ## Why this sits in the read core
+//!
+//! Everything here is a pure function of bytes: a policy enum, a digest, and
+//! two predicates over a recorded string. None of it opens a file, and none of
+//! it can change one — the same reason [`identity`](crate::identity) sits here
+//! rather than above the read boundary. The *writes* that record a digest
+//! (`attach`, `save`, the manifest verbs) live in `prov`, and the pass that
+//! reads bytes back to compare them is `prov`'s `check`.
 //!
 //! ## Why SHA-256
 //!
@@ -17,20 +26,20 @@
 //! tool-agnostic, self-describing ethos the whole crate is built on.
 //!
 //! The compression function comes from `sha2` rather than being written out
-//! here. This crate did once carry its own, on the reasoning that guards
-//! [`prov_graph::exec::block_on`] and the journal's FNV checksum — keep the
-//! dependency surface tiny and WASM-clean. It is the one place that reasoning
-//! loses: `sha2` is pure Rust and `no_std`-capable, so it costs no build
-//! toolchain and compiles on `wasm32-unknown-unknown` like everything else
-//! here, while a hand-written loop cannot reach the hardware path — `sha2`
+//! here. This module did once carry its own, on the reasoning that guards
+//! [`exec::block_on`](crate::exec::block_on) and the journal's FNV checksum —
+//! keep the dependency surface tiny and WASM-clean. It is the one place that
+//! reasoning loses: `sha2` is pure Rust and `no_std`-capable, so it costs no
+//! build toolchain and compiles on `wasm32-unknown-unknown` like everything
+//! else here, while a hand-written loop cannot reach the hardware path — `sha2`
 //! dispatches to SHA-NI on x86-64 and to the ARMv8 crypto extensions on
 //! aarch64, and `stamp --all` hashes every covered file in the workspace.
 //!
 //! What does not change is that correctness here is *checked*, not trusted:
 //! SHA-256 is a fully specified, deterministic function with published test
-//! vectors, and the tests below pin this crate's output to the NIST vectors and
-//! to what `sha256sum` produces — now testing the binding rather than a local
-//! compression loop, which is exactly what they are for.
+//! vectors, and the tests below pin this module's output to the NIST vectors
+//! and to what `sha256sum` produces — now testing the binding rather than a
+//! local compression loop, which is exactly what they are for.
 
 use sha2::{Digest, Sha256};
 

@@ -35,6 +35,9 @@ moid.workspace = true
 # optional: the census scans body `[[wikilinks]]`, and doing that correctly
 # means parsing the body well enough to know which spans are code.
 twig-doc.workspace = true
+# The fixity digest. See the workspace manifest for why this is not the new
+# dependency it looks like.
+sha2.workspace = true
 
 [dev-dependencies]
 # Property-based testing. The laws this crate carries — `resolve ∘ format = id`,

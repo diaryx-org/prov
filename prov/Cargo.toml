@@ -24,7 +24,6 @@ prov-store = { workspace = true, default-features = false }
 # Identity registration policies and opaque ID minting.
 
 # Content fixity policy, digests, and the device-local stat-validated cache.
-prov-fixity.workspace = true
 
 # Pure workspace policy, codecs, diagnostics, and controlled vocabularies.
 prov-config = { workspace = true, default-features = false }

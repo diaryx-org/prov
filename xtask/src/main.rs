@@ -149,7 +149,6 @@ fn docs(sh: &Sh) -> Result<()> {
 const ISOLATED: &[&[&str]] = &[
     &["-p", "prov-graph"],
     &["-p", "prov-store"],
-    &["-p", "prov-fixity"],
     &["-p", "prov-config"],
     &["-p", "prov-views"],
     &["-p", "prov-exports"],

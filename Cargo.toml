@@ -3,7 +3,7 @@ resolver = "2"
 # `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
 # workflow runs nothing else. It is a member so `cargo test --workspace` checks
 # it, and `publish = false` keeps it off crates.io.
-members = ["prov-graph", "prov-store", "prov-fixity", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
+members = ["prov-graph", "prov-store", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
 
 [workspace.package]
 version = "0.7.0"
@@ -66,7 +66,7 @@ twig-doc = "3"
 # no `os`/`js` features — is all it needs. See `prov/src/identity.rs`.
 moid = "1"
 
-# SHA-256, for `prov-fixity`. Fixity used to carry its own scalar
+# SHA-256, for `prov_graph::fixity`. Fixity used to carry its own scalar
 # implementation alongside the one a dependency already pulled in, which meant
 # two SHA-256s in one binary and only one of them reaching SHA-NI / the ARMv8
 # crypto extensions. This is the one that does.
@@ -77,12 +77,10 @@ sha2 = "0.11.0"
 
 # Internal crate.
 prov = { path = "prov", version = "0.7.0" }
-# Read-only graph and storage ports.
+# Read-only graph and storage ports, identity policy, and content fixity.
 prov-graph = { path = "prov-graph", version = "0.7.0", default-features = false }
 # The write halves of those ports: `Storage`, the metadata editor, the ID registries.
 prov-store = { path = "prov-store", version = "0.7.0", default-features = false }
-# Content fixity policy, digests, and the device-local cache.
-prov-fixity = { path = "prov-fixity", version = "0.7.0" }
 # Crash-atomic staged filesystem changes and write-ahead recovery, and the
 # filesystem port everything here is generic over. Lifted out of this workspace
 # and published on its own, because none of it knows what a document is: it

@@ -30,9 +30,9 @@ use fig_schema::FieldType;
 
 use crate::textdist::nearest;
 use prov_exports::{ExportIssueKind, ExportSpec};
-pub use prov_fixity::Fixity;
 use prov_graph::content::ContentFormat;
 use prov_graph::document::EmbedStyle;
+pub use prov_graph::fixity::Fixity;
 use prov_graph::identity::{Registration, Trigger};
 use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
 use prov_graph::meta::{Mapping, Value};

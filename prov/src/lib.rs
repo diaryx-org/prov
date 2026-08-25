@@ -55,8 +55,9 @@ pub mod about;
 pub mod attach;
 pub use prov_config as config;
 pub mod discovery;
-/// Content fixity policy, digests, and the device-local cache.
-pub use prov_fixity as fixity;
+/// Content fixity — the coverage policy, the digest, and the predicates that
+/// separate a verified hash from an unverifiable one.
+pub use prov_graph::fixity;
 #[cfg(test)]
 mod fs_faults;
 pub mod identity;

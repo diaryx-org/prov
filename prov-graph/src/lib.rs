@@ -70,6 +70,7 @@ pub mod content;
 pub mod document;
 pub mod error;
 pub mod exec;
+pub mod fixity;
 pub mod fs;
 pub mod graph;
 pub mod identity;
@@ -91,6 +92,7 @@ pub use error::{Error, Result};
 pub use exec::block_on;
 pub use fig::ExtKind;
 pub use fig::Format;
+pub use fixity::Fixity;
 pub use fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
 pub use graph::{
     Backlink, CensusEntry, Graph, LinkSite, Node, NodeKind, ReadSettings, Resolution,

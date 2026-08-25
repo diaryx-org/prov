@@ -11,7 +11,6 @@ description = "Workspace configuration policy, codecs, diagnostics, and vocabula
 
 [dependencies]
 prov-graph = { workspace = true, default-features = false }
-prov-fixity.workspace = true
 # The view format. The `views:` axis is declared here because every config axis
 # is, but the vocabulary it is spelled in belongs with the crate that executes
 # it — one definition of what a view is, rather than a config-side copy that

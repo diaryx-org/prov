@@ -531,7 +531,6 @@ dependencies = [
  "proptest",
  "prov-config",
  "prov-exports",
- "prov-fixity",
  "prov-graph",
  "prov-store",
  "prov-views",
@@ -558,7 +557,6 @@ dependencies = [
  "indexmap",
  "proptest",
  "prov-exports",
- "prov-fixity",
  "prov-graph",
  "prov-views",
  "thiserror",
@@ -573,14 +571,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prov-fixity"
-version = "0.7.0"
-dependencies = [
- "prov-graph",
- "sha2",
-]
-
-[[package]]
 name = "prov-graph"
 version = "0.7.0"
 dependencies = [
@@ -589,6 +579,7 @@ dependencies = [
  "indexmap",
  "moid",
  "proptest",
+ "sha2",
  "thiserror",
  "twig-doc",
 ]

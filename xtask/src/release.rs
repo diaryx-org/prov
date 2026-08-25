@@ -534,7 +534,7 @@ fn dependencies_on_members(manifest: &str, members: &[String]) -> Vec<String> {
         if !in_dependencies {
             continue;
         }
-        // `prov-store = { workspace = true }` and `prov-fixity.workspace = true`
+        // `prov-store = { workspace = true }` and `prov-graph.workspace = true`
         // are the same dependency written two ways.
         if let Some(key) = line.split('=').next() {
             let name = key.trim().trim_matches('"');
