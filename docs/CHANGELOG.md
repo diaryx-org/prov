@@ -32,6 +32,36 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.9.0 — 2026-08-25
+
+### Breaking
+
+- **workspace** — a workspace can declare what beside it is not the workspace ([`93d7ef3`](https://github.com/diaryx-org/prov/commit/93d7ef3f85630abf057f782324af52bb6e67b1f4))
+
+### Behavioural changes
+
+- `WorkspaceConfig` and `Settings` gain an
+  `out_of_scope` field, so a caller constructing either with a struct
+  literal rather than `..Default::default()` must name it; `Vec::new()`
+  is the previous behaviour exactly. `WorkspaceBuilder::out_of_scope`
+  and `Workspace::out_of_scope` are the builder and accessor.
+
+- `Reason` gains a `Declared` variant, so an
+  exhaustive match over it no longer compiles. It appears only for a
+  directory the workspace declares, which no existing config does — a
+  caller that adds the arm and treats it like `Bookkeeping` keeps
+  today's behaviour.
+
+- a workspace declaring `out_of_scope` bounds every
+  walk by it. `check` no longer reports findings inside such a
+  directory (including a `MissingContainment` a document in it claimed),
+  `attach --all --recursive` no longer mints sidecars in it, the scoped
+  title index no longer resolves a nominal reference into it, and
+  `prov ignore` collapses it to one rule reading `declared out of scope`
+  where it previously read `unreached`. A workspace that declares
+  nothing is unaffected on every count.
+
+
 ## v0.8.0 — 2026-08-25
 
 ### Breaking

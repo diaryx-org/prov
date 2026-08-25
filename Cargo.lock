@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "prov"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "fig",
  "fig-schema",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "prov-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "cliclack",
@@ -552,7 +552,7 @@ dependencies = [
 
 [[package]]
 name = "prov-config"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "fig",
  "fig-schema",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "prov-exports"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "prov-graph",
  "prov-testkit",
@@ -575,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "prov-graph"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "fig",
  "fs-transaction",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "prov-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "fig",
  "fs-transaction",
@@ -600,11 +600,11 @@ dependencies = [
 
 [[package]]
 name = "prov-testkit"
-version = "0.8.0"
+version = "0.9.0"
 
 [[package]]
 name = "prov-views"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "prov-graph",
  "prov-testkit",
