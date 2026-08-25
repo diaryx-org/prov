@@ -36,6 +36,8 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - **transaction** — make the journal name configurable, defaulting generically ([`30a73e4`](https://github.com/diaryx-org/prov/commit/30a73e49adb9f9db82fe2ec10d9c57922d21d5f0))
 - depend on the published fs-transaction instead of vendoring it ([`791c974`](https://github.com/diaryx-org/prov/commit/791c974da7648474384693283e9f71d0ec97a9cb))
 - fold prov-identity into prov-graph ([`2dbedd6`](https://github.com/diaryx-org/prov/commit/2dbedd6355420120ce8a0f043a536a1981666d99))
+- **fixity** — retire the cache the capture verbs left behind ([`15a9937`](https://github.com/diaryx-org/prov/commit/15a99372a9bf42e40f25885d5f4f48882dc8fd49))
+- fold prov-fixity into prov-graph ([`be80ce0`](https://github.com/diaryx-org/prov/commit/be80ce027fff0df7bbaeda0509fc0f8979ae8374))
 
 ### Added
 
@@ -48,6 +50,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 ### Changed
 
 - **fixity** — hash through sha2 instead of a local compression loop ([`9f9fd33`](https://github.com/diaryx-org/prov/commit/9f9fd33535b815597ba546208e853d2a6306d2da))
+- **identity** — re-export the module instead of shimming it ([`511d2fc`](https://github.com/diaryx-org/prov/commit/511d2fcc22d84142211cd012badf4cb32bc77c5f))
 
 ### Behavioural changes
 
@@ -173,6 +176,24 @@ separate file.
   items `prov_graph::identity::*`; nothing in it changed name, signature or
   behaviour. Callers reaching these types through `prov::identity` are
   unaffected.
+
+- `prov_fixity::FixityCache` is gone, along with its
+  `new`/`decode`/`encode`/`get`/`put`/`forget`/`clear` surface. A caller
+  outside this workspace that persisted one has a file no version of prov will
+  read again; it holds nothing that is not re-derivable by hashing, so the
+  recovery is to delete it. `prov-fixity` also drops its `proptest`
+  dev-dependency.
+
+- the `prov-fixity` crate no longer exists; 0.7.0 is its last
+  version on crates.io. A consumer depending on it directly should depend on
+  `prov-graph` and spell the module `prov_graph::fixity` — nothing in it
+  changed name, signature or behaviour. Callers reaching it through
+  `prov::fixity` are unaffected.
+
+- `prov-graph` gains a `sha2` dependency, and with it a
+  `fixity` module and a `Fixity` re-export at the crate root. A glob import of
+  `prov_graph::*` now also brings `Fixity` into scope, which will collide with
+  a `Fixity` of the caller's own that a glob previously resolved cleanly.
 
 <!-- git-cliff:end -->
 
