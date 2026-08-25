@@ -31,6 +31,7 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 - **workspace** — an ignore list, in place of the historica skiplist ([`b5475d1`](https://github.com/diaryx-org/prov/commit/b5475d17d7b819f1b9ff1da667efdff9dd06d465))
 - **transaction** — invert the filesystem port onto prov-transaction ([`7ceb720`](https://github.com/diaryx-org/prov/commit/7ceb7204dab07a86b7869331cc4b784da176ee2c))
 - **transaction** — make the journal name configurable, defaulting generically ([`30a73e4`](https://github.com/diaryx-org/prov/commit/30a73e49adb9f9db82fe2ec10d9c57922d21d5f0))
+- depend on the published fs-transaction instead of vendoring it ([`791c974`](https://github.com/diaryx-org/prov/commit/791c974da7648474384693283e9f71d0ec97a9cb))
 
 ### Added
 
@@ -153,6 +154,15 @@ separate file.
  `prov_transaction::Error`, so a caller matching its failure directly no
  longer needs `.into()`. `prov::journal::{decode, encode}` became public,
  having previously been a `pub(crate)` import nothing used.
+
+- `prov::ChangeSet`, `prov::FileOp`, `prov::Journal`,
+ `prov::Recovered` and the `prov::change`/`prov::journal` modules now
+ re-export from `fs_transaction` rather than `prov_transaction`. The types
+ are the same types and the paths through `prov` are unchanged, but a
+ caller that named `prov_transaction` directly must depend on
+ `fs-transaction` and rename. `prov::journal::JOURNAL_NAME` still reads
+ `.prov-journal`, and prov still configures it rather than taking the
+ crate's `.fstx-journal` default.
 
 <!-- git-cliff:end -->
 
