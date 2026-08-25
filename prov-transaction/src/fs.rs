@@ -764,7 +764,7 @@ fn parent_dir(path: &Path) -> Option<&Path> {
 /// filesystem boundary.
 fn temp_sibling(path: &Path) -> PathBuf {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    path.with_file_name(format!(".{name}.prov-tmp"))
+    path.with_file_name(format!(".{name}.fstx-tmp"))
 }
 
 impl Storage for StdFs {

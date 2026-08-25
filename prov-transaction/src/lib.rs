@@ -6,6 +6,10 @@
 //! *committed* set recoverable after a process crash or power loss, via
 //! [`recover`].
 //!
+//! The journal's file name is [configurable](Journal::named) and defaults to
+//! [`.fstx-journal`](Journal::DEFAULT_NAME). Apply and recovery must agree
+//! about it, which is why both operations hang off [`Journal`].
+//!
 //! Files stay ordinary files. This is not a virtual filesystem and not a
 //! database — nothing here changes how the tree is read, only how it is
 //! written.
@@ -60,4 +64,4 @@ mod fs_faults;
 pub use change::{ChangeSet, FileOp};
 pub use error::{Error, Result};
 pub use fs::{InMemoryFs, ReadStorage, StdFs, Storage};
-pub use journal::{JOURNAL_NAME, Recovered, recover};
+pub use journal::{Journal, Recovered, recover};

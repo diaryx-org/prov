@@ -312,7 +312,11 @@ fn a_rollback_that_itself_fails_surfaces_as_torn() {
     cs.write("victim.md", "rewritten"); // op-1: lands, then must be rolled back
     cs.write("boom.md", "never lands"); // op-2: its write faults
 
-    let err: Error = block_on(cs.apply(&fs, &root)).unwrap_err().into();
+    // Through prov's own journal, as every prov mutation goes — not the bare
+    // `ChangeSet::apply`, whose default journal name prov's recovery does not
+    // read.
+    let journal = prov::journal::workspace_journal();
+    let err: Error = block_on(journal.apply(&cs, &fs, &root)).unwrap_err().into();
     match err {
         Error::Torn { cause, rollback } => {
             assert!(
@@ -330,7 +334,47 @@ fn a_rollback_that_itself_fails_surfaces_as_torn() {
     // Torn keeps the journal so recovery can later roll the set *forward* to the
     // consistent applied state (prov refuses to claim a state it cannot name).
     assert!(
-        root.join(".prov-journal").exists(),
+        journal.path_in(&root).exists(),
         "a torn apply leaves its journal for recovery"
+    );
+}
+
+#[test]
+fn provs_journal_is_the_one_provs_recovery_reads() {
+    // The coupling that has no compiler to enforce it: a set applied under one
+    // journal name and recovered under another fails *silently* — recovery
+    // finds nothing and reports success, leaving the change stranded
+    // half-applied. Anything in prov that reaches for a bare `ChangeSet::apply`
+    // reintroduces exactly that, so pin both ends here.
+    assert_eq!(prov::journal::JOURNAL_NAME, ".prov-journal");
+    let journal = prov::journal::workspace_journal();
+    assert_eq!(journal.name(), prov::journal::JOURNAL_NAME);
+
+    // And it is emphatically not the transaction crate's default, which is what
+    // a bare `ChangeSet::apply` would write.
+    let default = prov::journal::Journal::default();
+    assert_ne!(default.name(), journal.name());
+
+    let root = tmp("journal-agreement");
+    std::fs::write(root.join("parent.md"), "old").unwrap();
+    let mut cs = ChangeSet::new();
+    cs.write("child.md", "child");
+    cs.write("parent.md", "new");
+
+    // The on-disk state a crash just after the commit point leaves behind.
+    std::fs::write(
+        journal.path_in(&root),
+        prov::journal::encode(cs.ops()).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        block_on(prov::recover(&StdFs, &root)).unwrap(),
+        prov::Recovered::Applied(2),
+        "prov's recovery must find the journal prov's apply writes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("parent.md")).unwrap(),
+        "new"
     );
 }

@@ -32,6 +32,12 @@ pub enum Error {
     /// not be able to reach out of the tree it was pointed at.
     Escape(PathBuf),
 
+    /// A [`Journal`](crate::journal::Journal) was asked for under a name that
+    /// is not a single path component. Refused at construction, because the
+    /// name is joined onto a caller-supplied root and one containing `..` or a
+    /// separator would write outside the very tree an apply clamps into.
+    InvalidJournalName(String),
+
     /// A staged path could not be encoded into the journal because it is not
     /// UTF-8. The journal stores paths as UTF-8 so that a set written on one
     /// platform replays identically on another; a path that cannot round-trip
@@ -79,6 +85,10 @@ impl fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "io error: {e}"),
             Error::Escape(p) => write!(f, "path escapes the root: {}", p.display()),
+            Error::InvalidJournalName(name) => write!(
+                f,
+                "journal name must be a single path component, got {name:?}"
+            ),
             Error::NonUtf8Path(p) => {
                 write!(f, "journal cannot encode non-UTF-8 path: {}", p.display())
             }

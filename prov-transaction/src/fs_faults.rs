@@ -44,7 +44,7 @@ reads_like_stdfs!(FailAtWrite);
 
 impl Storage for FailAtWrite {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
-        if super::journal::is_journal_path(path) {
+        if crate::journal::Journal::default().owns_path(path) {
             return StdFs.write(path, contents).await;
         }
         let n = self.writes.get();

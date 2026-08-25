@@ -877,7 +877,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // before it lands, so a set that fails halfway leaves nothing behind
         // claiming to know what is on disk.
         self.forget_written(&cs);
-        match cs.apply(self.graph.fs(), self.graph.root()).await {
+        match self.apply_set(&cs).await {
             Ok(()) => {
                 // Unconditional: the op succeeded, so its checkpoint is spent
                 // either way. `staged_index` only says whether the store may now
@@ -889,9 +889,25 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
             Err(e) => {
                 self.graph.index_mut().rollback();
-                Err(e.into())
+                Err(e)
             }
         }
+    }
+
+    /// Land `cs` against this workspace's tree, all-or-nothing, through prov's
+    /// write-ahead journal.
+    ///
+    /// **Use this rather than [`ChangeSet::apply`] for anything that mutates a
+    /// workspace.** `ChangeSet::apply` journals under `prov-transaction`'s own
+    /// default name, which prov's recovery — [`crate::journal::recover`], the
+    /// one `prov check` runs — does not look for. A crash mid-apply would then
+    /// leave a journal nothing ever reads, stranding the change half-applied
+    /// with no record of how to finish it. Routing every workspace write
+    /// through here is what keeps the two ends naming the same file.
+    pub async fn apply_set(&self, cs: &ChangeSet) -> Result<()> {
+        Ok(crate::journal::workspace_journal()
+            .apply(cs, self.fs(), self.root())
+            .await?)
     }
 
     /// Drain [`pending_stamps`](Self::pending_stamps) into `cs`: for each
@@ -985,7 +1001,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             prov_store::edit::infer_scalar(&sidecar.to_string_lossy()),
         )?;
         cs.write(root_doc, updated);
-        cs.apply(self.graph.fs(), self.graph.root()).await?;
+        self.apply_set(&cs).await?;
         Ok(created)
     }
 

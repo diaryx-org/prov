@@ -88,7 +88,7 @@ impl Storage for FailAtWrite {
         // writes: leaving them uncounted keeps `nth` addressing the *document*
         // write a test means to fail, the way a real full disk fills mid-content
         // rather than mid-journal. A journal-write failure has its own test.
-        if crate::journal::is_journal_path(path) {
+        if crate::journal::workspace_journal().owns_path(path) {
             return StdFs.write(path, contents).await;
         }
         let n = self.writes.get();
@@ -358,7 +358,7 @@ mod tests {
         let root = tmp("atomic-fail");
         std::fs::write(root.join("doc.md"), "old").unwrap();
         let target = root.join("doc.md");
-        let temp = root.join(".doc.md.prov-tmp");
+        let temp = root.join(".doc.md.fstx-tmp");
 
         let err = block_on(FailingRename.write_atomic(&target, b"new")).unwrap_err();
 
@@ -409,7 +409,7 @@ mod tests {
         std::fs::write(root.join("doc.md"), "old").unwrap();
         let fs = RecordingFs::local();
         let target = root.join("doc.md");
-        let temp = root.join(".doc.md.prov-tmp");
+        let temp = root.join(".doc.md.fstx-tmp");
 
         block_on(fs.write_atomic(&target, b"new")).unwrap();
 
@@ -473,7 +473,7 @@ mod tests {
         let root = tmp("atomic-create");
         let fs = RecordingFs::local();
         let target = root.join("fresh.md");
-        let temp = root.join(".fresh.md.prov-tmp");
+        let temp = root.join(".fresh.md.fstx-tmp");
 
         block_on(fs.write_atomic(&target, b"hello")).unwrap();
 
@@ -507,6 +507,6 @@ mod tests {
             ],
             "the fallback must write the target directly, with no staging rename"
         );
-        assert!(!root.join(".doc.md.prov-tmp").exists());
+        assert!(!root.join(".doc.md.fstx-tmp").exists());
     }
 }

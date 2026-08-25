@@ -476,7 +476,7 @@ fn save_index(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result
     };
     let mut cs = ChangeSet::new();
     cs.write(path, rendered);
-    block_on(cs.apply(&StdFs, &ctx.root_dir))?;
+    block_on(prov::journal::workspace_journal().apply(&cs, &StdFs, &ctx.root_dir))?;
     ws.index_mut().committed(true);
     Ok(())
 }

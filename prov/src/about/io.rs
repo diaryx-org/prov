@@ -60,7 +60,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )?;
             cs.write(root_doc, updated);
         }
-        cs.apply(self.fs(), self.root()).await?;
+        self.apply_set(&cs).await?;
         Ok(path)
     }
 
@@ -87,7 +87,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let updated = prov_store::edit::unset_in_text(&text, doc.carrier, pointer)?;
             cs.write(root_doc, updated);
         }
-        cs.apply(self.fs(), self.root()).await?;
+        self.apply_set(&cs).await?;
         Ok(Some(path))
     }
 

@@ -60,6 +60,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::fs::Storage;
+use crate::journal::Journal;
 
 /// One staged filesystem operation. Paths are **root-relative** — the root
 /// is joined on at [`apply`](ChangeSet::apply) time, so a set is portable
@@ -250,7 +251,21 @@ impl ChangeSet {
     }
 
     /// Execute every staged op against `fs`, rooted at `root`, as one unit —
-    /// crash-atomically, behind a write-ahead journal.
+    /// crash-atomically, behind the [default](Journal::DEFAULT_NAME)
+    /// write-ahead journal.
+    ///
+    /// Shorthand for [`Journal::default().apply(..)`](Journal::apply); reach
+    /// for a named [`Journal`] when the default file name would collide with
+    /// something the tree already means. Whichever is used here, the same one
+    /// has to be used to [`recover`](Journal::recover) an interruption of it.
+    pub async fn apply<FS: Storage>(&self, fs: &FS, root: &Path) -> Result<()> {
+        Journal::default().apply(self, fs, root).await
+    }
+}
+
+impl Journal {
+    /// Execute every op `changes` staged against `fs`, rooted at `root`, as one
+    /// unit — crash-atomically, behind this write-ahead journal.
     ///
     /// The set's intent is journaled and flushed *before* any document is
     /// touched (see [`crate::journal`]); that flush is the commit point. From
@@ -280,11 +295,19 @@ impl ChangeSet {
     /// forward to the consistent applied state. Either way the tree lands on
     /// a state prov can name.
     ///
-    /// Takes `fs`/`root` rather than a higher-level object so a
-    /// bootstrap that must write two files before the tree exists can still
-    /// land them together.
-    pub async fn apply<FS: Storage>(&self, fs: &FS, root: &Path) -> Result<()> {
-        if self.ops.is_empty() {
+    /// Takes `fs`/`root` rather than a higher-level object so a bootstrap
+    /// that must write two files before the tree exists can still land them
+    /// together.
+    ///
+    /// Whatever recovers an interruption of this call must name the same
+    /// journal — see [`Journal`] for why the two operations live together.
+    pub async fn apply<FS: Storage>(
+        &self,
+        changes: &ChangeSet,
+        fs: &FS,
+        root: &Path,
+    ) -> Result<()> {
+        if changes.ops.is_empty() {
             return Ok(());
         }
         // Clamp every staged path to the root *before* anything is
@@ -293,7 +316,7 @@ impl ChangeSet {
         // own mutations — but `apply` also lands sets a caller assembled directly,
         // and a link target that resolves to `../../../etc/passwd` must be refused
         // rather than let an apply write outside the tree it was pointed at.
-        for op in &self.ops {
+        for op in &changes.ops {
             match op {
                 FileOp::Write { path, .. } | FileOp::Remove { path } => {
                     guard_in_root(path)?;
@@ -318,7 +341,7 @@ impl ChangeSet {
         // ([`crate::journal::recover`], which `prov check` runs) must complete
         // it first. A journal this same apply is about to write does not exist yet,
         // so this only ever fires on a genuinely stale one.
-        let journal = root.join(crate::journal::JOURNAL_NAME);
+        let journal = self.path_in(root);
         if fs.try_exists(&journal).await? {
             return Err(Error::StaleJournal(journal));
         }
@@ -343,22 +366,22 @@ impl ChangeSet {
         // journal, but it must not slip a write past an *earlier* interrupted
         // change that recovery has yet to roll forward, or recovery would later
         // overwrite what was just written.
-        if self.ops.len() == 1 && fs.capabilities().atomic_replace {
+        if changes.ops.len() == 1 && fs.capabilities().atomic_replace {
             // No undo to record, either. Nothing preceded this op that could need
             // unwinding, and every failure mode leaves the target untouched — so
             // the reflexive read of the very file about to be overwritten, whose
             // only purpose is to hold the old bytes for a rollback that cannot
             // happen here, goes with it.
-            return exec(fs, root, &self.ops[0], None).await;
+            return exec(fs, root, &changes.ops[0], None).await;
         }
         // The commit point: durably record the whole intent before touching a
         // single document. `write_atomic` flushes it, so a crash finds the
         // journal whole or not at all — never half-written.
-        fs.write_atomic(&journal, &crate::journal::encode(&self.ops)?)
+        fs.write_atomic(&journal, &crate::journal::encode(&changes.ops)?)
             .await?;
 
         let mut undo: Vec<Undo> = Vec::new();
-        for op in &self.ops {
+        for op in &changes.ops {
             let Err(cause) = exec(fs, root, op, Some(&mut undo)).await else {
                 continue;
             };
@@ -557,7 +580,7 @@ mod tests {
     use crate::exec::block_on;
     use crate::fs::StdFs;
     use crate::fs_faults::{FailAtWrite, FsEvent, RecordingFs};
-    use crate::journal::JOURNAL_NAME;
+    use crate::journal::Journal;
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-change-{name}"));
@@ -765,7 +788,7 @@ mod tests {
             if let FsEvent::Write(p) = event {
                 let name = p.file_name().unwrap().to_string_lossy();
                 assert!(
-                    name.contains("prov-tmp"),
+                    name.contains("fstx-tmp"),
                     "wrote a document non-atomically: {name}"
                 );
             }
@@ -774,7 +797,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.contains("prov-tmp"))
+            .filter(|n| n.contains("fstx-tmp"))
             .collect();
         assert!(
             leftovers.is_empty(),
@@ -797,7 +820,7 @@ mod tests {
         block_on(cs.apply(&fs, &root)).unwrap();
 
         let events = fs.events();
-        let journal = root.join(JOURNAL_NAME);
+        let journal = Journal::default().path_in(&root);
 
         // The journal is renamed into place before any document write happens.
         let journal_committed = events
@@ -806,7 +829,7 @@ mod tests {
             .expect("journal must be committed");
         let first_doc_write = events
             .iter()
-            .position(|e| matches!(e, FsEvent::Write(p) if !crate::journal::is_journal_path(p)))
+            .position(|e| matches!(e, FsEvent::Write(p) if !Journal::default().owns_path(p)))
             .expect("a document must be written");
         assert!(
             journal_committed < first_doc_write,
@@ -833,7 +856,7 @@ mod tests {
         cs.write("doc.md", "new");
         block_on(cs.apply(&fs, &root)).unwrap();
 
-        let (target, temp) = (root.join("doc.md"), root.join(".doc.md.prov-tmp"));
+        let (target, temp) = (root.join("doc.md"), root.join(".doc.md.fstx-tmp"));
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
         assert_eq!(
             fs.events(),
@@ -845,7 +868,7 @@ mod tests {
             ],
             "a set of one must cost exactly one atomic write and nothing else"
         );
-        assert!(!root.join(JOURNAL_NAME).exists());
+        assert!(!Journal::default().path_in(&root).exists());
     }
 
     #[test]
@@ -855,7 +878,11 @@ mod tests {
         // that slipped past would be silently overwritten when it finally does.
         let root = tmp("journal-single-stale");
         std::fs::write(root.join("doc.md"), "old").unwrap();
-        std::fs::write(root.join(JOURNAL_NAME), "a previous change's intent").unwrap();
+        std::fs::write(
+            Journal::default().path_in(&root),
+            "a previous change's intent",
+        )
+        .unwrap();
 
         let mut cs = ChangeSet::new();
         cs.write("doc.md", "new");
@@ -921,7 +948,7 @@ mod tests {
         assert_eq!(read(&root, "existing.md").as_deref(), Some("before"));
         assert_eq!(read(&root, "brand-new.md"), None);
         assert!(
-            !root.join(JOURNAL_NAME).exists(),
+            !Journal::default().path_in(&root).exists(),
             "a cleanly-reverted change must not leave a journal to roll forward"
         );
     }
@@ -939,7 +966,7 @@ mod tests {
 
         // The journal the real apply would have committed at its commit point.
         std::fs::write(
-            root.join(JOURNAL_NAME),
+            Journal::default().path_in(&root),
             crate::journal::encode(cs.ops()).unwrap(),
         )
         .unwrap();
@@ -950,7 +977,7 @@ mod tests {
         assert_eq!(outcome, crate::journal::Recovered::Applied(2));
         assert_eq!(read(&root, "child.md").as_deref(), Some("child"));
         assert_eq!(read(&root, "parent.md").as_deref(), Some("new parent"));
-        assert!(!root.join(JOURNAL_NAME).exists());
+        assert!(!Journal::default().path_in(&root).exists());
     }
 
     #[test]
@@ -968,7 +995,7 @@ mod tests {
         );
         // Nothing was written, in or out of the root, and no journal remains.
         assert!(!root.parent().unwrap().join("escape.md").exists());
-        assert!(!root.join(JOURNAL_NAME).exists());
+        assert!(!Journal::default().path_in(&root).exists());
     }
 
     #[test]
@@ -997,7 +1024,7 @@ mod tests {
             bytes: b"prior".to_vec(),
         }];
         std::fs::write(
-            root.join(JOURNAL_NAME),
+            Journal::default().path_in(&root),
             crate::journal::encode(&prior).unwrap(),
         )
         .unwrap();
@@ -1012,7 +1039,7 @@ mod tests {
         // The new set did not land, and the old journal is untouched — recovery can
         // still complete the interrupted change.
         assert_eq!(read(&root, "doc.md").as_deref(), Some("before"));
-        assert!(root.join(JOURNAL_NAME).exists());
+        assert!(Journal::default().path_in(&root).exists());
     }
 
     #[test]
@@ -1026,7 +1053,7 @@ mod tests {
             bytes: b"prior".to_vec(),
         }];
         std::fs::write(
-            root.join(JOURNAL_NAME),
+            Journal::default().path_in(&root),
             crate::journal::encode(&prior).unwrap(),
         )
         .unwrap();

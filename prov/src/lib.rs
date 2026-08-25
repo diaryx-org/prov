@@ -129,10 +129,42 @@ pub mod change {
 }
 /// Journal recovery, retained at its original path for compatibility.
 pub mod journal {
-    pub use prov_transaction::journal::{JOURNAL_NAME, Recovered, recover};
+    use prov_graph::error::Result;
+    use prov_store::fs::Storage;
+    use std::path::Path;
 
-    #[allow(unused_imports)]
-    pub(crate) use prov_transaction::journal::{decode, encode, is_journal_path};
+    pub use prov_transaction::journal::{Journal, Recovered, decode, encode};
+
+    /// The name of prov's write-ahead journal: a single transient dotfile at
+    /// the workspace root, present only between a change set's commit point
+    /// and its completion.
+    pub const JOURNAL_NAME: &str = ".prov-journal";
+
+    /// prov's write-ahead journal — [`JOURNAL_NAME`] at the workspace root.
+    ///
+    /// Named rather than [`Journal::default()`], for two reasons that point the
+    /// same way. The name is part of prov's documented on-disk shape, so a user
+    /// who finds it in their workspace can look it up; and it predates the
+    /// extraction of `prov-transaction`, so a workspace that a crash
+    /// interrupted before an upgrade is carrying its journal under exactly this
+    /// name — and recovery has to still find it, or that change is stranded
+    /// half-applied with no record of how to finish.
+    ///
+    /// Every prov apply and every prov recovery goes through this one value, so
+    /// the two cannot disagree about where to look.
+    pub fn workspace_journal() -> Journal {
+        Journal::named(JOURNAL_NAME).expect("JOURNAL_NAME is a single path component")
+    }
+
+    /// Finish any change set a crash left journaled at `root`, rolling the
+    /// workspace forward to the fully-applied state, then remove the journal.
+    ///
+    /// A no-op when no journal is present, so it is cheap to call
+    /// unconditionally — `prov check` runs it before it reads anything, so an
+    /// interrupted mutation heals before it is diagnosed.
+    pub async fn recover<FS: Storage>(fs: &FS, root: &Path) -> Result<Recovered> {
+        Ok(workspace_journal().recover(fs, root).await?)
+    }
 }
 pub use config::{
     About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, OpenClosed, RelationDef,
@@ -182,11 +214,11 @@ pub use identity::{
     mint_workspace_id,
 };
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
+pub use journal::{Recovered, recover};
 pub use manifest::{ManifestStatus, ManifestUpdate};
 pub use mutate::{ContentState, Created, Diagnosis, Reparented};
 pub use prov_exports::ExportSpec;
 pub use prov_transaction::{ChangeSet, FileOp};
-pub use prov_transaction::{Recovered, recover};
 pub use prov_views::ViewSpec;
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
