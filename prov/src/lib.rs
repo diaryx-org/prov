@@ -177,8 +177,8 @@ pub mod journal {
 pub use config::{
     About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, OpenClosed, RelationDef,
     RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
-    field_type_from_config_str, is_valid_workspace_id, metadata_format_from_str,
-    metadata_format_str, spec_ahead,
+    field_type_from_config_str, is_valid_scope_path, is_valid_workspace_id,
+    metadata_format_from_str, metadata_format_str, spec_ahead,
 };
 pub use discovery::{Discovered, Discovery, discover};
 /// Declarative views over the workspace — the `views:` config axis, the

@@ -792,6 +792,35 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_directory_is_invisible_to_the_recursive_sweep_too() {
+        // The same protection the parked stores get, for the store prov cannot
+        // recognize. `--recursive` deliberately walks everywhere reachability
+        // does not, so without the declaration it mints a sidecar beside every
+        // file another tool owns — the exact damage the test above exists to
+        // prevent, at a directory prov has no way to identify.
+        let dir = tempdir("declared-sweep");
+        write(&dir, "index.md", b"---\ntitle: Home\n---\n");
+        write(&dir, "history/blobs/ab/cdef", b"parked bytes");
+        write(&dir, "loose.pdf", b"%PDF-1.7\n");
+
+        assert_eq!(
+            block_on(ws(&dir).loose_attachments()).unwrap(),
+            vec![PathBuf::from("history/blobs/ab/cdef"), "loose.pdf".into()],
+            "undeclared, another tool's bytes look like loose attachments"
+        );
+
+        let scoped = Workspace::builder(StdFs)
+            .root(&dir)
+            .out_of_scope([PathBuf::from("history")])
+            .build();
+        assert_eq!(
+            block_on(scoped.loose_attachments()).unwrap(),
+            vec![PathBuf::from("loose.pdf")],
+            "declared, the sweep walks into it no more than into prov's own stores"
+        );
+    }
+
+    #[test]
     fn loose_attachments_lists_only_unsidecarred_binaries() {
         let dir = tempdir("loose");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");

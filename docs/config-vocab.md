@@ -139,13 +139,17 @@ prov:
   fixity: all                # off | attachments | all
   recycle_bin: true          # bool — route delete to the recoverable bin
   about: structure           # off | structure — generate about.md, the page that explains this directory
+  out_of_scope:               # directories beside the workspace that are not the workspace
+    - history                 # another tool's store, a sync cache, a vendored checkout
+    - .obsidian
 ```
 
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
-`fixity: attachments`, `recycle_bin: true`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
+`fixity: attachments`, `recycle_bin: true`, `about: structure`,
+`out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content); absent `views` ⇒ the workspace declares no lenses.
@@ -331,6 +335,53 @@ and moves nothing. Publishing, copy-out, and OCFL export are downstream
 consumers of the same plan. The format and planner are the `prov-exports`
 crate, which depends only on the read core and `prov-views` and so cannot
 write to — or leak from — the workspace it judges.
+
+### `out_of_scope` — what is beside the workspace but not in it
+
+prov decides what belongs to a workspace by **reachability**: the bounded walk
+from the root document (spec §8). That answers "does the graph link this?", and
+for a folder nobody meant as content the answer is *no* — which is exactly the
+answer a note someone forgot to link gets. The two are indistinguishable from
+the inside, so a walk with only reachability to go on must descend into both or
+into neither.
+
+`out_of_scope` is how a workspace says which is which. It lists directories
+that are on disk beside the root and are **not** this workspace's content:
+
+```yaml
+out_of_scope:
+  - history        # a version-control store another tool keeps here
+  - .obsidian      # an editor's own folder
+  - vendor/upstream
+```
+
+Each entry is a directory path relative to the workspace root, `/`-separated,
+with no leading slash and no `.` or `..` segment. A malformed entry is reported
+by `check` and dropped rather than half-honored — the same posture
+`workspace_id` has, for the same reason: a path naming somewhere outside the
+workspace cannot bound a walk over it.
+
+What the declaration buys, everywhere at once:
+
+- `check` stops reporting the directory's interior — the containment sweep does
+  not read a claim written inside it;
+- `attach --all --recursive` no longer mints a sidecar beside every file in it;
+- the title index does not resolve a nominal `[[Some Note]]` to a copy living
+  inside it;
+- `prov ignore` names the directory as **one rule**, labelled *declared out of
+  scope* rather than *unreached* — a statement, not an oversight.
+
+Nothing is hidden by it. `prov ignore` still names each declared directory,
+which is what the list is for, and the files stay on disk where they were. What
+changes is that prov stops reporting another tool's interior as this
+workspace's problem.
+
+Set it from the command line with a comma-separated list — the one
+sequence-valued axis `prov config` will write:
+
+```
+prov config out_of_scope history,.obsidian
+```
 
 ### Field types
 

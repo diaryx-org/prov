@@ -224,3 +224,68 @@ fn a_workspace_that_reaches_everything_lists_nothing() {
     assert!(list.is_empty(), "{:?}", lines(&list));
     assert_eq!(list.render(), "");
 }
+
+/// A workspace that declares a folder out of scope gets one rule for it,
+/// labelled as its own statement rather than as an oversight — and the walk
+/// does not go inside to find out what is there.
+#[test]
+fn a_declared_directory_is_one_rule_naming_the_declaration() {
+    let dir = tempdir("declared");
+    root(&dir, &["notes/a.md"]);
+    child(&dir, "notes/a.md", "A");
+    // A store another tool keeps beside the root: many files, none of them
+    // this workspace's business.
+    loose(&dir, "history/revisions/one.md", "One");
+    loose(&dir, "history/revisions/two.md", "Two");
+    write(&dir, "history/header.txt", "a marker prov cannot read\n");
+
+    let scoped = Workspace::builder(StdFs)
+        .root(&dir)
+        .identity(crate::identity::Minter::lazy(42))
+        .index(FileIndex::new(fig::Format::Yaml))
+        .out_of_scope([PathBuf::from("history")])
+        .build();
+    let list = block_on(scoped.ignore_list(Path::new("index.md"))).unwrap();
+
+    assert_eq!(lines(&list), ["/history/"]);
+    assert_eq!(list.rules[0].reason, Reason::Declared);
+}
+
+/// Undeclared, the same folder is ordinary unreached content — collapsed to one
+/// rule for a different reason. The pair is the whole point of the axis: the
+/// bytes on disk are identical, and only the workspace's statement separates
+/// "another tool's store" from "notes nobody linked".
+#[test]
+fn the_same_folder_undeclared_is_merely_unreached() {
+    let dir = tempdir("undeclared");
+    root(&dir, &["notes/a.md"]);
+    child(&dir, "notes/a.md", "A");
+    loose(&dir, "history/revisions/one.md", "One");
+
+    let list = list(&dir);
+
+    assert_eq!(lines(&list), ["/history/"]);
+    assert_eq!(list.rules[0].reason, Reason::Unreached);
+}
+
+/// A declaration beats reachability, not just unreachedness. A document the
+/// graph genuinely links inside a declared directory still yields the one
+/// directory rule: the workspace said the folder is not its content, and a
+/// stray link into it does not overturn that.
+#[test]
+fn a_declaration_covers_even_a_reachable_document() {
+    let dir = tempdir("declared-reachable");
+    root(&dir, &["vendor/copy.md"]);
+    child(&dir, "vendor/copy.md", "Copy");
+
+    let scoped = Workspace::builder(StdFs)
+        .root(&dir)
+        .identity(crate::identity::Minter::lazy(42))
+        .index(FileIndex::new(fig::Format::Yaml))
+        .out_of_scope([PathBuf::from("vendor")])
+        .build();
+    let list = block_on(scoped.ignore_list(Path::new("index.md"))).unwrap();
+
+    assert_eq!(lines(&list), ["/vendor/"]);
+    assert_eq!(list.rules[0].reason, Reason::Declared);
+}

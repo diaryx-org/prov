@@ -415,6 +415,36 @@ pub struct WorkspaceConfig {
     /// Must be [well-formed](is_valid_workspace_id): a malformed value is
     /// reported by [`diagnose`] and ignored rather than half-honored.
     pub workspace_id: String,
+    /// The directories that are **on disk beside the workspace but are not the
+    /// workspace** — another tool's store, a sync cache, a vendored checkout.
+    ///
+    /// The one axis prov cannot work out for itself. Reachability answers
+    /// "does the graph link this?", and for a folder nobody meant as content
+    /// the answer is no in exactly the same way it is for a note someone
+    /// forgot to link — so a walk that has only reachability to go on must
+    /// either descend into both or into neither. Declaring the folder is how
+    /// the workspace says which it is, and the declaration is what every walk
+    /// then honors: the title index does not name a document inside one, the
+    /// orphan and containment sweeps do not report its interior, `attach` does
+    /// not sweep into it, and [`ignore_list`] rules it whole with
+    /// [`Reason::Declared`] rather than picking through it file by file.
+    ///
+    /// Each entry is a **directory** path relative to the workspace root,
+    /// `/`-separated, with no leading slash and no `.` or `..` segment
+    /// ([`is_valid_scope_path`]); a malformed one is reported by [`diagnose`]
+    /// and dropped rather than half-honored, exactly as a malformed
+    /// [`workspace_id`](Self::workspace_id) is. Empty (the default) means the
+    /// workspace declares nothing out of scope, which is every workspace that
+    /// has never needed to.
+    ///
+    /// Nothing is *hidden* by this: [`ignore_list`] names each declared
+    /// directory, which is what the list is for, and the files are on disk
+    /// where they always were. What it buys is that prov stops reporting
+    /// another tool's interior as this workspace's problem.
+    ///
+    /// [`ignore_list`]: https://docs.rs/prov/latest/prov/struct.Workspace.html#method.ignore_list
+    /// [`Reason::Declared`]: https://docs.rs/prov/latest/prov/enum.Reason.html
+    pub out_of_scope: Vec<String>,
 }
 
 /// Whether `name` is a usable workspace self-name.
@@ -424,6 +454,27 @@ pub struct WorkspaceConfig {
 /// `id:<workspace>/<id>` target parses, which is `prov-graph`'s business, not
 /// policy this crate gets a say in.
 pub use prov_graph::link::is_valid_workspace_id;
+
+/// Whether `path` is a usable [`out_of_scope`](WorkspaceConfig::out_of_scope)
+/// entry: a directory named relative to the workspace root.
+///
+/// Every clause is about the one thing the value is *for* — being compared
+/// against a workspace-relative path during a walk. A leading `/` or a drive
+/// letter names somewhere else entirely; a `..` segment names outside the
+/// workspace, which is the one place a workspace has no business declaring
+/// anything about; a `.` or empty segment spells the same directory two ways,
+/// so a path would fail to match itself. A trailing slash is *accepted* and
+/// carries no meaning — every entry is a directory already — but it is not
+/// normalized away here, so [`WorkspaceConfig::apply`] trims it.
+pub fn is_valid_scope_path(path: &str) -> bool {
+    let path = path.strip_suffix('/').unwrap_or(path);
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
 
 impl Default for WorkspaceConfig {
     /// The standalone default: portable markdown-root path links, identity
@@ -451,6 +502,7 @@ impl Default for WorkspaceConfig {
             about: About::Structure,
             updated: String::new(),
             workspace_id: String::new(),
+            out_of_scope: Vec::new(),
         }
     }
 }
@@ -828,6 +880,24 @@ impl WorkspaceConfig {
         {
             self.about = v;
         }
+        // The declared scope. Replaced whole rather than merged, unlike `views`
+        // and `fields`: those are keyed collections where a later surface adds
+        // an entry, and this is one statement about one workspace — a surface
+        // that could only ever lengthen the list could never shorten it.
+        // Normalized here (trimmed, deduplicated, sorted) so `to_mapping`
+        // round-trips stably and two configs saying the same thing diff clean.
+        if let Some(seq) = meta.get("out_of_scope").and_then(Value::as_sequence) {
+            let mut dirs: Vec<String> = seq
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|dir| is_valid_scope_path(dir))
+                .map(|dir| dir.strip_suffix('/').unwrap_or(dir).to_string())
+                .collect();
+            dirs.sort();
+            dirs.dedup();
+            self.out_of_scope = dirs;
+        }
     }
 
     /// A fresh config with `meta`'s recognized keys applied over the defaults.
@@ -988,6 +1058,20 @@ impl WorkspaceConfig {
             "workspace_id".into(),
             Value::String(self.workspace_id.clone()),
         );
+        // Written only when the workspace declares something, like `views` and
+        // unlike the scalar axes: an empty sequence is the default said out
+        // loud, and every existing config document would grow the key for it.
+        if !self.out_of_scope.is_empty() {
+            map.insert(
+                "out_of_scope".into(),
+                Value::Sequence(
+                    self.out_of_scope
+                        .iter()
+                        .map(|dir| Value::String(dir.clone()))
+                        .collect(),
+                ),
+            );
+        }
         map
     }
 }
@@ -1068,6 +1152,7 @@ const TOP_KEYS: &[&str] = &[
     "fixity",
     "recycle_bin",
     "about",
+    "out_of_scope",
 ];
 /// Keys inside the `metadata:` block.
 const METADATA_KEYS: &[&str] = &["format", "embed"];
@@ -1153,6 +1238,36 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                 );
             }
             "updated" => {} // free-form field name
+            // A sequence of workspace-relative directory paths. Each entry is
+            // judged on its own, so one malformed line is one issue naming
+            // that line rather than a verdict on the whole list.
+            "out_of_scope" => match value.as_sequence() {
+                Some(seq) => {
+                    for entry in seq {
+                        let ok = entry
+                            .as_str()
+                            .is_some_and(|dir| is_valid_scope_path(dir.trim()));
+                        if !ok {
+                            issues.push(ConfigIssue {
+                                key: key.clone(),
+                                kind: ConfigIssueKind::InvalidValue {
+                                    value: value_summary(entry),
+                                    expected: vec![
+                                        "a directory path relative to the workspace root".into(),
+                                    ],
+                                },
+                            });
+                        }
+                    }
+                }
+                None => issues.push(ConfigIssue {
+                    key: key.clone(),
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: value_summary(value),
+                        expected: vec!["a list of directory paths".into()],
+                    },
+                }),
+            },
             // A name the user chose, constrained only in shape — it has to
             // survive being written as the qualifier of an `id:<ws>/<id>`
             // target. A non-string is malformed for the same reason.
@@ -1842,6 +1957,16 @@ mod tests {
         Value::Mapping(map)
     }
 
+    /// A config surface declaring `out_of_scope` and nothing else.
+    fn scope_doc(dirs: &[&str]) -> Value {
+        let mut map = Mapping::new();
+        map.insert(
+            "out_of_scope".into(),
+            Value::Sequence(dirs.iter().map(|d| Value::String((*d).into())).collect()),
+        );
+        Value::Mapping(map)
+    }
+
     // Uses YAML frontmatter fixtures, so it runs under the `yaml` feature.
     #[test]
     #[cfg(feature = "yaml")]
@@ -2054,6 +2179,10 @@ mod tests {
             // Non-default (the default is anonymous), so the round trip proves
             // the name survives rather than being silently dropped.
             workspace_id: "notes".to_string(),
+            // Sorted here rather than as authored: `apply` normalizes, so a
+            // list written in any other order would fail this round trip for
+            // the right reason.
+            out_of_scope: vec![".obsidian".to_string(), "history".to_string()],
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);
@@ -2200,6 +2329,74 @@ mod tests {
                 suggestion: "recycle_bin".into()
             }
         );
+    }
+
+    /// A sequence of directory paths, normalized on the way in: trimmed,
+    /// deduplicated, sorted, and with the trailing slash a person naturally
+    /// types for a directory dropped. Normalizing here is what lets
+    /// `to_mapping` round-trip stably.
+    #[test]
+    fn out_of_scope_is_normalized_when_applied() {
+        let mut cfg = WorkspaceConfig::default();
+        assert!(cfg.out_of_scope.is_empty(), "nothing declared by default");
+        cfg.apply(&scope_doc(&["history/", " .obsidian ", "history"]));
+        assert_eq!(cfg.out_of_scope, [".obsidian", "history"]);
+    }
+
+    /// A malformed entry is dropped rather than half-honored — the same
+    /// posture `workspace_id` has, and for the same reason: a path that names
+    /// somewhere outside the workspace cannot bound a walk over it.
+    #[test]
+    fn out_of_scope_drops_entries_that_could_not_bound_a_walk() {
+        let mut cfg = WorkspaceConfig::default();
+        cfg.apply(&scope_doc(&[
+            "/etc",
+            "../sibling",
+            "notes/./a",
+            "",
+            "history",
+        ]));
+        assert_eq!(cfg.out_of_scope, ["history"]);
+    }
+
+    /// …and each dropped entry is reported, so a declaration that never takes
+    /// effect is visible rather than silent. One issue per bad line, naming
+    /// that line.
+    #[test]
+    fn diagnose_reports_each_unusable_out_of_scope_entry() {
+        let issues = diagnose(&scope_doc(&["/etc", "history", "../sibling"]));
+        assert_eq!(issues.len(), 2);
+        assert!(issues.iter().all(|issue| issue.key == "out_of_scope"));
+        assert!(
+            issues
+                .iter()
+                .all(|issue| matches!(issue.kind, ConfigIssueKind::InvalidValue { .. }))
+        );
+    }
+
+    /// A scalar where a list belongs is one issue about the axis, not a silent
+    /// no-op — the shape is wrong, so there are no entries to judge.
+    #[test]
+    fn diagnose_reports_an_out_of_scope_that_is_not_a_list() {
+        let issues = diagnose(&config_doc(&[("out_of_scope", "history")]));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].key, "out_of_scope");
+    }
+
+    #[test]
+    fn a_scope_path_has_to_be_a_relative_directory() {
+        assert!(is_valid_scope_path("history"));
+        assert!(is_valid_scope_path("history/"));
+        assert!(is_valid_scope_path("a/b/c"));
+        assert!(is_valid_scope_path(".obsidian"));
+        assert!(!is_valid_scope_path(""));
+        assert!(!is_valid_scope_path("/"));
+        assert!(!is_valid_scope_path("/absolute"));
+        assert!(!is_valid_scope_path("../outside"));
+        assert!(!is_valid_scope_path("a/../b"));
+        assert!(!is_valid_scope_path("a/./b"));
+        assert!(!is_valid_scope_path("a//b"));
+        assert!(!is_valid_scope_path("a\\b"));
     }
 
     #[test]

@@ -144,16 +144,6 @@ Still open here:
   shape is a finding message that names the situation rather than a `Fix` that
   shells out to a tool prov cannot see. Until then `FixityMismatch` offers only
   the re-stamp, marked `Judgment`.
-- **Nothing can tell a walk to skip a directory.** A workspace with another
-  tool's store beside the root — a version-control folder, a sync cache, a
-  vendored checkout — has no way to say so. prov parks its *own* byte stores
-  (`parked_dirs`) and skips hidden entries, and that is the whole of it, so
-  such a directory is walked, title-indexed and reported as unreached content.
-  `prov ignore` naming it is right (that is what the list is for); `check`
-  reporting its interior is noise. The fix is a scoping the workspace
-  *declares* — an axis, or a convention a directory can carry — feeding both
-  the walk and the ignore list from one place, and it is a decision about what
-  `check` reaches, not a patch to either caller.
 - **`DemoteEntry`** — spanning → overlay, contested containment's third answer.
 - **`MalformedStore`** — migrating a markdown store to a whole-file carrier
   creates a file and rewrites a pointer, so it is a mutation verb, not a fix.

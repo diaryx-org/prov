@@ -58,6 +58,13 @@ pub enum Reason {
     /// An archive a manifest document claims in bulk. Its rows are pinned by
     /// hash in a document the graph does reach, so the directory is one fact.
     Claimed,
+    /// The workspace itself says the directory is not its content
+    /// ([`out_of_scope`](crate::config::WorkspaceConfig::out_of_scope)) —
+    /// another tool's store, a sync cache, a vendored checkout. The one reason
+    /// prov did not work out for itself, and the only one that is a *statement*
+    /// rather than an observation: nothing about the directory's contents
+    /// could have produced it.
+    Declared,
     /// A hidden entry — an editor's or a tool's, not the workspace's content.
     /// A hidden directory is ruled without being walked, so a `.git` holding
     /// ten thousand objects costs one listing, not ten thousand.
@@ -136,6 +143,11 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 .iter()
                 .filter_map(|path| slash(path))
                 .collect(),
+            declared: self
+                .out_of_scope()
+                .iter()
+                .filter_map(|path| slash(path))
+                .collect(),
         };
 
         let (mut rules, _) = walk(self, &scan, String::new()).await?;
@@ -166,6 +178,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
 struct Scan {
     reachable: BTreeSet<String>,
     bookkeeping: Vec<String>,
+    declared: Vec<String>,
 }
 
 impl Scan {
@@ -175,6 +188,16 @@ impl Scan {
         self.bookkeeping
             .iter()
             .any(|prefix| rel == prefix || under(rel, prefix))
+    }
+
+    /// Whether the workspace declared `rel` — or a directory above it — out of
+    /// scope. The walk stops at the topmost one, so the nested test only
+    /// matters for a declaration made below a directory the walk entered for
+    /// another reason.
+    fn declared_covers(&self, rel: &str) -> bool {
+        self.declared
+            .iter()
+            .any(|dir| rel == dir || under(rel, dir))
     }
 
     /// Whether the graph reaches anything strictly beneath the directory
@@ -263,6 +286,14 @@ fn walk<'a, FS: Storage, Id, Ix: IndexStore>(
             };
 
             if entry.file_type().is_dir() {
+                // Ahead of every other test, because it is the workspace's own
+                // statement rather than prov's inference: a declared directory
+                // is one rule whatever its interior looks like, and the walk
+                // does not enter it to find out.
+                if scan.declared_covers(&rel) {
+                    rules.push(dir(rel, Reason::Declared));
+                    continue;
+                }
                 if scan.bookkeeping_covers(&rel) {
                     rules.push(dir(rel, Reason::Bookkeeping));
                     continue;
@@ -294,8 +325,14 @@ fn walk<'a, FS: Storage, Id, Ix: IndexStore>(
             } else if entry.file_type().is_file() {
                 // Bookkeeping is checked before reachability, not after: a
                 // derived page is *deliberately* reachable — the pointer is
-                // what keeps it from lying loose — and excluded even so.
-                let reason = if scan.bookkeeping_covers(&rel) {
+                // what keeps it from lying loose — and excluded even so. The
+                // declaration comes first for the same reason and one more: a
+                // declared path that turns out to name a file rather than a
+                // directory is still the workspace's statement, and every walk
+                // already honors it as one.
+                let reason = if scan.declared_covers(&rel) {
+                    Reason::Declared
+                } else if scan.bookkeeping_covers(&rel) {
                     Reason::Bookkeeping
                 } else if scan.reachable.contains(&rel) {
                     any_reachable = true;

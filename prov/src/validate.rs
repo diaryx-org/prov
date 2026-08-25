@@ -2478,6 +2478,41 @@ mod tests {
         );
     }
 
+    /// The declared scope bounds `check` the way prov's own parked stores do.
+    ///
+    /// The case the axis exists for: another tool's store sits beside the root,
+    /// its documents internally well-linked and claiming each other as parents.
+    /// Undeclared, that claim reaches `missing_containment` and the store's
+    /// interior becomes this workspace's findings. Declared, the walk never
+    /// enters it.
+    #[test]
+    fn a_declared_directory_keeps_its_interior_out_of_check() {
+        let dir = tempdir("scope-check");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        // A store whose top document claims the tree — the shape a bounded
+        // sweep cannot ignore, because the claim is what survives the bound.
+        write(&dir, "history/rev.md", "---\npart_of: ../index.md\n---\n");
+
+        let bare = Workspace::builder(StdFs).root(&dir).build();
+        let unbounded = block_on(bare.check("index.md")).unwrap();
+        assert!(
+            !unbounded.is_empty(),
+            "undeclared, the store's claim is this workspace's problem"
+        );
+
+        let scoped = Workspace::builder(StdFs)
+            .root(&dir)
+            .out_of_scope([PathBuf::from("history")])
+            .build();
+        let findings = block_on(scoped.check("index.md")).unwrap();
+        assert_eq!(
+            findings,
+            vec![],
+            "declared out of scope, nothing in it is reported: {findings:?}"
+        );
+    }
+
     #[test]
     fn a_disconnected_island_is_reported_once_at_the_link_it_is_missing() {
         // The failure the bounded sweep cannot see: a whole subtree, internally

@@ -102,6 +102,11 @@ pub struct Settings {
     /// reference can ever be recognized as pointing back here. See
     /// [`WorkspaceConfig::workspace_id`](crate::config::WorkspaceConfig::workspace_id).
     pub workspace_id: String,
+    /// The directories the workspace declares are not its content — see
+    /// [`parked_dirs`](Workspace::parked_dirs) and
+    /// [`WorkspaceConfig::out_of_scope`](crate::config::WorkspaceConfig::out_of_scope).
+    /// Workspace-relative, `/`-separated. Empty declares nothing.
+    pub out_of_scope: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -116,6 +121,7 @@ impl Default for Settings {
             fixity: Fixity::Payloads,
             id_storage: IdStorage::Registry,
             workspace_id: String::new(),
+            out_of_scope: Vec::new(),
         }
     }
 }
@@ -147,6 +153,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             fixity: config.fixity,
             id_storage: config.id_storage,
             workspace_id: config.workspace_id.clone(),
+            out_of_scope: config.out_of_scope.iter().map(PathBuf::from).collect(),
             ..Self::default()
         }
     }
@@ -361,6 +368,16 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         &self.settings.workspace_id
     }
 
+    /// The directories this workspace declares are not its content — another
+    /// tool's store, a sync cache, a vendored checkout. Workspace-relative.
+    ///
+    /// Every walk is bounded by these ([`parked_dirs`](Self::parked_dirs)) and
+    /// [`ignore_list`](Self::ignore_list) rules each one whole. Empty for a
+    /// workspace that declares nothing, which is most of them.
+    pub fn out_of_scope(&self) -> &[PathBuf] {
+        &self.settings.out_of_scope
+    }
+
     /// The workspace-default reference style — the fallback for any relation
     /// without its own `style` override. An explicit `reference_style` builder
     /// value wins; otherwise it is derived from the legacy `link_style`/`id_links`
@@ -540,14 +557,20 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// keeps the *cost* out too: a scan that never descends does not read a
     /// thousand revision documents in order to discard them.
     ///
-    /// What is *not* here is another tool's store sitting beside the root — a
-    /// version-control folder, a sync tool's cache. prov has no way to be told
-    /// about one, so every walk sees it as ordinary content the graph fails to
-    /// reach: [`ignore_list`](Self::ignore_list) reports it, which is useful,
-    /// and `check` reports its interior, which is noise. Scoping a walk to
-    /// something the workspace declares is its own decision, unmade.
+    /// Another tool's store sitting beside the root — a version-control
+    /// folder, a sync tool's cache, a vendored checkout — is here too, but
+    /// only because the workspace **declared** it
+    /// ([`out_of_scope`](Self::out_of_scope)). prov cannot recognize one:
+    /// reachability says "nothing links this", which is equally true of a note
+    /// its author forgot to link, so the difference is a statement only the
+    /// workspace can make. Until it makes one, such a directory is ordinary
+    /// unreached content — which is the honest answer, not an oversight.
     pub(crate) async fn parked_dirs(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
-        let mut dirs = Vec::new();
+        // The declared scope first: it is the cheapest of the three (no read
+        // at all) and the only one the workspace states rather than prov
+        // deriving, so a walk bounded by it is bounded before any pointer is
+        // followed.
+        let mut dirs: Vec<PathBuf> = self.settings.out_of_scope.clone();
         // A retired prov event store the root still points at. The `history`
         // pointer and this parking survive the store's retirement so an
         // unmigrated workspace keeps its scans out of the event archive; both
@@ -1335,6 +1358,17 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Declare directories that are on disk beside the workspace but are not
+    /// the workspace — see
+    /// [`Workspace::out_of_scope`](Workspace::out_of_scope). Each is
+    /// workspace-relative; anything absolute or reaching outside is the
+    /// caller's error to avoid, since a builder has no config document to file
+    /// a [`ConfigIssue`](crate::ConfigIssue) against.
+    pub fn out_of_scope(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.settings.out_of_scope = dirs.into_iter().collect();
+        self
+    }
+
     /// Set the workspace-default reference style — the fallback for relations
     /// without their own override. Supersedes the `link_style`/`id_links`
     /// convenience inputs when set.
@@ -1467,6 +1501,7 @@ mod tests {
             fixity: Fixity::Off,
             id_storage: IdStorage::Frontmatter,
             workspace_id: "notes".into(),
+            out_of_scope: vec![PathBuf::from("history")],
         };
         let ws = Workspace::builder(DummyFs)
             .root("vault")
@@ -1482,6 +1517,7 @@ mod tests {
         assert_eq!(ws.fixity(), Fixity::Off);
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
         assert_eq!(ws.workspace_id(), "notes");
+        assert_eq!(ws.out_of_scope(), [PathBuf::from("history")]);
         assert_eq!(ws.relations().spanning_relation(), Some("contents"));
         // `id_links` has no field of its own on the far side — it is read back
         // through the reference style it feeds, which is the whole of what it
@@ -1493,6 +1529,7 @@ mod tests {
         let copy = ws.clone();
         assert_eq!(copy.id_storage(), IdStorage::Frontmatter);
         assert_eq!(copy.workspace_id(), "notes");
+        assert_eq!(copy.out_of_scope(), [PathBuf::from("history")]);
     }
 
     /// A config document declares the workspace's policy, and all of it arrives.

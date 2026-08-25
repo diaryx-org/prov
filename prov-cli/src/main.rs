@@ -2753,6 +2753,7 @@ pub(crate) fn reason_word(reason: prov::Reason) -> &'static str {
     match reason {
         prov::Reason::Bookkeeping => "bookkeeping",
         prov::Reason::Claimed => "claimed by a manifest",
+        prov::Reason::Declared => "declared out of scope",
         prov::Reason::Hidden => "hidden",
         prov::Reason::Unreached => "unreached",
     }
@@ -3274,6 +3275,21 @@ fn cmd_config(
             // to set a name it had just minted itself.
             let inferred: Value = if key == "workspace_id" {
                 Value::String(value.to_string())
+            } else if key == "out_of_scope" {
+                // The one sequence-valued axis reachable from here, so the one
+                // that needs a spelling a shell can produce: comma-separated,
+                // because the alternative is asking a person to hand-edit YAML
+                // for the axis whose whole purpose is to be set once by someone
+                // who just noticed another tool's folder beside their notes.
+                // An empty value clears the list rather than declaring `""`.
+                Value::Sequence(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|dir| !dir.is_empty())
+                        .map(|dir| Value::String(dir.to_string()))
+                        .collect(),
+                )
             } else {
                 edit::infer_scalar(value).into()
             };
