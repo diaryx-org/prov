@@ -288,11 +288,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// disk — [`reachable_set`] over a fresh walk, filtered to real files.
     ///
     /// This is §8's bounded walk expressed as a *file set* rather than a findings
-    /// list: the same population `check` validates. `prov`'s `Workspace::history_capture` captures
-    /// it (minus prov's two byte-parking stores) precisely so that an event is a
-    /// consistent cut across everything the workspace considers its own.
+    /// list: the same population `check` validates. `prov`'s `Workspace::ignore_list`
+    /// subtracts it from a top-down walk of the folder to say what is *not* the
+    /// workspace — so the two answers come from one definition of what the
+    /// workspace considers its own, rather than two that can disagree.
     ///
-    /// `prov`'s `Workspace::history_capture`: `prov`'s `Workspace::history_capture`
+    /// [`reachable_files_within`](Self::reachable_files_within) is the same walk
+    /// bounded away from directories prov parks its own bytes in.
     pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
         self.reachable_files_within(start, &[]).await
     }

@@ -24,7 +24,7 @@
 //! The write surface is `prov-store`: `Storage`, the metadata editor, and the
 //! `IndexStore` registries. The verbs are `prov`: creating, renaming, deleting,
 //! attaching, the change/journal machinery that makes a mutation crash-atomic,
-//! the version history, the config layer, the validation and repair passes.
+//! the config layer, the validation and repair passes.
 //! `prov` owns one [`Graph`] and forwards every read to it, so the two are the
 //! same traversal — not a reimplementation that can drift.
 //!

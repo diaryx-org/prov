@@ -74,7 +74,7 @@ pub mod workspace;
 /// `prov` is `prov-graph` plus the verbs. A consumer that needs both should
 /// depend on `prov` alone and reach everything through here; a consumer that
 /// only traverses can depend on `prov-graph` directly and link none of the
-/// mutation, history, or config machinery.
+/// mutation or config machinery.
 pub use prov_graph;
 /// Identity — the id type, its check-character verification, and the
 /// registration/minting policy.

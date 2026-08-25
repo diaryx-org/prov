@@ -125,7 +125,7 @@ impl Default for Settings {
 ///
 /// This is the conversion the CLI used to spell out as ten builder calls. It
 /// lives here rather than in [`config`](crate::config) because `workspace`
-/// already depends on `config` (for [`Fixity`], [`History`], [`IdStorage`]) and
+/// already depends on `config` (for [`Fixity`], [`IdStorage`]) and
 /// the reverse edge would be a cycle for no gain.
 ///
 /// Two fields are deliberately not read. `identity` is a

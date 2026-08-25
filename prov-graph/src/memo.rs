@@ -28,8 +28,8 @@
 //! itself on would be a cache again, and because the caller is the only one who
 //! knows where its operation begins. Scopes nest: an operation that opens one
 //! and then calls another that opens its own gets a single memo lasting the
-//! outer one, which is exactly the composition case (`history_capture` opens a
-//! scope and then calls `reachable_files`, which is welcome to open its own).
+//! outer one, which is exactly the composition case (`prov`'s `check` opens a
+//! scope and then calls `walk`, which is welcome to open its own).
 //!
 //! ## What is not memoized
 //!

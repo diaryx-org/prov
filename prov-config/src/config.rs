@@ -3,7 +3,7 @@
 //! DESIGN §6's reachability move applied to policy) and from its root's
 //! `prov:` frontmatter block.
 //!
-//! Programmatic embedders never need this: they configure the [`Workspace`]
+//! Programmatic embedders never need this: they configure the `Workspace`
 //! directly through the builder (`.link_style`, `.identity`, …), which is why
 //! the type-level identity/index choice lives there. `WorkspaceConfig` is the
 //! **data** shape that lets a workspace configure *itself* — so the same tool
@@ -20,8 +20,6 @@
 //! [`apply`](WorkspaceConfig::apply) reads either shape; unset keys keep their
 //! default, and layering root block then config document gives the precedence
 //! *config document > root `prov:` block > default*.
-//!
-//! [`Workspace`]: crate::workspace::Workspace
 
 use std::collections::BTreeMap;
 
@@ -481,7 +479,7 @@ impl WorkspaceConfig {
     }
 
     /// The fused path [`LinkStyle`] this config's notation + path resolution
-    /// select — what the [`Workspace`](crate::workspace::Workspace) builder's
+    /// select — what `prov`'s `Workspace` builder's
     /// `link_style` expects for authoring structural path links.
     pub fn link_format(&self) -> LinkStyle {
         LinkStyle::from_axes(self.notation, self.path_style)

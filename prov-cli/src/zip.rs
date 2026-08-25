@@ -1,8 +1,8 @@
 //! A minimal, store-only (uncompressed) ZIP writer for `prov backup --zip`.
 //!
 //! prov keeps its dependency surface tiny and WASM-clean (no build-toolchain
-//! cost, nothing to audit) — the same reason [`prov::fixity`] hand-rolls
-//! SHA-256 rather than pulling in a crate. A *store-only* ZIP archive (method
+//! cost, nothing to audit) — the same reason [`prov::exec::block_on`] is fifteen
+//! lines rather than an async runtime. A *store-only* ZIP archive (method
 //! 0: bytes copied verbatim, no DEFLATE) is small enough to hand-write the same
 //! way: local file headers, a central directory, and an end-of-central-directory
 //! record, per the format's own spec (PKWARE APPNOTE.TXT §4.3). CRC-32 is the

@@ -51,10 +51,13 @@
 //! Nor do the covered files enter the reachable set. They are opaque bytes: not
 //! content documents, so never orphan candidates, and adding ten thousand paths
 //! to every walk would make the archive pay on each one for a check none of them
-//! can fail. The consequence worth stating: a history capture parks the
-//! *manifest*, not the photographs. Damage to them stays **detectable** — every
-//! hash is on record — but not undoable from the history store, which is the
-//! price of not duplicating an archive into `history/blobs/`.
+//! can fail. The consequence worth stating: a tool that copies, syncs or
+//! records what the workspace reaches takes the *manifest*, not the
+//! photographs — [`ignore_list`](Workspace::ignore_list) rules the archive out
+//! by naming it *claimed*. Damage to the files stays **detectable**, because
+//! every hash is on record, and recovering them is that tool's business rather
+//! than prov's. The price of not duplicating an archive is that prov never
+//! holds a second copy to restore from.
 
 use std::path::{Path, PathBuf};
 
@@ -971,10 +974,10 @@ mod tests {
 
     #[test]
     fn the_reachable_set_holds_the_manifest_and_not_the_archive() {
-        // What a history capture parks falls out of this one set, so the promise
-        // "the manifest is captured, the photographs are not" is really a
-        // statement about reachability — tested where it is decided rather than
-        // through the store that consumes it.
+        // What a copying tool takes falls out of this one set, so the promise
+        // "the manifest travels, the photographs do not" is really a statement
+        // about reachability — tested where it is decided rather than through
+        // the ignore list that renders it.
         let dir = photos("reachable");
         block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
 
@@ -983,7 +986,7 @@ mod tests {
         assert!(reachable.contains(Path::new("photos.yaml")));
         assert!(
             !reachable.contains(Path::new("photos/a.jpg")),
-            "an archive must not be duplicated into the history store"
+            "an archive must not enter the reachable set"
         );
     }
 
