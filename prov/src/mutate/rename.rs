@@ -93,14 +93,27 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // a guard, not something rollback covers — and it is easy to walk into,
         // since the body's name is *derived* (`notes.yaml` → `notes.md`) and so
         // never passed by the caller, who therefore never sees the collision.
-        if let Some(mv) = &body_move
-            && self.exists(&mv.to).await?
-        {
-            return Err(Error::Structure(format!(
-                "{}'s content file would move to {}, which already exists",
-                to.display(),
-                mv.to.display()
-            )));
+        if let Some(mv) = &body_move {
+            // The node's own destination counts as occupied ground too: renaming
+            // a separated node onto its body's extension (`a.yaml` → `p.md`)
+            // derives the body's new home as the same path, and the pair cannot
+            // share one — whichever lands second silently replaces the first,
+            // since `rename` overwrites an occupied file (std::fs semantics,
+            // which every backend mirrors).
+            if mv.to == to {
+                return Err(Error::Structure(format!(
+                    "{} would collide with its own content file: the node and \
+                     its body would both land there",
+                    to.display()
+                )));
+            }
+            if self.exists(&mv.to).await? {
+                return Err(Error::Structure(format!(
+                    "{}'s content file would move to {}, which already exists",
+                    to.display(),
+                    mv.to.display()
+                )));
+            }
         }
 
         // 2. The document itself: when its directory changes, every relative
@@ -854,6 +867,40 @@ mod tests {
             dir.join("notes.yaml").exists(),
             "and the refused move changed nothing"
         );
+    }
+
+    #[test]
+    fn moving_a_separated_node_onto_its_own_body_extension_is_refused() {
+        // `notes.yaml` → `p.md` derives the body's new home as `p.md` too — the
+        // node and its body cannot share one path, and `rename` overwrites, so
+        // whichever landed second would silently replace the first. Found by the
+        // sequence law in `mutate::properties` the moment the in-memory backend
+        // started mirroring `std::fs::rename`'s replace semantics; over a real
+        // disk it was always a silent clobber.
+        let dir = tempdir("body-self-collision");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- notes.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "notes.yaml",
+            "title: Notes\npart_of: index.md\ncontent: notes.md\n",
+        );
+        write(&dir, "notes.md", "the prose\n");
+
+        let err =
+            block_on(ws(&dir).rename(Path::new("notes.yaml"), Path::new("p.md"))).unwrap_err();
+        assert!(
+            err.to_string().contains("content file"),
+            "should say what collided: {err}"
+        );
+        assert!(
+            dir.join("notes.yaml").exists() && dir.join("notes.md").exists(),
+            "the refused move changed nothing"
+        );
+        assert_eq!(read(&dir, "notes.md"), "the prose\n", "the body is intact");
     }
 
     #[test]
