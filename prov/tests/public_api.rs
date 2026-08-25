@@ -266,6 +266,12 @@ impl ReadStorage for DoubleFault {
     async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
         StdFs.metadata(path).await
     }
+    async fn executable(&self, path: &Path) -> io::Result<Option<bool>> {
+        StdFs.executable(path).await
+    }
+    async fn read_link(&self, path: &Path) -> io::Result<Option<PathBuf>> {
+        StdFs.read_link(path).await
+    }
 }
 
 impl Storage for DoubleFault {
@@ -274,6 +280,18 @@ impl Storage for DoubleFault {
             return Err(io::Error::other("double fault (test)"));
         }
         StdFs.write(path, contents).await
+    }
+    // Delegated, not defaulted: `capabilities` below claims `LOCAL_FS`, whose
+    // `exclusive_create` promises a working `create_new` — the default's
+    // `Unsupported` refusal would break that promise.
+    async fn create_new(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.create_new(path, contents).await
+    }
+    async fn set_executable(&self, path: &Path, executable: bool) -> io::Result<()> {
+        StdFs.set_executable(path, executable).await
+    }
+    async fn set_link(&self, path: &Path, target: &Path) -> io::Result<()> {
+        StdFs.set_link(path, target).await
     }
     async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         StdFs.create_dir_all(path).await

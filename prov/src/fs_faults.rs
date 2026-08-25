@@ -76,6 +76,15 @@ macro_rules! reads_like_stdfs {
             async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
                 StdFs.metadata(path).await
             }
+            // The execute bit and links are modeled — this *is* a local
+            // filesystem — so leaving these at the trait's declining defaults
+            // would misreport what is on disk.
+            async fn executable(&self, path: &Path) -> io::Result<Option<bool>> {
+                StdFs.executable(path).await
+            }
+            async fn read_link(&self, path: &Path) -> io::Result<Option<PathBuf>> {
+                StdFs.read_link(path).await
+            }
         }
     };
 }
@@ -112,6 +121,19 @@ impl Storage for FailAtWrite {
     }
     async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
         StdFs.copy_permissions(from, to).await
+    }
+    // Delegated, not defaulted: `capabilities` below claims `LOCAL_FS`, whose
+    // `exclusive_create` promises a working `create_new` — the default's
+    // `Unsupported` refusal would break that promise. Same for the link and
+    // execute-bit members, whose read halves the macro above delegates.
+    async fn create_new(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.create_new(path, contents).await
+    }
+    async fn set_executable(&self, path: &Path, executable: bool) -> io::Result<()> {
+        StdFs.set_executable(path, executable).await
+    }
+    async fn set_link(&self, path: &Path, target: &Path) -> io::Result<()> {
+        StdFs.set_link(path, target).await
     }
     // A faithful local filesystem in every respect but the chosen failing write,
     // so a change set applied over it exercises the *real* atomic-write protocol
@@ -189,11 +211,26 @@ impl ReadStorage for CountingFs {
     async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
         StdFs.metadata(path).await
     }
+    async fn executable(&self, path: &Path) -> io::Result<Option<bool>> {
+        StdFs.executable(path).await
+    }
+    async fn read_link(&self, path: &Path) -> io::Result<Option<PathBuf>> {
+        StdFs.read_link(path).await
+    }
 }
 
 impl Storage for CountingFs {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         StdFs.write(path, contents).await
+    }
+    async fn create_new(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.create_new(path, contents).await
+    }
+    async fn set_executable(&self, path: &Path, executable: bool) -> io::Result<()> {
+        StdFs.set_executable(path, executable).await
+    }
+    async fn set_link(&self, path: &Path, target: &Path) -> io::Result<()> {
+        StdFs.set_link(path, target).await
     }
     async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         StdFs.create_dir_all(path).await
@@ -266,6 +303,21 @@ impl Storage for RecordingFs {
             .push(FsEvent::Write(path.to_path_buf()));
         StdFs.write(path, contents).await
     }
+    // Logged as a write: an exclusive create is a write with a stricter
+    // precondition, and a protocol test cares that the bytes landed, not which
+    // syscall landed them.
+    async fn create_new(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        self.log
+            .borrow_mut()
+            .push(FsEvent::Write(path.to_path_buf()));
+        StdFs.create_new(path, contents).await
+    }
+    async fn set_executable(&self, path: &Path, executable: bool) -> io::Result<()> {
+        StdFs.set_executable(path, executable).await
+    }
+    async fn set_link(&self, path: &Path, target: &Path) -> io::Result<()> {
+        StdFs.set_link(path, target).await
+    }
     async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         StdFs.create_dir_all(path).await
     }
@@ -314,6 +366,15 @@ reads_like_stdfs!(FailingRename);
 impl Storage for FailingRename {
     async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
         StdFs.write(path, contents).await
+    }
+    async fn create_new(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.create_new(path, contents).await
+    }
+    async fn set_executable(&self, path: &Path, executable: bool) -> io::Result<()> {
+        StdFs.set_executable(path, executable).await
+    }
+    async fn set_link(&self, path: &Path, target: &Path) -> io::Result<()> {
+        StdFs.set_link(path, target).await
     }
     async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         StdFs.create_dir_all(path).await
@@ -384,6 +445,7 @@ mod tests {
             Capabilities::NONE,
             Capabilities {
                 atomic_replace: false,
+                exclusive_create: false,
                 sync_guarantee: SyncGuarantee::None,
                 native_transactions: false
             }

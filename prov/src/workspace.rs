@@ -301,7 +301,9 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
             match op {
                 FileOp::Write { path, .. }
                 | FileOp::Remove { path }
-                | FileOp::CopyFrom { path, .. } => forget(path),
+                | FileOp::CopyFrom { path, .. }
+                | FileOp::SetExecutable { path, .. }
+                | FileOp::SetLink { path, .. } => forget(path),
                 FileOp::Rename { from, to } => {
                     forget(from);
                     forget(to);

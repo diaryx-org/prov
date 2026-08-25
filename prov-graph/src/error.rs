@@ -73,10 +73,15 @@ pub enum Error {
     )]
     StaleJournal(PathBuf),
 
-    /// A staged write failed *and* the rollback that should have undone it also
-    /// failed — see `prov`'s `ChangeSet::apply`. The one case where
-    /// prov cannot say what is on disk, so it says exactly that instead of
-    /// reporting the original failure as if the workspace were untouched.
+    /// An apply could not deliver either of its durable answers — see
+    /// `prov`'s `ChangeSet::apply`. The classic case: a staged write failed
+    /// *and* the rollback that should have undone it also failed. Since
+    /// fs-transaction 0.2 the same shape also covers a rollback or a
+    /// completed apply whose certification (or journal retirement) could not
+    /// be made durable. In every case prov cannot stand behind a clean
+    /// endpoint, so it says exactly that instead of reporting the original
+    /// failure as if the workspace were untouched — and `prov check`'s
+    /// recovery is what resolves the workspace to a nameable state.
     #[error(
         "{cause}; and rolling back failed too: {rollback}. \
          The workspace may be partially written — run `prov check`."

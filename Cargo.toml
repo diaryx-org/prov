@@ -90,7 +90,7 @@ prov-store = { path = "prov-store", version = "0.9.0", default-features = false 
 #
 # prov configures its journal name rather than taking the default — see
 # `prov::journal::workspace_journal` for why `.prov-journal` has to stay.
-fs-transaction = { version = "0.1" }
+fs-transaction = { version = "0.2" }
 # Test scaffolding, shared so it cannot drift. Never published — see its manifest.
 prov-testkit = { path = "prov-testkit" }
 # The declarative view format and its executor. Depends on the read core only,

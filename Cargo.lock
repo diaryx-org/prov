@@ -318,9 +318,9 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "fs-transaction"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aac916b209ffd5208ff9df604bb3ee469fb995766966ad1b2726c4942928d50"
+checksum = "c052c55512e128e23a16cc537162342a950eed0fed59f7c85fc37a5667c794f7"
 
 [[package]]
 name = "futures-core"
