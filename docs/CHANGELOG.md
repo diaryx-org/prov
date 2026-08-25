@@ -30,6 +30,7 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 - **graph** — a document's body is both sides of its metadata block ([`b418f79`](https://github.com/diaryx-org/prov/commit/b418f798e85d34c0c450a38e2d63e282b112b660))
 - **workspace** — an ignore list, in place of the historica skiplist ([`b5475d1`](https://github.com/diaryx-org/prov/commit/b5475d17d7b819f1b9ff1da667efdff9dd06d465))
 - **transaction** — invert the filesystem port onto prov-transaction ([`7ceb720`](https://github.com/diaryx-org/prov/commit/7ceb7204dab07a86b7869331cc4b784da176ee2c))
+- **transaction** — make the journal name configurable, defaulting generically ([`30a73e4`](https://github.com/diaryx-org/prov/commit/30a73e49adb9f9db82fe2ec10d9c57922d21d5f0))
 
 ### Added
 
@@ -134,6 +135,24 @@ separate file.
  and `write_probe` are gone, with no replacement. Each was a two-line
  wrapper over the `Storage` port; a caller that needs one can call
  `Storage::write_atomic`, `remove_file`, or `write` directly.
+
+- the default journal is now `.fstx-journal` and the
+ `write_atomic` staging sibling is `.`<name>`.fstx-tmp`, where both were
+ `.prov-*`. A workspace opened through `prov` is unaffected — it configures
+ `.prov-journal` explicitly — but a direct `prov-transaction` user who
+ crashed mid-apply under a previous version must either recover with
+ `Journal::named(".prov-journal")` or move the file before upgrading.
+
+- `prov_transaction::JOURNAL_NAME` and `is_journal_path`
+ are gone, replaced by `Journal::DEFAULT_NAME` and `Journal::owns_path`,
+ which answer for the journal actually in use rather than for a global
+ constant. `prov::journal::JOURNAL_NAME` still exists and still reads
+ `.prov-journal`.
+
+- `prov::recover` now returns `prov::Error` rather than
+ `prov_transaction::Error`, so a caller matching its failure directly no
+ longer needs `.into()`. `prov::journal::{decode, encode}` became public,
+ having previously been a `pub(crate)` import nothing used.
 
 <!-- git-cliff:end -->
 
