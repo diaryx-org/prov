@@ -471,7 +471,6 @@ updated: ''
 identity: lazy
 fixity: attachments
 recycle_bin: true
-history: off
 $ prov config references.target id
 set references.target = id in prov.yaml
 ```
@@ -491,7 +490,6 @@ The knobs (dotted keys address nested axes):
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
 | `fixity`                  | `off`, `attachments`, `all`                                    | how far content-checksum coverage extends        |
 | `recycle_bin`             | `true`/`false`                                                 | route a delete to the recoverable bin            |
-| `history`                 | `off`, `manual`                                                | maintain a historica store's skiplist (`prov history-skips`) |
 | `updated`                 | *a field name*                                                 | the machine-maintained "last updated" field      |
 
 The two `init` identity prompts map onto these keys: **Identity** sets
@@ -626,6 +624,61 @@ the status rather than piping through it:
 
 ---
 
+## 12. Handing the folder to another tool
+
+The workspace is what the graph reaches from the root. Everything else in the
+directory — an editor's dotfiles, a scratch note nothing links, the bytes the
+recycle bin is holding, the page prov generates for you — is on disk without
+being *of* the workspace, and a tool that copies, syncs, backs up or
+version-controls the folder has no way to know the difference. `prov ignore`
+tells it:
+
+<!-- exec -->
+```console
+$ echo "notes to self" > scratch.md
+$ prov ignore
+/about.md
+/recyclebin/items/
+/scratch.md
+```
+
+The lines are gitignore syntax, anchored to the workspace root. `--why` groups
+them under the reason each rule is there:
+
+<!-- exec -->
+```console
+$ prov ignore --why
+# bookkeeping
+/about.md
+/recyclebin/items/
+
+# unreached
+/scratch.md
+```
+
+*Bookkeeping* is prov's own machinery, and *unreached* is the one worth
+reading: nothing in the workspace links `scratch.md`. Link it — or delete it —
+and the next run stops mentioning it, which makes this list a second way of
+asking what `check`'s orphan findings ask.
+
+So the whole list goes where such a list is expected:
+
+<!-- exec -->
+```console
+$ prov ignore > .gitignore
+```
+
+Run it again afterwards and `/.gitignore` is on the list too, filed under
+*hidden* — the file you just wrote is not part of the graph either, and prov
+says so rather than making an exception for it.
+
+prov writes nothing but the list. Merging it into a tool's own configuration —
+what that tool already ignores, and what a rule should mean for a file it has
+recorded before — is that tool's decision, not prov's. `--json` gives the same
+rules as records for a program making it.
+
+---
+
 ## Command reference
 
 | Command                         | What it does                                             |
@@ -655,6 +708,7 @@ the status rather than piping through it:
 | `id FILE` / `resolve ID`        | mint / look up a stable ID                               |
 | `backlinks FILE`                | list inbound links                                       |
 | `config [KEY [VALUE]]`          | read/write workspace settings                            |
+| `ignore [--why\|--json]`        | what a tool copying this folder should leave alone, as gitignore lines |
 
 Run `prov <command> --help` for the full options of any command.
 

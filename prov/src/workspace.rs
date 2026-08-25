@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::change::{ChangeSet, FileOp};
-use crate::config::{Fixity, History, IdStorage};
+use crate::config::{Fixity, IdStorage};
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
 use prov_graph::document::EmbedStyle;
 use prov_graph::error::{Error, Result};
@@ -40,6 +40,17 @@ use prov_graph::relation::RelationSet;
 use prov_graph::title::TitleIndex;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
+
+mod ignore;
+
+pub use ignore::{Ignore, IgnoreList, Reason};
+
+/// A byte-parking store's directory — the parent of the index document that
+/// names it. The recycle bin's `items/` hangs off its index this way, and the
+/// retired history store's archive did too.
+fn store_dir(store_index: &Path) -> PathBuf {
+    store_index.parent().unwrap_or(Path::new("")).to_path_buf()
+}
 
 /// The workspace's **policy knobs**, as one value.
 ///
@@ -84,9 +95,6 @@ pub struct Settings {
     pub embed_style: EmbedStyle,
     /// How far content checksums are recorded — see [`Workspace::fixity`].
     pub fixity: Fixity,
-    /// Whether a history store is kept, and on what trigger — see
-    /// [`Workspace::history`].
-    pub history: History,
     /// Where a document's stable id is persisted — see
     /// [`Workspace::id_storage`].
     pub id_storage: IdStorage,
@@ -107,7 +115,6 @@ impl Default for Settings {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             fixity: Fixity::Payloads,
-            history: History::Off,
             id_storage: IdStorage::Registry,
             workspace_id: String::new(),
         }
@@ -139,7 +146,6 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             default_embed_format: config.default_embed_format,
             embed_style: config.embed_style,
             fixity: config.fixity,
-            history: config.history,
             id_storage: config.id_storage,
             workspace_id: config.workspace_id.clone(),
             ..Self::default()
@@ -327,16 +333,6 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// recorded regardless.
     pub fn fixity(&self) -> Fixity {
         self.settings.fixity
-    }
-
-    /// Whether this workspace maintains a historica store's skiplist.
-    ///
-    /// The axis gates *writing* — `history-skips --write` refuses under `off`,
-    /// so a workspace that has not asked for a store never has one's scoping
-    /// maintained — while computing and showing the plan stays free, the same
-    /// division the retired capture verbs drew.
-    pub fn history(&self) -> History {
-        self.settings.history
     }
 
     /// How this workspace embeds metadata — the family (`delimited`,
@@ -531,8 +527,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         }
     }
 
-    /// The directories a **byte-parking store** keeps its contents under — a
-    /// historica store beside the root, and the recycle bin's `items/`.
+    /// The directories a **byte-parking store** keeps its contents under — the
+    /// recycle bin's `items/`, and a retired event store's archive.
     ///
     /// These are machinery, not the workspace's documents, and every walk is
     /// blind to them by decision. The line matters most for **names**: a
@@ -544,27 +540,25 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// Naming the directories rather than filtering paths afterwards is what
     /// keeps the *cost* out too: a scan that never descends does not read a
     /// thousand revision documents in order to discard them.
+    ///
+    /// What is *not* here is another tool's store sitting beside the root — a
+    /// version-control folder, a sync tool's cache. prov has no way to be told
+    /// about one, so every walk sees it as ordinary content the graph fails to
+    /// reach: [`ignore_list`](Self::ignore_list) reports it, which is useful,
+    /// and `check` reports its interior, which is noise. Scoping a walk to
+    /// something the workspace declares is its own decision, unmade.
     pub(crate) async fn parked_dirs(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
         let mut dirs = Vec::new();
-        // A historica store beside the root, identified by its marker file
-        // rather than its name — a folder merely called `history` is content.
-        // Parked whole: nothing links into it, historica excludes it from its
-        // own recording, and a walk that descended it would title-index
-        // another tool's document store.
-        let marker = Path::new(prov_history::STORE_DIR).join(prov_history::HEADER_FILE);
-        if self.graph.stat(&marker).await.is_ok() {
-            dirs.push(PathBuf::from(prov_history::STORE_DIR));
-        }
         // A retired prov event store the root still points at. The `history`
         // pointer and this parking survive the store's retirement so an
         // unmigrated workspace keeps its scans out of the event archive; both
         // go when nothing declares such a store any more.
         if let Some(index) = self.history_path(root_doc).await? {
-            dirs.push(crate::history::store_dir(&index).join("events"));
-            dirs.push(crate::history::store_dir(&index).join("blobs"));
+            dirs.push(store_dir(&index).join("events"));
+            dirs.push(store_dir(&index).join("blobs"));
         }
         if let Some(index) = self.recycle_bin_path(root_doc).await? {
-            dirs.push(crate::history::store_dir(&index).join("items"));
+            dirs.push(store_dir(&index).join("items"));
         }
         Ok(dirs)
     }
@@ -1299,13 +1293,6 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
-    /// Set whether this workspace maintains a historica store's skiplist. Off
-    /// by default; see [`Workspace::history`].
-    pub fn history(mut self, history: History) -> Self {
-        self.settings.history = history;
-        self
-    }
-
     /// Set the metadata embedding family — the `(style, format)` half that
     /// resolves to a concrete carrier. Defaults to
     /// [`EmbedStyle::Delimited`], matching the config default.
@@ -1463,7 +1450,6 @@ mod tests {
             default_embed_format: fig::Format::Json,
             embed_style: EmbedStyle::CodeBlock,
             fixity: Fixity::Off,
-            history: History::Manual,
             id_storage: IdStorage::Frontmatter,
             workspace_id: "notes".into(),
         };
@@ -1479,7 +1465,6 @@ mod tests {
         assert_eq!(ws.default_embed_format(), fig::Format::Json);
         assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
         assert_eq!(ws.fixity(), Fixity::Off);
-        assert_eq!(ws.history(), History::Manual);
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
         assert_eq!(ws.workspace_id(), "notes");
         assert_eq!(ws.relations().spanning_relation(), Some("contents"));
@@ -1502,7 +1487,6 @@ mod tests {
     fn a_config_becomes_the_workspaces_settings() {
         let config = crate::config::WorkspaceConfig {
             id_storage: IdStorage::Frontmatter,
-            history: History::Manual,
             fixity: Fixity::Off,
             embed_style: EmbedStyle::CodeBlock,
             default_embed_format: fig::Format::Json,
@@ -1516,7 +1500,6 @@ mod tests {
             .build();
 
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
-        assert_eq!(ws.history(), History::Manual);
         assert_eq!(ws.fixity(), Fixity::Off);
         assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
         assert_eq!(ws.default_embed_format(), fig::Format::Json);

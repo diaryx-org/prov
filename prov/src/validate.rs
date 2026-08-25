@@ -981,9 +981,6 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .await?,
         );
         findings.extend(self.stale_label_findings(&census).await?);
-        // A historica store beside the root is parked, not validated: its own
-        // `historica check` is the authority on its documents, exactly as this
-        // walk is the authority on the workspace's.
         Ok(findings)
     }
 

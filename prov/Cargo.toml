@@ -42,8 +42,6 @@ prov-exports = { workspace = true, default-features = false }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { workspace = true, default-features = false }
 
-# The skiplist that scopes a historica store to the workspace's graph.
-prov-history = { workspace = true, default-features = false }
 
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs
 # runs `zig build`). The value tree is prov's common currency. Which format
@@ -83,12 +81,12 @@ default = ["yaml"]
 # recognizing that format (see `whole_file_format`). At least one must be on —
 # `lib.rs` enforces this with a `compile_error!`.
 yaml = ["fig/yaml", "prov-config/yaml", "prov-graph/yaml",
-    "prov-store/yaml", "prov-history/yaml", "prov-identity/yaml", "prov-transaction/yaml", "prov-views/yaml", "prov-exports/yaml"]
+    "prov-store/yaml", "prov-identity/yaml", "prov-transaction/yaml", "prov-views/yaml", "prov-exports/yaml"]
 json = ["fig/json", "prov-config/json", "prov-graph/json",
-    "prov-store/json", "prov-history/json", "prov-identity/json", "prov-transaction/json", "prov-views/json", "prov-exports/json"]
+    "prov-store/json", "prov-identity/json", "prov-transaction/json", "prov-views/json", "prov-exports/json"]
 toml = ["fig/toml", "prov-config/toml", "prov-graph/toml",
-    "prov-store/toml", "prov-history/toml", "prov-identity/toml", "prov-transaction/toml", "prov-views/toml", "prov-exports/toml"]
+    "prov-store/toml", "prov-identity/toml", "prov-transaction/toml", "prov-views/toml", "prov-exports/toml"]
 # `fig` is the dependency name, so the native-dialect feature is spelled
 # `fig-lang` (a feature and a dependency may not share a name unambiguously).
 fig-lang = ["fig/fig", "prov-config/fig-lang", "prov-graph/fig-lang",
-    "prov-store/fig-lang", "prov-history/fig-lang", "prov-identity/fig-lang", "prov-transaction/fig-lang", "prov-views/fig-lang", "prov-exports/fig-lang"]
+    "prov-store/fig-lang", "prov-identity/fig-lang", "prov-transaction/fig-lang", "prov-views/fig-lang", "prov-exports/fig-lang"]

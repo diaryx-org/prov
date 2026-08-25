@@ -59,7 +59,6 @@ pub mod discovery;
 pub use prov_fixity as fixity;
 #[cfg(test)]
 mod fs_faults;
-pub mod history;
 pub mod identity;
 pub mod intake;
 pub mod manifest;
@@ -136,8 +135,8 @@ pub mod journal {
     pub(crate) use prov_transaction::journal::{decode, encode, is_journal_path};
 }
 pub use config::{
-    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, OpenClosed,
-    RelationDef, RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
+    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, OpenClosed, RelationDef,
+    RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
     field_type_from_config_str, is_valid_workspace_id, metadata_format_from_str,
     metadata_format_str, spec_ahead,
 };
@@ -178,7 +177,6 @@ pub mod exports {
 /// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
 /// different version than the one prov resolves against.
 pub use fig_schema::FieldType;
-pub use history::{Reason, Skip, Skiplist};
 pub use identity::{
     IdentityPolicy, Minter, NoIdentity, Registration, Trigger, WORKSPACE_NAME_LEN,
     mint_workspace_id,
@@ -194,4 +192,4 @@ pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
 pub use validate::{CheckDiff, Finding};
 pub use vocabulary::{Term, Vocabulary};
-pub use workspace::{Settings, Workspace, WorkspaceBuilder};
+pub use workspace::{Ignore, IgnoreList, Reason, Settings, Workspace, WorkspaceBuilder};

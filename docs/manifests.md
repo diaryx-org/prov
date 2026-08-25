@@ -169,7 +169,7 @@ record as though the loss were intended. That is the judgment `FixityMismatch`
 declines to make on the author's behalf, on the same evidence, so
 `check --fix mechanical` reports drift and moves on.
 
-## 6. Moving, deleting, and history
+## 6. Moving, deleting, and recording
 
 **`rename` moves the node and its manifest; the covered directory stays put.** A
 separated document's body *is* its content and travels with it; a manifest is a
@@ -190,16 +190,17 @@ so a covered directory can never quietly acquire a second manifest.
 behind is an uncovered directory — exactly what it was before anything described
 it.
 
-**History records the manifest, not the photographs.** Covered files are not
-in the reachable set: they are opaque bytes, never orphan candidates, and adding
-ten thousand paths to every walk would make an archive pay on each of them for a
-check none can fail. The skiplist says the same thing to historica — a claimed
-directory is one `skip photos/` rule — so damage to a covered file stays
-**detectable** (every hash is on record in the recorded manifest) but is not
-undoable from the store. The alternative was duplicating the whole archive into
-history on its first record, which is a worse default for the only workspaces
-this feature exists for. Keep the bytes safe the way the rest of an archive is
-kept safe: a backup, on separate media.
+**A recording tool takes the manifest, not the photographs.** Covered files are
+not in the reachable set: they are opaque bytes, never orphan candidates, and
+adding ten thousand paths to every walk would make an archive pay on each of
+them for a check none can fail. `prov ignore` says the same thing to whatever
+records the folder — a claimed directory is one `/photos/` rule, filed as
+*claimed by a manifest* — so damage to a covered file stays **detectable**
+(every hash is on record in the recorded manifest) but is not undoable from
+that tool's store. The alternative was duplicating the whole archive into it on
+the first recording, which is a worse default for the only workspaces this
+feature exists for. Keep the bytes safe the way the rest of an archive is kept
+safe: a backup, on separate media.
 
 ## 7. Commands
 

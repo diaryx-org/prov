@@ -3,7 +3,7 @@ resolver = "2"
 # `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
 # workflow runs nothing else. It is a member so `cargo test --workspace` checks
 # it, and `publish = false` keeps it off crates.io.
-members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov-history", "prov", "prov-cli", "xtask"]
+members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
 
 [workspace.package]
 version = "0.7.0"
@@ -39,8 +39,8 @@ license = "MIT OR Apache-2.0"
 #   The fix is in the Zig `fig-sys`, which fig requires transitively at the
 #   same version.
 # - 3.0 made fig's FFI-mirroring enums (e.g. `EmbedType`, `ExtKind`)
-#   `#[non_exhaustive]` — prov's matches on them (about.rs, document.rs,
-#   history/docs.rs) gained wildcard arms accordingly. 3.0.2 is where
+#   `#[non_exhaustive]` — prov's matches on them (about.rs, document.rs)
+#   gained wildcard arms accordingly. 3.0.2 is where
 #   `fig-sys` learned to skip its native build under `DOCS_RS`, without which
 #   prov itself fails to build on docs.rs (no Zig, no network there).
 # - 3.1 added convenience accessors on `fig::Value` itself (`as_str`,
@@ -66,18 +66,10 @@ twig-doc = "3"
 # no `os`/`js` features — is all it needs. See `prov/src/identity.rs`.
 moid = "1"
 
-# The version control a prov workspace records into. prov never records —
-# `prov-history` computes the skiplist that scopes recording to the graph, and
-# uses this library to read the store's rules and tracked tree rather than
-# re-deriving historica's formats.
-historica = "0.2"
-
-# SHA-256, for `prov-fixity`. Not a new edge in prov's dependency graph:
-# `historica` already hashes its content-addressed blobs with this crate, and
-# `prov-history` makes that a required dependency of `prov` — so every prov
-# build already compiles it. Fixity used to carry its own scalar implementation
-# alongside it, which meant two SHA-256s in one binary and only one of them
-# reaching SHA-NI / the ARMv8 crypto extensions. This is the one that does.
+# SHA-256, for `prov-fixity`. Fixity used to carry its own scalar
+# implementation alongside the one a dependency already pulled in, which meant
+# two SHA-256s in one binary and only one of them reaching SHA-NI / the ARMv8
+# crypto extensions. This is the one that does.
 #
 # Pure Rust and `no_std`-capable, so it costs no build toolchain and compiles on
 # `wasm32-unknown-unknown` like the rest of the workspace.
@@ -95,8 +87,6 @@ prov-identity = { path = "prov-identity", version = "0.7.0", default-features = 
 prov-fixity = { path = "prov-fixity", version = "0.7.0" }
 # Crash-atomic staged filesystem changes and write-ahead recovery.
 prov-transaction = { path = "prov-transaction", version = "0.7.0", default-features = false }
-# The skiplist that scopes a historica store to the workspace's graph.
-prov-history = { path = "prov-history", version = "0.7.0", default-features = false }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
 prov-views = { path = "prov-views", version = "0.7.0", default-features = false }

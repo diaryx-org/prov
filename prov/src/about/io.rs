@@ -350,10 +350,10 @@ mod tests {
     }
 
     #[test]
-    fn the_derived_page_is_never_recorded_into_history() {
+    fn the_derived_page_is_never_handed_to_a_recording_tool() {
         // Recording it would write a new revision on every config change to
         // store something the recorded config already determines — so the page
-        // reaches the skiplist as bookkeeping, and recording never takes it.
+        // reaches the ignore list as bookkeeping, whatever tool reads it.
         let (dir, config, ctx) = fixture("about-not-captured");
         write(
             &dir,
@@ -363,20 +363,16 @@ mod tests {
         let ws = Workspace::builder(StdFs).root(&dir).build();
         block_on(ws.write_about(std::path::Path::new("index.md"), &config, &ctx)).unwrap();
 
-        let plan = block_on(ws.skiplist(
-            std::path::Path::new("index.md"),
-            &prov_history::Standing::default(),
-        ))
-        .unwrap();
+        let list = block_on(ws.ignore_list(std::path::Path::new("index.md"))).unwrap();
         assert!(
-            plan.rules
+            list.rules
                 .iter()
-                .any(|s| s.rule.covers("about.md") && s.reason == crate::Reason::Bookkeeping),
-            "the derived page must be skipped: {:?}",
-            plan.rules
+                .any(|rule| rule.path == "about.md" && rule.reason == crate::Reason::Bookkeeping),
+            "the derived page must be ignored: {:?}",
+            list.rules
         );
         // The root itself is still recorded — only the derived page is ruled.
-        assert!(!plan.rules.iter().any(|s| s.rule.covers("index.md")));
+        assert!(!list.rules.iter().any(|rule| rule.path == "index.md"));
     }
 
     #[test]

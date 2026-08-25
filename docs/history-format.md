@@ -3,13 +3,14 @@ part_of: '[prov](/README.md)'
 ---
 # The history store — format specification
 
-> **Superseded.** prov no longer writes this store: recording moved to
-> [historica](https://crates.io/crates/historica), and prov's contribution is
-> the skiplist that scopes a historica store to the workspace's graph (`prov
-> history-skips`, the `prov-history` crate). This document remains what it
-> always was for the stores already on disk — the contract that makes them
-> readable by hand, with tools that are not prov, forever. Nothing writes new
-> events; everything below still describes the old ones exactly.
+> **Superseded.** prov no longer writes this store, and no longer records at
+> all: version control belongs to whatever tool the workspace is kept under,
+> and what prov contributes is `prov ignore` — the list of what such a tool
+> should leave alone, in gitignore syntax, naming no tool in particular. This
+> document remains what it always was for the stores already on disk — the
+> contract that makes them readable by hand, with tools that are not prov,
+> forever. Nothing writes new events; everything below still describes the old
+> ones exactly.
 
 > The compatibility contract for the retired `prov history-*` verbs. Event
 > documents are **immutable**: once written they were never rewritten, so

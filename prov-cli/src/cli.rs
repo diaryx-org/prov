@@ -819,32 +819,35 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "check")]
         print: bool,
     },
-    /// Maintain the skiplist that scopes a historica store to this
-    /// workspace's graph.
+    /// List what a tool copying, syncing or recording this folder should
+    /// leave alone.
     ///
-    /// Recording history is historica's job (`historica record`, in this same
-    /// folder). What prov contributes is *which files are the workspace*: the
-    /// graph's reachable walk, minus prov's own bookkeeping and what a
-    /// manifest claims in bulk. This command computes the skip rules that
-    /// difference implies and — with `--write` — rewrites one marker-fenced
-    /// region of `history/skipped.txt` to say exactly that, leaving
-    /// historica's defaults and any hand-written rules untouched.
+    /// The workspace is the graph's bounded reachable walk from the root
+    /// document, so everything else on disk is something a person did not
+    /// mean to hand such a tool: prov's own bookkeeping, an archive a
+    /// manifest already pins by hash, an editor's dotfiles, and files nothing
+    /// links. This prints that difference as gitignore-syntax lines on
+    /// stdout — anchored to the workspace root — for whatever consumes them:
+    /// `.gitignore`, a version-control tool's skiplist, `rsync
+    /// --exclude-from`, a backup job.
     ///
-    /// Without `--write` it prints the plan: the rules the region should
-    /// hold, which are new, which stand but no longer belong, plus two
-    /// reports — a rule *withheld* because it would cover a path historica is
-    /// tracking (skipping a tracked path stops recording cold; link the file
-    /// back or drop it from history), and a hand-written rule *shadowing* a
-    /// file the graph reaches.
+    /// prov writes nothing and merges nothing. What rules a tool already
+    /// holds, and what a rule means for a file it has recorded before, are
+    /// that tool's to decide.
     ///
-    /// Requires a store (`historica init .` creates one). Writing requires
-    /// `history: manual` in the workspace config; planning does not — asking
-    /// what the workspace fails to reach is a question about the workspace.
-    HistorySkips {
-        /// Rewrite the generated region to match the plan. Without this,
-        /// nothing is touched.
+    /// A rule reading *unreached* is the one worth acting on from the other
+    /// side: link the file into the graph, and the next run withdraws it.
+    /// `--why` groups the rules under a comment naming each reason; `--json`
+    /// gives the same as structured records.
+    Ignore {
+        /// Group the rules under a comment naming why each set is there.
+        /// Still a valid ignore file, and ordered by reason rather than path.
         #[arg(long)]
-        write: bool,
+        why: bool,
+        /// Emit the list as JSON records — path, whether it covers a
+        /// directory whole, the reason, and the rendered line.
+        #[arg(long, conflicts_with = "why")]
+        json: bool,
     },
 }
 

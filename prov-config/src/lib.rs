@@ -10,9 +10,9 @@ pub mod config;
 pub mod vocabulary;
 
 pub use config::{
-    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, History, IdStorage,
-    OpenClosed, ROOT_CONFIG_KEY, RelationDef, RelationStyleConfig, SPEC_VERSION, WorkspaceConfig,
-    diagnose, field_type_as_config_str, field_type_from_config_str, is_valid_workspace_id,
+    About, ConfigIssue, ConfigIssueKind, FIELD_TYPES, FieldSpec, Fixity, IdStorage, OpenClosed,
+    ROOT_CONFIG_KEY, RelationDef, RelationStyleConfig, SPEC_VERSION, WorkspaceConfig, diagnose,
+    field_type_as_config_str, field_type_from_config_str, is_valid_workspace_id,
     metadata_format_from_str, metadata_format_str, spec_ahead,
 };
 pub use vocabulary::{Term, Vocabulary};

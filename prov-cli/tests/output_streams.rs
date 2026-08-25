@@ -363,34 +363,29 @@ fn mechanical_repairs_run_without_a_terminal_and_leave_the_judgment_calls() {
 }
 
 #[test]
-fn history_skips_keeps_the_rules_on_stdout_and_the_narration_on_stderr() {
-    // The plan's rules are the file's next content — pipeable, undecorated.
-    // Everything said *about* them (the diff summary, the write prompt, a
-    // withheld or shadowed report) is narration, and narration is stderr.
-    let dir = sandbox("history-skips");
+fn ignore_keeps_the_rules_on_stdout_and_the_narration_on_stderr() {
+    // The rules are an ignore file's content — pipeable, undecorated. The
+    // count said *about* them is narration, and narration is stderr.
+    let dir = sandbox("ignore");
     ok(&dir, &["init", "--yes"]);
     ok(&dir, &["new", "Alpha", "--in", "index.md"]);
     std::fs::write(dir.join("loose.md"), "a note nothing links\n").unwrap();
-    historica::store::Store::init(dir.join("history")).unwrap();
 
-    let (out, err) = ok(&dir, &["history-skips"]);
+    let (out, err) = ok(&dir, &["ignore"]);
     assert!(
-        out.lines().any(|l| l == "skip loose.md"),
+        out.lines().any(|l| l == "/loose.md"),
         "the rules are stdout: {out:?}"
     );
     assert!(
-        !out.contains("rule(s) to add"),
-        "the summary must not leak onto stdout: {out:?}"
+        !out.contains("rule(s)"),
+        "the count must not leak onto stdout: {out:?}"
     );
-    assert!(
-        err.contains("rule(s) to add") && err.contains("--write"),
-        "the summary and the prompt are stderr narration: {err:?}"
-    );
+    assert!(err.contains("rule(s)"), "the count is stderr: {err:?}");
 
-    // Settled: same rules on stdout, and stderr says there is nothing to do.
-    ok(&dir, &["config", "history", "manual"]);
-    ok(&dir, &["history-skips", "--write"]);
-    let (out, err) = ok(&dir, &["history-skips"]);
-    assert!(out.lines().any(|l| l == "skip loose.md"), "{out:?}");
-    assert!(err.contains("settled"), "{err:?}");
+    // `--json` is the mode where nobody is reading a terminal: the records go
+    // to stdout and the count is not said at all.
+    let (out, err) = ok(&dir, &["ignore", "--json"]);
+    assert!(out.contains("\"reason\": \"unreached\""), "{out:?}");
+    assert!(out.contains("\"line\": \"/loose.md\""), "{out:?}");
+    assert!(!err.contains("rule(s)"), "{err:?}");
 }

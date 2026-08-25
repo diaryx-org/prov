@@ -112,28 +112,20 @@ fn every_command_runs_end_to_end() {
     ok(&dir, &["rm", "zig-copy.md"]);
     ok(&dir, &["empty-bin"]);
 
-    // ── history: the skiplist that scopes a historica store to the graph ──
-    // Planning without a store is a refusal that names the repair.
-    let (planned, out) = run(&dir, &["history-skips"]);
-    assert!(!planned, "history-skips needs a store: {out}");
-    assert!(out.contains("historica init"), "{out}");
-    // With a store: the plan prints, writing is gated on the axis, and once
-    // the axis says `manual` the region lands in the store's own file.
-    historica::store::Store::init(dir.join("history")).unwrap();
+    // ── ignore: what a tool copying this folder should leave alone ──
     std::fs::write(dir.join("loose.md"), "a note nothing links\n").unwrap();
-    let plan = ok(&dir, &["history-skips"]);
-    assert!(plan.contains("skip loose.md"), "{plan}");
-    let (wrote, out) = run(&dir, &["history-skips", "--write"]);
-    assert!(!wrote, "writing must be gated on the history axis: {out}");
-    ok(&dir, &["config", "history", "manual"]);
-    ok(&dir, &["history-skips", "--write"]);
-    let skipped = std::fs::read_to_string(dir.join("history/skipped.txt")).unwrap();
-    assert!(skipped.contains("skip loose.md"), "{skipped}");
-    // The loose note deleted, the next write empties the region again.
+    let list = ok(&dir, &["ignore"]);
+    assert!(list.lines().any(|line| line == "/loose.md"), "{list}");
+    // Grouped, the same rules still read as an ignore file.
+    let why = ok(&dir, &["ignore", "--why"]);
+    assert!(
+        why.contains("# unreached") && why.contains("/loose.md"),
+        "{why}"
+    );
+    // Linked back into the graph, the rule withdraws itself.
     std::fs::remove_file(dir.join("loose.md")).unwrap();
-    ok(&dir, &["history-skips", "--write"]);
-    let skipped = std::fs::read_to_string(dir.join("history/skipped.txt")).unwrap();
-    assert!(!skipped.contains("skip loose.md"), "{skipped}");
+    let list = ok(&dir, &["ignore"]);
+    assert!(!list.contains("/loose.md"), "{list}");
     ok(&dir, &["check"]);
 
     // ── config: read, write, materialize ──

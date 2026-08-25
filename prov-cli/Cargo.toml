@@ -29,12 +29,6 @@ fig.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 cliclack = "0.5.5"
 
-[dev-dependencies]
-# The store the smoke tests record into. Tests only: the binary never touches
-# a store — `prov history-skips` writes rules for historica's own command to
-# honour, through `prov` and `prov-history`.
-historica.workspace = true
-
 [features]
 # JSON and the native fig dialect ship in the default binary, but a downstream
 # build can drop either with `--no-default-features` to shrink `libfig.a`. The

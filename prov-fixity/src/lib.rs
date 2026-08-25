@@ -19,13 +19,12 @@
 //! The compression function comes from `sha2` rather than being written out
 //! here. This crate did once carry its own, on the reasoning that guards
 //! [`prov_graph::exec::block_on`] and the journal's FNV checksum — keep the
-//! dependency surface tiny and WASM-clean. That reasoning stopped applying:
-//! `historica` addresses its blobs with `sha2`, and `prov-history` makes it a
-//! required dependency of `prov`, so the crate is compiled into every prov build
-//! either way. Carrying a second implementation next to it bought no
-//! independence and cost the hardware path — `sha2` dispatches to SHA-NI on
-//! x86-64 and to the ARMv8 crypto extensions on aarch64, which a scalar loop
-//! cannot reach, and a capture hashes every covered file in the workspace.
+//! dependency surface tiny and WASM-clean. It is the one place that reasoning
+//! loses: `sha2` is pure Rust and `no_std`-capable, so it costs no build
+//! toolchain and compiles on `wasm32-unknown-unknown` like everything else
+//! here, while a hand-written loop cannot reach the hardware path — `sha2`
+//! dispatches to SHA-NI on x86-64 and to the ARMv8 crypto extensions on
+//! aarch64, and `stamp --all` hashes every covered file in the workspace.
 //!
 //! What does not change is that correctness here is *checked*, not trusted:
 //! SHA-256 is a fully specified, deterministic function with published test

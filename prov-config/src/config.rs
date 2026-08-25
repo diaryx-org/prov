@@ -246,36 +246,6 @@ pub fn field_type_as_config_str(ty: FieldType) -> Option<&'static str> {
     })
 }
 
-/// Whether the workspace maintains a **historica store's skiplist** — the
-/// generated region of `history/skipped.txt` that scopes what `historica
-/// record` takes to the workspace's reachable graph.
-///
-/// Recording itself is historica's, not prov's; what prov contributes is
-/// which files are the workspace, and this axis says whether prov is asked to
-/// keep the store's scoping current (`prov history-skips --write`).
-///
-/// Default **off**, unlike `recycle_bin`: a version-control store is ongoing
-/// storage the user has not asked for. It is also the wrong tool when the
-/// transport is **git**, which already stores every pre-image and reconciles
-/// concurrent histories — a historica store earns its keep on Dropbox,
-/// Syncthing, iCloud, a synced network share.
-///
-/// `off` gates *writing* only. Computing and showing the plan works
-/// regardless: asking what the workspace fails to reach is a question about
-/// the workspace, not about history.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum History {
-    /// The skiplist is not maintained (`off`, the default). `history-skips`
-    /// still shows its plan; `--write` refuses.
-    #[default]
-    Off,
-    /// The skiplist is rewritten when the user asks (`manual`) — `prov
-    /// history-skips --write`, run by hand or by a pre-record script the user
-    /// wires up themselves. prov does not run the recording, so there is no
-    /// event for it to hook.
-    Manual,
-}
-
 /// Whether the workspace generates **`about.md`** — a short prose page,
 /// specialized against this workspace's own configuration, that tells a reader
 /// with no prior knowledge how to read *this* directory.
@@ -297,9 +267,9 @@ pub enum History {
 /// "every file here opens with a `---` line." Nothing is lost operationally, and
 /// the sentence is about *this directory* rather than about prov.
 ///
-/// Default **on**, unlike [`History`]: it costs a few hundred bytes and one
-/// file, and a workspace that explains itself to a stranger by default is the
-/// whole thesis — making it opt-in concedes it.
+/// Default **on**: it costs a few hundred bytes and one file, and a workspace
+/// that explains itself to a stranger by default is the whole thesis — making
+/// it opt-in concedes it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum About {
     /// No page is generated and the root declares no `about` pointer (`off`).
@@ -333,30 +303,6 @@ impl About {
         match self {
             Self::Off => "off",
             Self::Structure => "structure",
-        }
-    }
-}
-
-impl History {
-    /// Whether `history-skips --write` is permitted to rewrite the region.
-    pub fn captures(self) -> bool {
-        matches!(self, History::Manual)
-    }
-
-    /// Parse the `history` config spelling; unknown → `None`.
-    pub fn from_config_str(value: &str) -> Option<Self> {
-        match value {
-            "off" => Some(Self::Off),
-            "manual" => Some(Self::Manual),
-            _ => None,
-        }
-    }
-
-    /// The `history` config spelling.
-    pub fn as_config_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Manual => "manual",
         }
     }
 }
@@ -446,10 +392,6 @@ pub struct WorkspaceConfig {
     /// How far content-checksum (fixity) coverage extends — attachments only (the
     /// default), attachments plus document bodies, or off.
     pub fixity: Fixity,
-    /// Whether the workspace keeps a **history store** of captured pre-images —
-    /// the safety net for structural damage an external sync transport introduces.
-    /// Off by default; see [`History`].
-    pub history: History,
     /// Whether the workspace generates **`about.md`**, the prose page that tells
     /// a stranger how to read this directory. On by default; see [`About`].
     pub about: About,
@@ -508,7 +450,6 @@ impl Default for WorkspaceConfig {
             content_format: ContentFormat::Markdown,
             recycle_bin: true,
             fixity: Fixity::Payloads,
-            history: History::Off,
             about: About::Structure,
             updated: String::new(),
             workspace_id: String::new(),
@@ -883,13 +824,6 @@ impl WorkspaceConfig {
             self.recycle_bin = v;
         }
         if let Some(v) = meta
-            .get("history")
-            .and_then(Value::as_str)
-            .and_then(History::from_config_str)
-        {
-            self.history = v;
-        }
-        if let Some(v) = meta
             .get("about")
             .and_then(Value::as_str)
             .and_then(About::from_config_str)
@@ -1049,10 +983,6 @@ impl WorkspaceConfig {
         );
         map.insert("recycle_bin".into(), Value::Bool(self.recycle_bin));
         map.insert(
-            "history".into(),
-            Value::String(self.history.as_config_str().into()),
-        );
-        map.insert(
             "about".into(),
             Value::String(self.about.as_config_str().into()),
         );
@@ -1139,7 +1069,6 @@ const TOP_KEYS: &[&str] = &[
     "identity",
     "fixity",
     "recycle_bin",
-    "history",
     "about",
 ];
 /// Keys inside the `metadata:` block.
@@ -1216,15 +1145,6 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                 );
             }
             "recycle_bin" => bool_axis(&mut issues, key, value),
-            "history" => {
-                enum_axis(
-                    &mut issues,
-                    key,
-                    value,
-                    |s| History::from_config_str(s).is_some(),
-                    &["off", "manual"],
-                );
-            }
             "about" => {
                 enum_axis(
                     &mut issues,
@@ -2128,7 +2048,6 @@ mod tests {
             recycle_bin: false,
             fixity: Fixity::Full,
             // Non-default, so the round trip actually exercises the axis.
-            history: History::Manual,
             // Likewise non-default — `structure` is the default, so `off` is
             // what proves the value survives the mapping rather than being
             // silently re-defaulted on the way back.
@@ -2358,8 +2277,8 @@ mod tests {
 
     #[test]
     fn about_defaults_on_and_accepts_only_its_two_spellings() {
-        // Default is `structure`, not `off` — the one axis that departs from
-        // `history`'s posture, because self-description by default is the thesis.
+        // Default is `structure`, not `off` — self-description by default is
+        // the thesis, so the axis a person never sets still generates a page.
         assert_eq!(WorkspaceConfig::default().about, About::Structure);
         assert!(About::Structure.generates());
         assert!(!About::Off.generates());

@@ -138,12 +138,22 @@ twig has no wikilink concept, so a wikilink span is lexical either way.
 
 Still open here:
 
-- **Restore-from-history for `FixityMismatch`.** Restoring from backup is the
-  arm prov cannot decide, and the historica store beside the workspace can
-  actually perform it (`historica cat`) — but recording is historica's now,
-  so the honest shape is a finding message that names the command rather than
-  a `Fix` that shells out. Until then `FixityMismatch` offers only the
-  re-stamp, marked `Judgment`.
+- **Restore-from-backup for `FixityMismatch`.** Restoring is the arm prov
+  cannot decide, and a version-control store beside the workspace can actually
+  perform it — but prov no longer knows such a store exists, so the honest
+  shape is a finding message that names the situation rather than a `Fix` that
+  shells out to a tool prov cannot see. Until then `FixityMismatch` offers only
+  the re-stamp, marked `Judgment`.
+- **Nothing can tell a walk to skip a directory.** A workspace with another
+  tool's store beside the root — a version-control folder, a sync cache, a
+  vendored checkout — has no way to say so. prov parks its *own* byte stores
+  (`parked_dirs`) and skips hidden entries, and that is the whole of it, so
+  such a directory is walked, title-indexed and reported as unreached content.
+  `prov ignore` naming it is right (that is what the list is for); `check`
+  reporting its interior is noise. The fix is a scoping the workspace
+  *declares* — an axis, or a convention a directory can carry — feeding both
+  the walk and the ignore list from one place, and it is a decision about what
+  `check` reaches, not a patch to either caller.
 - **`DemoteEntry`** — spanning → overlay, contested containment's third answer.
 - **`MalformedStore`** — migrating a markdown store to a whole-file carrier
   creates a file and rewrites a pointer, so it is a mutation verb, not a fix.
@@ -590,8 +600,8 @@ well-linked but attached to *nothing* was invisible: in a real workspace,
 to each other, no `contents` entry anywhere points into the directory, and `check`
 reported **zero** findings there while flagging 180 orphans that happen to lie in
 already-reached directories. Worse than a miscount: `check` came back clean with 86
-files sitting outside the capture set, so the safety net said "safe" about content
-history would not bring back.
+files sitting outside the reachable set, so the safety net said "safe" about
+content nothing was recording.
 
 This is §8 turned on itself: discovery is reachability-bounded, but *"what is
 unreachable?"* is precisely the question a reachability bound cannot answer, and
@@ -615,10 +625,9 @@ claims a parent that is *gone* (the claim has to land in the reachable set to be
 evidence of anything, and a dangling one is indistinguishable from a stray copy of
 someone else's document). Finding those still needs the opt-in unbounded report
 (`check --unreached`?) with a message that says which
-of the two questions it answered. `prov history-skips` names them today (an
-unreached file is exactly what earns a skip rule, and the plan prints without
-a gate), so the one diagnostic that catches them is not hidden behind enabling
-anything.
+of the two questions it answered. `prov ignore` names them today — an unreached
+file is exactly what earns a rule, and it reads `# unreached` under `--why` —
+so the one diagnostic that catches them is not hidden behind enabling anything.
 
 ## Mutation
 

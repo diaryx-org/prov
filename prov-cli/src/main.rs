@@ -221,7 +221,7 @@ fn main() -> ExitCode {
         } => cmd_config(key.as_deref(), value.as_deref(), setup, home),
         Command::Backup { to, zip } => backup::cmd_backup(&to, zip),
         Command::About { check, print } => cmd_about(check, print),
-        Command::HistorySkips { write } => cmd_history_skips(write),
+        Command::Ignore { why, json } => cmd_ignore(why, json),
     };
     match result {
         Ok(code) => code,
@@ -2457,10 +2457,10 @@ fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
 
 /// Regenerate `about.md`, or inspect what would be generated.
 ///
-/// Not gated on the `about` axis the way `history-skips --write` is gated on
-/// `history`: `--print` and `--check` are read-only, and a bare `prov about` in
-/// a workspace with `about: off` is a clear enough request to be worth honoring
-/// — but it says so, because the page it just wrote will not be maintained.
+/// Not gated on the `about` axis: `--print` and `--check` are read-only, and a
+/// bare `prov about` in a workspace with `about: off` is a clear enough request
+/// to be worth honoring — but it says so, because the page it just wrote will
+/// not be maintained.
 fn cmd_about(check: bool, print: bool) -> CmdResult {
     let ctx = find_root()?;
     let ws = workspace(&ctx)?;
@@ -2698,69 +2698,64 @@ fn cmd_peer_resolve(reference: &str, unverified: bool) -> CmdResult {
     }
 }
 
-/// Maintain the skiplist that scopes the historica store to the graph.
+/// List what a tool copying, syncing or recording this folder should leave
+/// alone: the difference between what is on disk and what the graph reaches.
 ///
-/// Planning is free; only `--write` is gated on the `history` axis — the same
-/// division the retired capture verbs drew: asking what the workspace fails
-/// to reach is a question about the workspace, and writing into the store is
-/// the thing a workspace has to have asked for.
+/// Gated on nothing. Asking what the workspace fails to reach is a question
+/// about the workspace, and the command writes nothing — the tool that
+/// consumes the list owns every decision after this one.
 ///
-/// The region lines go to stdout (they are the file's next content, for
-/// `diff` and friends); everything said *about* them goes to stderr.
-fn cmd_history_skips(write: bool) -> CmdResult {
+/// The rules go to stdout (they are an ignore file's content, for `>` and
+/// `diff` and friends); the count said *about* them goes to stderr.
+fn cmd_ignore(why: bool, as_json: bool) -> CmdResult {
     let ctx = find_root()?;
     let ws = workspace(&ctx)?;
-    let standing = match prov::history::Standing::read(&ctx.root_dir) {
-        Ok(standing) => standing,
-        Err(prov::history::StandingError::Store(error)) => {
-            return Err(format!(
-                "{error}\nno historica store beside this workspace — `historica init .` creates one"
-            )
-            .into());
+    let list = block_on(ws.ignore_list(&ctx.root_doc))?;
+
+    if as_json {
+        print!(
+            "{}",
+            json::J::Arr(list.rules.iter().map(json::ignore).collect()).render()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    // With `--why` the rules are grouped under a comment naming their reason,
+    // rather than annotated one by one: gitignore reads `#` only at the start
+    // of a line, so a trailing note would become part of the pattern and the
+    // file would stop meaning what it says.
+    let mut ordered: Vec<_> = list.rules.iter().collect();
+    if why {
+        ordered.sort_by_key(|rule| (rule.reason, rule.path.clone()));
+    }
+    let mut said: Option<prov::Reason> = None;
+    for rule in ordered {
+        if why && said != Some(rule.reason) {
+            if said.is_some() {
+                println!();
+            }
+            println!("# {}", reason_word(rule.reason));
+            said = Some(rule.reason);
         }
-        Err(error) => return Err(error.to_string().into()),
-    };
-    let plan = block_on(ws.skiplist(&ctx.root_doc, &standing))?;
-
-    for skip in &plan.rules {
-        println!("{}", skip.rule);
+        println!("{rule}");
     }
-    for (rule, tracked) in &plan.withheld {
-        eprintln!(
-            "withheld: `{rule}` would cover {tracked}, which history is tracking — \
-             link it back into the graph, or drop it from history"
-        );
+    // The count is narration for a person reading a terminal; `--json` is the
+    // mode where nobody is, and it has already returned.
+    match list.is_empty() {
+        true => eprintln!("nothing to ignore — the graph reaches everything on disk"),
+        false => eprintln!("{} rule(s)", list.rules.len()),
     }
-    for (rule, file) in &plan.shadowed {
-        eprintln!(
-            "shadowed: your rule `{rule}` covers {file}, which the graph reaches — \
-             recording will not take it while the rule stands"
-        );
-    }
-
-    if plan.settled() {
-        eprintln!("settled: the region already says this");
-        return Ok(ExitCode::SUCCESS);
-    }
-    eprintln!(
-        "{} rule(s) to add, {} to withdraw",
-        plan.fresh.len(),
-        plan.stale.len()
-    );
-    if !write {
-        eprintln!("nothing written — `prov history-skips --write` rewrites the region");
-        return Ok(ExitCode::SUCCESS);
-    }
-    if !ctx.config.history.captures() {
-        return Err(
-            "the `history` axis is off — `prov config history manual` says this workspace \
-             maintains a store"
-                .into(),
-        );
-    }
-    prov::history::apply(&ctx.root_dir, &plan).map_err(|error| error.to_string())?;
-    eprintln!("wrote the region ({} rule(s))", plan.rules.len());
     Ok(ExitCode::SUCCESS)
+}
+
+/// The one-word spelling of a reason, shared by `--why` and `--json` so the
+/// two never drift into different vocabularies for the same fact.
+pub(crate) fn reason_word(reason: prov::Reason) -> &'static str {
+    match reason {
+        prov::Reason::Bookkeeping => "bookkeeping",
+        prov::Reason::Claimed => "claimed by a manifest",
+        prov::Reason::Hidden => "hidden",
+        prov::Reason::Unreached => "unreached",
+    }
 }
 
 /// Report a convert sweep: the changed document paths to stdout (one per line,

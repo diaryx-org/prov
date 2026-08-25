@@ -345,6 +345,21 @@ pub fn finding(f: &Finding) -> J {
     J::Obj(fields)
 }
 
+/// One ignore rule as a JSON object.
+///
+/// The rendered `line` is included beside the parts it is made of: a consumer
+/// writing an ignore file wants the line prov would write, and one deciding
+/// what to do about an unreached document wants the path and the reason
+/// without parsing gitignore's escaping back off.
+pub fn ignore(rule: &prov::Ignore) -> J {
+    J::Obj(vec![
+        ("path", s(&rule.path)),
+        ("directory", J::Bool(rule.whole_dir)),
+        ("reason", s(crate::reason_word(rule.reason))),
+        ("line", s(&rule.to_string())),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

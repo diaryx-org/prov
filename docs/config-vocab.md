@@ -58,9 +58,10 @@ The `config`, `registry`, `recycle_bin`, `history`, and `about` **pointer relati
 *not* policy — they are structural links the root declares so the workspace
 unfolds from its own root (DESIGN §6). They remain at the root's top level
 alongside `part_of`/`contents`, resolved by the same link machinery. This also
-resolves the `recycle_bin` and `history` name clashes by location: the top-level
-key is a *pointer* (a path to the bin index / the history store index); the
-`prov:`-block key of the same name is a *policy* (a bool / an enum).
+resolves the `recycle_bin` name clash by location: the top-level key is a
+*pointer* (a path to the bin index); the `prov:`-block key of the same name is
+a *policy* (a bool). (`history` points at a retired event store and survives
+only so an unmigrated one stays out of every walk — nothing writes one.)
 
 ```yaml
 title: My Vault
@@ -137,7 +138,6 @@ prov:
   identity: lazy              # none (a.k.a. off) | lazy | eager
   fixity: all                # off | attachments | all
   recycle_bin: true          # bool — route delete to the recoverable bin
-  history: off               # off | manual — maintain the skiplist scoping a historica store
   about: structure           # off | structure — generate about.md, the page that explains this directory
 ```
 
@@ -145,7 +145,7 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
-`fixity: attachments`, `recycle_bin: true`, `history: off`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
+`fixity: attachments`, `recycle_bin: true`, `about: structure`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
 declares none; absent `fields` ⇒ no field is described (every such field is
 ordinary carried content); absent `views` ⇒ the workspace declares no lenses.
@@ -425,7 +425,6 @@ applies to path targets only.
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
 | — | `spec: 1` | new version marker |
 | `config`/`registry`/`recycle_bin`/`history` pointers | unchanged, top-level | structure, not policy |
-| — | `history: off` | new axis — historica-store skiplist maintenance, off by default |
 | — | `about: structure` | new axis — the generated `about.md`, **on** by default |
 
 ## Linting (`check`)
@@ -561,8 +560,8 @@ in `metadata.format` and embedded per `metadata.embed`, and under
   the first delete, the first capture). Ordinary mutations leave it alone.
 - `check` reports `AboutStale`; `check --fix` rewrites it.
 
-The skiplist (`prov history-skips`) deliberately rules it out of recording:
-the page is a pure function of configuration that is itself recorded.
+`prov ignore` lists it as *bookkeeping*, so a tool recording the folder never
+takes it: the page is a pure function of configuration that tool already has.
 
 ### Git
 

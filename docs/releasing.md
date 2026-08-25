@@ -1,6 +1,6 @@
 # Releasing prov
 
-All eleven published crates share one version number, one tag, and one
+All ten published crates share one version number, one tag, and one
 changelog. A release is therefore one command:
 
 ```console

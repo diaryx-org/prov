@@ -870,11 +870,6 @@ pub(crate) fn cmd_init(
         content_format: content.into(),
         recycle_bin,
         fixity: fixity.into(),
-        // Off, and deliberately not prompted for: history is a narrow feature
-        // (it earns its keep only on a transport that keeps no history of its
-        // own) and adds ongoing storage. `prov config history manual` turns it
-        // on for the workspaces that want it.
-        history: prov::History::Off,
         // On, and deliberately not prompted for either — but for the opposite
         // reason. A workspace that explains itself to a stranger by default is
         // the whole thesis (DESIGN §1); asking would invite people to decline
