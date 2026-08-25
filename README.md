@@ -40,7 +40,7 @@ A *self-describing plaintext workspace*: a set of documents whose structure live
 
 `cargo xtask ci` runs everything CI runs, in the order CI runs it; `cargo xtask` on its own lists the individual jobs. The [workflow](.github/workflows/ci.yml) does nothing but ask `cargo xtask ci-matrix` what the jobs are and run each one, so changing CI means editing [`xtask/src/main.rs`](xtask/src/main.rs) and nothing else.
 
-Releases are one command: `cargo xtask release <patch|minor|major|x.y.z>` bumps the workspace version, cuts the changelog's unreleased region into a released section, commits and tags — and pushes only when given `--push`, because the push is what publishes ten crates to crates.io. See [Releasing](docs/releasing.md).
+Releases are one command: `cargo xtask release <patch|minor|major|x.y.z>` bumps the workspace version, cuts the changelog's unreleased region into a released section, commits and tags — and pushes only when given `--push`, because the push is what publishes the workspace's crates to crates.io. See [Releasing](docs/releasing.md).
 
 Building needs [Zig](https://ziglang.org) 0.16 on `PATH` — prov's `fig` and `twig-doc` dependencies are Zig-backed, and their build scripts run `zig build`. `nix develop` provides it, as does the `flake.nix` dev shell.
 

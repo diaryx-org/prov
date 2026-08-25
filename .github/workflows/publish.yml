@@ -23,12 +23,14 @@ name: Publish
 # Auth is the `CARGO_REGISTRY_TOKEN` secret, as in fig, twig, and moid. It was
 # Trusted Publishing, which mints a short-lived token per run and needs no stored
 # secret — but that token is scoped to the crates this workflow is *registered*
-# for, one crate at a time, and the workspace is eleven crates that each would
-# need registering before their first release through CI. v0.6.0 is what that
-# cost: `403 … token is not valid for crate prov-graph`, at the first upload,
-# with ten crates behind it.
+# for, one crate at a time, and every crate in the workspace would need
+# registering before its first release through CI. v0.6.0 is what that cost:
+# `403 … token is not valid for crate prov-graph`, at the first upload, with ten
+# crates behind it — the workspace was eleven crates then, and the count has
+# moved twice since, which is the other half of why this is not a per-crate
+# scheme.
 #
-# So: one token, all eleven. It must carry `publish-update` for the crates that
+# So: one token, every crate. It must carry `publish-update` for the crates that
 # exist and `publish-new` for any crate the workspace has yet to publish, and it
 # must not be scoped to a subset of them — a token missing a crate fails the same
 # way, at the first upload that needs it. Rotating is a repo-settings edit

@@ -1,7 +1,8 @@
 # Releasing prov
 
-All ten published crates share one version number, one tag, and one
-changelog. A release is therefore one command:
+Every published crate in the workspace shares one version number, one tag, and
+one changelog — `cargo xtask publish --list` says which crates those are, and in
+what order they go up. A release is therefore one command:
 
 ```console
 $ cargo xtask release minor          # bump, changelog, commit, tag
@@ -67,7 +68,8 @@ Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, and
 moid. It was Trusted Publishing until v0.6.0, which failed at its first upload
 with `403 … token is not valid for crate prov-graph`: the token that scheme
 mints is scoped to the crates the workflow is *registered* for, one crate at a
-time, and the workspace had become eleven crates.
+time, and the workspace had become eleven crates (it has since been
+consolidated down; the argument is unchanged, and so is the failure mode).
 
 One token covers all of them, but it has to actually cover all of them — issue
 it with `publish-update` and `publish-new` (a crate the workspace has never
