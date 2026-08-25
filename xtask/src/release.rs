@@ -507,27 +507,60 @@ fn members(sh: &Sh) -> Result<Vec<String>> {
 
 /// Which other members a manifest depends on, in any dependency table —
 /// `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and the
-/// `[target.'cfg(…)'.dependencies]` forms. Dev-dependencies count: cargo
-/// verifies a published crate by building it, tests and all, so a dev-dependency
-/// on a sibling has to be on the index just as much as a real one.
-fn dependencies_on_members(manifest: &str, members: &[String]) -> Vec<String> {
+/// `[target.'cfg(…)'.dependencies]` forms — paired with whether the table was
+/// the dev one.
+///
+/// The pairing is what lets [`publish_order`] tell two situations apart that
+/// look identical from here. A **normal** dependency on a sibling has to be on
+/// the index before this crate can go up: cargo rewrites the path to a version
+/// requirement and the upload is rejected if nothing answers it. A
+/// **dev**-dependency written with a path and no version is *stripped* from the
+/// packaged manifest instead, and the verification build — which builds the
+/// library, not its tests — never looks for it. So a dev-dependency on a
+/// `publish = false` member is fine, and a normal one is a release that would
+/// fail at the upload.
+/// One member-to-member dependency edge, and which table declared it.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct MemberDep {
+    /// The member depended on.
+    name: String,
+    /// Declared under `[dev-dependencies]`, rather than a table whose contents
+    /// survive into the packaged manifest.
+    dev: bool,
+}
+
+/// A member as [`publish_order`] needs to see it: what it is, whether it may go
+/// to crates.io, and what it depends on.
+struct MemberManifest {
+    name: String,
+    publishable: bool,
+    deps: Vec<MemberDep>,
+}
+
+fn dependencies_on_members(manifest: &str, members: &[String]) -> Vec<MemberDep> {
     let is_member = |name: &str| members.iter().any(|m| m == name);
-    let mut found = Vec::new();
+    let mut found: Vec<MemberDep> = Vec::new();
     let mut in_dependencies = false;
+    let mut in_dev = false;
 
     for line in manifest.lines() {
         let line = line.trim();
         if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             let segments: Vec<&str> = header.split('.').collect();
             let table = |s: &str| s.ends_with("dependencies");
+            let position = segments.iter().position(|s| table(s));
             in_dependencies = segments.last().is_some_and(|s| table(s));
+            in_dev = position.is_some_and(|i| segments[i] == "dev-dependencies");
             // `[dependencies.prov-graph]` — the dependency is named by the
             // header itself, and the lines under it are its fields.
-            if let Some(position) = segments.iter().position(|s| table(s))
+            if let Some(position) = position
                 && let Some(name) = segments.get(position + 1)
                 && is_member(name)
             {
-                found.push((*name).to_string());
+                found.push(MemberDep {
+                    name: (*name).to_string(),
+                    dev: in_dev,
+                });
             }
             continue;
         }
@@ -540,14 +573,33 @@ fn dependencies_on_members(manifest: &str, members: &[String]) -> Vec<String> {
             let name = key.trim().trim_matches('"');
             let name = name.strip_suffix(".workspace").unwrap_or(name);
             if is_member(name) {
-                found.push(name.to_string());
+                found.push(MemberDep {
+                    name: name.to_string(),
+                    dev: in_dev,
+                });
             }
         }
     }
 
+    // A crate depended on both ways sorts its normal edge first, so the dedup
+    // below keeps the stricter of the two.
     found.sort();
-    found.dedup();
+    found.dedup_by(|a, b| a.name == b.name);
     found
+}
+
+/// Whether a member's manifest lets it go to crates.io.
+///
+/// `publish = false` is how a member opts out — `xtask` because it *is* the CI,
+/// `prov-testkit` because it is test scaffolding. Read from the manifest rather
+/// than listed here, so adding another one is a manifest edit and nothing else:
+/// this is the predicate the publish order and the jobs that check it all
+/// share, and a list would be a second place for them to disagree.
+pub(crate) fn publishable(manifest: &str) -> bool {
+    !manifest.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("publish") && line.contains("false")
+    })
 }
 
 /// Every publishable member, ordered so that no crate is published before
@@ -559,20 +611,18 @@ fn publish_order(sh: &Sh) -> Result<Vec<String>> {
     let mut manifests = Vec::new();
     for member in &members {
         let text = sh.read(&format!("{member}/Cargo.toml"))?;
-        // `publish = false` is how xtask stays out of this list.
-        let publishable = !text.lines().any(|line| {
-            let line = line.trim();
-            line.starts_with("publish") && line.contains("false")
+        manifests.push(MemberManifest {
+            name: member.clone(),
+            publishable: publishable(&text),
+            deps: dependencies_on_members(&text, &members),
         });
-        let deps = dependencies_on_members(&text, &members);
-        manifests.push((member.clone(), publishable, deps));
     }
 
     let mut order: Vec<String> = Vec::new();
     let mut visiting: Vec<String> = Vec::new();
     fn visit(
         member: &str,
-        manifests: &[(String, bool, Vec<String>)],
+        manifests: &[MemberManifest],
         order: &mut Vec<String>,
         visiting: &mut Vec<String>,
     ) -> Result<()> {
@@ -586,15 +636,33 @@ fn publish_order(sh: &Sh) -> Result<Vec<String>> {
             ));
         }
         visiting.push(member.to_string());
-        let (_, publishable, deps) = manifests
+        let this = manifests
             .iter()
-            .find(|(name, _, _)| name == member)
+            .find(|m| m.name == member)
             .ok_or_else(|| format!("`{member}` is not a workspace member"))?;
-        for dep in deps {
-            visit(dep, manifests, order, visiting)?;
+        for dep in &this.deps {
+            let name = &dep.name;
+            let reachable = manifests
+                .iter()
+                .find(|m| &m.name == name)
+                .is_some_and(|m| m.publishable);
+            if !reachable {
+                // Stripped from the packaged manifest, so it never has to reach
+                // the index — but only when it is a dev-dependency. A normal one
+                // would be a version requirement crates.io cannot satisfy, and
+                // finding that out at the upload means a half-published release.
+                if dep.dev {
+                    continue;
+                }
+                return Err(format!(
+                    "`{member}` depends on `{name}`, which is `publish = false`; \
+                     a normal dependency on an unpublished member cannot be released"
+                ));
+            }
+            visit(name, manifests, order, visiting)?;
         }
         visiting.pop();
-        if *publishable {
+        if this.publishable {
             order.push(member.to_string());
         }
         Ok(())
@@ -908,10 +976,42 @@ path = "."
 "#;
         assert_eq!(
             dependencies_on_members(manifest, &members),
-            vec!["prov-cli", "prov-graph", "prov-store"]
+            vec![
+                MemberDep {
+                    name: "prov-cli".to_string(),
+                    dev: true,
+                },
+                MemberDep {
+                    name: "prov-graph".to_string(),
+                    dev: false,
+                },
+                MemberDep {
+                    name: "prov-store".to_string(),
+                    dev: false,
+                },
+            ]
         );
         // `[package]`'s own keys are not dependencies.
         assert!(dependencies_on_members("[package]\nprov-graph = 1\n", &members).is_empty());
+    }
+
+    /// `publish = false` anywhere in the manifest opts a member out; nothing
+    /// else does. The publish order, the isolation job, and the test above all
+    /// ask this one question, so it is the one that has to be right.
+    #[test]
+    fn publishable_reads_the_manifest_not_a_list() {
+        assert!(publishable("[package]\nname = \"prov\"\n"));
+        assert!(publishable(
+            "[package]\nname = \"prov\"\npublish = [\"crates-io\"]\n"
+        ));
+        assert!(!publishable(
+            "[package]\nname = \"xtask\"\npublish = false\n"
+        ));
+        assert!(!publishable("[package]\npublish = false  # it is the CI\n"));
+        // A `publish` key belonging to something else does not count.
+        assert!(publishable(
+            "[package]\ndescription = \"publish = false, they said\"\n"
+        ));
     }
 
     /// The real workspace, ordered: every crate after the ones it depends on,
@@ -922,22 +1022,30 @@ path = "."
         let order = publish_order(&sh).unwrap();
         let members = members(&sh).unwrap();
 
-        assert!(
-            !order.contains(&"xtask".to_string()),
-            "xtask is publish = false"
-        );
         for member in &members {
-            if member != "xtask" {
+            let manifest = sh.read(&format!("{member}/Cargo.toml")).unwrap();
+            if publishable(&manifest) {
                 assert!(
                     order.contains(member),
                     "`{member}` would never be published"
+                );
+            } else {
+                assert!(
+                    !order.contains(member),
+                    "`{member}` is publish = false but is in the publish order"
                 );
             }
         }
 
         for (position, name) in order.iter().enumerate() {
             let manifest = sh.read(&format!("{name}/Cargo.toml")).unwrap();
-            for dep in dependencies_on_members(&manifest, &members) {
+            for MemberDep { name: dep, dev } in dependencies_on_members(&manifest, &members) {
+                let dep_manifest = sh.read(&format!("{dep}/Cargo.toml")).unwrap();
+                if dev && !publishable(&dep_manifest) {
+                    // Stripped from the packaged manifest — see
+                    // `dependencies_on_members`.
+                    continue;
+                }
                 let dep_position = order.iter().position(|c| *c == dep);
                 assert!(
                     dep_position.is_some_and(|d| d < position),

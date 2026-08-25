@@ -1,0 +1,14 @@
+[package]
+name = "prov-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Filesystem scratch helpers shared by the workspace's tests."
+# Test scaffolding, not a product. `publish = false` keeps it off crates.io and
+# out of `cargo xtask publish`'s order, the same way `xtask` stays out.
+publish = false
+
+[dependencies]

@@ -557,21 +557,9 @@ mod tests {
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
 
-    fn write(dir: &Path, rel: &str, bytes: &[u8]) {
-        let p = dir.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, bytes).unwrap();
-    }
-
-    fn read(dir: &Path, rel: &str) -> String {
-        std::fs::read_to_string(dir.join(rel)).unwrap()
-    }
-
+    use prov_testkit::{read, write};
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-manifest-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        prov_testkit::scratch("manifest", tag)
     }
 
     fn ws(dir: &Path) -> Workspace<StdFs> {
@@ -582,8 +570,8 @@ mod tests {
     fn photos(tag: &str) -> PathBuf {
         let dir = tempdir(tag);
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
-        write(&dir, "photos/a.jpg", &[0xff, 0xd8, 0x01]);
-        write(&dir, "photos/2019/b.jpg", &[0xff, 0xd8, 0x02]);
+        write(&dir, "photos/a.jpg", [0xff, 0xd8, 0x01]);
+        write(&dir, "photos/2019/b.jpg", [0xff, 0xd8, 0x02]);
         dir
     }
 
@@ -633,7 +621,7 @@ mod tests {
         let dir = tempdir("scale");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
         for i in 0..500 {
-            write(&dir, &format!("photos/{i:04}.jpg"), &[0xff, i as u8]);
+            write(&dir, &format!("photos/{i:04}.jpg"), [0xff, i as u8]);
         }
         block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
 
@@ -690,9 +678,9 @@ mod tests {
         let dir = photos("update");
         block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
 
-        write(&dir, "photos/c.jpg", &[0xff, 0xd8, 0x03]); // added
+        write(&dir, "photos/c.jpg", [0xff, 0xd8, 0x03]); // added
         std::fs::remove_file(dir.join("photos/a.jpg")).unwrap(); // removed
-        write(&dir, "photos/2019/b.jpg", &[0xff, 0xd8, 0x99]); // rewritten
+        write(&dir, "photos/2019/b.jpg", [0xff, 0xd8, 0x99]); // rewritten
 
         let mut w = ws(&dir);
         let update = block_on(w.update_manifest(Path::new("photos.yaml"))).unwrap();
@@ -729,7 +717,7 @@ mod tests {
         .unwrap();
         assert!(!read(&dir, "photos.manifest.yaml").contains("hash:"));
 
-        write(&dir, "photos/c.jpg", &[0xff, 0xd8, 0x03]);
+        write(&dir, "photos/c.jpg", [0xff, 0xd8, 0x03]);
         let mut w = ws(&dir);
         block_on(w.update_manifest(Path::new("photos.yaml"))).unwrap();
         assert!(
@@ -745,7 +733,7 @@ mod tests {
 
         // A bit rots: the file is still there, still listed, and its bytes have
         // changed. Nothing shallow can see this.
-        write(&dir, "photos/a.jpg", &[0xff, 0xd8, 0x77]);
+        write(&dir, "photos/a.jpg", [0xff, 0xd8, 0x77]);
 
         assert_eq!(
             block_on(ws(&dir).check("index.md")).unwrap(),
@@ -767,7 +755,7 @@ mod tests {
 
         // A photo appears and a photo vanishes — neither is a document, so no
         // other pass in prov can see either one.
-        write(&dir, "photos/c.jpg", &[0xff, 0xd8, 0x03]);
+        write(&dir, "photos/c.jpg", [0xff, 0xd8, 0x03]);
         std::fs::remove_file(dir.join("photos/2019/b.jpg")).unwrap();
 
         let mut w = ws(&dir);
@@ -1017,7 +1005,7 @@ mod tests {
             false,
         ))
         .unwrap();
-        write(&dir, "photos/a.jpg", &[0xff, 0xd8, 0x77]);
+        write(&dir, "photos/a.jpg", [0xff, 0xd8, 0x77]);
         assert_eq!(
             block_on(ws(&dir).verify_manifest(Path::new("photos.yaml"))).unwrap(),
             vec![]

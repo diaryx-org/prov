@@ -3,7 +3,7 @@ resolver = "2"
 # `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
 # workflow runs nothing else. It is a member so `cargo test --workspace` checks
 # it, and `publish = false` keeps it off crates.io.
-members = ["prov-graph", "prov-store", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
+members = ["prov-graph", "prov-store", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "prov-testkit", "xtask"]
 
 [workspace.package]
 version = "0.7.0"
@@ -91,6 +91,8 @@ prov-store = { path = "prov-store", version = "0.7.0", default-features = false 
 # prov configures its journal name rather than taking the default — see
 # `prov::journal::workspace_journal` for why `.prov-journal` has to stay.
 fs-transaction = { version = "0.1" }
+# Test scaffolding, shared so it cannot drift. Never published — see its manifest.
+prov-testkit = { path = "prov-testkit" }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
 prov-views = { path = "prov-views", version = "0.7.0", default-features = false }

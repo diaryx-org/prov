@@ -19,21 +19,9 @@ pub(super) use prov_graph::fs::StdFs;
 use prov_store::fs::Storage;
 pub(super) use prov_store::index::FileIndex;
 
-pub(super) fn write(dir: &Path, rel: &str, text: &str) {
-    let p = dir.join(rel);
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(p, text).unwrap();
-}
-
-pub(super) fn read(dir: &Path, rel: &str) -> String {
-    std::fs::read_to_string(dir.join(rel)).unwrap()
-}
-
+pub(super) use prov_testkit::{read, write};
 pub(super) fn tempdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-mutate-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    prov_testkit::scratch("mutate", tag)
 }
 
 pub(super) fn ws(dir: &Path) -> Workspace<StdFs> {

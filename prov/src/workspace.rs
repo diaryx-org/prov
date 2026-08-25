@@ -1534,17 +1534,9 @@ mod spanning_children_tests {
     use crate::fs_faults::CountingFs;
     use prov_graph::exec::block_on;
 
+    use prov_testkit::write;
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-children-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn write(dir: &Path, rel: &str, text: &str) {
-        let path = dir.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, text).unwrap();
+        prov_testkit::scratch("children", tag)
     }
 
     /// **One generation, and the documents that resolved it.**

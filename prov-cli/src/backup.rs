@@ -345,10 +345,7 @@ mod tests {
     use super::*;
 
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-backup-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        prov_testkit::scratch("backup", tag)
     }
 
     #[test]

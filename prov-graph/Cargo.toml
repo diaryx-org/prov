@@ -40,6 +40,7 @@ twig-doc.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+prov-testkit = { workspace = true }
 # Property-based testing. The laws this crate carries — `resolve ∘ format = id`,
 # the id↔path bijection — are already written down in prose, and an example test
 # can only witness one input per law. Dev-only, so it costs a downstream

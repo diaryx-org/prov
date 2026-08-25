@@ -533,6 +533,7 @@ dependencies = [
  "prov-exports",
  "prov-graph",
  "prov-store",
+ "prov-testkit",
  "prov-views",
  "thiserror",
  "twig-doc",
@@ -546,6 +547,7 @@ dependencies = [
  "cliclack",
  "fig",
  "prov",
+ "prov-testkit",
 ]
 
 [[package]]
@@ -567,6 +569,7 @@ name = "prov-exports"
 version = "0.7.0"
 dependencies = [
  "prov-graph",
+ "prov-testkit",
  "prov-views",
 ]
 
@@ -579,6 +582,7 @@ dependencies = [
  "indexmap",
  "moid",
  "proptest",
+ "prov-testkit",
  "sha2",
  "thiserror",
  "twig-doc",
@@ -595,10 +599,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prov-testkit"
+version = "0.7.0"
+
+[[package]]
 name = "prov-views"
 version = "0.7.0"
 dependencies = [
  "prov-graph",
+ "prov-testkit",
 ]
 
 [[package]]

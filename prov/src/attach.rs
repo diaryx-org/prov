@@ -394,21 +394,9 @@ mod tests {
     use prov_graph::fs::StdFs;
     use prov_graph::title::TitleMatch;
 
-    fn write(dir: &Path, rel: &str, bytes: &[u8]) {
-        let p = dir.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, bytes).unwrap();
-    }
-
-    fn read(dir: &Path, rel: &str) -> String {
-        std::fs::read_to_string(dir.join(rel)).unwrap()
-    }
-
+    use prov_testkit::{read, write};
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-attach-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        prov_testkit::scratch("attach", tag)
     }
 
     fn ws(dir: &Path) -> Workspace<StdFs> {
@@ -420,7 +408,7 @@ mod tests {
         let dir = tempdir("basic");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
         // A binary payload: bytes prov must never try to read as text.
-        write(&dir, "photo.jpg", &[0xff, 0xd8, 0xff, 0xe0, 0x00]);
+        write(&dir, "photo.jpg", [0xff, 0xd8, 0xff, 0xe0, 0x00]);
 
         let node =
             block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
@@ -485,11 +473,11 @@ mod tests {
         // The archival payoff: bit-rot no link check would ever see.
         let dir = tempdir("fixity-rot");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
-        write(&dir, "photo.jpg", &[0xff, 0xd8, 0xff, 0xe0, 0x01]);
+        write(&dir, "photo.jpg", [0xff, 0xd8, 0xff, 0xe0, 0x01]);
         block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
 
         // A bit rots — the payload's bytes change out from under its checksum.
-        write(&dir, "photo.jpg", &[0xff, 0xd8, 0xff, 0xe0, 0x99]);
+        write(&dir, "photo.jpg", [0xff, 0xd8, 0xff, 0xe0, 0x99]);
 
         let findings = block_on(ws(&dir).check("index.md")).unwrap();
         assert!(
@@ -507,10 +495,10 @@ mod tests {
         // re-stamping, and the workspace validates again.
         let dir = tempdir("fixity-restamp");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
-        write(&dir, "photo.jpg", &[0x01, 0x02, 0x03]);
+        write(&dir, "photo.jpg", [0x01, 0x02, 0x03]);
         block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
 
-        write(&dir, "photo.jpg", &[0x04, 0x05, 0x06]); // an intended re-export
+        write(&dir, "photo.jpg", [0x04, 0x05, 0x06]); // an intended re-export
 
         let mut w = ws(&dir);
         let finding = block_on(w.check("index.md"))
@@ -532,7 +520,7 @@ mod tests {
     fn fixity_off_records_no_checksum() {
         let dir = tempdir("fixity-off");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
-        write(&dir, "photo.jpg", &[0x01, 0x02, 0x03]);
+        write(&dir, "photo.jpg", [0x01, 0x02, 0x03]);
 
         let w = || {
             Workspace::builder(StdFs)
@@ -553,7 +541,7 @@ mod tests {
     fn attachment_for_finds_the_sidecar_and_refuses_a_document_payload() {
         let dir = tempdir("lookup");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
-        write(&dir, "assets/logo.png", &[0x89, 0x50, 0x4e, 0x47]);
+        write(&dir, "assets/logo.png", [0x89, 0x50, 0x4e, 0x47]);
 
         assert!(
             block_on(ws(&dir).attachment_for(Path::new("assets/logo.png")))
@@ -793,7 +781,7 @@ mod tests {
         // A blob (content-addressed, so extensionless and opaque), a binned
         // attachment, and one genuinely loose file to prove the sweep still runs.
         write(&dir, "history/blobs/ab/cdef", b"parked bytes");
-        write(&dir, "recyclebin/items/binned.jpg", &[0xff, 0xd8]);
+        write(&dir, "recyclebin/items/binned.jpg", [0xff, 0xd8]);
         write(&dir, "loose.pdf", b"%PDF-1.7\n");
 
         assert_eq!(
@@ -808,7 +796,7 @@ mod tests {
         let dir = tempdir("loose");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
         write(&dir, "a.pdf", b"%PDF-1.7\n");
-        write(&dir, "sub/b.png", &[0x89, 0x50]);
+        write(&dir, "sub/b.png", [0x89, 0x50]);
         // A prose document is not a payload; it should never appear.
         write(&dir, "sub/note.md", b"---\ntitle: Note\n---\n");
 
@@ -833,7 +821,7 @@ mod tests {
         // the payload beside it and repoints `content` — no attachment-specific code.
         let dir = tempdir("rename");
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
-        write(&dir, "photo.jpg", &[0xff, 0xd8]);
+        write(&dir, "photo.jpg", [0xff, 0xd8]);
         block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
 
         block_on(ws(&dir).rename(

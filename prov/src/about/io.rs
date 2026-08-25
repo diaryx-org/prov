@@ -201,17 +201,9 @@ mod tests {
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
 
-    fn write(dir: &Path, rel: &str, text: &str) {
-        let p = dir.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, text).unwrap();
-    }
-
+    use prov_testkit::write;
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-about-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        prov_testkit::scratch("about", tag)
     }
 
     fn fixture(tag: &str) -> (std::path::PathBuf, WorkspaceConfig, AboutContext) {

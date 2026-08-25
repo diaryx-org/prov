@@ -21,6 +21,9 @@ prov-graph = { workspace = true, default-features = false }
 # narrow an export but is structurally unable to widen one.
 prov-views = { workspace = true, default-features = false }
 
+[dev-dependencies]
+prov-testkit = { workspace = true }
+
 [features]
 default = ["yaml"]
 yaml = ["prov-graph/yaml", "prov-views/yaml"]

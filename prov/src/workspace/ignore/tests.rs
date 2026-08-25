@@ -15,17 +15,9 @@ use prov_store::index::FileIndex;
 use super::{Ignore, IgnoreList, Reason};
 use crate::workspace::Workspace;
 
+use prov_testkit::write;
 fn tempdir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-ignore-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn write(dir: &Path, rel: &str, text: &str) {
-    let path = dir.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, text).unwrap();
+    prov_testkit::scratch("ignore", tag)
 }
 
 fn ws(dir: &Path) -> Workspace<StdFs, crate::identity::Minter, FileIndex> {
@@ -51,12 +43,12 @@ fn child(dir: &Path, rel: &str, title: &str) {
     write(
         dir,
         rel,
-        &format!("---\ntitle: {title}\npart_of: '{up}index.md'\n---\n{title}\n"),
+        format!("---\ntitle: {title}\npart_of: '{up}index.md'\n---\n{title}\n"),
     );
 }
 
 fn loose(dir: &Path, rel: &str, title: &str) {
-    write(dir, rel, &format!("---\ntitle: {title}\n---\nunlinked\n"));
+    write(dir, rel, format!("---\ntitle: {title}\n---\nunlinked\n"));
 }
 
 fn list(dir: &Path) -> IgnoreList {

@@ -1463,21 +1463,9 @@ mod tests {
     use prov_graph::link::LinkStyle;
     use prov_store::index::FileIndex;
 
-    fn write(dir: &Path, rel: &str, text: &str) {
-        let p = dir.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, text).unwrap();
-    }
-
+    use prov_testkit::{read, write};
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-remedy-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn read(dir: &Path, rel: &str) -> String {
-        std::fs::read_to_string(dir.join(rel)).unwrap()
+        prov_testkit::scratch("remedy", tag)
     }
 
     fn kinds(remedies: &[Remedy]) -> Vec<RemedyKind> {

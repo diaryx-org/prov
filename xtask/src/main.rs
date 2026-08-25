@@ -478,9 +478,10 @@ mod tests {
         assert!(!ids.contains(&"ci") && !ids.contains(&"ci-matrix"));
     }
 
-    /// Every member of the workspace should be built alone by the isolation
-    /// job; that is the whole point of it. `prov` is covered by its per-format
-    /// rows instead, and `xtask` is not a published crate.
+    /// Every *publishable* member of the workspace should be built alone by the
+    /// isolation job; that is the whole point of it. `prov` is covered by its
+    /// per-format rows instead, and a `publish = false` member is never
+    /// packaged, so there is no isolated build to check.
     #[test]
     fn package_isolation_covers_every_member() {
         let sh = Sh::new();
@@ -491,7 +492,9 @@ mod tests {
             .expect("workspace members");
 
         for member in members.split('"').skip(1).step_by(2) {
-            if member == "prov" || member == "xtask" {
+            let member_manifest =
+                std::fs::read_to_string(sh.root.join(member).join("Cargo.toml")).unwrap();
+            if member == "prov" || !release::publishable(&member_manifest) {
                 continue;
             }
             assert!(

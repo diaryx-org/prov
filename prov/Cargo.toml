@@ -57,6 +57,7 @@ thiserror.workspace = true
 twig-doc.workspace = true
 
 [dev-dependencies]
+prov-testkit = { workspace = true }
 # Property-based testing. The crate's laws are already written down in prose —
 # `resolve ∘ format = id`, the id↔path bijection, "a check-clean workspace stays
 # check-clean under any verb" — and an example test can only witness one input

@@ -17,6 +17,9 @@ license.workspace = true
 # reason.
 prov-graph = { workspace = true, default-features = false }
 
+[dev-dependencies]
+prov-testkit = { workspace = true }
+
 [features]
 default = ["yaml"]
 yaml = ["prov-graph/yaml"]

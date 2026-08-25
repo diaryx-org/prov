@@ -33,6 +33,7 @@ A *self-describing plaintext workspace*: a set of documents whose structure live
 
 - **`prov/`** — the library. Documents, relations, identity, and the workspace seam.
 - **`prov-cli/`** — a thin command-line companion (the installed binary is `prov`).
+- **`prov-testkit/`** — filesystem scratch helpers the tests share. Never published.
 - **`xtask/`** — CI, as a program. Each job is `cargo xtask <job>`.
 
 ## Development

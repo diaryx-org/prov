@@ -407,17 +407,9 @@ mod fs_tests {
     use prov_graph::index::NoIndex;
     use prov_views::Grouping;
 
-    fn write(dir: &Path, rel: &str, text: &str) {
-        let p = dir.join(rel);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, text).unwrap();
-    }
-
+    use prov_testkit::write;
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-exports-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        prov_testkit::scratch("exports", tag)
     }
 
     /// A journal with a `Daily/` subtree and a draft beside it. The gate field
