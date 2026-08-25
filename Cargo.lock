@@ -585,6 +585,7 @@ dependencies = [
  "indexmap",
  "moid",
  "proptest",
+ "prov-transaction",
  "thiserror",
  "twig-doc",
 ]
@@ -605,15 +606,12 @@ dependencies = [
  "fig",
  "proptest",
  "prov-graph",
+ "prov-transaction",
 ]
 
 [[package]]
 name = "prov-transaction"
 version = "0.7.0"
-dependencies = [
- "prov-graph",
- "prov-store",
-]
 
 [[package]]
 name = "prov-views"

@@ -1,6 +1,6 @@
 //! An in-memory [`Storage`] backend.
 //!
-//! Available on every target prov compiles for — including
+//! Available on every target this crate compiles for — including
 //! `wasm32-unknown-unknown`, where it needs no browser API at all. Useful for
 //! tests and sandboxes, and for clients (a WASM frontend with no direct disk
 //! access) that load a workspace into memory up front and persist it
@@ -11,7 +11,7 @@ use std::io::{self, Error, ErrorKind};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use prov_graph::fs::{DirEntry, FileType, Metadata, ReadStorage};
+use super::{DirEntry, FileType, Metadata, ReadStorage};
 
 use super::{Capabilities, Storage};
 
@@ -519,7 +519,7 @@ impl InMemoryFs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prov_graph::exec::block_on;
+    use crate::exec::block_on;
 
     #[test]
     fn read_write_roundtrip() {

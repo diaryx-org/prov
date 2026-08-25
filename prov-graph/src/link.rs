@@ -17,7 +17,7 @@
 //! find.
 
 use std::ops::Range;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// A parsed link string: an optional human label and the target it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1217,45 +1217,11 @@ fn code_spans_for(path: &Path, body: &str) -> Option<Vec<Range<usize>>> {
     crate::content::code_spans(body, format).ok()
 }
 
-/// Lexically normalize a relative path: drop `.` components and fold
-/// `parent/..` pairs. Leading `..` components (escaping the workspace root)
-/// are kept — the caller decides whether that is an error.
-pub fn normalize(path: impl AsRef<Path>) -> PathBuf {
-    let mut out: Vec<Component> = Vec::new();
-    for component in path.as_ref().components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => match out.last() {
-                Some(Component::Normal(_)) => {
-                    out.pop();
-                }
-                _ => out.push(component),
-            },
-            other => out.push(other),
-        }
-    }
-    out.iter().collect()
-}
-
-/// Whether `path`, resolved against a workspace root, would land *outside* it.
-///
-/// Two ways a workspace-relative path can escape the tree it is joined onto:
-/// an **absolute** path (or a Windows drive prefix), which `root.join(path)`
-/// jumps to wholesale, ignoring the root entirely; and one whose
-/// [`normalize`]d form still leads with `..`, a climb above the root that the
-/// `parent/..` folding could not cancel. Either is refused by the read/write
-/// guards (`prov`'s `Workspace`'s `load`, `prov`'s `ChangeSet::apply`) so a
-/// relation target — which is *data*, authored by whoever wrote the document —
-/// can never name a file the workspace does not contain.
-///
-/// A path that stays within the root (`notes/a.md`, `../sibling/b.md` where the
-/// document is nested deeply enough that the `..` cancels) returns `false`.
-pub fn escapes_root(path: impl AsRef<Path>) -> bool {
-    matches!(
-        normalize(path).components().next(),
-        Some(Component::ParentDir | Component::RootDir | Component::Prefix(_))
-    )
-}
+// Lexical path handling lives in `prov-transaction`, which needs the same
+// normalization to clamp a staged op to its root. Re-exported here so prov's
+// read guards and its write guards demonstrably share one implementation
+// rather than two that agree by inspection.
+pub use prov_transaction::path::{escapes_root, normalize};
 
 /// Resolve a link target written in `doc` to a normalized path in the same
 /// coordinate system as `doc` (workspace-relative when `doc` is). A target with
@@ -1302,6 +1268,7 @@ pub fn relative(from_dir: &Path, to: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Component;
 
     #[test]
     fn locator_splits_at_the_first_separator_and_round_trips() {

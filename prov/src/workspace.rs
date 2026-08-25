@@ -889,7 +889,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
             Err(e) => {
                 self.graph.index_mut().rollback();
-                Err(e)
+                Err(e.into())
             }
         }
     }

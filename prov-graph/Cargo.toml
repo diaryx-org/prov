@@ -10,6 +10,12 @@ readme.workspace = true
 license.workspace = true
 
 [dependencies]
+# The filesystem port and the transaction that lands a change through it. The
+# bottom of the stack: no dependencies of its own, and no knowledge of what a
+# document is. `fs` and `exec` here are re-exports of its modules, and its
+# `path` helpers are the same ones the write guards clamp against.
+prov-transaction = { workspace = true }
+
 # Embedded-metadata backend. See the workspace manifest for why the version
 # floor is where it is. Which format backends fig compiles in is governed by
 # this crate's features below, which `prov` forwards to.

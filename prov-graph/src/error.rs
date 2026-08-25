@@ -104,3 +104,34 @@ impl From<crate::index::Collision> for Error {
 
 /// Convenience alias for results in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Carry a transaction failure into prov's own error vocabulary.
+///
+/// [`prov_transaction`] phrases its errors for a generic tree of files, since
+/// it knows nothing about workspaces. The variants map one-to-one onto prov's,
+/// which restate them in terms a prov user can act on — naming `prov check` as
+/// the recovery step, and a workspace root as the boundary that was crossed.
+impl From<prov_transaction::Error> for Error {
+    fn from(e: prov_transaction::Error) -> Self {
+        use prov_transaction::Error as Tx;
+        match e {
+            Tx::Io(e) => Error::Io(e),
+            Tx::Escape(path) => Error::Escape(path),
+            Tx::StaleJournal(path) => Error::StaleJournal(path),
+            Tx::Torn { cause, rollback } => Error::Torn { cause, rollback },
+            // The three that have no prov-level counterpart: a journal prov
+            // cannot read, a replay it cannot finish, and a path it could not
+            // encode. All are structural failures of the on-disk state, which
+            // is what `Structure` names.
+            Tx::NonUtf8Path(path) => {
+                Error::Structure(format!("cannot journal non-UTF-8 path: {}", path.display()))
+            }
+            Tx::Corrupt(what) => Error::Structure(format!("journal is corrupt: {what}")),
+            Tx::Recovery(what) => Error::Structure(format!("journal replay: {what}")),
+            // `prov_transaction::Error` is `#[non_exhaustive]`: a variant added
+            // upstream must not silently become a compile error here, but it
+            // must not be mistaken for a prov-level failure either.
+            other => Error::Structure(other.to_string()),
+        }
+    }
+}

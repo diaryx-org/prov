@@ -10,6 +10,11 @@ readme.workspace = true
 license.workspace = true
 
 [dependencies]
+# The filesystem port and the transaction over it. `fs` here is a re-export of
+# its `fs`, and the `Rebase` impl for its `ChangeSet` lives in `index` — this
+# crate owns the trait, so the impl belongs on this side of the edge.
+prov-transaction = { workspace = true }
+
 # The read core. Everything here is the *other half* of a port this crate's
 # dependency declares: `Storage` completes `prov_graph::fs::ReadStorage`,
 # `IndexStore` completes `prov_graph::index::IdIndex`. Nothing flows the other

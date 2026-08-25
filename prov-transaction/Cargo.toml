@@ -9,15 +9,9 @@ homepage.workspace = true
 readme.workspace = true
 license.workspace = true
 
+# No dependencies, on purpose. This crate is the bottom of prov's stack: the
+# filesystem port every other crate is generic over, and the transaction that
+# lands a change through it. Nothing here needs to know what a document is, so
+# nothing here depends on the crates that do — which is what lets it be lifted
+# out as a general-purpose crate (see `docs/`).
 [dependencies]
-prov-graph = { workspace = true, default-features = false }
-# The write halves of prov-graph's ports — the `Storage` the journal drives and
-# the `Rebase` seam a change set answers through.
-prov-store = { workspace = true, default-features = false }
-
-[features]
-default = ["yaml"]
-yaml = ["prov-graph/yaml", "prov-store/yaml"]
-json = ["prov-graph/json", "prov-store/json"]
-toml = ["prov-graph/toml", "prov-store/toml"]
-fig-lang = ["prov-graph/fig-lang", "prov-store/fig-lang"]

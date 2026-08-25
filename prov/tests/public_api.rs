@@ -101,7 +101,9 @@ fn a_path_escaping_the_root_is_refused_by_apply() {
     let root = tmp("escape");
     let mut cs = ChangeSet::new();
     cs.write("../escapee.md", "should never be written");
-    let err = block_on(cs.apply(&StdFs, &root)).unwrap_err();
+    // `apply` answers in `prov_transaction`'s vocabulary; a prov caller reaches
+    // prov's through the `From` impl, which is what `?` would do for them.
+    let err: Error = block_on(cs.apply(&StdFs, &root)).unwrap_err().into();
     assert!(
         matches!(err, Error::Escape(_)),
         "expected Escape, got {err:?}"
@@ -310,7 +312,7 @@ fn a_rollback_that_itself_fails_surfaces_as_torn() {
     cs.write("victim.md", "rewritten"); // op-1: lands, then must be rolled back
     cs.write("boom.md", "never lands"); // op-2: its write faults
 
-    let err = block_on(cs.apply(&fs, &root)).unwrap_err();
+    let err: Error = block_on(cs.apply(&fs, &root)).unwrap_err().into();
     match err {
         Error::Torn { cause, rollback } => {
             assert!(

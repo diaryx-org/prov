@@ -1,46 +1,46 @@
 //! The write-ahead journal — what makes a whole [`ChangeSet`](crate::ChangeSet)
 //! crash-atomic, not just each file in it.
 //!
-//! [`crate::change`] already lands every document write atomically (via
+//! [`crate::change`] already lands every file write atomically (via
 //! [`Storage::write_atomic`]) and unwinds the set in memory on any *error*. The
 //! one failure that leaves behind — a `kill -9` or a power cut *between* two of a
 //! set's writes — is what this closes. The mechanism is the classic write-ahead
-//! log, specialized to the one shape prov's change sets take: a sequence of
+//! log, specialized to the one shape a change set takes: a sequence of
 //! whole-file writes, copies, renames, and removes, each self-contained.
 //!
 //! ## The protocol
 //!
-//! Before touching a single document, [`ChangeSet::apply`](crate::ChangeSet::apply)
+//! Before touching a single file, [`ChangeSet::apply`](crate::ChangeSet::apply)
 //! writes this journal — the complete list of intended ops — and flushes it. That
 //! flush is the **commit point**. Because the journal is itself written through
 //! [`Storage::write_atomic`], it appears whole or not at all, so a crash leaves
 //! the disk in exactly one of two states:
 //!
-//! - **No journal** (the crash beat the commit point). No document write had
-//!   started yet either, so the workspace is untouched — nothing to recover.
+//! - **No journal** (the crash beat the commit point). No file write had
+//!   started yet either, so the tree is untouched — nothing to recover.
 //! - **A whole journal** (the crash came after the commit point). Some, all, or
-//!   none of the document writes may have landed. [`recover`] replays the journal
+//!   none of the file writes may have landed. [`recover`] replays the journal
 //!   forward — idempotently, so already-applied ops are no-ops — bringing the
-//!   workspace to the fully-applied state, then deletes the journal.
+//!   tree to the fully-applied state, then deletes the journal.
 //!
-//! So an interrupted change set always resolves to a *consistent* workspace:
+//! So an interrupted change set always resolves to a *consistent* tree:
 //! either fully before it (the commit point was never reached) or fully after it
 //! (recovery rolled it forward). The one honesty worth stating plainly:
 //!
-//! > Which of the two an interruption yields depends on whether prov kept
-//! > control. An **error** returned mid-apply is unwound in memory — the
-//! > workspace ends up fully *before*. A **crash** loses that chance, so recovery
+//! > Which of the two an interruption yields depends on whether the process
+//! > kept control. An **error** returned mid-apply is unwound in memory — the
+//! > tree ends up fully *before*. A **crash** loses that chance, so recovery
 //! > rolls the journaled set fully *forward* instead. Both endpoints are
-//! > consistent; they are simply different consistent states, and prov does
-//! > not pretend a lost-power mutation didn't happen when its intent was already
-//! > durably on disk.
+//! > consistent; they are simply different consistent states, and this crate
+//! > does not pretend a lost-power change didn't happen when its intent was
+//! > already durably on disk.
 //!
 //! ## Format
 //!
 //! A compact, length-prefixed binary encoding with a magic header and a trailing
-//! checksum. The journal is ephemeral machine state, not a document the user
-//! owns, so it is not `fig` and not meant to be read by hand — and binary keeps
-//! opaque payloads (an attached photo staged for a write) exact without escaping.
+//! checksum. The journal is ephemeral machine state, not something the user
+//! owns, so it is not meant to be read by hand — and binary keeps opaque
+//! payloads (an image staged for a write) exact without escaping.
 //! The checksum is belt-and-suspenders: `write_atomic` already makes the journal
 //! all-or-nothing, so a torn *write* is impossible, but bit-rot on the way back
 //! is not, and a journal that cannot be trusted must be refused loudly rather
@@ -49,42 +49,42 @@
 //! ## Payload by reference
 //!
 //! One op — [`FileOp::CopyFrom`] — journals a *source path* in place of the bytes
-//! it will write. Without it, a change set putting a whole captured workspace
-//! back would duplicate that entire tree into the journal at the commit point,
-//! making a restore two full-workspace writes and bounding it by the size of the
-//! workspace rather than the number of files in it.
+//! it will write. Without it, a change set putting a whole captured tree back
+//! would duplicate that entire tree into the journal at the commit point,
+//! making a restore two full-tree writes and bounding it by the total size of
+//! the tree rather than the number of files in it.
 //!
 //! Journaling a reference stays deterministic to replay, but only because the
-//! referent is *required* to be immutable. A content-addressed history blob
+//! referent is *required* to be immutable. A content-addressed blob
 //! satisfies that by construction — its path is the digest of its own contents —
 //! so replay either finds exactly the bytes the set intended, or finds nothing
 //! and fails loudly. That requirement is a real obligation on whoever stages the
-//! op: pointed at a mutable document, it would let recovery write bytes the
+//! op: pointed at a mutable file, it would let recovery write bytes the
 //! original change never intended, which is the one thing a write-ahead log
 //! exists to prevent.
 
 use std::path::{Path, PathBuf};
 
 use crate::change::FileOp;
-use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
+use crate::error::{Error, Result};
+use crate::fs::Storage;
 
-/// The workspace-root-relative name of the journal file. A single transient
+/// The root-relative name of the journal file. A single transient
 /// dotfile: it exists only between a change set's commit point and its
-/// completion, so in steady state the workspace carries no journal at all, and
+/// completion, so in steady state the tree carries no journal at all, and
 /// no dotfolder is spawned to hold one. It survives a crash solely so [`recover`]
 /// can find it, and is removed the moment recovery (or a clean apply) finishes.
 pub const JOURNAL_NAME: &str = ".prov-journal";
 
 /// The magic prefix stamped on every journal, embedding a one-byte format
-/// version (`1`). A file that does not start with this is not a journal prov
-/// wrote — or is one from an incompatible future version — and is refused rather
-/// than guessed at.
+/// version (`1`). A file that does not start with this is not a journal this
+/// crate wrote — or is one from an incompatible future version — and is refused
+/// rather than guessed at.
 const MAGIC: &[u8; 8] = b"COLOJRN1";
 
 /// Whether `path` names the journal (or its `write_atomic` staging sibling).
 /// Used so a fault-injecting test backend can leave the journal's own writes
-/// alone and fail only the document writes it means to.
+/// alone and fail only the file writes it means to.
 pub fn is_journal_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -128,13 +128,13 @@ pub fn encode(ops: &[FileOp]) -> Result<Vec<u8>> {
 }
 
 /// Parse journal bytes back into ops, verifying the magic and the checksum. A
-/// mismatch is an [`Error::Structure`] — a journal that cannot be trusted is
+/// mismatch is an [`Error::Corrupt`] — a journal that cannot be trusted is
 /// refused, never partially replayed.
 pub fn decode(bytes: &[u8]) -> Result<Vec<FileOp>> {
-    let corrupt = |what: &str| Error::Structure(format!("journal is corrupt: {what}"));
+    let corrupt = |what: &str| Error::Corrupt(what.to_string());
 
     if bytes.len() < MAGIC.len() + 8 + 8 || &bytes[..MAGIC.len()] != MAGIC {
-        return Err(corrupt("not a prov journal (bad header)"));
+        return Err(corrupt("not a journal (bad header)"));
     }
     let body_end = bytes.len() - 8;
     let stored = u64::from_le_bytes(bytes[body_end..].try_into().unwrap());
@@ -181,15 +181,15 @@ pub enum Recovered {
     /// No journal was present — steady state, the common case.
     Nothing,
     /// A journal was found and its `ops` ops were rolled forward, then it was
-    /// removed. The workspace was interrupted mid-change and is now consistent.
+    /// removed. The tree was interrupted mid-change and is now consistent.
     Applied(usize),
 }
 
-/// Finish any change set a crash left journaled at `root`, rolling the workspace
+/// Finish any change set a crash left journaled at `root`, rolling the tree
 /// forward to the fully-applied state, then remove the journal.
 ///
 /// The recovery entry point: an `open` or a `check` runs it so an interrupted
-/// mutation heals before anything reads the workspace. A no-op when no journal is
+/// mutation heals before anything reads the tree. A no-op when no journal is
 /// present, so it is cheap to call unconditionally. Replay is idempotent — a
 /// write already landed is simply rewritten, a rename already done is recognized
 /// and skipped — so recovering the *same* journal twice (a crash *during*
@@ -229,8 +229,8 @@ async fn replay<FS: Storage>(fs: &FS, root: &Path, op: &FileOp) -> Result<()> {
         FileOp::CopyFrom { path, source } => {
             let (full, source_full) = (root.join(path), root.join(source));
             let bytes = fs.read(&source_full).await.map_err(|e| {
-                Error::Structure(format!(
-                    "journal replay: cannot copy {} from {} — {e}",
+                Error::Recovery(format!(
+                    "cannot copy {} from {} — {e}",
                     full.display(),
                     source_full.display()
                 ))
@@ -260,8 +260,8 @@ async fn replay<FS: Storage>(fs: &FS, root: &Path, op: &FileOp) -> Result<()> {
             } else if fs.try_exists(&to_full).await? {
                 // Already renamed before the crash — nothing to redo.
             } else {
-                return Err(Error::Structure(format!(
-                    "journal replay: neither {} nor {} exists — cannot complete the rename",
+                return Err(Error::Recovery(format!(
+                    "neither {} nor {} exists — cannot complete the rename",
                     from_full.display(),
                     to_full.display()
                 )));
@@ -285,16 +285,13 @@ fn put_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
     buf.extend_from_slice(bytes);
 }
 
-/// Encode a workspace-relative path as UTF-8. prov addresses documents by
-/// UTF-8 paths throughout; a non-UTF-8 path cannot arise from its own mutations,
-/// so refusing one here is a real invariant, not a lost capability.
+/// Encode a root-relative path as UTF-8, so a journal written on one platform
+/// replays identically on another. A path that is not UTF-8 is refused at the
+/// commit point rather than mangled into one that is.
 fn put_path(buf: &mut Vec<u8>, path: &Path) -> Result<()> {
-    let s = path.to_str().ok_or_else(|| {
-        Error::Structure(format!(
-            "journal cannot encode non-UTF-8 path: {}",
-            path.display()
-        ))
-    })?;
+    let s = path
+        .to_str()
+        .ok_or_else(|| Error::NonUtf8Path(path.to_path_buf()))?;
     put_bytes(buf, s.as_bytes());
     Ok(())
 }
@@ -308,7 +305,7 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn short() -> Error {
-        Error::Structure("journal is corrupt: unexpected end of data".into())
+        Error::Corrupt("unexpected end of data".into())
     }
 
     fn take(&mut self, n: usize) -> Result<&[u8]> {
@@ -333,8 +330,7 @@ impl Cursor<'_> {
 
     fn take_path(&mut self) -> Result<PathBuf> {
         let bytes = self.take_bytes()?;
-        let s = std::str::from_utf8(bytes)
-            .map_err(|_| Error::Structure("journal is corrupt: non-UTF-8 path".into()))?;
+        let s = std::str::from_utf8(bytes).map_err(|_| Error::Corrupt("non-UTF-8 path".into()))?;
         Ok(PathBuf::from(s))
     }
 }
@@ -354,8 +350,8 @@ fn fnv1a(data: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prov_graph::exec::block_on;
-    use prov_graph::fs::StdFs;
+    use crate::exec::block_on;
+    use crate::fs::StdFs;
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-journal-{name}-{}", std::process::id()));
@@ -393,7 +389,7 @@ mod tests {
     fn a_copy_journals_a_reference_not_the_payload() {
         // The point of the op, stated as an assertion: the journal for a copy is
         // bounded by the path lengths, not by the size of what it will write.
-        // Without this, restoring a captured workspace writes that whole workspace
+        // Without this, restoring a captured tree writes that whole tree
         // into `.prov-journal` before touching a single document.
         let payload: Vec<u8> = vec![7; 512 * 1024];
         let by_value = encode(&[FileOp::Write {
@@ -431,7 +427,7 @@ mod tests {
     #[test]
     fn a_tampered_journal_is_refused_not_replayed() {
         // The checksum's whole job: a journal whose bytes changed under it must be
-        // rejected loudly, never silently replayed into a corrupt workspace.
+        // rejected loudly, never silently replayed into a corrupt tree.
         let ops = vec![FileOp::Write {
             path: "child.md".into(),
             bytes: b"hello".to_vec(),

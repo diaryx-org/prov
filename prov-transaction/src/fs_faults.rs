@@ -1,8 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use prov_graph::fs::{DirEntry, Metadata, ReadStorage, StdFs};
-use prov_store::fs::{Capabilities, Durability, Storage};
+use crate::fs::{Capabilities, DirEntry, Durability, Metadata, ReadStorage, StdFs, Storage};
 
 macro_rules! reads_like_stdfs {
     ($ty:ty) => {

@@ -1,68 +1,69 @@
-//! Transactional writes — the unit every mutation lands through.
+//! Transactional writes — the unit every change lands through.
 //!
-//! Mutating a linked workspace is never a single-file operation: the spanning
-//! relation and its inverse live in *other* documents, so `create` touches two
-//! files, `reparent` three, and a `rename` in a well-linked tree as many as have
-//! ever pointed at the moved document. [`crate::mutate`] has always computed
-//! every one of those edits *before* touching the filesystem — the hard half —
-//! but it then wrote them one at a time, so an I/O failure partway through the
-//! burst left the workspace torn: links maintained in the documents already
-//! written, dangling in the ones not reached.
+//! Changing a set of linked files is rarely a single-file operation. A rename
+//! that keeps backlinks intact has to rewrite every file that pointed at the
+//! moved one; a move between directories has to re-relativize the links inside
+//! the file it moved. What is logically one edit is physically several, and
+//! issued one at a time an I/O failure partway through the burst leaves the
+//! tree torn: updated in the files already written, stale in the ones never
+//! reached.
 //!
-//! A [`ChangeSet`] closes that window. An operation stages its writes into one
-//! instead of issuing them, and [`ChangeSet::apply`] executes the whole set as a
-//! unit: each op records how to undo itself *at the moment it runs*, and the
+//! A [`ChangeSet`] closes that window. A caller stages its writes into one
+//! instead of issuing them, and [`ChangeSet::apply`] executes the whole set as
+//! a unit: each op records how to undo itself *at the moment it runs*, and the
 //! first failure unwinds every op already applied, in reverse. Either the whole
-//! set lands or the workspace is as it was.
+//! set lands or the tree is as it was.
 //!
 //! ## What this does and does not buy
 //!
 //! This is **error** atomicity and **crash** atomicity across the whole set. A
 //! failed write, a full disk, a permission error, or a rejected edit cannot
-//! leave a half-linked workspace, because unwinding puts back every op already
-//! applied. And no single document can be caught half-written even by a power
-//! cut: every [`FileOp::Write`] lands through [`Storage::write_atomic`], which
+//! leave the tree half-updated, because unwinding puts back every op already
+//! applied. And no single file can be caught half-written even by a power cut:
+//! every [`FileOp::Write`] lands through [`Storage::write_atomic`], which
 //! stages the new bytes in a temporary sibling, flushes them, and renames it
-//! over the target, so an observer sees the whole old document or the whole new
-//! one, never a splice. A `kill -9` or power cut *between* ops leaves the journal
-//! behind; [`crate::journal::recover`] replays it forward to the fully-applied
-//! state. The distinction is worth keeping sharp: caught errors abort back to
-//! the pre-change state, while crashes recover to the committed state.
+//! over the target, so an observer sees the whole old file or the whole new
+//! one, never a splice. A `kill -9` or power cut *between* ops leaves the
+//! journal behind; [`crate::journal::recover`] replays it forward to the
+//! fully-applied state. The distinction is worth keeping sharp: caught errors
+//! abort back to the pre-change state, while crashes recover to the committed
+//! state.
 //!
 //! Two smaller honesties, both deliberate:
 //!
 //! - **Directories are not unwound.** Applying a set creates any parent
 //!   directory its writes need; a rollback leaves an empty one behind. An empty
-//!   directory is litter, not a torn workspace — prov's graph lives in the
-//!   documents, so nothing about it is wrong (DESIGN §1).
+//!   directory is litter, not a torn tree.
 //! - **Undo is held in memory.** Overwriting or removing a file reads its old
-//!   bytes first so the rollback can put them back, which means a removed opaque
-//!   payload (an attached photo) is briefly held whole. Documents are small and
-//!   the buffer lives only for the length of the apply.
+//!   bytes first so the rollback can put them back, which means a removed
+//!   payload is briefly held whole. The buffer lives only for the length of the
+//!   apply, but it does mean a set is bounded by what fits in memory —
+//!   [`FileOp::CopyFrom`] is the escape hatch for a large payload already on
+//!   disk.
 //!
 //! ## Staging is also a plan
 //!
-//! Because a set is a value that describes writes without performing them, it is
-//! equally an answer to "what *would* this do?" — the shape `--dry-run` needs.
-//! [`crate::route::RoutePlan`] and [`crate::intake::StructurePlan`] already model
-//! the *semantic* plan (which documents should exist); a `ChangeSet` is the
-//! *physical* one (which bytes reach which files), and the two compose: a
-//! semantic plan is realized by the ops that build change sets.
+//! Because a set is a value that describes writes without performing them, it
+//! is equally an answer to "what *would* this do?" — the shape a `--dry-run`
+//! needs. [`ChangeSet::ops`] is that view, and it is the same sequence `apply`
+//! will execute rather than a reconstruction of it.
 //!
-//! This module (with its recovery arm in [`crate::journal`]) is the transaction
-//! crate's [`Storage`] write surface — staged ops through [`ChangeSet::apply`],
-//! and the handful of writes that genuinely are not document mutations
-//! through the raw facade at the bottom of this file — so every write's
-//! durability and ordering guarantee is reviewable in one place.
+//! ## Single writer
+//!
+//! A set assumes it is the only thing mutating the tree while it applies. There
+//! is no locking here: two processes applying sets against the same root will
+//! race on the journal, and the [`Error::StaleJournal`] check that guards
+//! against a *previous* interrupted change is a check-then-act, not a mutex. A
+//! caller that needs several writers has to serialize them itself.
 
 use std::path::{Path, PathBuf};
 
-use prov_graph::error::{Error, Result};
-use prov_store::fs::Storage;
+use crate::error::{Error, Result};
+use crate::fs::Storage;
 
-/// One staged filesystem operation. Paths are **workspace-relative** — the root
+/// One staged filesystem operation. Paths are **root-relative** — the root
 /// is joined on at [`apply`](ChangeSet::apply) time, so a set is portable
-/// between workspaces and prints readably in a dry run.
+/// between trees and prints readably in a dry run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileOp {
     /// Write `bytes` to `path`, creating it (and any missing parent directory)
@@ -90,27 +91,27 @@ pub enum FileOp {
     /// [`Write`](FileOp::Write) with the payload left where it lies. The journal
     /// records the *source path* instead of the bytes, so a set that writes a
     /// large payload costs O(path) of journal rather than a second copy of every
-    /// byte — which is what makes putting a whole captured workspace back
-    /// tractable, where `Write` would duplicate the entire tree into
-    /// `.prov-journal` at the commit point.
+    /// byte — which is what makes putting a whole captured tree back
+    /// tractable, where `Write` would duplicate every byte of it into the
+    /// journal at the commit point.
     ///
     /// **The source must be immutable for the lifetime of the change**, because
     /// that is the entire correctness argument. A `Write` journals the exact bytes
     /// it intends, so replay after a crash is deterministic by construction; a
     /// `CopyFrom` journals a reference, and replay is deterministic only if the
-    /// referent cannot have changed underneath it. A content-addressed history
-    /// blob satisfies this by definition — its path *is* the digest of its
+    /// referent cannot have changed underneath it. A content-addressed blob
+    /// satisfies this by definition — its path *is* the digest of its
     /// contents, so bytes found there are the bytes intended, or the file is gone
-    /// and replay fails loudly. Do not point this at a mutable document, at a
+    /// and replay fails loudly. Do not point this at a mutable file, at a
     /// path some other op in the same set writes, or at anything outside the
-    /// workspace.
+    /// root.
     ///
     /// This bounds *journal* growth, not peak memory: rollback still buffers the
     /// bytes it overwrites, exactly as `Write` does.
     CopyFrom {
         /// The file to write.
         path: PathBuf,
-        /// The workspace-relative file to copy from — immutable, and ideally
+        /// The root-relative file to copy from — immutable, and ideally
         /// content-addressed.
         source: PathBuf,
     },
@@ -140,29 +141,13 @@ pub struct ChangeSet {
     ops: Vec<FileOp>,
 }
 
-/// A pending change set can answer the two questions an [`IndexStore`] has
-/// before it renders: where its host document will end up, and what will be in
-/// it. Implementing the narrow trait rather than being passed whole is what
-/// keeps a store implementor free of the mutation engine.
-///
-/// [`IndexStore`]: prov_store::index::IndexStore
-impl prov_store::index::Rebase for ChangeSet {
-    fn renamed_to(&self, path: &Path) -> Option<PathBuf> {
-        ChangeSet::renamed_to(self, path)
-    }
-
-    fn staged(&self, path: &Path) -> Option<&[u8]> {
-        ChangeSet::staged(self, path)
-    }
-}
-
 impl ChangeSet {
     /// An empty set.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Stage a write of `contents` to `path` (workspace-relative).
+    /// Stage a write of `contents` to `path` (root-relative).
     pub fn write(&mut self, path: impl Into<PathBuf>, contents: impl Into<Vec<u8>>) -> &mut Self {
         self.ops.push(FileOp::Write {
             path: path.into(),
@@ -171,7 +156,7 @@ impl ChangeSet {
         self
     }
 
-    /// Stage a move from `from` to `to` (both workspace-relative).
+    /// Stage a move from `from` to `to` (both root-relative).
     pub fn rename(&mut self, from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> &mut Self {
         self.ops.push(FileOp::Rename {
             from: from.into(),
@@ -180,13 +165,13 @@ impl ChangeSet {
         self
     }
 
-    /// Stage the removal of `path` (workspace-relative).
+    /// Stage the removal of `path` (root-relative).
     pub fn remove(&mut self, path: impl Into<PathBuf>) -> &mut Self {
         self.ops.push(FileOp::Remove { path: path.into() });
         self
     }
 
-    /// Stage a copy of the file at `source` to `path` (both workspace-relative),
+    /// Stage a copy of the file at `source` to `path` (both root-relative),
     /// instead of carrying its bytes through the set.
     ///
     /// See [`FileOp::CopyFrom`] for the immutability the source has to satisfy —
@@ -273,13 +258,13 @@ impl ChangeSet {
     ///
     /// - **On success**, the journal is removed and the change is done.
     /// - **On an error** (a full disk, a permission fault), every op already
-    ///   applied is unwound in reverse, the workspace is restored to what it was,
+    ///   applied is unwound in reverse, the tree is restored to what it was,
     ///   and the journal is cleared — the mutation aborts as if it never began.
     /// - **On a crash** (a `kill -9`, a power cut) there is no error to catch and
     ///   no chance to unwind, so the journal simply survives; the next
     ///   [`crate::journal::recover`] rolls the set forward to its fully-applied
     ///   state. An interrupted change set is therefore always resolved to a
-    ///   consistent workspace — fully before it on a caught error, fully after it
+    ///   consistent tree — fully before it on a caught error, fully after it
     ///   on a crash.
     ///
     /// A set of **one** op skips the journal entirely: a single op is already
@@ -292,22 +277,22 @@ impl ChangeSet {
     /// The rare exception is a rollback that *itself* fails ([`Error::Torn`]):
     /// prov could not restore the pre-change state, so — rather than leave an
     /// unknown one — it keeps the journal, and recovery will later roll the set
-    /// forward to the consistent applied state. Either way the workspace lands on
+    /// forward to the consistent applied state. Either way the tree lands on
     /// a state prov can name.
     ///
-    /// Takes `fs`/`root` rather than a higher-level workspace object so a
-    /// bootstrap that must write two files before a workspace exists can still
+    /// Takes `fs`/`root` rather than a higher-level object so a
+    /// bootstrap that must write two files before the tree exists can still
     /// land them together.
     pub async fn apply<FS: Storage>(&self, fs: &FS, root: &Path) -> Result<()> {
         if self.ops.is_empty() {
             return Ok(());
         }
-        // Clamp every staged path to the workspace root *before* anything is
-        // written or journaled. A set is built from workspace-relative,
+        // Clamp every staged path to the root *before* anything is
+        // written or journaled. A set is built from root-relative,
         // already-normalized paths, so an escaping op cannot arise from prov's
         // own mutations — but `apply` also lands sets a caller assembled directly,
         // and a link target that resolves to `../../../etc/passwd` must be refused
-        // rather than have the workspace write outside the tree it was pointed at.
+        // rather than let an apply write outside the tree it was pointed at.
         for op in &self.ops {
             match op {
                 FileOp::Write { path, .. } | FileOp::Remove { path } => {
@@ -319,7 +304,7 @@ impl ChangeSet {
                 }
                 // The source is clamped too: it is read, and a set assembled by a
                 // caller must not be able to pull `../../../etc/passwd` into the
-                // workspace any more than it may write out of one.
+                // tree any more than it may write out of one.
                 FileOp::CopyFrom { path, source } => {
                     guard_in_root(path)?;
                     guard_in_root(source)?;
@@ -420,7 +405,7 @@ enum Undo {
     /// Recorded *before* the write it reverses, because a write that fails
     /// partway still leaves a file behind — so this has to tolerate finding
     /// nothing there, which is the case where the write failed before creating
-    /// anything at all. Undoing nothing is success, not a torn workspace.
+    /// anything at all. Undoing nothing is success, not a torn tree.
     Delete { path: PathBuf },
     /// Move `from` back to `to`.
     Rename { from: PathBuf, to: PathBuf },
@@ -546,12 +531,11 @@ async fn unwind<FS: Storage>(fs: &FS, undo: Vec<Undo>) -> Result<()> {
     }
 }
 
-/// Refuse a staged path that would resolve outside the workspace root. The
-/// write-side counterpart to the read guard in [`crate::Workspace`]'s `load`;
-/// both defer to [`prov_graph::link::escapes_root`] so read and write clamp to the
-/// exact same boundary.
+/// Refuse a staged path that would resolve outside the root. Defers to
+/// [`crate::path::escapes_root`], so a caller that guards its *reads* with the
+/// same function clamps both directions to the exact same boundary.
 fn guard_in_root(path: &Path) -> Result<()> {
-    if prov_graph::link::escapes_root(path) {
+    if crate::path::escapes_root(path) {
         return Err(Error::Escape(path.to_path_buf()));
     }
     Ok(())
@@ -567,76 +551,13 @@ async fn ensure_parent<FS: Storage>(fs: &FS, full: &Path) -> Result<()> {
     Ok(())
 }
 
-// Raw writes that deliberately bypass `ChangeSet` staging.
-//
-// Everything above lands a *document mutation*: an edit with an undo, that
-// must reach disk with its siblings or not at all. The three functions below
-// are not that, and routing them through a set would misrepresent what they
-// are — see each one's own doc for its reason. They live here rather than
-// beside their callers in `history/` so that every `Storage` write in the
-// crate stays reviewable in one file — this one owns the durability and
-// ordering policy, even for the writes that opt out of it. Each is a thin,
-// byte-identical delegation to the direct calls it replaces.
-
-/// Park `bytes` at `path` (workspace-relative) as a content-addressed blob,
-/// creating any missing parent directory.
-///
-/// Bypasses [`ChangeSet`] staging on purpose: a blob's address is the digest
-/// of its bytes, so parking one is idempotent — replaying it after a crash
-/// can only write the same bytes to the same path — and there is nothing for
-/// an unwind to undo. Riding the change set would also cost a second whole
-/// copy of the payload in the journal, which embeds file contents.
-pub async fn write_blob_atomic<FS: Storage>(
-    fs: &FS,
-    root: &Path,
-    path: &Path,
-    bytes: &[u8],
-) -> Result<()> {
-    let full = root.join(path);
-    ensure_parent(fs, &full).await?;
-    fs.write_atomic(&full, bytes).await?;
-    Ok(())
-}
-
-/// Remove the file at `path` (workspace-relative). It must exist.
-///
-/// Bypasses [`ChangeSet`] staging on purpose, for two different reasons at
-/// its two call sites. Removing an already-unreferenced blob happens *after*
-/// the index rewrite that stops referencing it has committed as its own set,
-/// so the removal was never part of that transaction — an interrupted cleanup
-/// pass just leaves the blob for the next run to find again.
-/// Removing [`write_probe`]'s throwaway file is not a document mutation to
-/// begin with.
-pub async fn discard_file<FS: Storage>(fs: &FS, root: &Path, path: &Path) -> Result<()> {
-    fs.remove_file(&root.join(path)).await?;
-    Ok(())
-}
-
-/// Write `bytes` to `path` (workspace-relative) directly, without the
-/// atomic-replace protocol a document write gets.
-///
-/// Bypasses [`ChangeSet`] staging on purpose: this is for a throwaway file
-/// used once to answer a filesystem question — a caller can use it to probe
-/// whether the filesystem folds ASCII
-/// case — and then removed with [`discard_file`]. It is not workspace data,
-/// so there is nothing here to stage or undo.
-pub async fn write_probe<FS: Storage>(
-    fs: &FS,
-    root: &Path,
-    path: &Path,
-    bytes: &[u8],
-) -> Result<()> {
-    fs.write(&root.join(path), bytes).await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::block_on;
+    use crate::fs::StdFs;
     use crate::fs_faults::{FailAtWrite, FsEvent, RecordingFs};
     use crate::journal::JOURNAL_NAME;
-    use prov_graph::exec::block_on;
-    use prov_graph::fs::StdFs;
 
     fn tmp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("prov-change-{name}"));
@@ -750,7 +671,7 @@ mod tests {
         let err = block_on(cs.apply(&FailAtWrite::nth(2), &root)).unwrap_err();
         assert!(err.to_string().contains("disk full"), "{err}");
 
-        // Everything is as it was found — no half-linked workspace.
+        // Everything is as it was found — no half-linked tree.
         assert_eq!(read(&root, "child.md").as_deref(), Some("old child"));
         assert_eq!(read(&root, "parent.md").as_deref(), Some("old parent"));
     }
@@ -918,9 +839,9 @@ mod tests {
             fs.events(),
             vec![
                 FsEvent::Write(temp.clone()),
-                FsEvent::Sync(temp.clone(), prov_store::fs::Durability::Ordered),
+                FsEvent::Sync(temp.clone(), crate::fs::Durability::Ordered),
                 FsEvent::Rename(temp, target),
-                FsEvent::Sync(root.clone(), prov_store::fs::Durability::Durable),
+                FsEvent::Sync(root.clone(), crate::fs::Durability::Durable),
             ],
             "a set of one must cost exactly one atomic write and nothing else"
         );

@@ -41,6 +41,25 @@ pub trait Rebase {
     fn staged(&self, path: &Path) -> Option<&[u8]>;
 }
 
+/// A pending change set can answer the two questions an [`IndexStore`] has
+/// before it renders: where its host document will end up, and what will be in
+/// it.
+///
+/// The impl lives here rather than beside [`ChangeSet`](prov_transaction::ChangeSet)
+/// because [`Rebase`] is prov's question, not the transaction crate's — a
+/// generic change set has no idea that anything wants to read it back
+/// mid-build. Implementing the narrow trait rather than passing the set whole
+/// is what keeps a store implementor free of the mutation engine.
+impl Rebase for prov_transaction::ChangeSet {
+    fn renamed_to(&self, path: &Path) -> Option<PathBuf> {
+        prov_transaction::ChangeSet::renamed_to(self, path)
+    }
+
+    fn staged(&self, path: &Path) -> Option<&[u8]> {
+        prov_transaction::ChangeSet::staged(self, path)
+    }
+}
+
 /// Somewhere IDs (and eventually derived graph data) are persisted and queried —
 /// [`IdIndex`]'s lookups plus everything that changes what is stored.
 pub trait IndexStore: IdIndex {
