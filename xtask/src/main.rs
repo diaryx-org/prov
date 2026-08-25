@@ -151,7 +151,6 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "prov-store"],
     &["-p", "prov-identity"],
     &["-p", "prov-fixity"],
-    &["-p", "prov-transaction"],
     &["-p", "prov-config"],
     &["-p", "prov-views"],
     &["-p", "prov-exports"],

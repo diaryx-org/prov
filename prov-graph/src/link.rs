@@ -1217,11 +1217,11 @@ fn code_spans_for(path: &Path, body: &str) -> Option<Vec<Range<usize>>> {
     crate::content::code_spans(body, format).ok()
 }
 
-// Lexical path handling lives in `prov-transaction`, which needs the same
+// Lexical path handling lives in `fs-transaction`, which needs the same
 // normalization to clamp a staged op to its root. Re-exported here so prov's
 // read guards and its write guards demonstrably share one implementation
 // rather than two that agree by inspection.
-pub use prov_transaction::path::{escapes_root, normalize};
+pub use fs_transaction::path::{escapes_root, normalize};
 
 /// Resolve a link target written in `doc` to a normalized path in the same
 /// coordinate system as `doc` (workspace-relative when `doc` is). A target with

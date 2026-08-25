@@ -3,7 +3,7 @@ resolver = "2"
 # `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
 # workflow runs nothing else. It is a member so `cargo test --workspace` checks
 # it, and `publish = false` keeps it off crates.io.
-members = ["prov-graph", "prov-store", "prov-transaction", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
+members = ["prov-graph", "prov-store", "prov-fixity", "prov-identity", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "xtask"]
 
 [workspace.package]
 version = "0.7.0"
@@ -85,8 +85,16 @@ prov-store = { path = "prov-store", version = "0.7.0", default-features = false 
 prov-identity = { path = "prov-identity", version = "0.7.0", default-features = false }
 # Content fixity policy, digests, and the device-local cache.
 prov-fixity = { path = "prov-fixity", version = "0.7.0" }
-# Crash-atomic staged filesystem changes and write-ahead recovery.
-prov-transaction = { path = "prov-transaction", version = "0.7.0" }
+# Crash-atomic staged filesystem changes and write-ahead recovery, and the
+# filesystem port everything here is generic over. Lifted out of this workspace
+# and published on its own, because none of it knows what a document is: it
+# stages a set of file operations, lands them all-or-nothing, and rolls a
+# write-ahead journal forward after a crash. Zero dependencies, so it costs the
+# build nothing but itself.
+#
+# prov configures its journal name rather than taking the default — see
+# `prov::journal::workspace_journal` for why `.prov-journal` has to stay.
+fs-transaction = { version = "0.1" }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
 prov-views = { path = "prov-views", version = "0.7.0", default-features = false }

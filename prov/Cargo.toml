@@ -40,7 +40,7 @@ prov-views = { workspace = true, default-features = false }
 prov-exports = { workspace = true, default-features = false }
 
 # Crash-atomic staged filesystem changes and write-ahead recovery.
-prov-transaction = { workspace = true }
+fs-transaction = { workspace = true }
 
 
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs

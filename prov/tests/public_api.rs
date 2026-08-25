@@ -101,7 +101,7 @@ fn a_path_escaping_the_root_is_refused_by_apply() {
     let root = tmp("escape");
     let mut cs = ChangeSet::new();
     cs.write("../escapee.md", "should never be written");
-    // `apply` answers in `prov_transaction`'s vocabulary; a prov caller reaches
+    // `apply` answers in `fs_transaction`'s vocabulary; a prov caller reaches
     // prov's through the `From` impl, which is what `?` would do for them.
     let err: Error = block_on(cs.apply(&StdFs, &root)).unwrap_err().into();
     assert!(

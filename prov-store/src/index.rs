@@ -45,18 +45,18 @@ pub trait Rebase {
 /// before it renders: where its host document will end up, and what will be in
 /// it.
 ///
-/// The impl lives here rather than beside [`ChangeSet`](prov_transaction::ChangeSet)
+/// The impl lives here rather than beside [`ChangeSet`](fs_transaction::ChangeSet)
 /// because [`Rebase`] is prov's question, not the transaction crate's — a
 /// generic change set has no idea that anything wants to read it back
 /// mid-build. Implementing the narrow trait rather than passing the set whole
 /// is what keeps a store implementor free of the mutation engine.
-impl Rebase for prov_transaction::ChangeSet {
+impl Rebase for fs_transaction::ChangeSet {
     fn renamed_to(&self, path: &Path) -> Option<PathBuf> {
-        prov_transaction::ChangeSet::renamed_to(self, path)
+        fs_transaction::ChangeSet::renamed_to(self, path)
     }
 
     fn staged(&self, path: &Path) -> Option<&[u8]> {
-        prov_transaction::ChangeSet::staged(self, path)
+        fs_transaction::ChangeSet::staged(self, path)
     }
 }
 

@@ -31,7 +31,9 @@
 //!   the registry-document-backed [`FileIndex`]).
 //!
 //! The crash-atomic staging that drives these — the change set and its
-//! write-ahead journal — is `prov-transaction`, a layer up.
+//! write-ahead journal — is [`fs-transaction`](fs_transaction), a layer *down*:
+//! it knows nothing about documents, so it is a dependency of this crate rather
+//! than a consumer of it. [`fs`] re-exports its port.
 //!
 //! [`ReadStorage`]: prov_graph::fs::ReadStorage
 //! [`IdIndex`]: prov_graph::index::IdIndex

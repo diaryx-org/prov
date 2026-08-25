@@ -14,7 +14,7 @@ license.workspace = true
 # bottom of the stack: no dependencies of its own, and no knowledge of what a
 # document is. `fs` and `exec` here are re-exports of its modules, and its
 # `path` helpers are the same ones the write guards clamp against.
-prov-transaction = { workspace = true }
+fs-transaction = { workspace = true }
 
 # Embedded-metadata backend. See the workspace manifest for why the version
 # floor is where it is. Which format backends fig compiles in is governed by

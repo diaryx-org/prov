@@ -125,7 +125,7 @@ pub mod index {
 pub use about::AboutContext;
 /// Transaction primitives, retained at their original paths for compatibility.
 pub mod change {
-    pub use prov_transaction::change::{ChangeSet, FileOp};
+    pub use fs_transaction::change::{ChangeSet, FileOp};
 }
 /// Journal recovery, retained at its original path for compatibility.
 pub mod journal {
@@ -133,7 +133,7 @@ pub mod journal {
     use prov_store::fs::Storage;
     use std::path::Path;
 
-    pub use prov_transaction::journal::{Journal, Recovered, decode, encode};
+    pub use fs_transaction::journal::{Journal, Recovered, decode, encode};
 
     /// The name of prov's write-ahead journal: a single transient dotfile at
     /// the workspace root, present only between a change set's commit point
@@ -145,7 +145,7 @@ pub mod journal {
     /// Named rather than [`Journal::default()`], for two reasons that point the
     /// same way. The name is part of prov's documented on-disk shape, so a user
     /// who finds it in their workspace can look it up; and it predates the
-    /// extraction of `prov-transaction`, so a workspace that a crash
+    /// extraction of `fs-transaction`, so a workspace that a crash
     /// interrupted before an upgrade is carrying its journal under exactly this
     /// name — and recovery has to still find it, or that change is stranded
     /// half-applied with no record of how to finish.
@@ -209,6 +209,7 @@ pub mod exports {
 /// (or, for [`ExtKind`], on `fig`) directly — and so neither can drift to a
 /// different version than the one prov resolves against.
 pub use fig_schema::FieldType;
+pub use fs_transaction::{ChangeSet, FileOp};
 pub use identity::{
     IdentityPolicy, Minter, NoIdentity, Registration, Trigger, WORKSPACE_NAME_LEN,
     mint_workspace_id,
@@ -218,7 +219,6 @@ pub use journal::{Recovered, recover};
 pub use manifest::{ManifestStatus, ManifestUpdate};
 pub use mutate::{ContentState, Created, Diagnosis, Reparented};
 pub use prov_exports::ExportSpec;
-pub use prov_transaction::{ChangeSet, FileOp};
 pub use prov_views::ViewSpec;
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};

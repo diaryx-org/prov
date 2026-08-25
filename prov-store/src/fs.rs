@@ -6,11 +6,11 @@
 //! ([`Capabilities`], [`Durability`], [`SyncGuarantee`]), and the
 //! write-temp-then-rename protocol that makes a replacement crash-atomic.
 //!
-//! Both halves are defined in [`prov_transaction::fs`], one layer below, where
+//! Both halves are defined in [`fs_transaction::fs`], one layer below, where
 //! the transaction that drives them lives. The split into a read module here
 //! and a write module there is what it has always been: importing `prov-graph`
 //! alone cannot get you the ability to change a workspace.
 
-pub use prov_transaction::fs::{
+pub use fs_transaction::fs::{
     Capabilities, Durability, InMemoryFs, ReadStorage, StdFs, Storage, SyncGuarantee, memory,
 };

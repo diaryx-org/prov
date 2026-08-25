@@ -5,7 +5,7 @@
 //! OPFS/IndexedDB — the library asks only for a small async trait that mirrors
 //! the slice of [`std::fs`] its scan/traverse engine needs.
 //!
-//! The port itself lives in [`prov_transaction::fs`], one layer below this
+//! The port itself lives in [`fs_transaction::fs`], one layer below this
 //! crate, because it is the seam a *transaction* lands through and has nothing
 //! to do with documents. It is re-exported here so `prov_graph::fs` remains the
 //! name prov's read core is written against.
@@ -15,6 +15,6 @@
 //! module, so that depending on this crate cannot get you the ability to change
 //! a workspace.
 //!
-//! [`Storage`]: prov_transaction::fs::Storage
+//! [`Storage`]: fs_transaction::fs::Storage
 
-pub use prov_transaction::fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
+pub use fs_transaction::fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};

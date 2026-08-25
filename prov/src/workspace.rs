@@ -898,7 +898,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// write-ahead journal.
     ///
     /// **Use this rather than [`ChangeSet::apply`] for anything that mutates a
-    /// workspace.** `ChangeSet::apply` journals under `prov-transaction`'s own
+    /// workspace.** `ChangeSet::apply` journals under `fs-transaction`'s own
     /// default name, which prov's recovery — [`crate::journal::recover`], the
     /// one `prov check` runs — does not look for. A crash mid-apply would then
     /// leave a journal nothing ever reads, stranding the change half-applied
