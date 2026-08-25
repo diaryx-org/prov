@@ -32,6 +32,7 @@ sources. Five of the eleven crates were packaged one commit earlier, at
 - **transaction** — invert the filesystem port onto prov-transaction ([`7ceb720`](https://github.com/diaryx-org/prov/commit/7ceb7204dab07a86b7869331cc4b784da176ee2c))
 - **transaction** — make the journal name configurable, defaulting generically ([`30a73e4`](https://github.com/diaryx-org/prov/commit/30a73e49adb9f9db82fe2ec10d9c57922d21d5f0))
 - depend on the published fs-transaction instead of vendoring it ([`791c974`](https://github.com/diaryx-org/prov/commit/791c974da7648474384693283e9f71d0ec97a9cb))
+- fold prov-identity into prov-graph ([`2dbedd6`](https://github.com/diaryx-org/prov/commit/2dbedd6355420120ce8a0f043a536a1981666d99))
 
 ### Added
 
@@ -163,6 +164,12 @@ separate file.
  `fs-transaction` and rename. `prov::journal::JOURNAL_NAME` still reads
  `.prov-journal`, and prov still configures it rather than taking the
  crate's `.fstx-journal` default.
+
+- the `prov-identity` crate no longer exists. A caller
+  depending on it directly should depend on `prov-graph` and spell the same
+  items `prov_graph::identity::*`; nothing in it changed name, signature or
+  behaviour. Callers reaching these types through `prov::identity` are
+  unaffected.
 
 <!-- git-cliff:end -->
 
