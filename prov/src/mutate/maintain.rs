@@ -36,6 +36,24 @@ use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
+/// One maintenance rewrite of an existing document: the text the op read there
+/// — staged as the change set's *expectation*, so the apply refuses
+/// ([`Error::Drifted`]) if another writer landed in the compute→apply gap —
+/// and the text the op stages in its place.
+///
+/// Carrying the pre-image is what turns a maintenance sweep's read-modify-write
+/// from last-write-wins into compare-and-swap: a rewrite computed from a
+/// reading that no longer holds would silently drop the racing writer's edit,
+/// and the census-shaped verbs (`rename`, `separate`, `combine`, `retitle`,
+/// the `convert` sweeps) hold that reading open across a walk of the whole
+/// reachable graph — the widest window any verb has.
+pub(super) struct Rewrite {
+    /// What the op read at the path — the expectation.
+    pub(super) read: String,
+    /// What it writes instead.
+    pub(super) text: String,
+}
+
 /// Walking the spanning relation needs the relation set and the resolver, and
 /// neither of those is an identity concern — so these four sit outside the
 /// `IdentityPolicy` bound the mutation verbs carry. `validate`'s remedy
@@ -174,12 +192,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// — the inbound half of a move. Reused by `rename`, `separate`, and
     /// `combine`. Id-form links are left untouched (the registry keeps them
     /// resolving); `from`'s own links are excluded (the mover rewrites those
-    /// itself). Returns `(source_path, new_text)` pairs.
+    /// itself). Returns `(source_path, rewrite)` pairs.
     pub(super) async fn collect_inbound_rewrites(
         &self,
         from: &Path,
         to: &Path,
-    ) -> Result<Vec<(PathBuf, String)>> {
+    ) -> Result<Vec<(PathBuf, Rewrite)>> {
         let (_spanning, inverse) = self.spanning_pair()?;
         let root = self.spanning_root(from, &inverse).await?;
         let mut sources: BTreeSet<PathBuf> = self
@@ -196,7 +214,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut writes = Vec::new();
         for source in sources {
             if let Some(updated) = self.rewrite_inbound_doc(&source, from, to).await? {
-                writes.push((source, updated));
+                // A memo hit — the census above already read every source, and
+                // the caller holds the scope — so pairing the rewrite with the
+                // text it was computed from costs no I/O.
+                let (read, _) = self.load(&source).await?;
+                writes.push((
+                    source,
+                    Rewrite {
+                        read,
+                        text: updated,
+                    },
+                ));
             }
         }
         Ok(writes)
@@ -223,7 +251,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         &self,
         root: &Path,
         moves: &BTreeMap<PathBuf, PathBuf>,
-    ) -> Result<BTreeMap<PathBuf, String>> {
+    ) -> Result<BTreeMap<PathBuf, Rewrite>> {
         // source → the moved paths it references, in a stable order so a
         // multi-move document rewrites the same way every run.
         let mut by_source: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
@@ -250,7 +278,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 }
             }
             if text != original {
-                writes.insert(source, text);
+                writes.insert(
+                    source,
+                    Rewrite {
+                        read: original,
+                        text,
+                    },
+                );
             }
         }
         Ok(writes)

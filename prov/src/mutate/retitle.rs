@@ -56,20 +56,26 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         let mut cs = self.change();
 
-        // 1. The document's own title.
+        // 1. The document's own title. The edit was computed from this
+        //    reading, over a census-wide window: staged as the set's
+        //    expectation, a retitle over a document another writer just edited
+        //    refuses ([`Error::Drifted`]) instead of writing the racer's
+        //    version away.
         let mut editor = MetaEditor::open(&text, carrier)?;
         editor.set_value(
             &[Segment::Key("title")],
             fig::Value::Str(new_title.to_string()),
         )?;
         cs.write(&path, editor.render()?);
+        cs.expect(&path, text);
 
         // 2. Inbound labels — every document that links here with a label,
         //    refreshed to the new title.
         let relabels = self.collect_inbound_relabels(&path, new_title).await?;
         let count = relabels.len();
-        for (source, updated) in relabels {
-            cs.write(&source, updated);
+        for (source, rw) in relabels {
+            cs.expect(&source, rw.read);
+            cs.write(&source, rw.text);
         }
 
         self.commit(cs).await?;
@@ -86,7 +92,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         &self,
         path: &Path,
         new_title: &str,
-    ) -> Result<Vec<(PathBuf, String)>> {
+    ) -> Result<Vec<(PathBuf, super::maintain::Rewrite)>> {
         let (_spanning, inverse) = self.spanning_pair()?;
         let root = self.spanning_root(path, &inverse).await?;
         let mut sources: BTreeSet<PathBuf> = self
@@ -100,7 +106,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut writes = Vec::new();
         for source in sources {
             if let Some(updated) = self.relabel_inbound_doc(&source, path, new_title).await? {
-                writes.push((source, updated));
+                // A memo hit — the census already read every source, and the
+                // verb holds the scope — pairing the relabel with the text it
+                // was computed from, for the set's expectation.
+                let (read, _) = self.load(&source).await?;
+                writes.push((
+                    source,
+                    super::maintain::Rewrite {
+                        read,
+                        text: updated,
+                    },
+                ));
             }
         }
         Ok(writes)

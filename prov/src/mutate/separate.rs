@@ -39,7 +39,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));
         }
-        let (_, doc) = self.load(&path).await?;
+        let (own_text, doc) = self.load(&path).await?;
         let Some(MetaCarrier::Fenced(kind)) = doc.carrier else {
             return Err(Error::Structure(format!(
                 "{} is not a combined document (nothing to separate)",
@@ -92,13 +92,22 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let body_text = doc.body.clone();
 
         let mut cs = self.change();
+        // The split was computed from this reading of the document, over a
+        // census-wide window another writer can land in: stage the reading as
+        // the set's expectation (a drifted document refuses the split rather
+        // than shredding the racer's edit across two files), and the metadata
+        // path's verified absence (so the refusal above cannot be raced into a
+        // clobber).
+        cs.expect(&path, own_text);
+        cs.expect_absent(&meta_path);
         // Inbound links now point at the metadata file (the structural node).
         let inbound = self.collect_inbound_rewrites(&path, &meta_path).await?;
 
         cs.write(&meta_path, meta_text);
         cs.write(&path, body_text);
-        for (source, text) in inbound {
-            cs.write(source, text);
+        for (source, rw) in inbound {
+            cs.expect(&source, rw.read);
+            cs.write(source, rw.text);
         }
         if let Some(id) = moving_id {
             self.index_mut().set_path(&id, &meta_path);
@@ -117,7 +126,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // load of every source it turns up.
         let _scope = self.read_scope();
         let path = link::normalize(path);
-        let (_, doc) = self.load(&path).await?;
+        let (node_text, doc) = self.load(&path).await?;
         let Some(content) = content_target(&doc, &path) else {
             return Err(Error::Structure(format!(
                 "{} is not a separated document (no `content` attribute)",
@@ -154,6 +163,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             return Err(conflict.into());
         }
         let (body_raw, body_doc) = self.load(&content).await?;
+        let body_read = body_raw.clone();
         // Normally the body file is pure prose; tolerate a stray frontmatter.
         let body = match body_doc.carrier {
             Some(_) => body_doc.body,
@@ -173,13 +183,21 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let combined = editor.render()?;
 
         let mut cs = self.change();
+        // The merge was computed from this reading of both halves — the node
+        // that will be removed and the body it folds into. Stage both as
+        // expectations, so a pair another writer edited in the compute→apply
+        // gap refuses the fold rather than combining stale halves (and
+        // removing the racer's version of the node outright).
+        cs.expect(&path, node_text);
+        cs.expect(&content, body_read);
         // Inbound links point back at the (now combined) content file.
         let inbound = self.collect_inbound_rewrites(&path, &content).await?;
 
         cs.write(&content, combined);
         cs.remove(&path);
-        for (source, text) in inbound {
-            cs.write(source, text);
+        for (source, rw) in inbound {
+            cs.expect(&source, rw.read);
+            cs.write(source, rw.text);
         }
         if let Some(id) = moving_id {
             self.index_mut().set_path(&id, &content);

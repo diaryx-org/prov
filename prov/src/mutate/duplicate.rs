@@ -120,10 +120,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         };
 
         // All edits computed; stage them. Node first, then its body copy (opaque
-        // payload bytes carried verbatim), then the parent's updated entry.
+        // payload bytes carried verbatim), then the parent's updated entry. The
+        // copy paths `unique_copy_path` found free are expected still free at
+        // apply, so a file another writer landed there in the meantime refuses
+        // the duplicate ([`Error::Drifted`]) instead of being replaced by it.
+        cs.expect_absent(&dest);
         cs.write(&dest, copy_text);
         if let (Some(body_from), Some((body_to, _))) = (&body_from, &body_dest) {
             let bytes = self.read_bytes(body_from).await?;
+            cs.expect_absent(body_to);
             cs.write(body_to, bytes);
         }
         if let Some((parent, text)) = parent_write {

@@ -75,6 +75,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let (from_text, from_doc) = self.load(&from).await?;
         let mut cs = self.change();
 
+        // Everything below is computed from this reading of the tree, and the
+        // census gives another writer — a sync daemon, a second process — a
+        // wide gap to land in before the apply. Stage the reading itself, so a
+        // set computed from bytes that no longer hold is refused
+        // ([`Error::Drifted`]) instead of moving-then-overwriting the racer's
+        // edit; and stage the destination's verified absence, so the refusal
+        // above cannot be raced into a silent clobber (`rename` overwrites,
+        // and an overwrite is the one thing rollback cannot make good).
+        cs.expect(&from, from_text.clone());
+        cs.expect_absent(&to);
+
         // 1. Inbound references: every document that links *to* `from` by a
         //    path, retargeted to `to` (parent's spanning entry, children's
         //    inverses, overlay `links`, body wikilinks). Id-form links resolve
@@ -113,6 +124,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     to.display(),
                     mv.to.display()
                 )));
+            }
+            // The same drift guards the node itself carries, for the pair's
+            // other half: its destination stays free, and — where the body was
+            // read to be rewritten — its bytes stay what the plan read. An
+            // opaque payload was never read (the bare rename carries whatever
+            // is there), so it stages no reading to expect.
+            cs.expect_absent(&mv.to);
+            if let Some(read) = &mv.read {
+                cs.expect(&mv.from, read.clone());
             }
         }
 
@@ -175,8 +195,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 cs.write(&mv.to, text.clone());
             }
         }
-        for (source, text) in inbound_writes {
-            cs.write(source, text);
+        for (source, rw) in inbound_writes {
+            cs.expect(&source, rw.read);
+            cs.write(source, rw.text);
         }
 
         // Identity hook — the registry follows the move, so every
@@ -218,20 +239,22 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // it as text, and never rewrite it. The bare `rename` carries the bytes;
         // `text` stays `None`. A prose body is loaded and its wikilinks
         // re-relativized when the directory changes, as before.
-        let text = if opaque {
-            None
+        let (read, text) = if opaque {
+            (None, None)
         } else {
             let (raw, _) = self.load(&body_from).await?;
-            Some(if from.parent() != to.parent() {
+            let rewritten = if from.parent() != to.parent() {
                 rerelativize_body_links(&raw, &raw, &body_from, &body_to, self.link_style())
             } else {
-                raw
-            })
+                raw.clone()
+            };
+            (Some(raw), Some(rewritten))
         };
         Ok(Some(BodyMove {
             from: body_from,
             to: body_to,
             new_ref,
+            read,
             text,
             key: "content",
         }))
@@ -268,6 +291,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .to_string();
 
         let (raw, parsed) = self.load(&manifest_from).await?;
+        let read = raw.clone();
         let text = if manifest_from.parent() == manifest_to.parent() {
             Some(raw)
         } else {
@@ -293,6 +317,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             from: manifest_from,
             to: manifest_to,
             new_ref,
+            read: Some(read),
             text,
             key: prov_graph::manifest::MANIFEST_KEY,
         }))
@@ -309,6 +334,11 @@ struct BodyMove {
     /// The metadata file's new `content`/`manifest` value — the moved file's
     /// basename.
     new_ref: String,
+    /// The body file's text as the plan read it — the change set's expectation
+    /// at `from`, so a body another writer edited in the compute→apply gap
+    /// refuses the move rather than being overwritten by a rewrite of older
+    /// bytes. `None` for an opaque payload, which is never read at all.
+    read: Option<String>,
     /// The prose body's text, wikilinks re-relativized if the directory changed,
     /// to rewrite after the move. `None` for an opaque attachment payload, whose
     /// bytes the bare rename carries untouched.
@@ -901,6 +931,74 @@ mod tests {
             "the refused move changed nothing"
         );
         assert_eq!(read(&dir, "notes.md"), "the prose\n", "the body is intact");
+    }
+
+    #[test]
+    fn a_rename_raced_by_a_writer_at_its_destination_refuses_and_clobbers_nothing() {
+        // The compute-time guard (`AlreadyExists`) sees only what was on disk
+        // when the op looked; here another writer lands a file at the
+        // destination in the gap between that look and the apply (`RaceFs`
+        // plants it at the apply's first filesystem call). Without the staged
+        // `expect_absent` the move's `rename` would overwrite it — the one
+        // loss rollback cannot make good. With it, the whole set refuses
+        // before a byte moves.
+        let dir = tempdir("rename-raced-dest");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n---\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        let before = snapshot(&dir);
+
+        let fs = RaceFs::plants(dir.join("b.md"), "the racer's document\n");
+        let mut w = Workspace::builder(fs).root(&dir).build();
+        let err = block_on(w.rename(Path::new("a.md"), Path::new("b.md"))).unwrap_err();
+        assert!(
+            matches!(&err, Error::Drifted(p) if p == Path::new("b.md")),
+            "expected Drifted(b.md), got {err:?}"
+        );
+
+        // The racer's file survives, and nothing else was touched.
+        assert_eq!(read(&dir, "b.md"), "the racer's document\n");
+        std::fs::remove_file(dir.join("b.md")).unwrap();
+        assert_eq!(snapshot(&dir), before, "the refused move changed something");
+    }
+
+    #[test]
+    fn a_rename_raced_by_an_edit_to_a_linking_document_refuses_instead_of_dropping_it() {
+        // The lost-update half: the retargeted text for b.md was computed from
+        // a reading the racer's edit postdates. Landing it would replace the
+        // racer's version wholesale — link maintenance as the author of silent
+        // data loss. The staged expectation turns that into a refusal, with
+        // the racer's edit intact and the move not begun.
+        let dir = tempdir("rename-raced-inbound");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n- b.md\n---\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        write(
+            &dir,
+            "b.md",
+            "---\npart_of: index.md\nlinks:\n- a.md\n---\n",
+        );
+
+        let racer = "---\npart_of: index.md\nlinks:\n- a.md\n---\nthe racer's prose\n";
+        let fs = RaceFs::plants(dir.join("b.md"), racer);
+        let mut w = Workspace::builder(fs).root(&dir).build();
+        let err = block_on(w.rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap_err();
+        assert!(
+            matches!(&err, Error::Drifted(p) if p == Path::new("b.md")),
+            "expected Drifted(b.md), got {err:?}"
+        );
+
+        assert_eq!(read(&dir, "b.md"), racer, "the racer's edit must survive");
+        assert!(
+            dir.join("a.md").exists() && !dir.join("sub").join("a.md").exists(),
+            "the refused move must not have begun"
+        );
     }
 
     #[test]

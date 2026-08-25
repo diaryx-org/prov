@@ -12,7 +12,7 @@ use crate::workspace::Workspace;
 
 // Re-exported so each verb's `mod tests` can pull the whole fixture surface —
 // helpers and the concrete workspace types they hand back — from one glob.
-pub(super) use crate::fs_faults::FailAtWrite;
+pub(super) use crate::fs_faults::{FailAtWrite, RaceFs};
 pub(super) use crate::identity::Minter;
 pub(super) use prov_graph::exec::block_on;
 pub(super) use prov_graph::fs::StdFs;

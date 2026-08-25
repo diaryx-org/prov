@@ -228,11 +228,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let parent_out = parent_editor.render()?;
 
-        // All edits computed; stage them.
+        // All edits computed; stage them — under the guard that the paths the
+        // exists-check above found free are *still* free when the set lands. A
+        // writer racing the compute→apply gap (a sync daemon delivering a file
+        // at the same path) would otherwise be silently replaced by the new
+        // document; expected absent, the race refuses with [`Error::Drifted`]
+        // and the racer's file survives.
+        cs.expect_absent(&node);
         cs.write(&node, new_text);
         // A separated child's prose file starts empty (like a combined child's
         // body, which is just the synthesized block with nothing after it).
         if let Some(body_path) = &body {
+            cs.expect_absent(body_path);
             cs.write(body_path, Vec::new());
         }
         cs.write(&parent, parent_out);
@@ -248,6 +255,32 @@ mod tests {
     use super::*;
     use prov_graph::index::IdIndex;
     use prov_graph::link::LinkStyle;
+
+    #[test]
+    fn a_create_raced_by_a_file_landing_at_its_path_refuses_and_leaves_it() {
+        // `create` verified nothing sits at the new path, but a `write` at
+        // apply time replaces whatever is there — so a file another writer
+        // delivers in the compute→apply gap (a sync daemon, say; `RaceFs`
+        // plants it at the apply's first filesystem call) would be silently
+        // destroyed by a document that was composed never knowing it. The
+        // staged `expect_absent` refuses the whole set instead: the delivered
+        // file survives, and the parent gains no entry for a child never made.
+        let dir = tempdir("create-raced");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+
+        let fs = RaceFs::plants(dir.join("new.md"), "delivered out of band\n");
+        let mut w = Workspace::builder(fs).root(&dir).build();
+        let err = block_on(w.create(Path::new("new.md"), Path::new("index.md"))).unwrap_err();
+        assert!(
+            matches!(&err, Error::Drifted(p) if p == Path::new("new.md")),
+            "expected Drifted(new.md), got {err:?}"
+        );
+        assert_eq!(read(&dir, "new.md"), "delivered out of band\n");
+        assert!(
+            !read(&dir, "index.md").contains("new.md"),
+            "the parent must not link a child that was never created"
+        );
+    }
 
     // Exercises inheritance of a `fig`-dialect parent block, so it needs that
     // backend on top of the module-wide `yaml` gate.

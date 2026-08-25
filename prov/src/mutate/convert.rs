@@ -116,6 +116,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut changed = Vec::new();
         for path in &targets {
             if let Some(text) = self.restyle_document(path, style).await? {
+                // A memo hit (the restyle just loaded it, under the scope):
+                // the text the restyle was computed from, staged as the set's
+                // expectation so a document another writer edited in the
+                // compute→apply gap refuses the sweep rather than losing that
+                // edit to a restyle of older bytes.
+                let (read, _) = self.load(path).await?;
+                cs.expect(path, read);
                 cs.write(path, text);
                 changed.push(path.clone());
             }
@@ -299,29 +306,40 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut cs = self.change();
         let mut converted = Vec::new();
         for plan in &plans {
-            let staged = rewrites.remove(&plan.from);
-            let text = match (staged, plan.node.is_some()) {
-                // A separated body file is prose all the way down: no metadata
-                // block to preserve, so the whole text transcodes.
-                (staged, true) => {
-                    let raw = match staged {
-                        Some(text) => text,
-                        None => self.read_text(&plan.from).await?,
+            // What the mover holds on disk (`read`) alongside the text this
+            // sweep transcodes (`input`) — the same bytes unless an inbound
+            // rewrite already retargeted them, in which case `read` is the
+            // rewrite's own pre-image. `read` becomes the set's expectation at
+            // `plan.from`, so a mover another writer edited in the
+            // compute→apply gap refuses the sweep ([`Error::Drifted`]) rather
+            // than having its racer's text moved and overwritten by a
+            // transcode of older bytes.
+            let (read, input) = match rewrites.remove(&plan.from) {
+                Some(rw) => (rw.read, rw.text),
+                None => {
+                    let raw = if plan.node.is_some() {
+                        self.read_text(&plan.from).await?
+                    } else {
+                        self.load(&plan.from).await?.0
                     };
-                    transcode(&raw, plan.from_format, format)?
-                }
-                // A combined document keeps its metadata block byte-for-byte and
-                // swaps only the prose beneath it.
-                (staged, false) => {
-                    let text = match staged {
-                        Some(text) => text,
-                        None => self.load(&plan.from).await?.0,
-                    };
-                    let body = Document::parse(&plan.from, &text)?.body;
-                    let new_body = transcode(&body, plan.from_format, format)?;
-                    splice_body(&text, &body, &new_body)
+                    (raw.clone(), raw)
                 }
             };
+            let text = if plan.node.is_some() {
+                // A separated body file is prose all the way down: no metadata
+                // block to preserve, so the whole text transcodes.
+                transcode(&input, plan.from_format, format)?
+            } else {
+                // A combined document keeps its metadata block byte-for-byte
+                // and swaps only the prose beneath it.
+                let body = Document::parse(&plan.from, &input)?.body;
+                let new_body = transcode(&body, plan.from_format, format)?;
+                splice_body(&input, &body, &new_body)
+            };
+            cs.expect(&plan.from, read);
+            // And the destination the guard above found free must still be
+            // free — `rename` overwrites, the one thing rollback cannot undo.
+            cs.expect_absent(&plan.to);
             cs.rename(&plan.from, &plan.to);
             cs.write(&plan.to, text);
             // A separated node stays put; only its `content` pointer follows the
@@ -332,9 +350,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // link-rewritten text back over this `content` repoint, pointing the
             // node at a body file the rename just emptied.
             if let Some(node) = &plan.node {
-                let node_text = match rewrites.remove(node) {
-                    Some(text) => text,
-                    None => self.load(node).await?.0,
+                let (node_read, node_text) = match rewrites.remove(node) {
+                    Some(rw) => (rw.read, rw.text),
+                    None => {
+                        let raw = self.load(node).await?.0;
+                        (raw.clone(), raw)
+                    }
                 };
                 let node_doc = Document::parse(node, &node_text)?;
                 if let Some(carrier) = node_doc.carrier {
@@ -343,6 +364,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         &[Segment::Key("content")],
                         fig::Value::Str(plan.content_ref.clone()),
                     )?;
+                    cs.expect(node, node_read);
                     cs.write(node, editor.render()?);
                 }
             }
@@ -350,8 +372,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         // Whatever is left in `rewrites` is a source that links at a mover without
         // being one itself.
-        for (source, text) in rewrites {
-            cs.write(source, text);
+        for (source, rw) in rewrites {
+            cs.expect(&source, rw.read);
+            cs.write(source, rw.text);
         }
         // The registry follows each moved node, so every `colophon:<id>` pointing
         // at one survives the conversion untouched — the point of an id link.
@@ -453,6 +476,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for path in &targets {
             let named = path == &file;
             if let Some(text) = self.reformat_document(path, axis, named).await? {
+                // As in `convert_link_style`: the reformat's own reading,
+                // staged as the set's expectation against a racing writer.
+                let (read, _) = self.load(path).await?;
+                cs.expect(path, read);
                 cs.write(path, text);
                 changed.push(path.clone());
             }

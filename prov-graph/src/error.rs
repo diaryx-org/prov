@@ -93,6 +93,23 @@ pub enum Error {
         rollback: String,
     },
 
+    /// A mutation's reading of the workspace went stale before its writes
+    /// landed: between an op computing its edits and applying them, something
+    /// else — another process, a sync daemon — wrote to this path. The op
+    /// stages what it read as an expectation on its `prov`'s `ChangeSet`
+    /// (`ChangeSet::expect` / `expect_absent`), and the apply refuses the whole
+    /// set rather than land edits computed from a reading that no longer holds:
+    /// nothing was written, journaled, or unwound. Unlike
+    /// [`AlreadyExists`](Self::AlreadyExists) (the same fact caught while
+    /// computing), this is retryable as-is — re-run the operation and it
+    /// recomputes over the fresh state.
+    #[error(
+        "{0} changed under this operation — something else wrote to the \
+         workspace after it was read; nothing was written, so re-run the \
+         operation to recompute over the current state"
+    )]
+    Drifted(PathBuf),
+
     /// An operation would have registered an ID across a registration the index
     /// already holds — see [`Collision`](crate::index::Collision). Refused rather
     /// than resolved, because the displaced document still spells the ID in its
@@ -123,6 +140,7 @@ impl From<fs_transaction::Error> for Error {
             Tx::Io(e) => Error::Io(e),
             Tx::Escape(path) => Error::Escape(path),
             Tx::StaleJournal(path) => Error::StaleJournal(path),
+            Tx::Drifted(path) => Error::Drifted(path),
             Tx::Torn { cause, rollback } => Error::Torn { cause, rollback },
             // The three that have no prov-level counterpart: a journal prov
             // cannot read, a replay it cannot finish, and a path it could not

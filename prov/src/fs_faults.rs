@@ -147,6 +147,104 @@ impl Storage for FailAtWrite {
     }
 }
 
+/// A real filesystem with one other writer loose in it: at the moment an apply
+/// begins — the stale-journal probe, the first filesystem call
+/// `ChangeSet::apply` makes after an op has finished computing its edits — it
+/// lands one plain `std::fs` write of its own, then gets out of the way.
+///
+/// What it simulates is exactly the writer a change set's *expectations*
+/// exist to catch: one that races the gap between an op's reading of the tree
+/// and the apply of the edits computed from that reading. The journal probe is
+/// the seam because it is deterministic and sits precisely on the boundary —
+/// every compute-time read and existence check has already answered, and
+/// nothing has been written or journaled yet.
+#[derive(Debug)]
+pub(crate) struct RaceFs {
+    /// Absolute path and contents of the racing write.
+    plant: (PathBuf, String),
+    /// The racer writes once — the first apply of the workspace's lifetime.
+    done: std::cell::Cell<bool>,
+}
+
+impl RaceFs {
+    /// A backend whose racer writes `contents` at (absolute) `path` when the
+    /// next apply begins.
+    pub(crate) fn plants(path: PathBuf, contents: &str) -> Self {
+        Self {
+            plant: (path, contents.to_string()),
+            done: std::cell::Cell::new(false),
+        }
+    }
+}
+
+impl ReadStorage for RaceFs {
+    async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        StdFs.read(path).await
+    }
+    async fn read_to_string(&self, path: &Path) -> io::Result<String> {
+        StdFs.read_to_string(path).await
+    }
+    async fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        StdFs.read_dir(path).await
+    }
+    async fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        StdFs.metadata(path).await
+    }
+    async fn executable(&self, path: &Path) -> io::Result<Option<bool>> {
+        StdFs.executable(path).await
+    }
+    async fn read_link(&self, path: &Path) -> io::Result<Option<PathBuf>> {
+        StdFs.read_link(path).await
+    }
+    async fn try_exists(&self, path: &Path) -> io::Result<bool> {
+        if !self.done.get() && crate::journal::workspace_journal().owns_path(path) {
+            self.done.set(true);
+            let (target, contents) = &self.plant;
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(target, contents)?;
+        }
+        StdFs.try_exists(path).await
+    }
+}
+
+impl Storage for RaceFs {
+    async fn write(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.write(path, contents).await
+    }
+    async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        StdFs.create_dir_all(path).await
+    }
+    async fn remove_file(&self, path: &Path) -> io::Result<()> {
+        StdFs.remove_file(path).await
+    }
+    async fn remove_dir_all(&self, path: &Path) -> io::Result<()> {
+        StdFs.remove_dir_all(path).await
+    }
+    async fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.rename(from, to).await
+    }
+    async fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        StdFs.copy_permissions(from, to).await
+    }
+    async fn create_new(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+        StdFs.create_new(path, contents).await
+    }
+    async fn set_executable(&self, path: &Path, executable: bool) -> io::Result<()> {
+        StdFs.set_executable(path, executable).await
+    }
+    async fn set_link(&self, path: &Path, target: &Path) -> io::Result<()> {
+        StdFs.set_link(path, target).await
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::LOCAL_FS
+    }
+    async fn sync(&self, path: &Path, need: Durability) -> io::Result<()> {
+        StdFs.sync(path, need).await
+    }
+}
+
 /// A [`Storage`] over `std::fs` that records the ordered sequence of mutating
 /// operations it performs, for asserting a *protocol* — the one durability
 /// guarantee a unit test cannot check by actually crashing. It reports whatever

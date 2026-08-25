@@ -158,9 +158,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // re-render preserves it). The bin is machinery, reached one-way through
         // the root's `recycle_bin` pointer, so it carries no `part_of` back-link
         // (DESIGN §5, "link target kinds"). Absent bin → empty, with a default title.
+        let mut bin_read: Option<String> = None;
         let (mut records, bin_title) = match &existing_index {
             Some(index) => {
-                let (_, bin_doc) = self.load(index).await?;
+                let (bin_text, bin_doc) = self.load(index).await?;
+                bin_read = Some(bin_text);
                 // The bin index is a record store — reject a markdown carrier
                 // (DESIGN §5, whole-file rule).
                 if let Some(carrier) = bin_doc.carrier {
@@ -270,6 +272,21 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
 
         let mut cs = self.change();
+        // The bin slot the bump loop above found free must still be free at
+        // apply — `rename` overwrites, and a clobbered tombstone's bytes are
+        // the one thing rollback cannot restore. And the index this record
+        // list was read from (or its verified absence, on the bootstrap) must
+        // still hold: a re-render over a drifted index would silently drop
+        // whatever record a racing recycle just added.
+        cs.expect_absent(&node_bin);
+        match bin_read {
+            Some(read) => {
+                cs.expect(&bin_index, read);
+            }
+            None => {
+                cs.expect_absent(&bin_index);
+            }
+        }
         cs.rename(&path, &node_bin);
         if let Some((from, to)) = &body_bin {
             cs.rename(from, to);
@@ -356,7 +373,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .recycle_bin_path(root_doc)
             .await?
             .ok_or_else(|| Error::Structure("workspace has no recycle bin".into()))?;
-        let (_, bin_doc) = self.load(&bin_index).await?;
+        let (bin_read, bin_doc) = self.load(&bin_index).await?;
         // The bin index is a record store — reject a markdown carrier
         // (DESIGN §5, whole-file rule).
         if let Some(carrier) = bin_doc.carrier {
@@ -448,6 +465,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let Some(id) = &id {
             self.index_mut().register(id, &from);
         }
+        // The restore path the exists-check above found free must still be
+        // free at apply (`rename` overwrites — the racer's file would be
+        // gone), and the index this record was cut from must still hold, or
+        // the re-render would drop what a racing recycle just recorded.
+        cs.expect_absent(&from);
+        cs.expect(&bin_index, bin_read);
         cs.rename(&node_bin, &from);
         if let Some((body_from, body_bin)) = &body {
             cs.rename(body_bin, body_from);
@@ -496,7 +519,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .recycle_bin_path(root_doc)
             .await?
             .ok_or_else(|| Error::Structure("workspace has no recycle bin".into()))?;
-        let (_, bin_doc) = self.load(&bin_index).await?;
+        let (bin_read, bin_doc) = self.load(&bin_index).await?;
         // The bin index is a record store — reject a markdown carrier
         // (DESIGN §5, whole-file rule).
         if let Some(carrier) = bin_doc.carrier {
@@ -539,6 +562,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let bin_text = prov_graph::meta::serialize_mapping(&bin_map, format)?;
 
         let mut cs = self.change();
+        // The purge empties exactly the records this reading held: expected,
+        // so a record a racing recycle adds in the compute→apply gap refuses
+        // the purge ([`Error::Drifted`]) instead of being wiped from the index
+        // while its bytes — never in `records` — survive orphaned in the bin.
+        cs.expect(&bin_index, bin_read);
         for record in &records {
             for key in ["bin", "body_bin"] {
                 if let Some(path) = record.get(key).and_then(Value::as_str) {

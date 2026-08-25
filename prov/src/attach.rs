@@ -370,6 +370,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let parent_out = parent_editor.render()?;
 
+        // The sidecar path the exists-check above found free is expected still
+        // free at apply, so a file another writer landed there in the
+        // compute→apply gap refuses the attach ([`Error::Drifted`]) instead of
+        // being silently replaced.
+        cs.expect_absent(&node);
         cs.write(&node, node_text);
         cs.write(&parent, parent_out);
 
