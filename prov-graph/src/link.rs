@@ -144,6 +144,21 @@ impl Link {
         self.target.contains("://") || self.target.starts_with("mailto:")
     }
 
+    /// `true` when the target names no document at all, only a place inside the
+    /// one it is written in: a target that is *entirely* a locator (`#3`,
+    /// `#section-one`).
+    ///
+    /// The counterpart of [`locator`](Self::locator)'s leading-`#` rule (see
+    /// [`split_locator`]). Such a reference says nothing about where anything
+    /// lives, so nothing here can be resolved against the filesystem and nothing
+    /// may rewrite it: it is byte-literal, exactly as `docs/reference-styles.md`
+    /// promises. Resolution reports it as
+    /// [`Target::SameDocument`](crate::graph::Target::SameDocument), never as a
+    /// sibling file whose name begins with `#`.
+    pub fn is_same_document(&self) -> bool {
+        !self.is_external() && self.target.starts_with(LOCATOR_SEPARATOR)
+    }
+
     /// The **sub-document locator** this target carries — the text after a `#`,
     /// naming a place *inside* a document rather than a document.
     ///
@@ -225,12 +240,13 @@ impl Link {
     /// Whether this link's target is a **path** — the only kind that says where
     /// its target lives, and so the only kind a move may rewrite.
     ///
-    /// False for an external URL and for every `id:` reference alike (local,
-    /// foreign, and malformed): none of them encodes a location, so
-    /// re-relativizing one could only damage it. This is the predicate the
-    /// rename, re-relativize and restyle passes filter on.
+    /// False for an external URL, for every `id:` reference alike (local,
+    /// foreign, and malformed), and for a
+    /// [same-document](Self::is_same_document) reference: none of them encodes a
+    /// location, so re-relativizing one could only damage it. This is the
+    /// predicate the rename, re-relativize and restyle passes filter on.
     pub fn is_path_target(&self) -> bool {
-        !self.is_external() && self.id_ref().is_none()
+        !self.is_external() && !self.is_same_document() && self.id_ref().is_none()
     }
 }
 
@@ -1314,6 +1330,31 @@ mod tests {
     }
 
     #[test]
+    fn a_target_that_is_only_a_locator_names_no_path() {
+        // `[Section One](#section-one)` is the commonest link in a long
+        // markdown document, and it names no file at all. Reading it as a path
+        // would look for a sibling *named* `#section-one`, which is how `check`
+        // came to report every same-document anchor as a broken link.
+        for target in [
+            "#3",
+            "#section-one",
+            "[[#v2]]",
+            "[Section One](#section-one)",
+        ] {
+            let link = Link::parse(target);
+            assert!(link.is_same_document(), "{target}");
+            assert!(!link.is_path_target(), "{target}");
+        }
+        // A locator *on* a document is the other case entirely: that one is a
+        // path, and a move rewrites it.
+        let located = Link::parse("chapter.md#3");
+        assert!(!located.is_same_document());
+        assert!(located.is_path_target());
+        // A URL's fragment belongs to the URL, wherever it sits.
+        assert!(!Link::parse("https://example.com/#top").is_same_document());
+    }
+
+    #[test]
     fn an_external_url_keeps_its_own_fragment() {
         let url = Link::parse("[talk](https://example.com/a#p3)");
         assert!(url.is_external());
@@ -1461,6 +1502,9 @@ mod tests {
             "id:a/b/c",
             "https://example.com/x",
             "mailto:a@b.c",
+            // A same-document reference: byte-literal, so a move must leave it
+            // alone as surely as it leaves an id alone.
+            "#3",
         ] {
             assert!(!Link::parse(stable).is_path_target(), "{stable}");
         }

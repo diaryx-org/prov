@@ -189,6 +189,9 @@ fn resolve_anchor<FS, Ix: IdIndex>(
         Target::External => Err(unresolved(
             "an anchor must name a document in this workspace, and this is a URL",
         )),
+        Target::SameDocument => Err(unresolved(
+            "an anchor must name a document, and this names only a place inside one",
+        )),
         Target::Foreign { workspace, .. } => Err(unresolved(&format!(
             "the anchor names a document in the workspace `{workspace}`, which prov cannot see from here"
         ))),

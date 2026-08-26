@@ -303,7 +303,12 @@ Two rules make it safe to add to an existing format:
   `b#c`), so no escaping is needed for the formats that use `#` internally.
 - **A leading `#` is not a locator.** `#3` alone is a same-document reference and
   stays byte-literal; reading it as a locator on the empty path would silently
-  retarget the link to its containing *directory*.
+  retarget the link to its containing *directory*. Resolution gives it its own
+  answer — `Target::SameDocument` / `Resolution::SameDocument` — rather than a
+  path: it names no file, so `check` has nothing to report, no move rewrites it,
+  and it is nobody's backlink. Reading it as a *path* instead is what made
+  `check` call every markdown heading link (`[Section One](#section-one)`)
+  broken, looking for a sibling file whose name began with `#`.
 
 The cost is one thing that used to work: a document whose **filename** contains
 `#` can no longer be linked by path. Every URL and Markdown implementation makes

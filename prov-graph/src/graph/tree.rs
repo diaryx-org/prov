@@ -243,7 +243,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     *titles = Some(self.title_index_scoped(cx.root, cx.parked).await?);
                 }
                 let child_path = match self.resolve_link_with(&path, &child, titles.as_ref()) {
-                    Target::External => continue,
+                    // Neither names a document in this workspace, so neither can
+                    // be a child: a URL leaves the building, and a bare `#3`
+                    // never left this one.
+                    Target::External | Target::SameDocument => continue,
                     Target::UnresolvedId(id) => {
                         children.push(Node {
                             path: PathBuf::from(child.target.clone()),

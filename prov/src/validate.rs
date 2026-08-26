@@ -91,9 +91,15 @@ fn finding_for(entry: &CensusEntry) -> Option<Finding> {
             // a workspace it cannot see, and a link reported broken on no
             // evidence is a false positive the host would have to filter back
             // out (see `Resolution::Foreign`).
+            //
+            // `SameDocument` is there for the same reason, one level down: `#3`
+            // addresses a place inside this document, and prov does not read a
+            // document's internal address space, so it has no evidence about
+            // whether that place exists either.
             Resolution::Path(_)
             | Resolution::Id { .. }
             | Resolution::External
+            | Resolution::SameDocument
             | Resolution::Foreign { .. } => None,
         }
     }
@@ -2103,6 +2109,25 @@ mod tests {
             )),
             "{findings:?}"
         );
+    }
+
+    #[test]
+    fn check_says_nothing_about_a_same_document_anchor() {
+        // The ordinary shape of a long markdown document: headings, and links
+        // down to them. None of it names a file, so none of it is prov's to
+        // check — reporting it broken made `check` a thing to be filtered.
+        let dir = tempdir("anchor-check");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n---\n## Section One\n\n\
+             See [Section One](#section-one), [[#section-one]], and [nothing](#no-such-heading).\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[test]

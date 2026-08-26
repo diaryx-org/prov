@@ -26,6 +26,18 @@ pub enum Target {
     /// A URL or mail address — never resolved against the workspace and never
     /// rewritten by moves.
     External,
+    /// A target that is *only* a locator (`#3`) — a place inside the document
+    /// the link is written in, naming no other document.
+    ///
+    /// Deliberately not [`Target::Path`] of the citing document. It is true that
+    /// the reference lands there, but saying so would make every consumer that
+    /// keys on a resolved path act as if a *link* to that document existed: the
+    /// document would become its own backlink, its own reachability edge, and —
+    /// worst — a rename would rewrite `#3` into a path to the moved file, which
+    /// is exactly the byte-literal guarantee `docs/reference-styles.md` gives.
+    /// A locator is carried, never resolved; this is that answer, in the shape
+    /// resolution speaks.
+    SameDocument,
     /// An `id:<workspace>/<id>` reference naming a document in *another*
     /// workspace — carried, never rewritten, and never reported broken.
     ///
@@ -81,6 +93,13 @@ impl<FS, Ix: IdIndex> Graph<FS, Ix> {
     ) -> Target {
         if link.is_external() {
             return Target::External;
+        }
+        // Before anything path-shaped is considered: `#3` addresses this
+        // document, so there is no filename to look for. Falling through would
+        // resolve it against `doc`'s directory and hand back `dir/#3`, a file
+        // nothing will ever put there.
+        if link.is_same_document() {
+            return Target::SameDocument;
         }
         // A reference qualified with this workspace's own name *is* local — the
         // registry that issued the id is the one in hand. That equivalence is
@@ -248,6 +267,30 @@ mod tests {
                 Some(&titles)
             ),
             Target::Path(PathBuf::from("mosiah/mosiah-1.md"))
+        );
+    }
+
+    #[test]
+    fn a_same_document_reference_resolves_to_no_path_at_all() {
+        // Not `Path("1-nephi/#v2")` — nothing will ever put a file there, so
+        // every consumer downstream would call the link broken. And not
+        // `Path(doc)` either: that would make the document its own backlink and
+        // let a rename rewrite `#v2` into a path.
+        let ws = named_ws("notes");
+        let doc = Path::new("1-nephi/1-nephi-1.md");
+        for target in ["#v2", "[[#v2]]", "[Verse 2](#v2)"] {
+            assert_eq!(
+                ws.resolve_link(doc, &Link::parse(target)),
+                Target::SameDocument,
+                "{target}"
+            );
+        }
+        // Even with a title index in hand: `#v2` is not a name to look up.
+        let mut titles = TitleIndex::new();
+        titles.insert("Mosiah 1", "mosiah/mosiah-1.md");
+        assert_eq!(
+            ws.resolve_link_with(doc, &Link::parse("#v2"), Some(&titles)),
+            Target::SameDocument
         );
     }
 

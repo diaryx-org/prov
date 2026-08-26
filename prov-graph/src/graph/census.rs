@@ -68,6 +68,15 @@ pub enum Resolution {
     },
     /// A URL / mail address — off-workspace, never resolved or rewritten.
     External,
+    /// A target that is *only* a locator (`#3`) — a place inside the document
+    /// the link is written in.
+    ///
+    /// A clean resolution, not a finding, on the same grounds as any other
+    /// locator: prov does not read a document's internal address space, so it
+    /// has no evidence about whether `#3` names anything. See
+    /// [`Target::SameDocument`] for why this is its own case rather than a
+    /// [`Resolution::Path`] of the citing document.
+    SameDocument,
     /// An `id:<workspace>/<id>` target naming a document in another workspace.
     ///
     /// A clean resolution, not a finding: prov holds no map from a workspace
@@ -640,6 +649,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         if link.is_external() {
             return Resolution::External;
         }
+        if link.is_same_document() {
+            return Resolution::SameDocument;
+        }
         // Mirrors `Workspace::resolve_link_with`: a reference qualified with
         // this workspace's own name is local, any other qualifier is foreign,
         // and a malformed `id:` body is a broken id rather than a filename that
@@ -780,6 +792,33 @@ mod tests {
                 .iter()
                 .any(|e| e.target_text == "gone.md" && matches!(e.resolution, Resolution::Broken)),
             "{census:?}"
+        );
+    }
+
+    #[test]
+    fn a_same_document_anchor_is_a_clean_resolution_not_a_broken_link() {
+        let dir = tempdir("anchor");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- a.md\n---\n## Section One\n\nSee [Section One](#section-one).\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let census = block_on(ws.census("index.md")).unwrap();
+
+        let anchor = census
+            .iter()
+            .find(|e| e.target_text == "#section-one")
+            .expect("the anchor is still a link the census reports");
+        assert_eq!(anchor.resolution, Resolution::SameDocument, "{census:?}");
+        // And so it is no backlink: index.md's inbound references are a.md's
+        // `part_of` and nothing else — the anchor did not make the document
+        // link to itself.
+        let inbound = block_on(ws.backlinks_to("index.md", "index.md")).unwrap();
+        assert!(
+            inbound.iter().all(|bl| bl.source != Path::new("index.md")),
+            "{inbound:?}"
         );
     }
 

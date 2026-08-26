@@ -1422,6 +1422,12 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
                         format!("{}: {} (external)", relation.name, parsed.target),
                         ExploreAction::Note("external link — not followed".into()),
                     ),
+                    Target::SameDocument => (
+                        format!("{}: {} (this document)", relation.name, parsed.target),
+                        ExploreAction::Note(
+                            "a place inside this document — prov does not read one".into(),
+                        ),
+                    ),
                     Target::UnresolvedId(id) => (
                         format!("{}: {id} (unresolved id)", relation.name),
                         ExploreAction::Note("this id has no live registry entry".into()),
