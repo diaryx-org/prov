@@ -32,6 +32,69 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.9.1 — 2026-08-26
+
+### Breaking
+
+- **deps** — move to fs-transaction 0.2 ([`37182a2`](https://github.com/diaryx-org/prov/commit/37182a275179477c225df26d99c0b5e97b9c55c5))
+- **mutate** — expect what each op read, so a raced apply refuses instead of clobbering ([`da8f6d0`](https://github.com/diaryx-org/prov/commit/da8f6d055dcb923a69e86311a53f11a99da4a4e7))
+
+### Added
+
+- **content** — re-export twig, so a consumer reaches the same parser ([`766dde8`](https://github.com/diaryx-org/prov/commit/766dde8589fff46795545a38e46c3478a1ace11c))
+
+### Fixed
+
+- **rename** — refuse to move a separated node onto its own body's path ([`4672dea`](https://github.com/diaryx-org/prov/commit/4672dea4f759dfd32a6ac77969627dba48bce164))
+
+### Behavioural changes
+
+- Workspace::rename of a separated node to a
+  destination equal to its body file's derived new path (the node's new
+  name spelled with the body's extension, e.g. notes.yaml -> p.md) now
+  refuses with a Structure error naming the collision. It previously
+  reported success while destroying the node's metadata file, so the
+  refusal is strictly better; no valid rename is affected.
+
+- the re-exported Capabilities struct gains an
+  exclusive_create field, so a caller constructing one with a struct
+  literal must name it; false is the previous behaviour. NONE and
+  IN_MEMORY/LOCAL_FS answer it false/true respectively.
+
+- the re-exported FileOp enum gains SetExecutable
+  and SetLink variants, so an exhaustive match over it no longer
+  compiles. prov itself never stages either yet, so arms that refuse
+  or ignore them keep today's behaviour.
+
+- the re-exported Storage and ReadStorage traits
+  gain defaulted members (create_new, replace, set_executable,
+  set_link, executable, read_link). A custom backend still compiles
+  unchanged, but one that overrode write_atomic should now override
+  replace instead — the transaction's internal callers land through
+  replace and bypass a write_atomic-only override.
+
+- the re-exported InMemoryFs::rename now replaces an
+  occupied non-directory destination, mirroring std::fs::rename, where
+  it previously refused. prov's own verbs guard occupied destinations
+  before staging, so workspace operations are unaffected — but a
+  caller driving the backend directly observes the new semantics.
+
+- prov::Error::Torn now also reports an apply whose
+  rollback or certification could not be made durable, not only a
+  failed write whose rollback also failed. The message is unchanged
+  and 'run prov check' remains the right response in every case.
+
+- mutation verbs that race another writer now refuse
+  with the new Error::Drifted where they previously reported success —
+  rename/create/duplicate/separate/attach/transcode over a destination
+  occupied after compute no longer silently replace the racer's file,
+  and the census-wide sweeps (rename, separate, combine, retitle, the
+  convert sweeps, the recycle-bin index) no longer overwrite a document
+  edited mid-op with text computed from the older reading. Error is an
+  exhaustive enum, so matches over it must add the Drifted arm. Each
+  apply also performs one extra read per staged expectation.
+
+
 ## v0.9.0 — 2026-08-25
 
 ### Breaking
