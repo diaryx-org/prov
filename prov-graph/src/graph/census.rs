@@ -685,8 +685,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // Only a nominal link needs the title index; the caller builds it lazily
         // the first time one appears, so `titles` is `Some` here whenever it is
         // consulted. If absent, fall through to path resolution.
-        if let Some(titles) = titles.filter(|_| title::is_alias_shaped(&link.target)) {
-            match titles.resolve(&link.target) {
+        //
+        // The *addressed* target, not the whole one — the same care
+        // `resolve_link_with` takes: a locator names a place inside the document
+        // an alias names, so `[[My File#v2]]` is the nominal reference
+        // `[[My File]]`. Asking the index for the spelling with the locator
+        // still on it misses every time and falls through to the path branch,
+        // which then reports a live document as a broken link.
+        let addressed = link.addressed_target();
+        if let Some(titles) = titles.filter(|_| title::is_alias_shaped(addressed)) {
+            match titles.resolve(addressed) {
                 TitleMatch::Unique(path) => {
                     return match self.exact_name(&path).await {
                         NameMatch::Exact => Resolution::Path(path),
@@ -819,6 +827,42 @@ mod tests {
         assert!(
             inbound.iter().all(|bl| bl.source != Path::new("index.md")),
             "{inbound:?}"
+        );
+    }
+
+    #[test]
+    fn an_alias_with_a_locator_resolves_to_the_document_the_alias_names() {
+        // §4's equivalence, at the layer `check` actually reads: the locator
+        // changes where in a document a reader lands, never which document is
+        // found. Asking the title index for `Mosiah 1#v2` misses every time and
+        // used to fall through to a path, reporting a live document as broken.
+        let dir = tempdir("alias-locator");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- mosiah-1.md\n---\nSee [[Mosiah 1#v2]] and [[Mosiah 1]].\n",
+        );
+        write(
+            &dir,
+            "mosiah-1.md",
+            "---\ntitle: Mosiah 1\npart_of: index.md\n---\n",
+        );
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let census = block_on(ws.census("index.md")).unwrap();
+
+        let located = census
+            .iter()
+            .find(|e| e.target_text == "Mosiah 1#v2")
+            .expect("the located alias is in the census");
+        let plain = census
+            .iter()
+            .find(|e| e.target_text == "Mosiah 1")
+            .expect("the plain alias is in the census");
+        assert_eq!(located.resolution, plain.resolution, "{census:?}");
+        assert_eq!(
+            located.resolution,
+            Resolution::Path(PathBuf::from("mosiah-1.md")),
+            "{census:?}"
         );
     }
 
