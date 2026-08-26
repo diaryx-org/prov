@@ -84,6 +84,11 @@ pub use prov_graph;
 /// [`Workspace::register`](workspace::Workspace::register), is in
 /// [`workspace`].
 pub use prov_graph::identity;
+/// The body-prose parser, re-exported whole — `prov-graph`'s, forwarded here
+/// so a consumer that depends on `prov` alone reaches the same twig the bodies
+/// were parsed with rather than pinning a second one. See
+/// [`prov_graph::twig`] for why the coupling is accepted.
+pub use prov_graph::twig;
 pub use prov_graph::{
     Addressing, Backlink, Body, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat,
     DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id,

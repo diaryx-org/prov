@@ -110,3 +110,50 @@ pub use meta::{Mapping, Value};
 pub use peer::{NoPeers, PeerLocation, PeerLookup, PeerResolver, Unconfirmed};
 pub use relation::{Cardinality, Edge, Relation, RelationSet};
 pub use title::{TitleIndex, TitleMatch};
+
+/// The body-prose parser, re-exported whole.
+///
+/// [`content`] uses twig to answer prov's own two questions — render a body to
+/// HTML ([`render_html`]) and find the spans a parser calls code
+/// ([`code_spans`]) — and both hand back plain strings and offsets. That is the
+/// whole of what prov needs, and for a long time it was the whole of what
+/// anyone could reach: twig was an implementation detail with no path out.
+///
+/// It is re-exported because the consumers this crate was built for — a
+/// language server, a static renderer, a browser viewer — need the *tree*, not
+/// a rendering of it. A static site generator filtering `:::vis{...}` regions
+/// by audience, or an editor addressing a node to splice it, is asking twig
+/// questions prov has no opinion about and should not grow one about.
+///
+/// Without this they would depend on `twig-doc` directly, pin it themselves,
+/// and resolve to a different [`twig::Document`] than the one [`content`]
+/// parses with — two AST vocabularies in one build, disagreeing silently about
+/// what a document is.
+///
+/// **This makes `twig-doc` a public dependency**, which is a real cost and the
+/// reason it was not done sooner: twig's major version is now part of prov's
+/// semver contract, so a twig 4 is a breaking change for prov whether or not
+/// prov's own surface moves. Accepted deliberately — the alternative is not
+/// "no coupling", it is the same coupling spelled separately by every
+/// downstream crate and enforced by nobody.
+///
+/// ```
+/// use prov_graph::twig::{Document, Format, MarkdownExtensions};
+///
+/// // What [`content`] cannot ask for: an opt-in extension. prov parses with
+/// // defaults, so a consumer that needs directives reaches past it — and,
+/// // through this re-export, reaches the same twig.
+/// let directives = MarkdownExtensions { directives: true, ..Default::default() };
+/// let mut doc = Document::parse_str_with(
+///     ":::vis{.public}\nHello\n:::\n",
+///     Format::Markdown,
+///     directives,
+/// )?;
+/// // The directive's name becomes the element tag and its attributes ride
+/// // along — which is also why a consumer publishing HTML unwraps these
+/// // rather than rendering them.
+/// let html = String::from_utf8(doc.render_html()?).unwrap();
+/// assert!(html.contains("<vis class=\"public\">"), "{html}");
+/// # Ok::<(), prov_graph::twig::Error>(())
+/// ```
+pub use twig;
