@@ -32,6 +32,28 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.9.2 — 2026-08-26
+
+### Fixed
+
+- **check** — resolve a same-document `#anchor` as itself, not a sibling file ([`fc6d82c`](https://github.com/diaryx-org/prov/commit/fc6d82c6ac353e8d915ffb59361d5f8c55ba8cbe))
+- **check** — resolve an alias carrying a locator through the title index ([`0b1d35b`](https://github.com/diaryx-org/prov/commit/0b1d35ba92350e6e790edb839485b2ef7ceeacef))
+
+### Behavioural changes
+
+- `prov check` no longer reports a broken link for a link
+ target that is only a `#locator` — a markdown heading link, an Obsidian
+ block reference. Workspaces whose documents carry them will see those
+ findings disappear, and `check` exit 1 become exit 0 where they were the
+ only findings. `Target` and `Resolution` each gain a `SameDocument`
+ variant, so an exhaustive match on either must add an arm; such a target
+ also stops satisfying `Link::is_path_target`.
+
+- `prov check` no longer reports a broken link for an alias
+ target carrying a locator (`[[My File#v2]]`) whose name the title index
+ resolves; it now resolves exactly as the same alias without the locator does.
+
+
 ## v0.9.1 — 2026-08-26
 
 ### Breaking
