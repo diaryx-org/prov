@@ -1,7 +1,8 @@
 name: Release
-# The binary half of a release: the `prov` CLI to Homebrew, a WASI build, and the
-# notes on the GitHub release itself. (Its sibling, publish.yml, does the
-# registry half.) The build/attach/render/push mechanics are shared with twig,
+# The binary half of a release: the `prov` CLI to Homebrew and a WASI build. (Its
+# sibling, publish.yml, does the registry half; the notes on the release itself
+# are written from the laptop that cut the tag, and are no longer a job here.)
+# The build/attach/render/push mechanics are shared with twig,
 # fig, and moid and live in diaryx-org/.github; only what makes prov different is
 # below.
 #
@@ -17,6 +18,14 @@ name: Release
 # `wasi: true` attaches a wasm32-wasip1 build to the same Release. It is not part
 # of the Homebrew formula (brew doesn't run wasm) — just a portable download for
 # any WASI runtime (wasmtime, wasmer, ...).
+#
+# Nothing here writes the release body. `release <spec> --push` writes it from the
+# laptop that cut the tag, out of the section that tag's own tree carries, which
+# is why no job here checks out diaryx-org/devtools or installs nu any more. The
+# shared workflow creates the release if it gets there first and leaves the body
+# alone either way — see the note on its attach step. If a release ever appears
+# with binaries and no notes, `release github-release <tag>` is the whole of the
+# fix.
 #
 # Runs on `v*.*.*` tags. Prerequisite before the first tagged release: install
 # the diaryx-bot GitHub App on diaryx-org/homebrew-tap (Contents:write) and add
@@ -39,45 +48,3 @@ jobs:
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
       TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
-
-  # The release body: this version's section of docs/CHANGELOG.md, which the tag
-  # already carries — `release release` writes the section, commits it, and tags
-  # that commit. Read rather than re-rendered, so the notes on the release page
-  # are the same bytes the repository ships, a handwritten release intro comes
-  # along with them, and the runner needs no git-cliff.
-  #
-  # The slicing rule — the section under `## <tag>`, up to the next `##`, plus
-  # the footer link — lives in diaryx-org/devtools rather than in this repo,
-  # because it was four implementations across three languages and is now one.
-  # That is what the second checkout and the nu install below are for: this is
-  # the only step in any workflow here that needs them.
-  #
-  # It runs after the shared workflow rather than beside it because that workflow
-  # is what *creates* the release (softprops/action-gh-release, when it attaches
-  # the first binary) — there would be nothing to write notes on before then.
-  # A tag whose changelog section is missing fails this job and only this job:
-  # the binaries are already attached, and the fix is to write the section and
-  # re-run.
-  notes:
-    name: Release notes
-    needs: homebrew
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # edit the release body
-    steps:
-    - uses: actions/checkout@v7
-    - uses: actions/checkout@v7
-      with:
-        repository: diaryx-org/devtools
-        path: .release-tool
-    - uses: hustcer/setup-nu@v3
-      with: { version: "0.113.0" }
-    - run: .release-tool/release release-notes "$TAG" > notes.md
-      env:
-        TAG: ${{ github.ref_name }}
-    - run: gh release edit "$TAG" --notes-file notes.md
-      env:
-        TAG: ${{ github.ref_name }}
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GH_REPO: ${{ github.repository }}
