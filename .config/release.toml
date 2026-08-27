@@ -1,0 +1,19 @@
+# What the shared release tooling needs to know about prov. Everything not
+# stated here is a default in lib/repo.nu — the manifest, the changelog path,
+# the cliff config, and that this is a Cargo workspace.
+name = "prov"
+url = "https://github.com/diaryx-org/prov"
+release_branch = "main"
+
+# What to run before cutting. Each repo owns its own CI; this names it.
+verify = "cargo xtask ci"
+
+# What pushing the tag sets off, most consequential first. The warning printed
+# before the push is handed back to you is composed from these.
+[[tag_starts]]
+workflow = "publish.yml"
+does = "uploads every publishable crate to crates.io"
+
+[[tag_starts]]
+workflow = "homebrew.yml"
+does = "builds the binaries and writes the tap"

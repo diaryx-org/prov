@@ -1,20 +1,25 @@
 name: Publish
 # Publish the workspace crates to crates.io on a version tag — the registry
 # half of a release (its sibling, homebrew.yml, ships the CLI binaries). Both
-# fire on the same `v*.*.*` tags, so one `cargo xtask release <spec> --push`
+# fire on the same `v*.*.*` tags, so one `release release <spec> --push`
 # cuts a complete release.
 #
-# As in ci.yml, this file holds no knowledge of the workspace: which crates go
-# up, in what order, and which are already there is `cargo xtask publish`, which
-# derives all three from the manifests. A crate added to the workspace is
-# published by the next tag with no edit here.
+# As in ci.yml, this file holds no knowledge of the workspace: which crates go up
+# and in what order is `cargo publish --workspace`, which reads both off the
+# manifests — `publish = false` members are skipped, and the uploads are ordered
+# so nothing goes up before something it depends on, waiting on the index between
+# them. A crate added to the workspace is published by the next tag with no edit
+# here. This replaced a hand-rolled loop in `cargo xtask publish` that did the
+# same thing by hand.
 #
-# That command is idempotent by design: before publishing a crate it asks
-# crates.io whether that exact version already exists and skips cleanly if so.
-# So the workflow is safe to re-run (workflow_dispatch, or a re-pushed tag), and
-# a partial release — say `prov` published but `prov-cli` failed — is finished by
-# simply running it again: the published crates are skipped, the missing ones go
-# up.
+# What the loop had and this does not is skipping a version already on the index.
+# So a re-run of a tag that fully published fails on the first crate, and a run
+# that died partway is finished by naming what already went up:
+#
+#     cargo publish --workspace --exclude prov-graph --exclude prov-store
+#
+# which is a `workflow_dispatch` of this file with that line edited in, or the
+# same command from a checkout of the tag.
 #
 # Zig, as everywhere in CI: `cargo publish` runs a verification build, and prov's
 # `fig`/`twig-doc` dependencies are Zig-backed (their build.rs runs `zig build`),
@@ -57,14 +62,15 @@ jobs:
     - name: Check the tag against the workspace version
       if: github.ref_type == 'tag'
       run: |
-        version=$(cargo run -q -p xtask -- version)
+        version=$(cargo metadata --no-deps --format-version 1 \
+          | jq -r '.packages[] | select(.name == "prov") | .version')
         echo "Workspace version: $version"
         if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
           echo "::error::tag ${GITHUB_REF_NAME} does not match workspace version ${version}"
           exit 1
         fi
 
-    - name: Publish every crate crates.io is missing, in dependency order
+    - name: Publish every publishable crate, in dependency order
       env:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      run: cargo xtask publish
+      run: cargo publish --workspace

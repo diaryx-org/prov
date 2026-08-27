@@ -1,13 +1,20 @@
 # Releasing prov
 
 Every published crate in the workspace shares one version number, one tag, and
-one changelog — `cargo xtask publish --list` says which crates those are, and in
-what order they go up. A release is therefore one command:
+one changelog — `cargo publish --workspace --dry-run` says which crates those
+are, and in what order they go up. A release is therefore one command:
 
 ```console
-$ cargo xtask release minor          # bump, changelog, commit, tag
-$ cargo xtask release minor --push   # …and push, which publishes
+$ release release minor          # bump, changelog, commit, tag
+$ release release minor --push   # …and push, which publishes
 ```
+
+`release` is the shared tooling in [diaryx-org/devtools][devtools], which prov,
+twig, leaf, flower, and the historica repos all cut releases with. What makes
+prov prov is `.config/release.toml` and nothing else; the behaviour lives there.
+It used to be `cargo xtask release`, one of five copies of the same program.
+
+[devtools]: https://github.com/diaryx-org/devtools
 
 Everything below is what that command does, and what it deliberately refuses to
 do on its own.
@@ -16,13 +23,13 @@ do on its own.
 
 Pushing `vX.Y.Z` starts two workflows, and neither can be undone:
 
-- **`publish.yml`** runs `cargo xtask publish`, which uploads every crate the
-  registry is missing, in dependency order. A crates.io version number can be
-  yanked but never reused.
+- **`publish.yml`** runs `cargo publish --workspace`, which uploads every
+  publishable crate in dependency order, waiting on the index between them. A
+  crates.io version number can be yanked but never reused.
 - **`homebrew.yml`** builds the release binaries, attaches a WASI build, cuts
   the GitHub release, writes the formula into `diaryx-org/homebrew-tap`, and
   then sets the release body to that version's section of the changelog —
-  `cargo xtask release-notes <tag>`, which reads `docs/CHANGELOG.md` rather than
+  `release release-notes <tag>`, which reads `docs/CHANGELOG.md` rather than
   re-rendering it, so the release page and the repository say the same thing,
   intro and all. That job runs after the rest, because attaching the first
   binary is what creates the release to write notes on. If the tag carries no
@@ -36,7 +43,7 @@ two `git push` lines it did not run, and the two-line undo.
 
 ## What `release` checks first
 
-`cargo xtask release` refuses before it writes anything if the working tree is
+`release release` refuses before it writes anything if the working tree is
 dirty, the branch is not `main`, `main` is behind `origin/main`, the tag already
 exists locally or on origin, git-cliff is not installed, or **any crate is
 already on crates.io at the target version**. That last one is not paranoia:
@@ -51,18 +58,25 @@ green.
 
 | Command | What it does |
 |---|---|
-| `cargo xtask version` | print the workspace version |
-| `cargo xtask bump <patch\|minor\|major\|x.y.z>` | move `[workspace.package]`, every internal `path`+`version` dependency, and the lockfile |
-| `cargo xtask changelog` | print the generated region |
-| `cargo xtask changelog --write` | splice it into `docs/CHANGELOG.md` |
-| `cargo xtask changelog --check` | fail if that region is stale |
-| `cargo xtask publish --list` | the publish order, derived from the manifests |
-| `cargo xtask publish` | publish every crate crates.io is missing |
-| `cargo xtask release-notes [tag]` | that release's changelog section, as the GitHub release body |
+| `release version` | print the workspace version |
+| `release bump <patch\|minor\|major\|x.y.z\|as-is>` | move `[workspace.package]`, every internal `path`+`version` dependency, and the lockfile |
+| `release changelog` | print the generated region |
+| `release changelog --write` | splice it into `docs/CHANGELOG.md` |
+| `release changelog --check` | fail if that region is stale |
+| `cargo publish --workspace --dry-run` | the publish order, derived from the manifests |
+| `cargo publish --workspace` | publish every publishable crate |
+| `release release-notes [tag]` | that release's changelog section, as the GitHub release body |
 
-`publish` is idempotent per crate — it asks the registry before each upload — so
-a release that died halfway (say `prov` up, `prov-cli` failed) is finished by
-running it again, locally or by re-running the workflow.
+`cargo publish --workspace` has no way to skip a version already on the index,
+which the hand-rolled loop it replaced did. So a release that died halfway (say
+`prov` up, `prov-cli` not) is finished by naming what already went up:
+
+```console
+$ cargo publish --workspace --exclude prov
+```
+
+and a re-run of a tag that fully published fails on its first crate rather than
+doing nothing.
 
 Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, and
 moid. It was Trusted Publishing until v0.6.0, which failed at its first upload
@@ -74,8 +88,8 @@ consolidated down; the argument is unchanged, and so is the failure mode).
 One token covers all of them, but it has to actually cover all of them — issue
 it with `publish-update` and `publish-new` (a crate the workspace has never
 published needs the latter) and no crate restriction, or a release fails the
-same way at whichever crate the token cannot reach. `cargo xtask publish` says
-so when it hits that 403.
+same way at whichever crate the token cannot reach — cargo reports it as
+`403 … token is not valid for crate <name>` at the first upload it cannot make.
 
 ## The changelog
 

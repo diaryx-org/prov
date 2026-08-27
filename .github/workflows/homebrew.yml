@@ -41,11 +41,16 @@ jobs:
       TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
 
   # The release body: this version's section of docs/CHANGELOG.md, which the tag
-  # already carries — `cargo xtask release` writes the section, commits it, and
-  # tags that commit. Read rather than re-rendered, so the notes on the release
-  # page are the same bytes the repository ships, a handwritten release intro
-  # comes along with them, and the runner needs no git-cliff. No Zig either: the
-  # xtask crate has no dependencies, so `cargo xtask` builds on its own.
+  # already carries — `release release` writes the section, commits it, and tags
+  # that commit. Read rather than re-rendered, so the notes on the release page
+  # are the same bytes the repository ships, a handwritten release intro comes
+  # along with them, and the runner needs no git-cliff.
+  #
+  # The slicing rule — the section under `## <tag>`, up to the next `##`, plus
+  # the footer link — lives in diaryx-org/devtools rather than in this repo,
+  # because it was four implementations across three languages and is now one.
+  # That is what the second checkout and the nu install below are for: this is
+  # the only step in any workflow here that needs them.
   #
   # It runs after the shared workflow rather than beside it because that workflow
   # is what *creates* the release (softprops/action-gh-release, when it attaches
@@ -62,8 +67,13 @@ jobs:
       contents: write # edit the release body
     steps:
     - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@stable
-    - run: cargo xtask release-notes "$TAG" > notes.md
+    - uses: actions/checkout@v7
+      with:
+        repository: diaryx-org/devtools
+        path: .release-tool
+    - uses: hustcer/setup-nu@v3
+      with: { version: "0.113.0" }
+    - run: .release-tool/release release-notes "$TAG" > notes.md
       env:
         TAG: ${{ github.ref_name }}
     - run: gh release edit "$TAG" --notes-file notes.md
