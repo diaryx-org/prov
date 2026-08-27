@@ -28,7 +28,16 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Changed
+
+- **xtask** — cut releases with the shared tooling, not a fifth copy ([`6247633`](https://github.com/diaryx-org/prov/commit/62476330c1c363100c1ee9b29006148a801290e9))
+
+### Behavioural changes
+
+- `cargo xtask version`, `bump`, `changelog`, `publish`,
+  `release`, and `release-notes` no longer exist. Each now exits non-zero
+  naming its replacement — `release <command>`, from diaryx-org/devtools, which
+  must be on PATH. `cargo xtask ci` and the individual CI jobs are unchanged.
 
 <!-- git-cliff:end -->
 
