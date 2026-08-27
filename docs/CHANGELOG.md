@@ -31,6 +31,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 ### Changed
 
 - **xtask** — cut releases with the shared tooling, not a fifth copy ([`6247633`](https://github.com/diaryx-org/prov/commit/62476330c1c363100c1ee9b29006148a801290e9))
+- **release** — read the shared cliff config, not a local copy ([`4222fa1`](https://github.com/diaryx-org/prov/commit/4222fa1b3f3c474c317113bf1cffd12a7ed936e8))
 
 ### Behavioural changes
 
@@ -38,6 +39,10 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
   `release`, and `release-notes` no longer exist. Each now exits non-zero
   naming its replacement — `release <command>`, from diaryx-org/devtools, which
   must be on PATH. `cargo xtask ci` and the individual CI jobs are unchanged.
+
+- releasing this repository needs diaryx-org/devtools on PATH
+  for its git-cliff config as well as for `release` itself. Nothing in the tree
+  configures git-cliff any more.
 
 <!-- git-cliff:end -->
 
