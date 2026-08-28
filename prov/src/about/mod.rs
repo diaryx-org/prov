@@ -722,6 +722,14 @@ fn fields_section(config: &WorkspaceConfig) -> Option<String> {
              an error rather than a new category.",
         ));
     }
+    if controlled.iter().any(|(_, s)| s.reify) {
+        s.push('\n');
+        s.push_str(&para(
+            "Where the list is itself a document in this directory, each \
+             permitted value is a page of its own: follow the list's entries to \
+             read what a value means and to see what refers to it.",
+        ));
+    }
     Some(s)
 }
 
@@ -763,6 +771,12 @@ fn machinery_section(
         ));
     }
     for (name, spec) in &config.fields {
+        // A reified vocabulary is not machinery: its list is an index node in
+        // the tree and its terms are documents, so the spine does reach it —
+        // this section's opening sentence would be false of it.
+        if spec.reify {
+            continue;
+        }
         if let Some(vocab) = &spec.vocabulary {
             pointers.push((
                 format!("fields.{name}.vocabulary"),
@@ -1823,6 +1837,50 @@ mod tests {
                 "{pointer} is machinery, not a relation a reader should follow"
             );
         }
+    }
+
+    #[test]
+    fn a_reified_vocabulary_is_content_not_machinery() {
+        // A flat vocabulary is a pointer target the spine never reaches; a
+        // reified one is an index node *in* the tree, so filing it under "files
+        // that are not part of the tree" would tell the reader the opposite of
+        // what reifying arranged.
+        let (mut config, ctx) = default_workspace();
+        config.fields = BTreeMap::from([
+            (
+                "tags".into(),
+                FieldSpec {
+                    ty: None,
+                    values: OpenClosed::Open,
+                    vocabulary: Some("[Tags](/vocab/tags.yaml)".into()),
+                    reify: false,
+                },
+            ),
+            (
+                "audience".into(),
+                FieldSpec {
+                    ty: None,
+                    values: OpenClosed::Closed,
+                    vocabulary: Some("[Audiences](/vocab/audiences.md)".into()),
+                    reify: true,
+                },
+            ),
+        ]);
+        let page = render(&config, &ctx);
+
+        let start = page
+            .find("## Files that are not part of the tree")
+            .expect("a machinery section");
+        let machinery = &page[start..];
+        assert!(machinery.contains("fields.tags.vocabulary"), "{machinery}");
+        assert!(
+            !machinery.contains("fields.audience.vocabulary"),
+            "a reified vocabulary is in the tree: {machinery}"
+        );
+        // Both are still controlled fields; the reified one earns the
+        // read-the-pages sentence.
+        assert!(page.contains("## Fields with fixed vocabularies"));
+        assert!(flat(&page).contains("each permitted value is a page of its own"));
     }
 
     #[test]
