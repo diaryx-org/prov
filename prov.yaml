@@ -9,24 +9,6 @@ recycle_bin: true
 metadata:
   format: yaml
   embed: delimited
-spanning: contents
-relations:
-  contents:
-    means: documents contained by this one
-    cardinality: many
-    inverse: part_of
-  part_of:
-    means: the document that contains this one
-    cardinality: one
-    inverse: contents
-  links:
-    means: arbitrary cross-references to other documents
-    cardinality: many
-    inverse: link_of
-  link_of:
-    means: documents that cross-reference this one
-    cardinality: many
-    inverse: links
 references:
   notation: markdown
   path_style: root

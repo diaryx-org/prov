@@ -39,8 +39,11 @@ prov workspace:
    number than you know means you may still traverse structure (rules 4–5 are
    stable) but should treat unknown policy keys as opaque.
 4. **Read `relations` + `spanning`** — resolved across both homes as in rule 3.
-   These declare the graph vocabulary (§2). Absent ⇒ the default vocabulary:
-   `contents`/`part_of` containment, spanning `contents`.
+   These declare the graph vocabulary (§2). The default vocabulary —
+   `contents`/`part_of` containment, spanning `contents` — is always the base,
+   and each declared entry overlays it: a new name is added, a name the default
+   has is redefined, and an entry that is the scalar `off` says the name is not a
+   relation here. Absent ⇒ the default vocabulary unchanged.
 5. **Unfold.** From the root, follow the field named by `spanning` to reach
    every node; each node's own block repeats the process. Non-spanning relations
    are the overlay graph.
@@ -62,22 +65,40 @@ prov:
   spec: 1
   spanning: contents          # the single-parent discovery spine (§3)
   relations:
+    see_also:
+      cardinality: many                          # many | one
+      inverse: see_also        # a symmetric overlay relation
     contents:
       means: "documents contained by this one"   # human gloss — carried, never read
-      cardinality: many                          # many | one
-      inverse: part_of                           # the reciprocal field
-    part_of:
-      means: "the document that contains this one"
-      cardinality: one
-      inverse: contents
-    see_also:
       cardinality: many
-      inverse: see_also        # a symmetric overlay relation
+      inverse: part_of                           # the reciprocal field
+    link_of: off               # not a relation here — an ordinary carried field
 ```
 
+**Declarations overlay the default vocabulary; they do not replace it.** The
+default is always the base, so `see_also` above *adds* a relation and leaves
+`contents`/`part_of`/`links`/`link_of` where they were, `contents` *redefines*
+one — per field, so what the entry leaves unsaid the default's own definition
+answers, and glossing `contents` with a `means:` alone does not strip its
+inverse or reset its cardinality — and `link_of: off` retracts a name, after
+which a document key called `link_of` is an ordinary user field, carried and
+never followed. (A name the default lacks has nothing to inherit from, so its
+unsaid fields take the bare defaults: `many`, no inverse.)
+Wholesale replacement is still expressible: declare your own vocabulary and turn
+off the default relations you do not use. The point of the base is that
+extending the vocabulary by one pair costs one pair, rather than a restatement of
+everything you were already happy with.
+
+The five **pointer** names (`config`, `registry`, `recycle_bin`, `history`,
+`about`) are read from the root regardless. Turning one off takes it out of the
+vocabulary a reader walks, but the root's key by that name is still how the
+workspace's own machinery is found (§6) — that pointer is not the vocabulary's
+to revoke.
+
 The same vocabulary in a config document drops the wrapper — `spec: 1`,
-`spanning: contents`, `relations:` at top level — which is how this repository's
-own `prov.yaml` spells it. Neither form is preferred; `prov config --home
+`spanning:`, `relations:` at top level, which is where this repository's own
+`prov.yaml` would put them if it had any to declare. Neither form is preferred;
+`prov config --home
 <root|sidecar>` moves policy between them without changing what it means. See
 [Config vocabulary](/docs/config-vocab.md) for the full key list and the
 precedence chain.
@@ -96,9 +117,11 @@ multi-parent membership belongs on a *non-spanning* overlay relation, which may
 be many-to-many.
 
 **Graceful degradation.** A workspace that declares no `relations` uses the
-built-in diaryx vocabulary unchanged (`RelationSet::from_config`), so a minimal
-hand-authored vault spells out nothing. The declaration is what a workspace adds
-to be legible to a foreign reader.
+built-in diaryx vocabulary unchanged (`WorkspaceConfig::relation_set`), so a
+minimal hand-authored vault spells out nothing — and, because that vocabulary is
+prov's own, a reader is told what its four relations mean rather than being
+handed four blanks. The declaration is what a workspace adds to be legible to a
+foreign reader when it is *not* the default one.
 
 ## 3. Controlled vocabularies (`fields`)
 

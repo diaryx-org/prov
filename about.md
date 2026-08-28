@@ -1,6 +1,6 @@
 ---
 title: How this workspace is organized
-generated_by: prov 0.3.2
+generated_by: prov 0.10.0
 ---
 
 # How this workspace is organized
@@ -80,8 +80,8 @@ one place along it.
 | --- | --- | --- | --- |
 | `contents` | documents contained by this one | many | `part_of` |
 | `part_of` | the document that contains this one | one | `contents` |
-| `link_of` | documents that cross-reference this one | many | `links` |
 | `links` | arbitrary cross-references to other documents | many | `link_of` |
+| `link_of` | documents that cross-reference this one | many | `links` |
 
 Both halves of a pair are kept in step: if A lists B under one, B names A
 under its opposite. If you edit one half by hand and not the other,
@@ -89,7 +89,7 @@ nothing is lost — the pair is simply inconsistent until someone repairs
 it.
 
 `part_of` holds exactly one target, which is what makes the spine a tree
-with a single top. `link_of` and `links` are laid over that tree and may
+with a single top. `links` and `link_of` are laid over that tree and may
 point anywhere; follow them for meaning, never to discover what is here.
 
 ## Files that are not part of the tree
@@ -135,7 +135,7 @@ already depend on them:
 - **`content_hash`** — a checksum. Changing it by hand asserts something
   about the bytes that may not be true.
 
-The relation fields — `contents`, `part_of`, `link_of` and `links` — are
+The relation fields — `contents`, `part_of`, `links` and `link_of` — are
 meant to be edited by hand. That is the whole point of keeping them in the
 files.
 

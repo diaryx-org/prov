@@ -82,11 +82,16 @@ pub struct RelationStyleConfig {
 /// from the document itself rather than assuming prov's `contents`/`part_of`
 /// preset. Each field is optional; a `relations` entry may carry only style, only
 /// definition, or both.
+///
+/// A definition **overlays** the built-in vocabulary rather than replacing it
+/// ([`WorkspaceConfig::relation_set`]): a name the preset does not have is added,
+/// a name it has is redefined per field — unsaid halves inherited from the
+/// preset's own definition — and [`off`](Self::off) retracts one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RelationDef {
-    /// How many targets the field may hold (`one` / `many`). `None` leaves the
-    /// relation's cardinality to whatever the built [`RelationSet`] defaults it to
-    /// (`many`, the permissive choice) when this def creates the relation.
+    /// How many targets the field may hold (`one` / `many`). `None` inherits the
+    /// preset relation's cardinality when this def overlays one, and otherwise
+    /// falls to `many`, the permissive choice.
     pub cardinality: Option<Cardinality>,
     /// The reciprocal relation's field name, bidirectionally maintained.
     pub inverse: Option<String>,
@@ -94,6 +99,18 @@ pub struct RelationDef {
     /// reads this back (DESIGN §2, tier 3) — it is documentation that travels with
     /// the data so a person reading the frontmatter learns the vocabulary too.
     pub means: Option<String>,
+    /// The entry states that this name is **not** a relation in this workspace
+    /// (`relations: { link_of: off }`) — spelled as the scalar `off`, the house
+    /// word for machinery that is not in use. The name loses whatever the
+    /// built-in vocabulary gave it, so a document key by that name is an
+    /// ordinary user field prov carries and never follows (DESIGN §2, tier 3).
+    ///
+    /// The other fields are meaningless beside it: an entry that retracts a name
+    /// has no cardinality, no inverse and nothing to gloss. Retracting one of the
+    /// five **pointer** names (`registry`/`config`/`recycle_bin`/`history`/`about`)
+    /// takes it out of the vocabulary but not out of the machinery — prov still
+    /// reads the root's key by that name to find the thing it points at.
+    pub off: bool,
 }
 
 /// Whether a controlled `fields` vocabulary is *open* (folksonomy — unknown
@@ -579,42 +596,63 @@ impl WorkspaceConfig {
     }
 
     /// Build this workspace's relation vocabulary — the self-describing path
-    /// (DESIGN §1, the `prov/1` spec). When [`relation_defs`](Self::relation_defs)
-    /// is **empty**, this is the diaryx preset
-    /// ([`RelationSet::diaryx`](prov_graph::relation::RelationSet::diaryx)) unchanged —
-    /// graceful degradation, so a minimal vault that spells out nothing keeps
-    /// working. When it declares definitions, the vocabulary is built from them,
-    /// and the structural pointer relations (`registry`/`config`/`recycle_bin`)
-    /// are preserved so those pointers stay reachable regardless. An explicit
-    /// `spanning` always wins; per-relation reference styles are overlaid last.
+    /// (DESIGN §1, the `prov/1` spec). The diaryx preset
+    /// ([`RelationSet::diaryx`](prov_graph::relation::RelationSet::diaryx)) is always
+    /// the **base**, and [`relation_defs`](Self::relation_defs) is an **overlay**
+    /// on it: a declared name the preset lacks is added, a name it has is
+    /// redefined, and an [`off`](RelationDef::off) entry retracts one.
+    /// Declaring nothing therefore leaves the preset unchanged (graceful
+    /// degradation, so a minimal vault spells out nothing), and adding one pair
+    /// costs one pair rather than a restatement of the other four. Wholesale
+    /// replacement is still expressible — declare your vocabulary and turn off
+    /// the preset relations you do not use.
+    ///
+    /// The overlay is **per field**, matching how [`apply`](Self::apply) already
+    /// layers a def across the two config surfaces: what a redefinition leaves
+    /// unsaid, the preset's own definition answers, so glossing `contents` with
+    /// a `means:` alone does not silently strip its inverse or reset its
+    /// cardinality. Only a name the preset lacks falls back to the bare defaults
+    /// (`many`, no inverse) — there is nothing else to inherit from. A preset
+    /// relation with *no* inverse is therefore not writable under its preset
+    /// name; a vocabulary that wants one names it itself and turns the preset
+    /// relation off.
+    ///
+    /// The five structural **pointer marks** are unconditional, because they are
+    /// how a reader finds the workspace's own machinery (§6) rather than
+    /// vocabulary the workspace gets a say in: `off` on one of those names takes
+    /// it out of the relation list, but prov still reads the root's key by that
+    /// name to reach the registry, config, bin, history or about page.
+    ///
+    /// An explicit `spanning` always wins; per-relation reference styles are
+    /// overlaid last.
     pub fn relation_set(&self) -> RelationSet {
-        let mut set = if self.relation_defs.is_empty() {
-            RelationSet::diaryx()
-        } else {
-            let mut s = RelationSet::new();
-            for (name, def) in &self.relation_defs {
-                let mut rel = match def.cardinality.unwrap_or(Cardinality::Many) {
-                    Cardinality::One => Relation::one(name),
-                    Cardinality::Many => Relation::many(name),
-                };
-                if let Some(inverse) = &def.inverse {
-                    rel = rel.inverse(inverse);
-                }
-                s = s.with(rel);
+        let preset = RelationSet::diaryx();
+        let mut set = preset.clone();
+        for (name, def) in &self.relation_defs {
+            // Remove first either way: `off` is the removal, and a redefinition
+            // is a replacement rather than a second relation of the same name.
+            set = set.without(name);
+            if def.off {
+                continue;
             }
-            // Keep the structural pointer relations reachable even under a fully
-            // custom vocabulary — but never shadow one the user already declared.
-            for pointer in ["registry", "config", "recycle_bin", "history", "about"] {
-                if !s.relations().iter().any(|r| r.name == pointer) {
-                    s = s.with(Relation::one(pointer));
-                }
+            let base = preset.relations().iter().find(|r| r.name == *name);
+            let cardinality = def
+                .cardinality
+                .or(base.map(|r| r.cardinality))
+                .unwrap_or(Cardinality::Many);
+            let mut rel = match cardinality {
+                Cardinality::One => Relation::one(name),
+                Cardinality::Many => Relation::many(name),
+            };
+            if let Some(inverse) = def
+                .inverse
+                .as_deref()
+                .or(base.and_then(|r| r.inverse.as_deref()))
+            {
+                rel = rel.inverse(inverse);
             }
-            s.registry("registry")
-                .config("config")
-                .recycle("recycle_bin")
-                .history("history")
-                .about("about")
-        };
+            set = set.with(rel);
+        }
         if let Some(spanning) = &self.spanning {
             set = set.spanning(spanning);
         }
@@ -718,6 +756,22 @@ impl WorkspaceConfig {
         // structural *definitions* (`cardinality`/`inverse`/`means`).
         if let Some(relations) = meta.get("relations").and_then(Value::as_mapping) {
             for (name, spec) in relations {
+                // `<name>: off` retracts the name from the vocabulary — the one
+                // entry shape that is a scalar rather than a settings mapping.
+                // Matched strictly (trimmed, exact), like every other off-axis:
+                // a near-miss is `diagnose`'s to report, not this to guess at.
+                if spec.as_mapping().is_none() {
+                    if spec.as_str().is_some_and(|s| s.trim() == "off") {
+                        self.relation_defs.insert(
+                            name.clone(),
+                            RelationDef {
+                                off: true,
+                                ..RelationDef::default()
+                            },
+                        );
+                    }
+                    continue;
+                }
                 let entry = self.relation_styles.entry(name.clone()).or_default();
                 if let Some(v) = spec
                     .get("notation")
@@ -759,6 +813,10 @@ impl WorkspaceConfig {
                     .map(str::to_string);
                 if cardinality.is_some() || inverse.is_some() || means.is_some() {
                     let def = self.relation_defs.entry(name.clone()).or_default();
+                    // A surface that defines the relation un-retracts it: the
+                    // later surface wins per key, and "here is its cardinality"
+                    // cannot coexist with "this is not a relation".
+                    def.off = false;
                     if cardinality.is_some() {
                         def.cardinality = cardinality;
                     }
@@ -962,6 +1020,13 @@ impl WorkspaceConfig {
             names.dedup();
             let mut relations = Mapping::new();
             for name in names {
+                // A retraction is a scalar, not a settings mapping: there is no
+                // setting to write beside it, and `off` is what `apply` reads
+                // back.
+                if self.relation_defs.get(name).is_some_and(|d| d.off) {
+                    relations.insert(name.clone(), Value::String("off".into()));
+                    continue;
+                }
                 let mut spec = Mapping::new();
                 if let Some(over) = self.relation_styles.get(name) {
                     if let Some(n) = over.notation {
@@ -1335,6 +1400,27 @@ fn diagnose_spanning_invariant(issues: &mut Vec<ConfigIssue>, map: &Mapping) {
     let Some(relations) = map.get("relations").and_then(Value::as_mapping) else {
         return;
     };
+    // The spine names a relation this surface retracts — a workspace with no
+    // spine at all, and the failure mode `off` introduces: turning `contents`
+    // off without renaming the spanning relation to whatever replaced it. Only
+    // this surface is consulted, exactly as the invariant below is; a *declared*
+    // contradiction is what is being reported.
+    if relations
+        .get(spanning)
+        .and_then(Value::as_str)
+        .is_some_and(|s| s.trim() == "off")
+    {
+        issues.push(ConfigIssue {
+            key: "spanning".into(),
+            kind: ConfigIssueKind::InvalidValue {
+                value: spanning.to_string(),
+                expected: vec![
+                    "a relation this workspace has — `relations` turns this one off".into(),
+                ],
+            },
+        });
+        return;
+    }
     let Some(inverse) = relations
         .get(spanning)
         .and_then(Value::as_mapping)
@@ -1451,10 +1537,24 @@ fn diagnose_relations(issues: &mut Vec<ConfigIssue>, value: &Value) {
 /// ([`RELATION_DEF_KEYS`]). `means` is free-form and accepted without check;
 /// `cardinality` is enum-checked; `inverse` must be a string. An unknown key is
 /// reported only when it near-misses a valid key at this level.
+///
+/// An entry has one other legal shape: the scalar `off`, retracting the name
+/// from the vocabulary. Any *other* scalar is reported here rather than by
+/// [`block_shape_issue`], because the accepted shapes are no longer just
+/// "a mapping" and a reader told only that would not find `off`.
 fn diagnose_relation_entry(issues: &mut Vec<ConfigIssue>, name: &str, value: &Value) {
     let prefix = format!("relations.{name}");
     let Some(map) = value.as_mapping() else {
-        return block_shape_issue(issues, &prefix, value);
+        if value.as_str().is_some_and(|s| s.trim() == "off") {
+            return;
+        }
+        return issues.push(ConfigIssue {
+            key: prefix,
+            kind: ConfigIssueKind::InvalidValue {
+                value: value_summary(value),
+                expected: vec!["a mapping of relation settings".into(), "off".into()],
+            },
+        });
     };
     for (key, v) in map {
         let dotted = format!("{prefix}.{key}");
@@ -1967,60 +2067,183 @@ mod tests {
         Value::Mapping(map)
     }
 
+    /// A structural definition, the shape a `relations.<name>` mapping entry
+    /// parses to.
+    fn rel(cardinality: Cardinality, inverse: &str) -> RelationDef {
+        RelationDef {
+            cardinality: Some(cardinality),
+            inverse: Some(inverse.to_string()),
+            ..RelationDef::default()
+        }
+    }
+
+    /// The relation named, if the built vocabulary has it.
+    fn built<'a>(set: &'a RelationSet, name: &str) -> Option<&'a prov_graph::relation::Relation> {
+        set.relations().iter().find(|r| r.name == name)
+    }
+
     // Uses YAML frontmatter fixtures, so it runs under the `yaml` feature.
     #[test]
     #[cfg(feature = "yaml")]
-    fn relation_set_builds_a_custom_vocabulary_and_falls_back_to_diaryx() {
+    fn a_vocabulary_declaring_only_a_new_pair_keeps_the_preset_it_did_not_mention() {
         use prov_graph::document::Document;
-
-        fn doc(text: &str) -> Document {
-            Document::parse("index.md", text).unwrap()
-        }
 
         // No relation defs → the diaryx preset unchanged (graceful degradation).
         let default_set = WorkspaceConfig::default().relation_set();
         assert_eq!(default_set.spanning_relation(), Some("contents"));
         assert_eq!(default_set.registry_relation(), Some("registry"));
 
-        // Declared defs → a self-described `part`/`whole` vocabulary, still with
-        // the structural pointer relations preserved.
+        // The scenario extension is *for*: one new pair, nothing else said. The
+        // four content relations and the spine must survive it — under the old
+        // replace semantics this collapsed the vocabulary to `front_page`/
+        // `fronts` and left the workspace with no tree.
         let config = WorkspaceConfig {
-            spanning: Some("part".into()),
             relation_defs: BTreeMap::from([
-                (
-                    "part".to_string(),
-                    RelationDef {
-                        cardinality: Some(Cardinality::Many),
-                        inverse: Some("whole".to_string()),
-                        means: None,
-                    },
-                ),
-                (
-                    "whole".to_string(),
-                    RelationDef {
-                        cardinality: Some(Cardinality::One),
-                        inverse: Some("part".to_string()),
-                        means: None,
-                    },
-                ),
+                ("front_page".to_string(), rel(Cardinality::One, "fronts")),
+                ("fronts".to_string(), rel(Cardinality::Many, "front_page")),
             ]),
             ..WorkspaceConfig::default()
         };
         let set = config.relation_set();
-        assert_eq!(set.spanning_relation(), Some("part"));
-        let d = doc("---\npart:\n- one.md\n- two.md\n---\nbody\n");
+        for preset in ["contents", "part_of", "links", "link_of"] {
+            assert!(built(&set, preset).is_some(), "{preset} was dropped");
+        }
+        assert!(built(&set, "front_page").is_some());
+        assert_eq!(set.spanning_relation(), Some("contents"));
+
+        let d = Document::parse(
+            "index.md",
+            "---\ncontents:\n- one.md\n- two.md\n---\nbody\n",
+        )
+        .expect("document");
         assert_eq!(
             set.children(&fig::Value::from(&d.meta)),
             vec!["one.md".to_string(), "two.md".to_string()]
         );
-        // Pointer relations survive a custom vocabulary so registry/config/bin
-        // stay reachable.
+    }
+
+    #[test]
+    fn a_redefined_relation_replaces_the_preset_one_rather_than_joining_it() {
+        // `links` is in the preset as many/`link_of`; redeclaring it one/`cites`
+        // must leave exactly one `links`, not two relations racing to read the
+        // same key.
+        let config = WorkspaceConfig {
+            relation_defs: BTreeMap::from([("links".to_string(), rel(Cardinality::One, "cites"))]),
+            ..WorkspaceConfig::default()
+        };
+        let set = config.relation_set();
+        assert_eq!(
+            set.relations().iter().filter(|r| r.name == "links").count(),
+            1
+        );
+        let links = built(&set, "links").expect("links");
+        assert_eq!(links.cardinality, Cardinality::One);
+        assert_eq!(links.inverse.as_deref(), Some("cites"));
+    }
+
+    #[test]
+    fn glossing_a_preset_relation_keeps_its_shape() {
+        // The overlay is per field: an author writing a `means:` for `contents`
+        // is documenting the vocabulary, not redefining it, and must not
+        // silently strip the spine's inverse or reset its cardinality.
+        let config = WorkspaceConfig {
+            relation_defs: BTreeMap::from([(
+                "contents".to_string(),
+                RelationDef {
+                    means: Some("chapters of this book".into()),
+                    ..RelationDef::default()
+                },
+            )]),
+            ..WorkspaceConfig::default()
+        };
+        let set = config.relation_set();
+        let contents = built(&set, "contents").expect("contents");
+        assert_eq!(contents.cardinality, Cardinality::Many);
+        assert_eq!(contents.inverse.as_deref(), Some("part_of"));
+        assert_eq!(set.spanning_relation(), Some("contents"));
+    }
+
+    #[test]
+    fn an_off_entry_takes_the_name_out_of_the_vocabulary() {
+        // Nothing else moves: `off` is a retraction of one name, so the rest of
+        // the preset — the spine included — is exactly where it was.
+        let config = WorkspaceConfig {
+            relation_defs: BTreeMap::from([(
+                "link_of".to_string(),
+                RelationDef {
+                    off: true,
+                    ..RelationDef::default()
+                },
+            )]),
+            ..WorkspaceConfig::default()
+        };
+        let set = config.relation_set();
+        assert!(built(&set, "link_of").is_none());
+        assert!(built(&set, "links").is_some());
+        assert_eq!(set.spanning_relation(), Some("contents"));
+    }
+
+    #[test]
+    fn a_pointer_turned_off_stops_being_a_relation_but_still_points() {
+        // The five pointers are how a reader finds the workspace's machinery
+        // (§6), not vocabulary the workspace gets to revoke: `off` takes
+        // `registry` out of the relation list, and prov still reads the root's
+        // `registry:` key to find the registry.
+        let config = WorkspaceConfig {
+            relation_defs: BTreeMap::from([(
+                "registry".to_string(),
+                RelationDef {
+                    off: true,
+                    ..RelationDef::default()
+                },
+            )]),
+            ..WorkspaceConfig::default()
+        };
+        let set = config.relation_set();
+        assert!(built(&set, "registry").is_none());
         assert_eq!(set.registry_relation(), Some("registry"));
-        assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
-        assert_eq!(set.history_relation(), Some("history"));
-        assert!(set.relations().iter().any(|r| r.name == "history"));
+        assert_eq!(set.config_relation(), Some("config"));
         assert_eq!(set.about_relation(), Some("about"));
-        assert!(set.relations().iter().any(|r| r.name == "about"));
+    }
+
+    #[test]
+    fn wholesale_replacement_is_declaring_a_vocabulary_and_turning_the_preset_off() {
+        // The old all-or-nothing shape, still expressible — but now spelled out,
+        // so nobody arrives at it by declaring one relation and losing four.
+        let mut defs = BTreeMap::from([
+            ("part".to_string(), rel(Cardinality::Many, "whole")),
+            ("whole".to_string(), rel(Cardinality::One, "part")),
+        ]);
+        for preset in ["contents", "part_of", "links", "link_of"] {
+            defs.insert(
+                preset.to_string(),
+                RelationDef {
+                    off: true,
+                    ..RelationDef::default()
+                },
+            );
+        }
+        let config = WorkspaceConfig {
+            spanning: Some("part".into()),
+            relation_defs: defs,
+            ..WorkspaceConfig::default()
+        };
+        let set = config.relation_set();
+        assert_eq!(set.spanning_relation(), Some("part"));
+        let names: Vec<&str> = set.relations().iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "registry",
+                "config",
+                "recycle_bin",
+                "history",
+                "about",
+                "part",
+                "whole"
+            ],
+            "only the pointers and the declared pair remain"
+        );
     }
 
     #[test]
@@ -2078,6 +2301,7 @@ mod tests {
                         cardinality: Some(Cardinality::Many),
                         inverse: Some("part_of".to_string()),
                         means: Some("documents contained by this one".to_string()),
+                        off: false,
                     },
                 ),
                 (
@@ -2086,6 +2310,17 @@ mod tests {
                         cardinality: Some(Cardinality::One),
                         inverse: Some("contents".to_string()),
                         means: None,
+                        off: false,
+                    },
+                ),
+                // A retraction: written as the scalar `off` rather than a
+                // settings mapping, so it is the one entry shape whose round
+                // trip goes through a different branch at both ends.
+                (
+                    "link_of".to_string(),
+                    RelationDef {
+                        off: true,
+                        ..RelationDef::default()
                     },
                 ),
             ]),
@@ -2524,6 +2759,74 @@ mod tests {
         assert_eq!(part_def.means.as_deref(), Some("the pieces"));
         // A clean self-described vocabulary passes its own diagnosis.
         assert!(diagnose(&Value::Mapping(cfg.to_mapping())).is_empty());
+    }
+
+    #[test]
+    fn an_off_relation_entry_parses_and_passes_its_own_diagnosis() {
+        let mut rels = Mapping::new();
+        rels.insert("link_of".into(), Value::String("off".into()));
+        // Trimmed, not fuzzy: leading space is a formatting accident, `Off` is
+        // a different word.
+        rels.insert("links".into(), Value::String("  off ".into()));
+        let mut top = Mapping::new();
+        top.insert("relations".into(), Value::Mapping(rels));
+
+        let cfg = WorkspaceConfig::from_meta(&Value::Mapping(top.clone()));
+        for name in ["link_of", "links"] {
+            let def = cfg.relation_defs.get(name).expect(name);
+            assert!(def.off, "{name}");
+            assert_eq!(def.cardinality, None);
+            assert_eq!(def.inverse, None);
+        }
+        let set = cfg.relation_set();
+        assert!(!set.relations().iter().any(|r| r.name == "links"));
+        assert!(diagnose(&Value::Mapping(top)).is_empty());
+        // …and no style entry was synthesized for a scalar, so `to_mapping`
+        // writes the retraction and nothing beside it.
+        assert!(cfg.relation_styles.is_empty());
+    }
+
+    #[test]
+    fn a_relations_entry_that_is_neither_a_mapping_nor_off_is_a_finding() {
+        let mut rels = Mapping::new();
+        rels.insert("links".into(), Value::Bool(false));
+        let mut top = Mapping::new();
+        top.insert("relations".into(), Value::Mapping(rels));
+
+        let issues = diagnose(&Value::Mapping(top));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "relations.links");
+        match &issues[0].kind {
+            ConfigIssueKind::InvalidValue { value, expected } => {
+                assert_eq!(value, "false");
+                // Both accepted shapes are named — a reader told only "a
+                // mapping" would never find `off`.
+                assert!(expected.iter().any(|e| e == "off"), "{expected:?}");
+                assert!(
+                    expected.iter().any(|e| e.contains("mapping")),
+                    "{expected:?}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diagnose_flags_a_spine_the_relations_block_turns_off() {
+        // Turning `contents` off without renaming the spine leaves a workspace
+        // whose declared spanning relation is not a relation at all.
+        let mut rels = Mapping::new();
+        rels.insert("contents".into(), Value::String("off".into()));
+        let mut top = Mapping::new();
+        top.insert("spanning".into(), Value::String("contents".into()));
+        top.insert("relations".into(), Value::Mapping(rels));
+
+        let issues = diagnose(&Value::Mapping(top));
+        assert!(
+            issues.iter().any(|i| i.key == "spanning"
+                && matches!(&i.kind, ConfigIssueKind::InvalidValue { value, .. } if value == "contents")),
+            "{issues:?}"
+        );
     }
 
     #[test]

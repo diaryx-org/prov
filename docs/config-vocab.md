@@ -98,13 +98,14 @@ prov:
     label: false              # bool — id/alias references carry a |Title label
   spanning: contents          # the single-parent discovery spine (DESIGN §3)
   relations:                  # per-relation *definitions* and reference-axis overrides
-    contents:
+    contents:                 # …overlaying the built-in vocabulary — see below
       means: "documents contained by this one"   # human gloss — carried, never read
       cardinality: many       # one | many
       inverse: part_of        # the reciprocal field
       notation: wikilink      # …plus any reference-axis override, same block
       target: alias
     part_of: { cardinality: one, inverse: contents, target: id }
+    link_of: off              # not a relation here — an ordinary carried field
   fields:                     # field declarations — types and controlled vocabularies
     audience:
       type: str               # what the value *is* — see "Field types" below
@@ -150,14 +151,37 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
 `fixity: attachments`, `recycle_bin: true`, `about: structure`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
-diaryx vocabulary (`RelationSet::from_config` falls back), so a minimal vault
-declares none; absent `fields` ⇒ no field is described (every such field is
-ordinary carried content); absent `views` ⇒ the workspace declares no lenses.
-The `spanning`, relation-definition
-Absent `exports` ⇒ nothing is declared exportable — the default state of a
-workspace and of every document in it. The `spanning`, relation-definition
-(`cardinality`/`inverse`/`means`), `fields`, `views` and `exports` axes are the
-*self-description* layer — see [Spec](/docs/spec.md).
+diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
+is described (every such field is ordinary carried content); absent `views` ⇒ the
+workspace declares no lenses. Absent `exports` ⇒ nothing is declared exportable —
+the default state of a workspace and of every document in it. The `spanning`,
+relation-definition (`cardinality`/`inverse`/`means`), `fields`, `views` and
+`exports` axes are the *self-description* layer — see [Spec](/docs/spec.md).
+
+### Relation definitions overlay the built-in vocabulary
+
+The diaryx vocabulary (`contents`/`part_of`, `links`/`link_of`, spanning
+`contents`) is always the **base**, and each `relations` entry overlays it
+(`WorkspaceConfig::relation_set`):
+
+| entry | means |
+| ----- | ----- |
+| a name the base does not have | a new relation, added |
+| a name the base has | that relation, redefined **per field** — what the entry leaves unsaid, the base's own definition answers, so a `means:`-only gloss keeps the inverse and cardinality |
+| `<name>: off` | the name is *not* a relation here; a document key by that name is an ordinary user field prov carries and never follows |
+
+So extending the vocabulary by one pair costs one pair. Wholesale replacement is
+still expressible — declare your relations and turn off the base ones you do not
+use — but it has to be written down, which is the point: a block that declares
+only `front_page`/`fronts` used to silently take `contents` with it, spine and
+all. An entry is therefore either a **mapping of settings** or the scalar `off`;
+anything else is a `check` finding naming both shapes. `check` also flags a
+`spanning` relation the same surface turns off.
+
+Retracting one of the five **pointer** names
+(`config`/`registry`/`recycle_bin`/`history`/`about`) takes it out of the
+vocabulary but not out of the machinery: prov still reads the root's key by that
+name to find what it points at (see "Pointers stay top-level" above).
 
 ### Views
 
@@ -499,10 +523,13 @@ silently ignore:
   user field), except inside the closed sub-blocks (`metadata`, `references`, a
   `relations` entry, a `fields` entry), where every key is expected to be a known
   axis. A `relations` entry additionally accepts the definition keys
-  `cardinality`/`inverse`/`means`.
+  `cardinality`/`inverse`/`means`, and may be the scalar `off` instead of a
+  mapping altogether; any *other* scalar is an invalid value naming both shapes.
 - **Spanning invariant** — a `spanning` relation whose declared `inverse` is
   itself declared `cardinality: many` cannot form a single-parent tree (DESIGN
-  §3), reported as `SpanningNotSingleParent`.
+  §3), reported as `SpanningNotSingleParent`. A `spanning` relation the same
+  surface turns `off` is reported too: the workspace named a spine it does not
+  have.
 - `spec`, and the config document's own `title`/`part_of`, are whitelisted.
 
 Beyond the two config surfaces, `check` also validates the workspace's **stores**

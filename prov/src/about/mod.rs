@@ -604,13 +604,20 @@ fn relations_section(
             vec![
                 code(&r.name),
                 // The human gloss is tier-3 config prov merely carries, so it
-                // lives in `relation_defs` rather than on the built relation. A
-                // workspace that declares no vocabulary has no glosses to print.
-                config
-                    .relation_defs
-                    .get(&r.name)
-                    .and_then(|d| d.means.clone())
-                    .unwrap_or_else(|| "—".to_string()),
+                // lives in `relation_defs` rather than on the built relation.
+                //
+                // The fallback is keyed on there being no entry at all, not on
+                // an entry with no `means`: no entry means the relation is the
+                // preset's own, so the preset's gloss is true by construction —
+                // whereas an author who declared the relation and left `means`
+                // out chose to say nothing, and a redefined relation means
+                // whatever they said it means. Neither is prov's to fill in.
+                match config.relation_defs.get(&r.name) {
+                    Some(def) => def.means.clone().unwrap_or_else(|| "—".to_string()),
+                    None => RelationSet::diaryx_means(&r.name)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| "—".to_string()),
+                },
                 match r.cardinality {
                     Cardinality::One => "one".to_string(),
                     Cardinality::Many => "many".to_string(),
@@ -1572,53 +1579,30 @@ mod tests {
             cardinality: Some(card),
             inverse: Some(inverse.into()),
             means: Some(means.into()),
+            off: false,
         }
     }
 
-    /// This repository's own vocabulary, as `prov.yaml` declares it.
-    fn diaryx_defs() -> BTreeMap<String, RelationDef> {
-        BTreeMap::from([
-            (
-                "contents".into(),
-                def(
-                    Cardinality::Many,
-                    "part_of",
-                    "documents contained by this one",
-                ),
-            ),
-            (
-                "part_of".into(),
-                def(
-                    Cardinality::One,
-                    "contents",
-                    "the document that contains this one",
-                ),
-            ),
-            (
-                "links".into(),
-                def(
-                    Cardinality::Many,
-                    "link_of",
-                    "arbitrary cross-references to other documents",
-                ),
-            ),
-            (
-                "link_of".into(),
-                def(
-                    Cardinality::Many,
-                    "links",
-                    "documents that cross-reference this one",
-                ),
-            ),
-        ])
+    /// `<name>: off` for each of the four preset content relations — what a
+    /// workspace with a vocabulary of its own writes beside its declarations,
+    /// since the preset is the base rather than a fallback (`relation_set`).
+    fn without_the_preset(defs: &mut BTreeMap<String, RelationDef>) {
+        for preset in ["contents", "part_of", "links", "link_of"] {
+            defs.insert(
+                preset.into(),
+                RelationDef {
+                    off: true,
+                    ..RelationDef::default()
+                },
+            );
+        }
     }
 
+    /// A workspace that declares no vocabulary at all — the minimal vault, and
+    /// what this repository's own `prov.yaml` is now that the preset is the
+    /// base: `contents`/`part_of`/`links`/`link_of` with prov's own glosses.
     fn default_workspace() -> (WorkspaceConfig, AboutContext) {
-        let config = WorkspaceConfig {
-            spanning: Some("contents".into()),
-            relation_defs: diaryx_defs(),
-            ..WorkspaceConfig::default()
-        };
+        let config = WorkspaceConfig::default();
         let ctx = AboutContext {
             root_doc: "README.md".into(),
             config_doc: Some("prov.yaml".into()),
@@ -1696,34 +1680,38 @@ mod tests {
         let (plain, ctx) = default_workspace();
         let plain_page = render(&plain, &ctx);
 
+        // A vocabulary of its own: four relations declared and the preset's four
+        // retracted, which is what "a different vocabulary" now costs.
+        let mut bespoke_defs = BTreeMap::from([
+            (
+                "sections".into(),
+                def(
+                    Cardinality::Many,
+                    "section_of",
+                    "records filed under this one",
+                ),
+            ),
+            (
+                "section_of".into(),
+                def(
+                    Cardinality::One,
+                    "sections",
+                    "the record this one is filed under",
+                ),
+            ),
+            (
+                "cites".into(),
+                def(Cardinality::Many, "cited_by", "records this one draws on"),
+            ),
+            (
+                "cited_by".into(),
+                def(Cardinality::Many, "cites", "records that draw on this one"),
+            ),
+        ]);
+        without_the_preset(&mut bespoke_defs);
         let bespoke = WorkspaceConfig {
             spanning: Some("sections".into()),
-            relation_defs: BTreeMap::from([
-                (
-                    "sections".into(),
-                    def(
-                        Cardinality::Many,
-                        "section_of",
-                        "records filed under this one",
-                    ),
-                ),
-                (
-                    "section_of".into(),
-                    def(
-                        Cardinality::One,
-                        "sections",
-                        "the record this one is filed under",
-                    ),
-                ),
-                (
-                    "cites".into(),
-                    def(Cardinality::Many, "cited_by", "records this one draws on"),
-                ),
-                (
-                    "cited_by".into(),
-                    def(Cardinality::Many, "cites", "records that draw on this one"),
-                ),
-            ]),
+            relation_defs: bespoke_defs,
             fields: BTreeMap::from([(
                 "audience".into(),
                 FieldSpec {
@@ -1814,9 +1802,33 @@ mod tests {
 
     #[test]
     fn relation_pairs_stay_adjacent_and_the_spine_leads() {
-        // The vocabulary arrives through a BTreeMap, which would interleave the
-        // pairs alphabetically (contents, link_of, links, part_of).
-        let (config, ctx) = default_workspace();
+        // A *declared* vocabulary is what puts the ordering at risk: it arrives
+        // through a BTreeMap, which would interleave the pairs alphabetically
+        // (contents, link_of, links, part_of). Declaring the four rather than
+        // taking the preset is the point of this fixture — the preset's own
+        // order happens to be right already, so it would not test anything.
+        let (_, ctx) = default_workspace();
+        let config = WorkspaceConfig {
+            relation_defs: BTreeMap::from([
+                (
+                    "contents".into(),
+                    def(Cardinality::Many, "part_of", "what is filed here"),
+                ),
+                (
+                    "part_of".into(),
+                    def(Cardinality::One, "contents", "where this is filed"),
+                ),
+                (
+                    "links".into(),
+                    def(Cardinality::Many, "link_of", "what this points at"),
+                ),
+                (
+                    "link_of".into(),
+                    def(Cardinality::Many, "links", "what points at this"),
+                ),
+            ]),
+            ..WorkspaceConfig::default()
+        };
         let page = render(&config, &ctx);
         let rows = rows_under(&page, "| relation | means | how many | its opposite |");
         assert_eq!(rows.len(), 4, "{rows:?}");
@@ -1824,6 +1836,51 @@ mod tests {
         assert!(rows[1].starts_with("| `part_of`"), "{rows:?}");
         assert!(rows[2].starts_with("| `link_of`"), "{rows:?}");
         assert!(rows[3].starts_with("| `links`"), "{rows:?}");
+    }
+
+    #[test]
+    fn an_undeclared_relation_carries_provs_own_gloss_and_a_declared_one_does_not() {
+        // The preset is the base, so an undeclared `contents` *is* prov's
+        // `contents` and its meaning is known — printing `—` there would be the
+        // page pleading ignorance about a relation it defined itself.
+        let (config, ctx) = default_workspace();
+        let page = render(&config, &ctx);
+        let rows = rows_under(&page, "| relation | means | how many | its opposite |").join("\n");
+        for gloss in [
+            "documents contained by this one",
+            "the document that contains this one",
+            "arbitrary cross-references to other documents",
+            "documents that cross-reference this one",
+        ] {
+            assert!(rows.contains(gloss), "{rows}");
+        }
+
+        // An author who declared the relation and left `means` out said nothing,
+        // and their silence is not prov's to fill in — even when the name is one
+        // the preset would have glossed.
+        let declared = WorkspaceConfig {
+            relation_defs: BTreeMap::from([(
+                "contents".into(),
+                RelationDef {
+                    cardinality: Some(Cardinality::Many),
+                    inverse: Some("part_of".into()),
+                    means: None,
+                    off: false,
+                },
+            )]),
+            ..WorkspaceConfig::default()
+        };
+        let page = render(&declared, &ctx);
+        let rows = rows_under(&page, "| relation | means | how many | its opposite |");
+        assert!(
+            rows[0].starts_with("| `contents` | — |"),
+            "declared without a gloss must stay blank: {rows:?}"
+        );
+        // …and `part_of`, which this workspace never mentioned, still carries its.
+        assert!(
+            rows[1].contains("the document that contains this one"),
+            "{rows:?}"
+        );
     }
 
     #[test]
@@ -1888,14 +1945,11 @@ mod tests {
         // Relation names come from config, so they are attacker-adjacent input in
         // the only sense that matters here: a name with a backtick or a pipe must
         // not corrupt the table it lands in.
-        let mut defs = diaryx_defs();
-        defs.insert(
-            "we|ird".into(),
-            def(Cardinality::Many, "back`tick", "a name with punctuation"),
-        );
         let config = WorkspaceConfig {
-            spanning: Some("contents".into()),
-            relation_defs: defs,
+            relation_defs: BTreeMap::from([(
+                "we|ird".into(),
+                def(Cardinality::Many, "back`tick", "a name with punctuation"),
+            )]),
             ..WorkspaceConfig::default()
         };
         let ctx = AboutContext::new("README.md", "0.0.0");
@@ -1920,26 +1974,30 @@ mod tests {
     fn worked_examples_use_this_workspaces_own_vocabulary() {
         // A sample showing `part_of` to a reader whose files say `section_of`
         // teaches the wrong key — the example must be one that could occur here.
+        // The preset is retracted, because a workspace that merely *added*
+        // `sections` would still have `part_of` and the sample would be right.
+        let mut defs = BTreeMap::from([
+            (
+                "sections".into(),
+                def(
+                    Cardinality::Many,
+                    "section_of",
+                    "records filed under this one",
+                ),
+            ),
+            (
+                "section_of".into(),
+                def(
+                    Cardinality::One,
+                    "sections",
+                    "the record this one is filed under",
+                ),
+            ),
+        ]);
+        without_the_preset(&mut defs);
         let config = WorkspaceConfig {
             spanning: Some("sections".into()),
-            relation_defs: BTreeMap::from([
-                (
-                    "sections".into(),
-                    def(
-                        Cardinality::Many,
-                        "section_of",
-                        "records filed under this one",
-                    ),
-                ),
-                (
-                    "section_of".into(),
-                    def(
-                        Cardinality::One,
-                        "sections",
-                        "the record this one is filed under",
-                    ),
-                ),
-            ]),
+            relation_defs: defs,
             reference_target: Addressing::Id,
             reference_label: true,
             ..WorkspaceConfig::default()

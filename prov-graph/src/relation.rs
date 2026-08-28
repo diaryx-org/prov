@@ -108,6 +108,26 @@ impl RelationSet {
         self
     }
 
+    /// Drop the named relation, if present (builder-style) — after this, the
+    /// field is not a link here, so [`edges`](Self::edges) ignores a document key
+    /// by that name and the value reads as ordinary carried content.
+    ///
+    /// The counterpart to [`with`](Self::with), and what makes a preset an
+    /// *overlay base* rather than an all-or-nothing choice: a config that starts
+    /// from [`diaryx`](Self::diaryx) and declares one relation needs a way to
+    /// both redefine a name (remove, then add) and retract one, without
+    /// restating the vocabulary it was otherwise happy with. See
+    /// `WorkspaceConfig::relation_set`.
+    ///
+    /// The **pointer marks** are deliberately untouched: dropping `registry`
+    /// stops it being a relation but leaves `registry_relation()` answering,
+    /// because that pointer is how a reader finds the workspace's machinery at
+    /// all (§6) and is not the vocabulary's to revoke.
+    pub fn without(mut self, name: &str) -> Self {
+        self.relations.retain(|r| r.name != name);
+        self
+    }
+
     /// Mark the named relation as the spanning (canonical tree) relation.
     pub fn spanning(mut self, name: impl Into<String>) -> Self {
         self.spanning = Some(name.into());
@@ -201,6 +221,26 @@ impl RelationSet {
             .recycle("recycle_bin")
             .history("history")
             .about("about")
+    }
+
+    /// prov's own human gloss for a [`diaryx`](Self::diaryx) **content**
+    /// relation — what the preset would have written in a `means:` had the
+    /// workspace bothered to declare it. `None` for any other name.
+    ///
+    /// The preset is the base every workspace's vocabulary overlays, so an
+    /// undeclared `contents` is prov's `contents` and its meaning is known here
+    /// rather than being a blank a reader has to guess at. Only the four content
+    /// relations are glossed: the five pointers are machinery a consumer
+    /// describes in its own words (see `prov`'s about page), not vocabulary a
+    /// reader follows.
+    pub fn diaryx_means(name: &str) -> Option<&'static str> {
+        match name {
+            "contents" => Some("documents contained by this one"),
+            "part_of" => Some("the document that contains this one"),
+            "links" => Some("arbitrary cross-references to other documents"),
+            "link_of" => Some("documents that cross-reference this one"),
+            _ => None,
+        }
     }
 
     /// The configured relations.
@@ -351,6 +391,41 @@ mod tests {
         // back-link into the generated page (spec §4, generated prose).
         let about = set.relations().iter().find(|r| r.name == "about").unwrap();
         assert_eq!(about.inverse, None);
+    }
+
+    #[test]
+    fn without_drops_the_relation_but_never_the_pointer_mark() {
+        let d = doc("---\nlinks:\n- a.md\nregistry: registry.yaml\n---\nbody\n");
+        let set = RelationSet::diaryx().without("links").without("registry");
+
+        // Neither key is a link any more, so both read as ordinary carried
+        // content — that is what retracting a relation means.
+        assert!(set.edges(&fig::Value::from(&d.meta)).is_empty());
+        assert!(!set.relations().iter().any(|r| r.name == "links"));
+        // …but the registry is still findable, because the pointer is how a
+        // reader reaches the workspace's machinery at all.
+        assert_eq!(set.registry_relation(), Some("registry"));
+        // Removing a name the set does not have is a no-op, not a panic.
+        let untouched = RelationSet::diaryx().without("nonexistent");
+        assert_eq!(untouched.relations().len(), 9);
+    }
+
+    #[test]
+    fn diaryx_means_glosses_the_content_relations_only() {
+        assert_eq!(
+            RelationSet::diaryx_means("part_of"),
+            Some("the document that contains this one")
+        );
+        // The pointers are machinery a consumer words for itself, and an
+        // unknown name is not the preset's to describe.
+        assert_eq!(RelationSet::diaryx_means("registry"), None);
+        assert_eq!(RelationSet::diaryx_means("sections"), None);
+        // Every glossed name is in fact a relation the preset declares.
+        let set = RelationSet::diaryx();
+        for name in ["contents", "part_of", "links", "link_of"] {
+            assert!(RelationSet::diaryx_means(name).is_some(), "{name}");
+            assert!(set.relations().iter().any(|r| r.name == name), "{name}");
+        }
     }
 
     #[test]
