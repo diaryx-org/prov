@@ -5,17 +5,20 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     # prov's `fig` and `twig-doc` dependencies are Zig-backed (their build.rs
-    # scripts run `zig build`), so the Rust build needs the pinned Zig toolchain
-    # (0.16.0) on PATH, matching those crates' CI.
-    zig-overlay.url = "github:mitchellh/zig-overlay";
-    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    # scripts run `zig build`), so the Rust build needs the same Zig toolchain
+    # those crates are built with. That is the whole reason the version is not
+    # written here: it is one number that fig, twig, and prov have to agree on,
+    # and it lives in diaryx-org/nix so that agreeing is not a thing anyone has
+    # to remember.
+    diaryx-nix.url = "github:diaryx-org/nix";
+    diaryx-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
+  outputs = { self, nixpkgs, flake-utils, diaryx-nix }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        zig = zig-overlay.packages.${system}."0.16.0";
+        zig = diaryx-nix.lib.${system}.zig;
 
         # The workspace version (single source of truth in [workspace.package]).
         # Parse it so the flake reports the same number as `prov --version`.
@@ -80,8 +83,8 @@
           program = "${self.packages.${system}.prov}/bin/prov";
         };
 
-        devShells.default = pkgs.mkShell {
-          nativeBuildInputs = [ pkgs.cargo pkgs.rustc zig ];
-        };
+        # The shared rust+zig shell. It carries the pinned Rust toolchain rather
+        # than nixpkgs' `cargo`/`rustc`, and git-cliff for `dx changelog`.
+        devShells.default = diaryx-nix.devShells.${system}.rust-zig;
       });
 }
