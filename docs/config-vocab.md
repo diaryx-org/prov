@@ -391,6 +391,14 @@ of them to be worth writing: a **type** (`type:` — what the value is) and a
 Neither implies the other. `created` is a date nothing controls; an `audience`
 vocabulary needs no declared type. An entry with neither is ignored.
 
+`reify:` says which *shape* the pointer's target takes, and only the default
+(`false`) is a whole-file store: a flat vocabulary is machinery holding a
+`terms:` mapping, while a reified one is an ordinary content index node whose
+spanning children are the terms — real documents with a `part_of`, a prose body
+and backlinks (Spec §3, §4). Membership is checked identically either way; what
+changes is where a term's payload lives, and that `check` neither demands a
+config carrier of a reified store nor offers to widen one mechanically.
+
 The type vocabulary is [`fig-schema`](https://crates.io/crates/fig-schema)'s, not
 one prov invents, so prov, a metadata editor, and a view engine all name types
 identically instead of agreeing by convention:
@@ -499,8 +507,9 @@ silently ignore:
 
 Beyond the two config surfaces, `check` also validates the workspace's **stores**
 and **controlled fields** (see [Spec](/docs/spec.md)): a `MalformedStore` finding
-for a registry/recycle/vocabulary pointer that resolves to a markdown document
-rather than a whole-file config document; `UnknownTerm` for a closed-field value
+for a registry/recycle/*flat*-vocabulary pointer that resolves to a markdown
+document rather than a whole-file config document (a `reify: true` vocabulary is
+content, so the rule does not reach it); `UnknownTerm` for a closed-field value
 that is not a known term; and `TermNearMiss` for an open-field value that closely
 resembles one.
 

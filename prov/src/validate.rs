@@ -1058,7 +1058,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let config = self.effective_config(start).await?;
         for spec in config.fields.values() {
-            // A type-only field declares no vocabulary, so it has no store.
+            // A type-only field declares no vocabulary, so it has no store. A
+            // *reified* one declares content rather than machinery — an index node
+            // whose children are term documents — so the whole-file rule does not
+            // reach it, and demanding a config carrier of it would report the
+            // markdown it is supposed to be. What it gets in exchange is the thing
+            // a machinery store deliberately gives up: its terms are in the
+            // reachable set, inverse-checked and orphan-checked like any content.
+            if spec.reify {
+                continue;
+            }
             if let Some(pointer) = &spec.vocabulary
                 && let Some(p) = self.vocabulary_path(start, pointer)
             {
@@ -1171,12 +1180,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             crate::vocabulary::Vocabulary,
         )> = Vec::new();
         for (field, spec) in &config.fields {
-            // Membership is only checkable for a field that names a vocabulary;
-            // a type-only field has nothing to be a member of.
-            let Some(pointer) = &spec.vocabulary else {
-                continue;
-            };
-            if let Ok(Some(vocab)) = self.load_vocabulary(start, pointer).await {
+            // Membership is only checkable for a field that names a vocabulary; a
+            // type-only field has nothing to be a member of. `load_field_vocabulary`
+            // is where flat and reified are told apart — both yield the same term
+            // set, so everything below reads one shape.
+            if let Ok(Some(vocab)) = self.load_field_vocabulary(start, field, spec).await {
                 vocabs.push((field.clone(), spec.values, vocab));
             }
         }
@@ -1960,6 +1968,107 @@ mod tests {
             !findings
                 .iter()
                 .any(|f| matches!(f, Finding::TermNearMiss { value, .. } if value == "research")),
+            "{findings:?}"
+        );
+    }
+
+    /// A reified vocabulary in the shape `check` has to accept: a markdown index
+    /// node under the spine, its `contents` the term documents, each with a
+    /// `part_of` back — content all the way down, which is what makes the
+    /// whole-file store rule inapplicable.
+    fn a_workspace_with_reified_audiences(tag: &str, values: &str, note: &str) -> PathBuf {
+        let dir = tempdir(tag);
+        write(
+            &dir,
+            "index.md",
+            format!(
+                "---\n\
+                 title: Root\n\
+                 contents:\n- note.md\n- vocab/index.md\n\
+                 prov:\n  fields:\n    audience:\n      values: {values}\n      \
+                 vocabulary: vocab/index.md\n      reify: true\n\
+                 ---\n"
+            ),
+        );
+        write(&dir, "note.md", note);
+        write(
+            &dir,
+            "vocab/index.md",
+            "---\ntitle: Audiences\npart_of: /index.md\ncontents:\n- public.md\n- friends.md\n---\nWho may read what.\n",
+        );
+        write(
+            &dir,
+            "vocab/public.md",
+            "---\ntitle: public\npart_of: index.md\n---\nAnyone.\n",
+        );
+        write(
+            &dir,
+            "vocab/friends.md",
+            "---\ntitle: friends\npart_of: index.md\n---\nPeople I know.\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn a_closed_reified_vocabulary_flags_a_value_naming_no_term_node() {
+        let dir = a_workspace_with_reified_audiences(
+            "reified-closed",
+            "closed",
+            "---\ntitle: Note\npart_of: index.md\naudience: freinds\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::UnknownTerm { field, value, .. } if field == "audience" && value == "freinds"
+            )),
+            "{findings:?}"
+        );
+        // The load-bearing negative: the index node is a markdown *content*
+        // document on purpose, so demanding a whole-file carrier of it would
+        // report the shape the declaration asked for.
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::MalformedStore { .. })),
+            "a reified vocabulary is content, not machinery: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_reified_vocabulary_whose_values_all_name_term_nodes_is_quiet() {
+        let dir = a_workspace_with_reified_audiences(
+            "reified-clean",
+            "closed",
+            "---\ntitle: Note\npart_of: index.md\naudience: friends\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn an_open_reified_vocabulary_only_warns_on_a_near_miss() {
+        let dir = a_workspace_with_reified_audiences(
+            "reified-open",
+            "open",
+            "---\ntitle: Note\npart_of: index.md\naudience:\n- publik\n- strangers\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::TermNearMiss { value, suggestion, .. } if value == "publik" && suggestion == "public"
+            )),
+            "{findings:?}"
+        );
+        // A genuinely new value in an open vocabulary is allowed silently, term
+        // nodes or not.
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::TermNearMiss { value, .. } if value == "strangers")),
             "{findings:?}"
         );
     }

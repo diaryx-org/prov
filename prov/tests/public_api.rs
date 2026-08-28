@@ -13,10 +13,11 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use prov::config::{FieldSpec, OpenClosed};
 use prov::fs::{DirEntry, Metadata};
 use prov::{
     Capabilities, ChangeSet, Discovery, Document, Durability, Error, InMemoryFs, InMemoryIndex,
-    Minter, ReadStorage, RelationSet, StdFs, Storage, Workspace, block_on,
+    Minter, ReadStorage, RelationSet, StdFs, Storage, Vocabulary, Workspace, block_on,
 };
 
 fn tmp(name: &str) -> PathBuf {
@@ -69,6 +70,59 @@ fn a_workspace_can_be_built_and_traversed_through_the_public_api() {
         children[0].1.meta.get("title").and_then(|v| v.as_str()),
         Some("Child"),
         "the document arrives parsed, so a caller need not read it again"
+    );
+}
+
+/// A reified vocabulary is read from out here the way a schema-aware frontend
+/// reads one: declare the field, load the term set, then follow a value to the
+/// node so the tier-3 payload hanging off the term is reachable at all. That
+/// second step is the whole reason to reify, so it has to be public.
+#[test]
+fn a_reified_vocabulary_is_loadable_and_its_terms_are_reachable_as_nodes() {
+    let root = tmp("reified-vocab");
+    std::fs::write(
+        root.join("index.md"),
+        "---\ntitle: Home\ncontents:\n- vocab/index.md\n---\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("vocab")).unwrap();
+    std::fs::write(
+        root.join("vocab/index.md"),
+        "---\ntitle: Audiences\npart_of: /index.md\ncontents:\n- friends.md\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("vocab/friends.md"),
+        "---\ntitle: Friends\nterm: friends\npart_of: index.md\ngate: circle:friends\n---\n",
+    )
+    .unwrap();
+
+    let ws = Workspace::builder(StdFs)
+        .root(&root)
+        .relations(RelationSet::diaryx())
+        .build();
+    let spec = FieldSpec {
+        ty: None,
+        values: OpenClosed::Closed,
+        vocabulary: Some("vocab/index.md".into()),
+        reify: true,
+    };
+    let vocab: Vocabulary =
+        block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &spec))
+            .expect("load")
+            .expect("a reified vocabulary");
+    assert!(vocab.accepts("friends"), "{:?}", vocab.terms);
+
+    let term_node =
+        block_on(ws.reified_term_path(Path::new("index.md"), "vocab/index.md", "friends"))
+            .expect("term path")
+            .expect("the node declaring the term");
+    assert_eq!(term_node, Path::new("vocab/friends.md"));
+    // Payload prov carries and never reads, read by the consumer it is for.
+    let node = block_on(ws.document(&term_node)).expect("document");
+    assert_eq!(
+        node.meta.get("gate").and_then(|v| v.as_str()),
+        Some("circle:friends")
     );
 }
 

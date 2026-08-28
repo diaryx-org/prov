@@ -1010,7 +1010,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 retired,
             } => {
                 let mut out = Vec::new();
-                let Some((store, vocab)) = self.vocabulary_for(doc, field).await? else {
+                let Some((store, vocab, reified)) = self.vocabulary_for(doc, field).await? else {
                     return Ok(out);
                 };
                 for candidate in vocab.live_term_names() {
@@ -1032,7 +1032,15 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // id and a gloss, and writing a bare key over it would un-retire
                 // it *and* destroy both. Reviving a retirement is a deliberate
                 // edit to the vocabulary, not a repair to this document.
-                if !retired {
+                //
+                // Never for a reified one either, for the same reason one step
+                // further out: `AddTerm` writes a `terms.<term>` key, and a
+                // reified vocabulary has no such mapping to write into — admitting
+                // a term there means authoring a node with a `part_of` and a body,
+                // which is a document somebody has to mean, not a mechanical
+                // repair. `SetTerm` still applies: respelling a value is the same
+                // edit whichever form the terms take.
+                if !retired && !reified {
                     out.push(Remedy::new(
                         RemedyKind::AddTerm,
                         Warrant::Judgment,
@@ -1065,7 +1073,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         to: suggestion.clone(),
                     },
                 )];
-                if let Some((store, _)) = self.vocabulary_for(doc, field).await? {
+                // Widening is only ever offered for a flat store — see the
+                // `UnknownTerm` arm for why a reified vocabulary is not grown by
+                // a repair.
+                if let Some((store, _, reified)) = self.vocabulary_for(doc, field).await?
+                    && !reified
+                {
                     out.push(Remedy::new(
                         RemedyKind::AddTerm,
                         Warrant::Judgment,
@@ -1177,8 +1190,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(out)
     }
 
-    /// The vocabulary governing `field`, and the store document it lives in —
-    /// what a term repair needs to know before it can offer anything.
+    /// The vocabulary governing `field`, the store document it lives in, and
+    /// whether that store is **reified** — what a term repair needs to know
+    /// before it can offer anything. The flag rides along because the repairs
+    /// differ by form and the caller has no other way to tell: a term set reads
+    /// identically once loaded.
     ///
     /// Anchored by walking up the spanning relation from `doc` to the workspace
     /// root, because a [`Finding`] names the document that has the problem and
@@ -1188,23 +1204,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         &self,
         doc: &Path,
         field: &str,
-    ) -> Result<Option<(PathBuf, crate::vocabulary::Vocabulary)>> {
+    ) -> Result<Option<(PathBuf, crate::vocabulary::Vocabulary, bool)>> {
         let root = self.root_doc_from(doc).await?;
         let config = self.effective_config(&root).await?;
-        let Some(pointer) = config
-            .fields
-            .get(field)
-            .and_then(|spec| spec.vocabulary.as_ref())
-        else {
+        let Some(spec) = config.fields.get(field) else {
+            return Ok(None);
+        };
+        let Some(pointer) = spec.vocabulary.as_deref() else {
             return Ok(None);
         };
         let Some(store) = self.vocabulary_path(&root, pointer) else {
             return Ok(None);
         };
         Ok(self
-            .load_vocabulary(&root, pointer)
+            .load_field_vocabulary(&root, field, spec)
             .await?
-            .map(|vocab| (store, vocab)))
+            .map(|vocab| (store, vocab, spec.reify)))
     }
 
     /// A config issue's key, qualified from the *document's* root rather than the
@@ -1933,6 +1948,50 @@ mod tests {
         assert!(
             !remedies.iter().any(|r| r.kind == RemedyKind::AddTerm),
             "a retirement is not reversed by a repair: {remedies:#?}"
+        );
+    }
+
+    #[test]
+    fn a_reified_vocabulary_is_respelled_into_but_never_widened() {
+        // `AddTerm` writes `terms.<term>` into a store, and a reified vocabulary
+        // has no such mapping — its terms are documents. Admitting one means
+        // authoring a node with a `part_of` and a body, which somebody has to
+        // mean; respelling a value is the same edit whichever form the terms take.
+        let dir = tempdir("remedy-reified");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\ncontents:\n- vocab/index.md\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "spec: 1\nfields:\n  status:\n    values: closed\n    vocabulary: /vocab/index.md\n    reify: true\n",
+        );
+        write(
+            &dir,
+            "vocab/index.md",
+            "---\ntitle: Statuses\npart_of: /index.md\ncontents:\n- todo.md\n---\nThe states a note passes through.\n",
+        );
+        write(
+            &dir,
+            "vocab/todo.md",
+            "---\ntitle: todo\npart_of: index.md\n---\nNot started.\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: /index.md\nstatus: to-do\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let unknown = sole(&findings, |f| matches!(f, Finding::UnknownTerm { .. }));
+        let remedies = block_on(ws.remedies(unknown)).unwrap();
+        assert_eq!(kinds(&remedies), vec![RemedyKind::SetTerm], "{remedies:#?}");
+        assert!(
+            remedies[0].effect.contains("todo"),
+            "the respelling is still offered: {remedies:#?}"
         );
     }
 

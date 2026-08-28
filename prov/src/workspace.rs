@@ -678,6 +678,177 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         }
         Ok(crate::vocabulary::Vocabulary::from_meta(&doc.meta))
     }
+
+    /// Load the controlled vocabulary a **reified** `fields` pointer names — one
+    /// whose terms are nodes rather than rows (spec §3). The pointer's target is
+    /// an ordinary content *index node* and its spanning-relation children are the
+    /// terms, so this deliberately does not go through
+    /// [`require_whole_file`](prov_graph::document::require_whole_file): the store
+    /// is content, usually markdown-with-frontmatter, and that is the whole point
+    /// of reifying. Any `vocabulary:` marker on the index node is ignored — what
+    /// makes this a vocabulary is `reify: true` in the field declaration, not
+    /// anything the target says about itself.
+    ///
+    /// `None` when the pointer does not resolve, or when the field declares no
+    /// vocabulary at all.
+    pub async fn load_reified_vocabulary(
+        &self,
+        root_doc: &Path,
+        field: &str,
+        spec: &crate::config::FieldSpec,
+    ) -> Result<Option<crate::vocabulary::Vocabulary>> {
+        let Some(terms) = self
+            .reified_terms(root_doc, spec.vocabulary.as_deref())
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(crate::vocabulary::Vocabulary {
+            field: field.to_string(),
+            values: spec.values,
+            terms: terms
+                .into_iter()
+                .map(|(key, (_, term))| (key, term))
+                .collect(),
+        }))
+    }
+
+    /// The **path of the term node** a reified vocabulary's `term` value names —
+    /// the seam a consumer reads tier-3 payload through, since a reified term's
+    /// gloss, body and per-term config live on the node rather than in a `terms:`
+    /// row (spec §3).
+    ///
+    /// `None` when the pointer does not resolve or no child carries that term key.
+    /// A *retired* term still returns its path: retirement says the value is no
+    /// longer legal for new content, and the caller here is reading configuration
+    /// off a node rather than judging membership — [`Vocabulary::accepts`] is what
+    /// answers that question.
+    ///
+    /// Where two children claim one term key the **last** wins, matching the
+    /// vocabulary [`load_reified_vocabulary`](Self::load_reified_vocabulary)
+    /// builds, so the two never disagree about which node a value means.
+    ///
+    /// [`Vocabulary::accepts`]: crate::vocabulary::Vocabulary::accepts
+    pub async fn reified_term_path(
+        &self,
+        root_doc: &Path,
+        pointer: &str,
+        term: &str,
+    ) -> Result<Option<PathBuf>> {
+        Ok(self
+            .reified_terms(root_doc, Some(pointer))
+            .await?
+            .and_then(|mut terms| terms.remove(term))
+            .map(|(path, _)| path))
+    }
+
+    /// The one walk behind both reified accessors: the index node's
+    /// spanning-relation children, each resolved to a path and read as a term.
+    /// `None` when the field declares no pointer or the pointer resolves to
+    /// nothing.
+    ///
+    /// What is skipped, and why each skip belongs to somebody else: a child link
+    /// that resolves to no path is the census's `BrokenLink`, a child that will
+    /// not load is the walk's `Unreadable`, and a child with neither `term:` nor
+    /// `title:` is simply not a term — none of the three is this loader's finding
+    /// to raise, and raising it here would report it twice. Two children claiming
+    /// one key collapse in `insert` order, the later winning; the tree is what
+    /// says a term exists, so a duplicate is a structural mistake to see in
+    /// `check`, not an error to fail a load on.
+    async fn reified_terms(
+        &self,
+        root_doc: &Path,
+        pointer: Option<&str>,
+    ) -> Result<Option<BTreeMap<String, (PathBuf, crate::vocabulary::Term)>>> {
+        let Some(pointer) = pointer else {
+            return Ok(None);
+        };
+        let Some(index_path) = self.vocabulary_path(root_doc, pointer) else {
+            return Ok(None);
+        };
+        // No spanning relation, no children to be terms.
+        let Some(spanning) = self.relations().spanning_relation() else {
+            return Ok(Some(BTreeMap::new()));
+        };
+        let (_, index) = self.load(&index_path).await?;
+        let children = index
+            .meta
+            .get(spanning)
+            .map(Value::link_strings)
+            .unwrap_or_default();
+
+        let mut terms = BTreeMap::new();
+        for raw in children {
+            let Target::Path(path) = self.resolve_link(&index_path, &Link::parse(&raw)) else {
+                continue;
+            };
+            let Ok((_, child)) = self.load(&path).await else {
+                continue;
+            };
+            // `term:` explicitly, `title:` by default — so a term can be retitled
+            // for a reader without silently renaming the value every document
+            // declares, while a node that never needed the distinction spells it
+            // once.
+            let Some(key) = child
+                .meta
+                .get("term")
+                .and_then(Value::as_str)
+                .or_else(|| child.meta.get("title").and_then(Value::as_str))
+            else {
+                continue;
+            };
+            let term = crate::vocabulary::Term {
+                // The node's own prov id *is* the term's id — that is what
+                // reifying buys — so the registry answers when frontmatter
+                // storage is off and there is nothing to read off the document.
+                id: child
+                    .meta
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|s| prov_graph::identity::Id(s.to_string()))
+                    .or_else(|| self.index().id_for_path(&path)),
+                // The prose body is the real gloss; prov does not read bodies
+                // here, so only an explicit `means:` reaches a consumer.
+                means: child
+                    .meta
+                    .get("means")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                retired: child
+                    .meta
+                    .get("retired")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            terms.insert(key.to_string(), (path, term));
+        }
+        Ok(Some(terms))
+    }
+
+    /// The vocabulary governing `field`, loaded the way its declaration says to —
+    /// [`load_reified_vocabulary`](Self::load_reified_vocabulary) under `reify:
+    /// true`, [`load_vocabulary`](Self::load_vocabulary) otherwise. `None` for a
+    /// type-only field: a field that names no vocabulary has nothing to be a
+    /// member of.
+    ///
+    /// The single place the two forms are told apart, so a caller holding a
+    /// [`FieldSpec`](crate::config::FieldSpec) never re-derives the choice.
+    pub(crate) async fn load_field_vocabulary(
+        &self,
+        root_doc: &Path,
+        field: &str,
+        spec: &crate::config::FieldSpec,
+    ) -> Result<Option<crate::vocabulary::Vocabulary>> {
+        let Some(pointer) = spec.vocabulary.as_deref() else {
+            return Ok(None);
+        };
+        if spec.reify {
+            self.load_reified_vocabulary(root_doc, field, spec).await
+        } else {
+            self.load_vocabulary(root_doc, pointer).await
+        }
+    }
+
     /// Resolve the first target of `relation` declared on `root_doc` to a
     /// workspace path — the shared mechanic behind the registry and config
     /// pointers: a workspace resource named by a well-known relation on the root.
@@ -1681,5 +1852,214 @@ mod spanning_children_tests {
                 .is_empty()
         );
         assert_eq!(fs.doc_reads(&dir, "index.md"), 1);
+    }
+}
+
+/// [`Workspace::load_reified_vocabulary`] and [`Workspace::reified_term_path`]
+/// over a real filesystem. The fixtures are YAML frontmatter on markdown
+/// carriers — deliberately the shape the *flat* loader refuses, since a reified
+/// store being content is the whole distinction under test.
+#[cfg(all(test, feature = "yaml"))]
+mod reified_vocabulary_tests {
+    use super::*;
+    use crate::config::{FieldSpec, OpenClosed};
+    use crate::identity::Minter;
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
+    use prov_graph::identity::Id as DocId;
+    use prov_store::index::FileIndex;
+
+    use prov_testkit::write;
+    fn tempdir(tag: &str) -> PathBuf {
+        prov_testkit::scratch("reified-vocab", tag)
+    }
+
+    fn spec(values: OpenClosed) -> FieldSpec {
+        FieldSpec {
+            ty: None,
+            values,
+            vocabulary: Some("vocab/index.md".into()),
+            reify: true,
+        }
+    }
+
+    /// One index node and every term shape the loader has to tell apart: a title
+    /// carrying the key, an explicit `term:` overriding a reader-facing title, a
+    /// retirement, a gloss, a self-declared id, and a child that is no term at
+    /// all.
+    fn a_vocabulary_of_audiences(tag: &str) -> PathBuf {
+        let dir = tempdir(tag);
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- vocab/index.md\n---\n",
+        );
+        write(
+            &dir,
+            "vocab/index.md",
+            "---\ntitle: Audiences\npart_of: /index.md\ncontents:\n\
+             - public.md\n- friends.md\n- colleagues.md\n- readme.md\n- gone.md\n---\nWho may read what.\n",
+        );
+        write(
+            &dir,
+            "vocab/public.md",
+            "---\ntitle: public\npart_of: index.md\nmeans: Anyone; safe to publish\n---\nThe gloss lives here.\n",
+        );
+        // A term retitled for a reader: the value every document declares is
+        // `friends`, whatever the heading says.
+        write(
+            &dir,
+            "vocab/friends.md",
+            "---\ntitle: Friends and family\nterm: friends\nid: aud_k9fp\npart_of: index.md\n---\n",
+        );
+        write(
+            &dir,
+            "vocab/colleagues.md",
+            "---\ntitle: colleagues\npart_of: index.md\nretired: true\n---\n",
+        );
+        // Neither `term:` nor `title:` — a node under the index that is not a term.
+        write(
+            &dir,
+            "vocab/readme.md",
+            "---\npart_of: index.md\n---\nHow to add a term.\n",
+        );
+        dir
+    }
+
+    fn load(dir: &Path, values: OpenClosed) -> crate::vocabulary::Vocabulary {
+        let ws = Workspace::builder(StdFs).root(dir).build();
+        block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &spec(values)))
+            .unwrap()
+            .expect("a reified vocabulary")
+    }
+
+    #[test]
+    fn the_terms_are_the_index_nodes_spanning_children() {
+        let dir = a_vocabulary_of_audiences("terms");
+        let vocab = load(&dir, OpenClosed::Closed);
+        assert_eq!(vocab.field, "audience");
+        assert_eq!(vocab.values, OpenClosed::Closed);
+        assert_eq!(
+            vocab.terms.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "colleagues".to_string(),
+                "friends".to_string(),
+                "public".to_string()
+            ],
+            "a broken child link and a child that is no term are somebody else's finding"
+        );
+    }
+
+    #[test]
+    fn an_explicit_term_key_wins_over_the_title_it_is_read_under() {
+        let dir = a_vocabulary_of_audiences("term-key");
+        let vocab = load(&dir, OpenClosed::Closed);
+        assert!(vocab.accepts("friends"));
+        assert!(
+            !vocab.terms.contains_key("Friends and family"),
+            "retitling a term must not rename the value: {:?}",
+            vocab.terms.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_term_node_without_an_explicit_key_is_read_under_its_title() {
+        let dir = a_vocabulary_of_audiences("title-fallback");
+        assert!(load(&dir, OpenClosed::Closed).accepts("public"));
+    }
+
+    #[test]
+    fn retired_means_and_the_nodes_own_id_come_off_the_term_node() {
+        let dir = a_vocabulary_of_audiences("fields");
+        let vocab = load(&dir, OpenClosed::Closed);
+        assert!(vocab.is_retired("colleagues"), "{:?}", vocab.terms);
+        assert!(!vocab.accepts("colleagues"));
+        assert_eq!(
+            vocab.terms["public"].means.as_deref(),
+            Some("Anyone; safe to publish"),
+            "the prose body is the gloss prov does not read; `means:` is the one it does"
+        );
+        assert_eq!(vocab.terms["friends"].id, Some(DocId("aud_k9fp".into())));
+        // Nothing invented for a term node that declares neither.
+        assert_eq!(vocab.terms["public"].id, None);
+        assert_eq!(vocab.terms["friends"].means, None);
+    }
+
+    /// The point of reifying: the term's id is the *node's* id. Frontmatter is
+    /// only one of the two places that lives, so the registry answers for a
+    /// workspace storing ids there instead.
+    #[test]
+    fn a_term_with_no_frontmatter_id_takes_the_one_the_registry_holds() {
+        let dir = a_vocabulary_of_audiences("registry-id");
+        let mut ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::lazy(9))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+        ws.index_mut()
+            .register(&DocId("bcdfghj".into()), Path::new("vocab/public.md"));
+
+        let vocab = block_on(ws.load_reified_vocabulary(
+            Path::new("index.md"),
+            "audience",
+            &spec(OpenClosed::Closed),
+        ))
+        .unwrap()
+        .expect("a reified vocabulary");
+        assert_eq!(vocab.terms["public"].id, Some(DocId("bcdfghj".into())));
+        // A self-declared id still wins — the document is the authority on itself.
+        assert_eq!(vocab.terms["friends"].id, Some(DocId("aud_k9fp".into())));
+    }
+
+    /// The seam a consumer reads a term's tier-3 payload through: value in, the
+    /// node that carries it out.
+    #[test]
+    fn a_term_value_resolves_to_the_node_that_declares_it() {
+        let dir = a_vocabulary_of_audiences("term-path");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let path = |term: &str| {
+            block_on(ws.reified_term_path(Path::new("index.md"), "vocab/index.md", term)).unwrap()
+        };
+        assert_eq!(path("public"), Some(PathBuf::from("vocab/public.md")));
+        assert_eq!(path("friends"), Some(PathBuf::from("vocab/friends.md")));
+        // Retirement is a membership judgment, not a reason to withhold the node.
+        assert_eq!(
+            path("colleagues"),
+            Some(PathBuf::from("vocab/colleagues.md"))
+        );
+        assert_eq!(
+            path("Friends and family"),
+            None,
+            "the key is the term, not the title"
+        );
+        assert_eq!(path("nobody"), None);
+    }
+
+    /// A field declaring no vocabulary has nothing to load, and a pointer at
+    /// nothing resolves to nothing — neither is an error to raise here.
+    #[test]
+    fn a_field_with_no_pointer_and_a_pointer_at_nothing_both_load_nothing() {
+        let dir = a_vocabulary_of_audiences("absent");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let none = FieldSpec {
+            ty: None,
+            values: OpenClosed::Closed,
+            vocabulary: None,
+            reify: true,
+        };
+        assert!(
+            block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &none))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            block_on(ws.reified_term_path(
+                Path::new("index.md"),
+                "https://example.com/terms",
+                "public"
+            ))
+            .unwrap()
+            .is_none()
+        );
     }
 }
