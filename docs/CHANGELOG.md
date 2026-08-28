@@ -28,6 +28,21 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.10.0 — 2026-08-27
+
+### Added
+
+- **vocabulary** — read reified vocabularies from their term nodes ([`14f468a`](https://github.com/diaryx-org/prov/commit/14f468a18098db18f78f01d0a41b9631a03d4a39))
+- **config** — relations declarations overlay the preset instead of replacing it ([`9f9a2db`](https://github.com/diaryx-org/prov/commit/9f9a2dbf6379243e2be4acb7f23069f065409ac8))
+
+### Fixed
+
+- **about** — file a reified vocabulary as content, not machinery ([`77958d9`](https://github.com/diaryx-org/prov/commit/77958d9200246d901a3908fb20ea296e9b4e118b))
+
 ### Changed
 
 - **xtask** — cut releases with the shared tooling, not a fifth copy ([`6247633`](https://github.com/diaryx-org/prov/commit/62476330c1c363100c1ee9b29006148a801290e9))
@@ -44,7 +59,29 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
   for its git-cliff config as well as for `release` itself. Nothing in the tree
   configures git-cliff any more.
 
-<!-- git-cliff:end -->
+- a workspace declaring `fields.<f>.reify: true` is
+  now read as declared. `check` stops reporting `MalformedStore` for its
+  markdown index node, starts term-checking the field against the
+  index's spanning children (previously silently unchecked), and no
+  longer offers the add-term repair for it. A `reify: true` pointer
+  aimed at a *flat* `terms:` store now loads an empty term set, so on a
+  closed field every value becomes `UnknownTerm` until the declaration
+  drops `reify` or the terms become nodes.
+
+- `prov about` no longer lists a `reify: true` field's
+  vocabulary under "files that are not part of the tree", and the
+  "fields with fixed vocabularies" section gains a sentence when any
+  controlled field is reified — regenerated about pages change
+  accordingly.
+
+- a `relations:` block no longer replaces the default
+  vocabulary — the preset relations stay recognized (their inverses
+  maintained and linted) unless individually retracted with
+  `<name>: off`, so an archive that declared a partial vocabulary
+  intending wholesale replacement must add the retraction lines.
+  Regenerated about pages carry prov's glosses for undeclared preset
+  relations.
+
 
 ## v0.9.2 — 2026-08-26
 
