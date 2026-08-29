@@ -174,11 +174,25 @@ pub fn key_path(dotted: &str) -> Vec<Segment<'_>> {
 
 /// Interpret a CLI-provided scalar: `true`/`false`, integers, floats, and
 /// `null` become their typed values; everything else stays a string.
+///
+/// A number carrying a **redundant leading zero** (`08`, `007`, `-04`) is not a
+/// number here, because typing it does not round-trip: `08` parses to `8` and
+/// the padding is gone for good, with no CLI spelling that gets it back. Padding
+/// is meaningful in precisely the data this tool holds — a month `08`, a day
+/// `04`, an all-digit id — so its presence is the evidence that the author meant
+/// text. A lone `0` and a fraction's `0.5` are canonical and still type.
+///
+/// This is the general form of a hazard callers have been dodging one at a time:
+/// [`identity`](prov_graph::identity) warns that an id may be all digits, and
+/// prov-cli stamps ids as explicit string scalars to route around this function.
+/// Those call sites are still right to be explicit — a value that must *never*
+/// be typed should not depend on inference — but the trap is no longer here.
 pub fn infer_scalar(s: &str) -> fig::Value {
     match s {
         "true" => fig::Value::Bool(true),
         "false" => fig::Value::Bool(false),
         "null" | "~" => fig::Value::Null,
+        _ if is_zero_padded(s) => fig::Value::Str(s.to_string()),
         _ => {
             if let Ok(i) = s.parse::<i64>() {
                 fig::Value::Int(i)
@@ -189,6 +203,14 @@ pub fn infer_scalar(s: &str) -> fig::Value {
             }
         }
     }
+}
+
+/// Whether `s` opens with a zero a numeric parse would silently discard — `08`,
+/// `-007`, `00`. The test is "zero followed by another digit", so the `0` of `0`
+/// and of `0.5` (information, not padding) is not caught.
+fn is_zero_padded(s: &str) -> bool {
+    let mut digits = s.strip_prefix(['-', '+']).unwrap_or(s).chars();
+    digits.next() == Some('0') && digits.next().is_some_and(|c| c.is_ascii_digit())
 }
 
 /// Upsert `dotted` to `value` in `text`'s metadata (carrier-aware), creating
@@ -435,6 +457,23 @@ mod tests {
         assert_eq!(infer_scalar("4.5"), fig::Value::Float(4.5));
         assert_eq!(infer_scalar("null"), fig::Value::Null);
         assert_eq!(infer_scalar("hello"), fig::Value::Str("hello".into()));
+    }
+
+    #[test]
+    fn zero_padding_survives_inference() {
+        // `prov set <doc> title 08` on a month index used to write `title: 8`,
+        // silently breaking the route that addressed it as "08" — and there was
+        // no way to spell the string back. Padding means the author meant text.
+        assert_eq!(infer_scalar("08"), fig::Value::Str("08".into()));
+        assert_eq!(infer_scalar("007"), fig::Value::Str("007".into()));
+        assert_eq!(infer_scalar("-04"), fig::Value::Str("-04".into()));
+        assert_eq!(infer_scalar("00"), fig::Value::Str("00".into()));
+
+        // A leading zero that carries information is still a number: a lone `0`,
+        // and the one every fraction below 1 opens with.
+        assert_eq!(infer_scalar("0"), fig::Value::Int(0));
+        assert_eq!(infer_scalar("0.5"), fig::Value::Float(0.5));
+        assert_eq!(infer_scalar("-0.25"), fig::Value::Float(-0.25));
     }
 
     #[cfg(feature = "yaml")]

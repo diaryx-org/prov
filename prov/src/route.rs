@@ -334,10 +334,39 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// expected, not evidence of anything.
     async fn assert_vacant(&self, path: &Path, segment: &str, layout: Layout) -> Result<()> {
         if self.exists(path).await? {
-            return Err(Error::Structure(format!(
-                "route segment {segment:?} would create {}, but a file is already there",
-                path.display()
-            )));
+            // The occupant is usually the node the segment *meant*, sitting under
+            // a title the route did not spell — a month index titled "2026-08"
+            // exactly where the segment "08" slugs to. That title is the whole
+            // repair, so name it, the way the directory check below already names
+            // the one it finds. A bare "a file is already there" sends the caller
+            // hunting for a filesystem conflict that isn't one.
+            //
+            // The directory check cannot cover this. It reports the first
+            // *neighbour* declaring containment, and in a month directory every
+            // daily note declares `part_of` — so it would name `2026-08-04.md`
+            // for a collision that is entirely about `index.md`.
+            //
+            // An occupant that fails to load, or declares no containment, has no
+            // title worth offering: it is a file in the way and nothing more, and
+            // routing to its title would not find it. That case keeps the plain
+            // message rather than prescribing a cure that does not work.
+            let occupant_title = match self.load(path).await {
+                Ok((_, doc)) if self.declares_containment(&doc.meta) => {
+                    doc.meta.get("title").and_then(title_text)
+                }
+                _ => None,
+            };
+            return Err(Error::Structure(match occupant_title {
+                Some(title) => format!(
+                    "route segment {segment:?} would create {}, but that file is already a node \
+                     titled {title:?}; route to that title instead",
+                    path.display()
+                ),
+                None => format!(
+                    "route segment {segment:?} would create {}, but a file is already there",
+                    path.display()
+                ),
+            }));
         }
         if layout != Layout::Nested {
             return Ok(());
@@ -876,6 +905,53 @@ mod tests {
         let err = block_on(ws(&dir).plan_route(Path::new("index.md"), &["Daily"], Layout::Nested))
             .unwrap_err();
         assert!(err.to_string().contains("a file is already there"), "{err}");
+    }
+
+    #[test]
+    fn a_node_squatting_the_synthesized_path_names_the_title_to_route_to() {
+        // The shape that produced this: a month index correctly linked under its
+        // year, but titled "2026-08" while the route segment is the padded month
+        // "08". The title lookup misses, synthesis derives the same path the node
+        // already occupies, and the collision is *entirely* a title mismatch — so
+        // the refusal names the title rather than reporting a bare squat.
+        let dir = tempdir("squat-node");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: 2026\ncontents:\n- '[2026-08](/08/index.md)'\n---\n",
+        );
+        write(
+            &dir,
+            "08/index.md",
+            "---\ntitle: 2026-08\npart_of: '[2026](/index.md)'\n---\n",
+        );
+        // A daily note beside it, declaring containment exactly as the real ones
+        // do: the directory check would have reported *this* file, which is not
+        // what the collision is about.
+        write(
+            &dir,
+            "08/2026-08-04.md",
+            "---\ntitle: 2026-08-04\npart_of: '[2026-08](/08/index.md)'\n---\n",
+        );
+
+        let err = block_on(ws(&dir).plan_route(Path::new("index.md"), &["08"], Layout::Nested))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already a node titled \"2026-08\""),
+            "names the occupant's title: {msg}"
+        );
+        assert!(
+            !msg.contains("2026-08-04"),
+            "the neighbour is not what collided: {msg}"
+        );
+
+        // And the title it names is one that actually resolves.
+        let plan =
+            block_on(ws(&dir).plan_route(Path::new("index.md"), &["2026-08"], Layout::Nested))
+                .unwrap();
+        assert!(plan.is_complete());
+        assert_eq!(plan.terminal, PathBuf::from("08/index.md"));
     }
 
     #[test]
