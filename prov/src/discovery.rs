@@ -94,22 +94,34 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         let Ok(entries) = fs.read_dir(dir).await else {
             continue;
         };
-        let mut candidates: Vec<String> = Vec::new();
-        for entry in entries {
-            let path = entry.path();
-            if !can_be_root(path) {
-                continue;
+        let shaped: Vec<PathBuf> = entries
+            .into_iter()
+            .map(|entry| entry.path().to_path_buf())
+            .filter(|path| can_be_root(path))
+            .collect();
+
+        // Probe in the same priority order `choose_root` applies. Once a valid
+        // `index` is found, no other file can change the answer; once all index
+        // variants have failed, the same is true of a valid `readme`. Large,
+        // flat workspaces therefore open one conventional root document rather
+        // than every prose file in the directory on every cold start.
+        for preferred in ["index", "readme"] {
+            for path in shaped.iter().filter(|path| stem_is(path, preferred)) {
+                if root_candidate_name(fs, path).await.is_some() {
+                    let root_doc = path.file_name().expect("candidate has a filename");
+                    let discovered = build(fs, dir.to_path_buf(), PathBuf::from(root_doc)).await?;
+                    return Ok(Discovery::Found(discovered));
+                }
             }
-            let Ok(text) = fs.read_to_string(path).await else {
-                continue;
-            };
-            let Ok(doc) = Document::parse(path, &text) else {
-                continue;
-            };
-            if is_root_candidate(&doc)
-                && let Some(name) = path.file_name().and_then(|n| n.to_str())
-            {
-                candidates.push(name.to_string());
+        }
+
+        let mut candidates: Vec<String> = Vec::new();
+        for path in shaped
+            .iter()
+            .filter(|path| !stem_is(path, "index") && !stem_is(path, "readme"))
+        {
+            if let Some(name) = root_candidate_name(fs, path).await {
+                candidates.push(name);
             }
         }
         match choose_root(&candidates) {
@@ -127,6 +139,17 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         }
     }
     Ok(Discovery::NotFound)
+}
+
+/// The filename when `path` is a readable root candidate, otherwise nothing.
+/// Kept separate so priority-ordered discovery does not duplicate the parsing
+/// half of the root-candidate test.
+async fn root_candidate_name<FS: Storage>(fs: &FS, path: &Path) -> Option<String> {
+    let text = fs.read_to_string(path).await.ok()?;
+    let doc = Document::parse(path, &text).ok()?;
+    is_root_candidate(&doc)
+        .then(|| path.file_name()?.to_str().map(str::to_owned))
+        .flatten()
 }
 
 /// Whether `path` is *shaped* like a root document — the cheap half of the test,
