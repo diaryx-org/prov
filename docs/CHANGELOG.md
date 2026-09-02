@@ -31,6 +31,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 ### Breaking
 
 - **delete** — a deletion log, in place of the recycle bin ([`3045e28`](https://github.com/diaryx-org/prov/commit/3045e281a8f1d6606e38fe58ad249e10f294fd06))
+- **fixity** — coverage follows the document's shape, not a tier ([`cb0054e`](https://github.com/diaryx-org/prov/commit/cb0054eee6744ac899c0f99e48b9e4dd323d24b7))
 
 ### Fixed
 
@@ -77,6 +78,31 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
   `deletions_path`, `deletions_pointer`, `Finding::LegacyDeletionsPointer`,
   the `record_deletions` setting and its builder method, and
   `RelationSet::deletions` / `deletions_relation`.
+
+- `fixity: all` is no longer a valid config value. A
+  workspace declaring it keeps the default (`on`) and gains a `config_issue`
+  finding listing `off`/`on`. `fixity: attachments` is still read and now
+  means `on`; `prov config fixity` writes `on`. `prov init --fixity` takes
+  `on`/`off` instead of `payloads`/`full`, and no longer prompts.
+
+- A combined document is never given a `content_hash`.
+  `prov edit`, `prov stamp` and `Workspace::save_document` /
+  `record_content_update` decline the checksum half for one — the text and
+  the `updated` field still land. A separated prose body is now covered under
+  the default, where it previously needed `fixity: all`. A manifest node's
+  write path declines instead of erroring; `content_state` still refuses it
+  with the same message, which is what `prov stamp <node>` prints.
+
+- `check` gains `Finding::LegacyBodyHash` (JSON kind
+  `legacy_body_hash`, fields `root`, `count`, `example`) — one finding per
+  workspace, not per document, for documents recording a `content_hash` of
+  their own body. Diagnosis-only: it offers no remedy. Recorded body hashes
+  are still verified as `fixity_mismatch`.
+
+- `prov_graph::Fixity` lost the `Payloads` and `Full`
+  variants and the `covers_payloads` / `covers_bodies` predicates; it is now
+  `Off | On` with `covers(&Document)` and `is_on()`. `WorkspaceConfig`'s
+  default is `Fixity::On`.
 
 <!-- git-cliff:end -->
 
