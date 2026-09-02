@@ -48,6 +48,38 @@
 //! diagnoses (`fields.<name>.vocabulary`, checked by `check`), so the typo is
 //! *reported* where a forgiving match would silently forgive it.
 //!
+//! # The hold: a document's own "not yet"
+//!
+//! A gate says who a document is *for*. It cannot say the document is not
+//! *ready* — and the two are different facts with different lifetimes: an
+//! audience is a durable property of the text, while a draft is a state that
+//! ends. Writing "not yet" by removing the audience conflates them, and loses
+//! the audience in the process, so the format carries the second fact under
+//! its own key: an optional `hold`, naming a field.
+//!
+//! ```yaml
+//! exports:
+//!   letters:
+//!     gate: { field: audience, value: family }
+//!     hold: draft
+//! ```
+//!
+//! A document the gate admits that declares `true` under the hold field
+//! (`draft: true`) is **held**: it is not in the export, and the plan reports
+//! it as held rather than withheld, because the author *did* say it may
+//! leave — only not now. Only the literal `true` holds; `draft: false`, an
+//! absent field, and any other value do not. The name of the field is the
+//! workspace's to choose, since prov has no opinion about what a draft is
+//! called; what it fixes is the shape, which keeps the audit property intact:
+//! *"does this document leave?"* is still answerable from two named fields on
+//! that one document, with no list in the config to consult.
+//!
+//! The hold narrows and never widens, like a view: a document the gate holds
+//! back is withheld whatever its hold field says. And it fails closed like the
+//! gate: a `hold` that does not name a field is an unreadable export, not an
+//! export with no hold, because the author wrote down a bound on what leaves
+//! and a bound nobody can apply must not be dropped silently.
+//!
 //! # Why an export has no front page
 //!
 //! A diaryx site fronts its published set with an `index:` page. That key is
@@ -67,7 +99,12 @@ use prov_views::humanize;
 pub const EXPORTS_KEY: &str = "exports";
 
 /// The keys valid inside one `exports.<name>` entry.
-pub const EXPORT_KEYS: &[&str] = &["label", "gate", "view"];
+pub const EXPORT_KEYS: &[&str] = &["label", "gate", "hold", "view"];
+
+/// The one value that holds a document back under an export's `hold` field —
+/// compared against the field's scalar text, so a YAML `draft: true` and a
+/// TOML `draft = true` both read as it.
+pub const HOLD_VALUE: &str = "true";
 
 /// The keys valid inside a `gate:` mapping.
 pub const GATE_KEYS: &[&str] = &["field", "value"];
@@ -148,6 +185,11 @@ pub struct ExportSpec {
     /// The gate whose admitted set bounds this export. Required: an export
     /// that does not say what may leave is not an export.
     pub gate: Gate,
+    /// The field a document declares `true` under to be held back from this
+    /// export even though the gate admits it — `draft`, typically. `None`
+    /// holds nothing back. See the module docs: a hold narrows the gate's set
+    /// and never widens it.
+    pub hold: Option<String>,
     /// The [`ViewSpec`](prov_views::ViewSpec) naming this export's
     /// arrangement, by its key under `views:`. `None` exports the gate's whole
     /// admitted set. A view may narrow the set; it can never widen it — see
@@ -158,20 +200,40 @@ pub struct ExportSpec {
 impl ExportSpec {
     /// Read one `exports.<name>` entry.
     ///
-    /// Returns `None` when the entry is not a mapping or carries no readable
-    /// [`Gate`]. Dropping such an entry is the fail-closed direction — an
-    /// unreadable export declaration exports nothing, where defaulting its
-    /// gate would export a set nobody chose. [`crate::diagnose_export`] is the
-    /// half that says *why*, so a malformed entry is reported rather than
-    /// merely dropped.
+    /// Returns `None` when the entry is not a mapping, carries no readable
+    /// [`Gate`], or writes a `hold` that does not name a field. Dropping such
+    /// an entry is the fail-closed direction — an unreadable export
+    /// declaration exports nothing, where defaulting its gate would export a
+    /// set nobody chose, and ignoring its hold would let leave what the
+    /// author wrote down to keep. [`crate::diagnose_export`] is the half that
+    /// says *why*, so a malformed entry is reported rather than merely
+    /// dropped.
     pub fn parse(name: &str, value: &Value) -> Option<Self> {
         let map = value.as_mapping()?;
         let gate = Gate::parse(map.get("gate")?)?;
+        let hold = match map.get("hold") {
+            None => None,
+            Some(field) => Some(non_empty(Some(field))?),
+        };
         Some(ExportSpec {
             name: name.to_string(),
             label: non_empty(map.get("label")),
             gate,
+            hold,
             view: non_empty(map.get("view")),
+        })
+    }
+
+    /// Whether `meta` declares [`HOLD_VALUE`] under this export's hold field —
+    /// the "not yet" that keeps a gate-admitted document from leaving.
+    ///
+    /// Always `false` for an export with no hold. Read the way the gate reads
+    /// its own field, so a hold field is a scalar or a sequence of scalars
+    /// and a composite declares nothing.
+    pub fn holds(&self, meta: &Value) -> bool {
+        self.hold.as_ref().is_some_and(|field| {
+            meta.get(field)
+                .is_some_and(|value| scalar_texts(value).iter().any(|t| t == HOLD_VALUE))
         })
     }
 
@@ -184,6 +246,9 @@ impl ExportSpec {
             map.insert("label".into(), Value::String(label.clone()));
         }
         map.insert("gate".into(), self.gate.to_value());
+        if let Some(hold) = &self.hold {
+            map.insert("hold".into(), Value::String(hold.clone()));
+        }
         if let Some(view) = &self.view {
             map.insert("view".into(), Value::String(view.clone()));
         }
@@ -313,6 +378,7 @@ mod tests {
                 field: "audience".into(),
                 value: "family".into(),
             },
+            hold: Some("draft".into()),
             view: Some("daily".into()),
         };
         let back =
@@ -326,10 +392,12 @@ mod tests {
                 field: "audience".into(),
                 value: "family".into(),
             },
+            hold: None,
             view: None,
         };
         let map = minimal.to_mapping();
         assert!(map.get("label").is_none(), "absent options are omitted");
+        assert!(map.get("hold").is_none());
         assert!(map.get("view").is_none());
         let back = ExportSpec::parse("letters", &Value::Mapping(map)).expect("an export");
         assert_eq!(back, minimal);
@@ -379,6 +447,70 @@ mod tests {
         assert!(g.admits(&meta(&[("audience", Value::String("  family  ".into()))])));
         assert!(!g.admits(&meta(&[("audience", Value::String("Family".into()))])));
         assert!(!g.admits(&meta(&[("audience", Value::String("FAMILY".into()))])));
+    }
+
+    /// A `hold` that does not name a field is not an export — the fail-closed
+    /// reading of a bound somebody wrote and nobody can apply. Absent is the
+    /// ordinary case and holds nothing.
+    #[test]
+    fn a_hold_must_name_a_field_or_the_entry_is_not_an_export() {
+        let with = |hold: Value| mapping(&[("gate", gate("audience", "family")), ("hold", hold)]);
+        assert_eq!(
+            ExportSpec::parse("x", &with(Value::String("draft".into()))).and_then(|s| s.hold),
+            Some("draft".to_string())
+        );
+        assert_eq!(
+            ExportSpec::parse("x", &mapping(&[("gate", gate("audience", "family"))]))
+                .map(|s| s.hold),
+            Some(None),
+            "absent: an export that holds nothing"
+        );
+        for bad in [
+            Value::String("  ".into()),
+            Value::Null,
+            Value::Bool(true),
+            seq(&["draft"]),
+        ] {
+            assert!(
+                ExportSpec::parse("x", &with(bad.clone())).is_none(),
+                "for {bad:?}"
+            );
+        }
+    }
+
+    /// The hold reads its field the way the gate reads its own: the literal
+    /// `true` as a boolean or as text, in a scalar or a sequence, and nothing
+    /// else — so `draft: false` is a document that may leave.
+    #[test]
+    fn a_hold_is_true_and_only_true() {
+        let holding = ExportSpec {
+            name: "letters".into(),
+            label: None,
+            gate: Gate {
+                field: "audience".into(),
+                value: "family".into(),
+            },
+            hold: Some("draft".into()),
+            view: None,
+        };
+        let draft = |v: Value| meta(&[("audience", Value::String("family".into())), ("draft", v)]);
+        assert!(holding.holds(&draft(Value::Bool(true))));
+        assert!(holding.holds(&draft(Value::String("true".into()))));
+        assert!(holding.holds(&draft(seq(&["true"]))));
+        assert!(!holding.holds(&draft(Value::Bool(false))));
+        assert!(!holding.holds(&draft(Value::String("yes".into()))));
+        assert!(!holding.holds(&draft(Value::Null)));
+        assert!(!holding.holds(&draft(meta(&[("since", Value::Bool(true))]))));
+        assert!(!holding.holds(&meta(&[("audience", Value::String("family".into()))])));
+
+        let unholding = ExportSpec {
+            hold: None,
+            ..holding
+        };
+        assert!(
+            !unholding.holds(&draft(Value::Bool(true))),
+            "no hold reads no field"
+        );
     }
 
     /// A composite value declares nothing: a mapping has no single text, and a

@@ -132,6 +132,7 @@ prov:
       gate:                   # the membership test, written in each document
         field: audience       # a document is in this export only if…
         value: family         # …its own `audience` declares `family`
+      hold: draft             # optional — a document declaring `draft: true` waits
       view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
@@ -331,6 +332,7 @@ exports:
   letters:
     label: Letters home
     gate: { field: audience, value: family }
+    hold: draft
     view: daily
 ```
 
@@ -344,6 +346,19 @@ the typo is reported rather than forgiven. Deliberately not an any-of list and
 not a condition: what makes an export auditable is that *"does this document
 leave?"* is answerable by reading one field on that one document.
 
+`hold` optionally names a second field, for the fact a gate cannot carry: that
+a document is *not ready*. Who a document is for and whether it is finished are
+different facts with different lifetimes — an audience is a durable property of
+the text, a draft is a state that ends — and taking the audience away to say
+"not yet" loses the first to say the second. So a document the gate admits that
+declares the literal `true` under the hold field (`draft: true`) is **held**: not
+in the export, and reported as held rather than withheld, because the author did
+say it may leave. `draft: false`, an absent field, and any other value do not
+hold. What the field is called is the workspace's choice; prov fixes only the
+shape, and the audit property survives it — two named fields on the one
+document, no list in the config to consult. A `hold` that does not name a field
+makes the entry unreadable, for the same reason a missing gate does.
+
 `view` optionally arranges what leaves, and it obeys a one-way valve: **an
 export's set is a subset of what its gate admits, whatever the view says**. A
 view may narrow the set; it can never put back a document the gate held out.
@@ -356,8 +371,8 @@ surface.)
 There is no `index:` (front page) key: which page greets a reader is a
 rendering concern, declared by the publish layer that owns a render. prov only
 ever *plans* an export — `prov exports` lists them, `prov exports <name>`
-previews what leaves, what the gate held back, and what the view scoped out,
-and moves nothing. Publishing, copy-out, and OCFL export are downstream
+previews what leaves, what the gate held back, what the documents themselves
+are holding, and what the view scoped out, and moves nothing. Publishing, copy-out, and OCFL export are downstream
 consumers of the same plan. The format and planner are the `prov-exports`
 crate, which depends only on the read core and `prov-views` and so cannot
 write to — or leak from — the workspace it judges.

@@ -20,7 +20,7 @@
 
 use prov_graph::meta::Value;
 
-use crate::spec::{EXPORT_KEYS, ExportSpec, GATE_KEYS};
+use crate::spec::{EXPORT_KEYS, GATE_KEYS, Gate, non_empty};
 
 /// Something wrong with one `exports.<name>` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +44,10 @@ pub enum ExportIssueKind {
     /// and there is no shorthand form — a gate that does not say both halves
     /// would have to guess one, and either guess exports a set nobody chose.
     NoGate,
+    /// `hold:` is present but does not name a field — empty, null, or not a
+    /// string. Fatal, like a missing gate: the author wrote down something to
+    /// keep back, and an export that cannot read what would let it leave.
+    HoldNotAField,
     /// A key this format does not define, at the entry level.
     UnknownKey,
     /// A key inside `gate:` this format does not define. Reported separately
@@ -58,7 +62,10 @@ impl ExportIssueKind {
     /// Whether this issue means the entry is not an export at all — the ones
     /// [`ExportSpec::parse`](crate::ExportSpec::parse) drops.
     pub fn is_fatal(&self) -> bool {
-        matches!(self, ExportIssueKind::NotAMapping | ExportIssueKind::NoGate)
+        matches!(
+            self,
+            ExportIssueKind::NotAMapping | ExportIssueKind::NoGate | ExportIssueKind::HoldNotAField
+        )
     }
 
     /// The spellings a diagnostic should offer for this issue, if any.
@@ -66,7 +73,7 @@ impl ExportIssueKind {
         match self {
             ExportIssueKind::UnknownKey => EXPORT_KEYS,
             ExportIssueKind::GateUnknownKey | ExportIssueKind::NoGate => GATE_KEYS,
-            ExportIssueKind::NotAMapping => &[],
+            ExportIssueKind::NotAMapping | ExportIssueKind::HoldNotAField => &[],
         }
     }
 }
@@ -82,12 +89,23 @@ pub fn diagnose_export(name: &str, value: &Value) -> Vec<ExportIssue> {
         return vec![issue("", ExportIssueKind::NotAMapping)];
     };
     let mut issues = Vec::new();
-    if ExportSpec::parse(name, value).is_none() {
+    // Each fatal cause is judged on its own key, so an entry with a bad gate
+    // *and* a bad hold reports both; the parity test below holds the sum of
+    // these to `ExportSpec::parse`'s single verdict.
+    if map
+        .get("gate")
+        .is_none_or(|gate| Gate::parse(gate).is_none())
+    {
         issues.push(issue("gate", ExportIssueKind::NoGate));
     }
     for (key, value) in map {
         match key.as_str() {
             "label" | "view" => {}
+            "hold" => {
+                if non_empty(Some(value)).is_none() {
+                    issues.push(issue("hold", ExportIssueKind::HoldNotAField));
+                }
+            }
             "gate" => {
                 let Some(gate) = value.as_mapping() else {
                     // Already reported as `NoGate` above; the shape says the
@@ -119,6 +137,7 @@ pub fn diagnose_exports(exports: &Value) -> Vec<ExportIssue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::ExportSpec;
     use prov_graph::meta::Mapping;
 
     fn entry(pairs: &[(&str, Value)]) -> Value {
@@ -149,11 +168,38 @@ mod tests {
                 &entry(&[
                     ("label", Value::String("Letters home".into())),
                     ("gate", good_gate()),
+                    ("hold", Value::String("draft".into())),
                     ("view", Value::String("daily".into())),
                 ])
             )
             .is_empty()
         );
+    }
+
+    /// A hold that names no field is fatal on its own key, and beside a bad
+    /// gate both are reported — one finding per cause, so the author is sent
+    /// to every line that needs fixing rather than the first.
+    #[test]
+    fn a_hold_that_names_no_field_is_reported() {
+        for bad in [
+            Value::String("".into()),
+            Value::Null,
+            Value::Bool(true),
+            Value::Sequence(vec![Value::String("draft".into())]),
+        ] {
+            let issues =
+                diagnose_export("letters", &entry(&[("gate", good_gate()), ("hold", bad)]));
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].key, "hold");
+            assert_eq!(issues[0].kind, ExportIssueKind::HoldNotAField);
+            assert!(issues[0].kind.is_fatal());
+            assert!(issues[0].kind.expected().is_empty());
+        }
+
+        let both = diagnose_export("letters", &entry(&[("hold", Value::Null)]));
+        let kinds: Vec<&ExportIssueKind> = both.iter().map(|i| &i.kind).collect();
+        assert!(kinds.contains(&&ExportIssueKind::NoGate));
+        assert!(kinds.contains(&&ExportIssueKind::HoldNotAField));
     }
 
     #[test]
@@ -230,6 +276,13 @@ mod tests {
                 ("gate", good_gate()),
                 ("veiw", Value::String("daily".into())),
             ]),
+            entry(&[
+                ("gate", good_gate()),
+                ("hold", Value::String("draft".into())),
+            ]),
+            entry(&[("gate", good_gate()), ("hold", Value::String("".into()))]),
+            entry(&[("gate", good_gate()), ("hold", Value::Bool(true))]),
+            entry(&[("hold", Value::Null)]),
             entry(&[(
                 "gate",
                 gate(&[("field", "audience"), ("value", "family"), ("extra", "x")]),

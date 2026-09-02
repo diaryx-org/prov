@@ -15,6 +15,14 @@
 //! answerable by reading one field on that one document — let a view widen
 //! the set and the question becomes a proof about the pipeline.
 //!
+//! The export's `hold` is the other narrowing, and it goes through the same
+//! valve: a document the gate admits that declares `true` under the hold
+//! field is `retain`ed out of `entries` into [`ExportPlan::held`], and a
+//! document the gate holds back is withheld whatever its hold field says.
+//! The hold is applied before the view, so a draft that a view would also
+//! have scoped out is reported as held — the document's own word about
+//! itself outranks the workspace's arrangement of it.
+//!
 //! The valve also fails **closed**: a view that cannot be executed is an
 //! error ([`Error::View`](crate::Error)), never a fall-back to the gate's
 //! whole set, and an unreadable export declaration is not an export at all
@@ -84,6 +92,13 @@ pub struct ExportPlan {
     /// preview owes the user this list, since "I tagged it and it isn't in
     /// the export" is otherwise unexplainable from the file alone.
     pub outside_view: Vec<PathBuf>,
+    /// Documents the gate admits that are held back by their own hold field
+    /// (`draft: true` under an export with `hold: draft`), in path order.
+    /// Carried as [`ExportDoc`]s, declared values and all, because these are
+    /// the documents that *would* leave — a preview shows them as the
+    /// export's pending set, not as strangers to it. Always empty for an
+    /// export with no hold.
+    pub held: Vec<ExportDoc>,
     /// Reachable documents the gate holds back, each with what it declared.
     /// The bulk of any workspace — closed by default means most documents
     /// are here — reported so *withheld* is an answer, never a silence.
@@ -103,16 +118,26 @@ pub fn compose(
     view_scope: Option<&HashSet<PathBuf>>,
 ) -> ExportPlan {
     let mut entries = Vec::new();
+    let mut held = Vec::new();
     let mut withheld = Vec::new();
     for row in rows {
         let title = row.title().map(str::to_string);
         match spec.gate.declared_in(&row.meta) {
             Some(declared) if declared.iter().any(|v| v == spec.gate.value.trim()) => {
-                entries.push(ExportDoc {
+                let doc = ExportDoc {
                     path: row.path.clone(),
                     title,
                     declared,
-                });
+                };
+                // The hold is judged only here, on a document the gate has
+                // already admitted: it can move a document from `entries` to
+                // `held`, and nothing can move one the other way. A withheld
+                // document's hold field is never read.
+                if spec.holds(&row.meta) {
+                    held.push(doc);
+                } else {
+                    entries.push(doc);
+                }
             }
             declared => withheld.push(Withheld {
                 path: row.path.clone(),
@@ -140,6 +165,7 @@ pub fn compose(
         export: spec.name.clone(),
         entries,
         outside_view,
+        held,
         withheld,
     }
 }
@@ -245,6 +271,7 @@ mod tests {
                 field: "audience".into(),
                 value: value.to_string(),
             },
+            hold: None,
             view: view.map(str::to_string),
         }
     }
@@ -392,6 +419,113 @@ mod tests {
         let plan = compose(&spec("letters", "family", None), &rows, None);
         assert_eq!(plan.entries[0].declared, ["family", "friends"]);
     }
+
+    fn held_spec(view: Option<&str>) -> ExportSpec {
+        ExportSpec {
+            hold: Some("draft".into()),
+            ..spec("letters", "family", view)
+        }
+    }
+
+    /// A row that also declares something under the hold field.
+    fn row_with(path: &str, audience: Option<&[&str]>, hold: Value) -> Row {
+        let mut row = row(path, audience);
+        let Value::Mapping(meta) = &mut row.meta else {
+            unreachable!("row() builds a mapping");
+        };
+        meta.insert("draft".into(), hold);
+        row
+    }
+
+    /// The hold's whole job: a document the gate admits, declaring `true`
+    /// under the hold field, is not in the export — and is reported as held,
+    /// with its declared values, rather than as a stranger the gate refused.
+    #[test]
+    fn a_held_document_is_admitted_but_does_not_leave() {
+        let rows = [
+            row("index.md", Some(&["family"])),
+            row_with("draft.md", Some(&["family", "friends"]), Value::Bool(true)),
+        ];
+        let plan = compose(&held_spec(None), &rows, None);
+
+        assert_eq!(entry_paths(&plan), ["index.md"]);
+        assert_eq!(plan.held.len(), 1);
+        assert_eq!(plan.held[0].path, PathBuf::from("draft.md"));
+        assert_eq!(plan.held[0].declared, ["family", "friends"]);
+        assert!(plan.withheld.is_empty(), "held is not withheld");
+    }
+
+    /// Only the literal `true` holds. `false` is an author un-drafting by
+    /// editing rather than deleting, and any other value is not a hold —
+    /// the field is a switch, not a vocabulary.
+    #[test]
+    fn only_true_holds() {
+        for (value, leaves) in [
+            (Value::Bool(true), false),
+            (Value::String("true".into()), false),
+            (Value::String(" true ".into()), false),
+            (Value::Bool(false), true),
+            (Value::String("yes".into()), true),
+            (Value::String("draft".into()), true),
+            (Value::Null, true),
+            (Value::Sequence(vec![Value::Bool(true)]), false),
+        ] {
+            let rows = [row_with("a.md", Some(&["family"]), value.clone())];
+            let plan = compose(&held_spec(None), &rows, None);
+            assert_eq!(plan.entries.len() == 1, leaves, "for {value:?}");
+            assert_eq!(plan.held.len() == 1, !leaves, "for {value:?}");
+        }
+    }
+
+    /// The hold never widens: an export with no hold reads no hold field,
+    /// and a document the gate holds back stays withheld whatever it says
+    /// under the field — its hold is never consulted.
+    #[test]
+    fn a_hold_narrows_and_never_widens() {
+        let rows = [
+            row_with("draft.md", Some(&["family"]), Value::Bool(true)),
+            row_with("private-draft.md", None, Value::Bool(true)),
+            row_with("other-draft.md", Some(&["internal"]), Value::Bool(true)),
+        ];
+
+        let unheld = compose(&spec("letters", "family", None), &rows, None);
+        assert_eq!(entry_paths(&unheld), ["draft.md"], "no hold, nothing held");
+        assert!(unheld.held.is_empty());
+
+        let held = compose(&held_spec(None), &rows, None);
+        assert!(held.entries.is_empty());
+        assert_eq!(held.held.len(), 1, "only the admitted draft is held");
+        assert_eq!(
+            held.withheld.len(),
+            2,
+            "the refused drafts are withheld, not held"
+        );
+        assert_eq!(held.withheld[0].declared, None);
+        assert_eq!(
+            held.withheld[1].declared,
+            Some(vec!["internal".to_string()])
+        );
+    }
+
+    /// A draft the view would also have scoped out is reported as held: the
+    /// document's own word about itself comes before the workspace's
+    /// arrangement, and one document is on exactly one side.
+    #[test]
+    fn a_held_document_outside_the_view_is_reported_as_held() {
+        let rows = [
+            row_with("drafts/note.md", Some(&["family"]), Value::Bool(true)),
+            row("daily/monday.md", Some(&["family"])),
+        ];
+        let plan = compose(
+            &held_spec(Some("daily")),
+            &rows,
+            Some(&scope(&["daily/monday.md"])),
+        );
+
+        assert_eq!(entry_paths(&plan), ["daily/monday.md"]);
+        assert_eq!(plan.held[0].path, PathBuf::from("drafts/note.md"));
+        assert!(plan.outside_view.is_empty(), "held once, not twice");
+    }
 }
 
 // These tests read YAML frontmatter fixtures from a real directory, so they
@@ -458,6 +592,7 @@ mod fs_tests {
                 field: "audience".into(),
                 value: "family".into(),
             },
+            hold: None,
             view: view.map(str::to_string),
         }
     }
@@ -557,6 +692,47 @@ mod fs_tests {
         ))
         .unwrap_err();
         assert!(matches!(err, Error::View(_)), "got {err:?}");
+    }
+
+    /// End to end through a real file: a `draft: true` beside the gate value
+    /// is read as a YAML boolean and holds the document, and the same file
+    /// under an export with no hold leaves.
+    #[test]
+    fn a_draft_on_disk_is_held_by_an_export_that_holds() {
+        let dir = journal("hold");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- daily.md\n- note.md\n- wip.md\n---\n",
+        );
+        write(
+            &dir,
+            "wip.md",
+            "---\ntitle: Work in progress\npart_of: index.md\naudience: family\ndraft: true\n---\n",
+        );
+        let g = graph(&dir);
+
+        let holding = ExportSpec {
+            hold: Some("draft".into()),
+            ..export(None)
+        };
+        let plan = block_on(plan(&g, &holding, &[], "index.md")).expect("a plan");
+        assert_eq!(
+            entry_paths(&plan),
+            ["daily/07-24.md", "daily.md", "note.md"]
+        );
+        assert_eq!(plan.held.len(), 1);
+        assert_eq!(plan.held[0].path, PathBuf::from("wip.md"));
+        assert_eq!(plan.held[0].title.as_deref(), Some("Work in progress"));
+        assert_eq!(
+            plan.withheld.len(),
+            2,
+            "the hold moved nothing into withheld"
+        );
+
+        let unheld = block_on(super::plan(&g, &export(None), &[], "index.md")).expect("a plan");
+        assert!(unheld.held.is_empty());
+        assert!(entry_paths(&unheld).contains(&"wip.md".to_string()));
     }
 
     /// Planning twice over an unchanged workspace produces the identical

@@ -18,8 +18,15 @@
 //!   letters:
 //!     label: Letters home
 //!     gate: { field: audience, value: family }
+//!     hold: draft
 //!     view: daily
 //! ```
+//!
+//! The optional `hold` names a field a document declares `true` under to
+//! stay behind for now — `draft: true` — without giving up the audience it
+//! declared. Who a document is *for* and whether it is *ready* are different
+//! facts with different lifetimes, and the format carries them apart. See
+//! [`spec`] for the reasoning.
 //!
 //! What consumes a plan is deliberately out of scope: a publish step, an
 //! OCFL/copy-out export, a partial sync all start from the same
@@ -60,4 +67,4 @@ pub mod spec;
 pub use error::{Error, Result};
 pub use lint::{ExportIssue, ExportIssueKind, diagnose_export, diagnose_exports};
 pub use plan::{ExportDoc, ExportPlan, Withheld, compose, plan};
-pub use spec::{EXPORT_KEYS, EXPORTS_KEY, ExportSpec, GATE_KEYS, Gate, exports_from};
+pub use spec::{EXPORT_KEYS, EXPORTS_KEY, ExportSpec, GATE_KEYS, Gate, HOLD_VALUE, exports_from};

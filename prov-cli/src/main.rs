@@ -1213,12 +1213,16 @@ fn cmd_exports(name: Option<&str>) -> CmdResult {
             return Ok(ExitCode::SUCCESS);
         }
         for export in exports {
+            let hold = match &export.hold {
+                Some(field) => format!(", holding {field}: true"),
+                None => String::new(),
+            };
             let view = match &export.view {
                 Some(view) => format!(", arranged by {view}"),
                 None => String::new(),
             };
             println!(
-                "{}  {} — gate: {}: {}{view}",
+                "{}  {} — gate: {}: {}{hold}{view}",
                 export.name,
                 export.display_label(),
                 export.gate.field,
@@ -1255,6 +1259,23 @@ fn cmd_exports(name: Option<&str>) -> CmdResult {
             None => println!("  {}", doc.path.display()),
         }
     }
+    // The export's pending set: admitted, and waiting on the document's own
+    // word. Listed in full, with titles, because these are the documents the
+    // author is closest to finishing and the ones a preview is most often
+    // asked about.
+    if !plan.held.is_empty() {
+        println!(
+            "(admitted by the gate, held back by `{}: true`) ({})",
+            export.hold.as_deref().unwrap_or_default(),
+            plan.held.len()
+        );
+        for doc in &plan.held {
+            match &doc.title {
+                Some(title) => println!("  {} — {title}", doc.path.display()),
+                None => println!("  {}", doc.path.display()),
+            }
+        }
+    }
     // Named because it is the difference between the export and its gate:
     // "I tagged it and it isn't in the export" is unexplainable from the
     // file alone, and this list is the explanation.
@@ -1268,9 +1289,13 @@ fn cmd_exports(name: Option<&str>) -> CmdResult {
         }
     }
     println!(
-        "\n{} document(s) leave, {} held back by the gate{}",
+        "\n{} document(s) leave, {} held back by the gate{}{}",
         plan.entries.len(),
         plan.withheld.len(),
+        match plan.held.len() {
+            0 => String::new(),
+            n => format!(", {n} held by the document"),
+        },
         match plan.outside_view.len() {
             0 => String::new(),
             n => format!(", {n} outside the view"),

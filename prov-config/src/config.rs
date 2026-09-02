@@ -1835,6 +1835,19 @@ fn diagnose_exports(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mapp
                         ],
                     },
                 }),
+                ExportIssueKind::HoldNotAField => issues.push(ConfigIssue {
+                    key: format!("{prefix}.hold"),
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: spec
+                            .get("hold")
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        expected: vec![
+                            "the name of a field — a document the gate admits is held \
+                             back while it declares `true` under it (`hold: draft`)"
+                                .into(),
+                        ],
+                    },
+                }),
                 // A stray key inside an `exports.<name>` entry (or its gate)
                 // is inside a block prov defines completely, so a near-miss is
                 // the only thing it can be — same reasoning as `views`.
@@ -2409,6 +2422,7 @@ mod tests {
                         field: "audience".to_string(),
                         value: "family".to_string(),
                     },
+                    hold: Some("draft".to_string()),
                     view: Some("daily".to_string()),
                 },
                 ExportSpec {
@@ -2418,6 +2432,7 @@ mod tests {
                         field: "audience".to_string(),
                         value: "public".to_string(),
                     },
+                    hold: None,
                     view: None,
                 },
             ],
