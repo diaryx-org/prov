@@ -28,7 +28,55 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Breaking
+
+- **delete** — a deletion log, in place of the recycle bin ([`3045e28`](https://github.com/diaryx-org/prov/commit/3045e281a8f1d6606e38fe58ad249e10f294fd06))
+
+### Fixed
+
+- **routes** — preserve padded titles during scalar inference ([`5e3b82e`](https://github.com/diaryx-org/prov/commit/5e3b82e1ca0511ed29411f87644523a9a3b881e9))
+
+### Changed
+
+- **discovery** — prioritize conventional workspace roots ([`4b144e0`](https://github.com/diaryx-org/prov/commit/4b144e06b3382623a6c7a178801a15fcecd9b698))
+
+### Behavioural changes
+
+- `prov rm` destroys the file. It no longer moves it
+  anywhere, and `--purge` is gone with the distinction it drew. `prov
+  restore PATH` now repairs the graph around bytes you have already put
+  back — recover the file first (version control, a backup), then restore;
+  it refuses and says so when nothing is at the path. A workspace whose
+  records came from the old bin is unaffected: those still restore by
+  moving the parked bytes home.
+
+- `prov empty-bin` is now `prov clear-deletions`, and
+  forgets the log's records. In a workspace still on the old pointer it also
+  destroys the bytes parked under it, exactly as emptying a bin did.
+  `prov init --no-recycle-bin` is now `--no-record-deletions`.
+
+- The config axis `recycle_bin` is now `record_deletions`,
+  and the root's `recycle_bin` pointer is now `deletions`. Both old
+  spellings are still read, so no workspace has to be edited to keep
+  working; `prov config` writes the new ones, and `check` reports a root
+  still on the old pointer as a rename to make. The axis no longer chooses
+  between two kinds of delete — the delete is a hard delete either way — it
+  chooses whether the delete is recorded.
+
+- `check` no longer verifies a bin record's parked bytes.
+  The `recycled_bytes_missing` finding is gone (with its JSON shape), since
+  no record names bytes prov is keeping; `legacy_deletions_pointer` takes
+  its place, with fields `root`, `relation` and `log`. Both are
+  diagnosis-only.
+
+- The prov library lost `Workspace::recycle`,
+  `recycle_with`, `empty_bin` and `recycle_bin_path`, and
+  `Finding::RecycledBytesMissing`. `delete_with` gained an `at` parameter
+  (the deletion timestamp for the record) ahead of its `Diagnosis`;
+  `delete`'s own signature is unchanged. Added: `clear_deletions`,
+  `deletions_path`, `deletions_pointer`, `Finding::LegacyDeletionsPointer`,
+  the `record_deletions` setting and its builder method, and
+  `RelationSet::deletions` / `deletions_relation`.
 
 <!-- git-cliff:end -->
 
