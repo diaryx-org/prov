@@ -32,6 +32,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 - **delete** — a deletion log, in place of the recycle bin ([`3045e28`](https://github.com/diaryx-org/prov/commit/3045e281a8f1d6606e38fe58ad249e10f294fd06))
 - **fixity** — coverage follows the document's shape, not a tier ([`cb0054e`](https://github.com/diaryx-org/prov/commit/cb0054eee6744ac899c0f99e48b9e4dd323d24b7))
+- **exports** — a hold keeps an admitted document back while it says draft: true ([`10005c5`](https://github.com/diaryx-org/prov/commit/10005c5be9983d67505c851294668a04c1911a71))
 
 ### Fixed
 
@@ -103,6 +104,19 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
   variants and the `covers_payloads` / `covers_bodies` predicates; it is now
   `Off | On` with `covers(&Document)` and `is_on()`. `WorkspaceConfig`'s
   default is `Fixity::On`.
+
+- `ExportSpec` has a new `hold: Option<String>` field
+  and `ExportPlan` a new `held: Vec<ExportDoc>` field. Struct literals of
+  either must name them; a spec with `hold: None` plans exactly as before.
+
+- `ExportIssueKind` has a new fatal variant,
+  `HoldNotAField`, with no suggested spellings. An exhaustive match on the
+  enum must add an arm.
+
+- `exports.<name>.hold` is now a defined key. A config
+  that carried one was diagnosed as an unknown key and planned without
+  it; it now holds documents back, and one that does not name a field
+  makes the export unreadable.
 
 <!-- git-cliff:end -->
 
