@@ -190,10 +190,7 @@ fn config_set_refuses_a_setting_check_would_ignore() {
     let dir = workspace("refuse");
     let (ok, out) = run(&dir, &["config", "fixity", "alll"]);
     assert!(!ok, "a bad value must be refused: {out}");
-    assert!(
-        out.contains("attachments"),
-        "lists the accepted values: {out}"
-    );
+    assert!(out.contains("on"), "lists the accepted values: {out}");
     let (ok, out) = run(&dir, &["config", "references.notaton", "bare"]);
     assert!(!ok, "a typo'd nested key must be refused: {out}");
     assert!(
@@ -208,7 +205,7 @@ fn config_setup_materializes_the_full_effective_config() {
     // A partial config with a user field and one non-default setting.
     std::fs::write(
         dir.join("prov.yaml"),
-        "title: prov config\npart_of: '[Setup](/index.md)'\nmaintainer: adam\nfixity: all\n",
+        "title: prov config\npart_of: '[Setup](/index.md)'\nmaintainer: adam\nfixity: off\n",
     )
     .unwrap();
     let (ok, out) = run(&dir, &["config", "--setup"]);
@@ -219,7 +216,7 @@ fn config_setup_materializes_the_full_effective_config() {
         "preserves a user field: {cfg}"
     );
     assert!(
-        cfg.contains("fixity: all"),
+        cfg.contains("fixity: off"),
         "preserves a non-default: {cfg}"
     );
     assert!(

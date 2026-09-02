@@ -4,7 +4,7 @@ content_format: markdown
 id_storage: both
 updated: ''
 identity: lazy
-fixity: attachments
+fixity: on
 record_deletions: true
 metadata:
   format: yaml

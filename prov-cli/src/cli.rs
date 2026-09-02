@@ -194,9 +194,9 @@ pub(crate) enum Command {
         /// but no tombstones) (default: frontmatter).
         #[arg(long, value_enum)]
         id_storage: Option<IdStorageArg>,
-        /// Content-checksum coverage for bit-rot detection: payloads (attachment
-        /// files only — the default, frictionless), full (also document bodies,
-        /// paired with `prov edit`), or off. Verified by `prov check`.
+        /// Record content checksums for bit-rot detection: on (the default) or
+        /// off. What a checksum covers is not a setting — every node whose
+        /// content is a file of its own gets one. Verified by `prov check`.
         #[arg(long, value_enum)]
         fixity: Option<FixityArg>,
         /// Delete without recording what was deleted. Recording is on by
@@ -291,8 +291,9 @@ pub(crate) enum Command {
         file: String,
     },
     /// Open a document in `$EDITOR` and, on save, recompute its content checksum
-    /// (under the `full` fixity tier) so a body edit keeps its fixity true rather
-    /// than becoming a `check` finding. The prov-mediated edit path.
+    /// (for a document that records one — an attachment sidecar, a separated
+    /// node) so an edit keeps its fixity true rather than becoming a `check`
+    /// finding. The prov-mediated edit path.
     Edit {
         /// The document to edit: a path, a title route (`@Daily/2026/07`), or an
         /// id (`id:fpk38j`).
@@ -1142,23 +1143,27 @@ pub(crate) enum FixModeArg {
     Mechanical,
 }
 
-/// How far content-checksum (fixity) coverage extends — the `fixity` config key
-/// ([`prov::Fixity`]). `Payloads` (the default) checksums attachment payloads
-/// only — frictionless, since a payload is never edited; `Full` also checksums
-/// document bodies (pair with `prov edit`); `Off` records nothing.
+/// Whether content checksums (fixity) are recorded — the `fixity` config key
+/// ([`prov::Fixity`]). `On` (the default) checksums every node whose content is
+/// a file of its own: an attachment's payload, a separated document's prose
+/// body. `Off` records nothing.
+///
+/// There is no third value. There was — `full`, which also hashed a combined
+/// document's own body — and it went because coverage is the *document's*
+/// question, not the workspace's: a hash is worth recording when it names
+/// another file, and a hash of a parsed body names nothing an outside tool can
+/// check. See [`prov::Fixity::covers`].
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum FixityArg {
     Off,
-    Payloads,
-    Full,
+    On,
 }
 
 impl From<FixityArg> for prov::Fixity {
     fn from(f: FixityArg) -> Self {
         match f {
             FixityArg::Off => prov::Fixity::Off,
-            FixityArg::Payloads => prov::Fixity::Payloads,
-            FixityArg::Full => prov::Fixity::Full,
+            FixityArg::On => prov::Fixity::On,
         }
     }
 }

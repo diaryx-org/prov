@@ -872,8 +872,9 @@ fn cmd_edit(file: &Path) -> CmdResult {
 ///   crash-safe write `record_content_update` makes of them.
 /// - **`Intact`** — the bytes did not change. Nothing is written, which is what
 ///   makes re-running this free and puts it safely in a sync hook.
-/// - **`Unrecorded`** — no checksum on record (fixity off, or a document that
-///   predates it). There is no evidence either way, so a *named* target is
+/// - **`Unrecorded`** — no checksum on record (fixity off, a document fixity
+///   does not cover, or one that predates it). There is no evidence either way,
+///   so a *named* target is
 ///   stamped on the strength of the user having named it, and `--all` skips it:
 ///   naming one file asserts an edit, sweeping a workspace does not.
 /// - **`Unverifiable`** — a digest from an algorithm this build cannot compute.
@@ -978,8 +979,9 @@ fn cmd_stamp(target: Option<&Path>, all: bool, no_timestamp: bool, dry_run: bool
         if block_on(ws.record_content_update(&path, timestamp))? {
             // Whether a checksum actually landed is not knowable up front for an
             // `Unrecorded` document: `record_content_update` writes one only if
-            // the workspace's fixity tier covers this document's *kind*, which
-            // is a decision the library makes and does not report. Re-reading
+            // the workspace covers this document at all — fixity on, and the
+            // document pointing at a file of its own — which is a decision the
+            // library makes and does not report. Re-reading
             // the state is how the narration stays a claim about what happened
             // rather than about what was attempted — one extra read, and only
             // for a document that was actually written.
@@ -1000,10 +1002,10 @@ fn cmd_stamp(target: Option<&Path>, all: bool, no_timestamp: bool, dry_run: bool
             }
         } else {
             // `record_content_update` self-gates on the same two questions, so
-            // it can decline what `content_state` waved through — a workspace
-            // whose fixity tier does not cover this document's kind, with no
-            // `updated` field configured either. Nothing to write, and nothing
-            // wrong.
+            // it can decline what `content_state` waved through — a document
+            // fixity does not cover (one that keeps its prose inline, so there
+            // is no separate file to vouch for), with no `updated` field
+            // configured either. Nothing to write, and nothing wrong.
             if named {
                 eprintln!(
                     "{}: this workspace records neither a checksum nor a timestamp for it",

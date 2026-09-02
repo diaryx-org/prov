@@ -117,7 +117,7 @@ Each prompt has a flag, so you can skip the interview entirely. Pass `--yes`
 $ prov init my-vault --yes
 initialized /home/you/my-vault
   root: index.md — My Vault
-  config: prov.yaml — content markdown, embed delimited (character delimiters), language yaml, identity lazy, references path, markdown notation, root paths, id storage both, recycle bin, fixity attachments
+  config: prov.yaml — content markdown, embed delimited (character delimiters), language yaml, identity lazy, references path, markdown notation, root paths, id storage both, recycle bin, fixity on
 next: prov new <title> --in index.md
 ```
 
@@ -135,7 +135,7 @@ The prompts, in the order they're asked:
 | **References between docs**   | `--reference`  | `path`                        | `path`, `id`, `alias`, `split` — `id`/`split` need identity   |
 | **Path format**               | `--link-style` | `markdown-root`               | `markdown-root`, `markdown-relative`, `plain-relative`, `plain-canonical` (only when references are by path) |
 | **Where IDs are stored**      | `--id-storage` | `frontmatter`                 | `registry`, `frontmatter` — only when identity is on          |
-| **Content checksums**         | `--fixity`     | `payloads`                    | `off`, `payloads` (attachments), `full` (also bodies)         |
+| **Content checksums**         | `--fixity`     | `on`                          | `on`, `off` — what they cover follows each document's shape   |
 
 The root-shaping choices come first; the rest are **workspace preferences**, all
 written into a config document (`prov.yaml`, linked from the root) so the
@@ -152,7 +152,7 @@ needs identity, so it's rejected with `--identity off`:
 $ prov init my-vault --content djot --reference id --yes
 initialized /home/you/my-vault
   root: index.dj — My Vault
-  config: prov.yaml — content djot, embed code_block (typed code block), language yaml, identity lazy, references id, id storage both, recycle bin, fixity attachments
+  config: prov.yaml — content djot, embed code_block (typed code block), language yaml, identity lazy, references id, id storage both, recycle bin, fixity on
 next: prov new <title> --in index.dj
 ```
 
@@ -477,7 +477,7 @@ references:
 id_storage: both
 updated: ''
 identity: lazy
-fixity: attachments
+fixity: on
 record_deletions: true
 $ prov config references.target id
 set references.target = id in prov.yaml
@@ -496,7 +496,7 @@ The knobs (dotted keys address nested axes):
 | `metadata.format`         | `yaml`, `json`, `toml`, `fig`                                  | config language for newly created documents      |
 | `metadata.embed`          | `delimited`, `code_block`, `html_script`, `html_code`, `separate` | how that config language is embedded          |
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
-| `fixity`                  | `off`, `attachments`, `all`                                    | how far content-checksum coverage extends        |
+| `fixity`                  | `on`, `off`                                                    | whether content checksums are recorded           |
 | `record_deletions`        | `true`/`false`                                                 | a delete records what it destroyed               |
 | `updated`                 | *a field name*                                                 | the machine-maintained "last updated" field      |
 
@@ -533,30 +533,52 @@ launched the editor and knows whether you changed anything. Nothing else does:
 a sync client, another editor, a script, or `git checkout` all move bytes behind
 prov's back, and the document's own bookkeeping is then out of date.
 
-Turn on body checksums and name an `updated` field, so there is bookkeeping to
-be out of date in the first place:
+**What carries a checksum.** Not everything, and the rule is worth knowing
+before the demo: a `content_hash` is recorded wherever it covers *a file of its
+own* — an attachment's payload, or a separated document's prose body. Those are
+one small file vouching for another, and `sha256sum` on the covered file
+reproduces the recorded digest with no knowledge of prov, which is the whole
+point of writing it down. A document that keeps its prose inline gets none: the
+only thing such a hash could cover is the text between the frontmatter
+delimiters, which is not a file you can hand to `sha256sum`, and which prov
+would have to re-parse the document to reconstruct. That is a checksum only prov
+can check, and this archive does not deal in those — see
+[§12](#12-handing-the-folder-to-another-tool) for the same principle everywhere
+else. What says an inline body changed is whatever backs up or version-controls
+the folder.
+
+Name an `updated` field, and attach a file — bytes nothing can diff, which is
+exactly where a checksum earns its keep:
 
 <!-- exec -->
 ```console
-$ prov config fixity all
 $ prov config updated updated
+$ printf 'date,note\n2026-01-01,first\n' > data.csv
+$ prov attach data.csv --in index.md
+attached data.csv (sidecar data.csv.yaml in index.md)
 $ prov stamp --all
 ```
 
-`stamp --all` gives every document a checksum for the bytes it currently has —
-the baseline. It does *not* set `updated` on any of them: a checksum only
-restates the bytes, but a timestamp claims an edit happened, and a sweep across
-a workspace it merely read has no evidence for that.
+`attach` records the checksum as it writes the sidecar — the payload is read
+once, right there. `stamp --all` then gives every *other* covered document a
+checksum for the bytes it currently has, the baseline. It does *not* set
+`updated` on any of them: a checksum only restates the bytes, but a timestamp
+claims an edit happened, and a sweep across a workspace it merely read has no
+evidence for that.
 
-Now change a file the way anything other than prov would, and `check` sees it:
+Now change the file the way anything other than prov would, and `check` sees it:
 
 <!-- exec allow-fail -->
 ```console
-$ printf '\nA paragraph added by another editor.\n' >> notes/rust.md
+$ printf 'date,note\n2026-01-01,revised\n' > data.csv
 $ prov check
-notes/rust.md: fixity mismatch — content changed since its checksum was recorded (bit-rot, or an out-of-band edit)
+data.csv.yaml: fixity mismatch — content changed since its checksum was recorded (bit-rot, or an out-of-band edit)
 1 finding(s)
 ```
+
+The finding is filed against `data.csv.yaml`, the sidecar that made the claim,
+not against the payload that broke it — the sidecar is the file a repair
+rewrites.
 
 `check` deliberately stops there. It cannot tell an edit you meant from bit-rot
 you didn't, so it reports the question rather than answering it — which is why
@@ -566,8 +588,8 @@ happened. **You** are the missing evidence, and `stamp` is how you supply it:
 
 <!-- exec -->
 ```console
-$ prov stamp notes/rust.md
-notes/rust.md: stamped `updated` + checksum
+$ prov stamp data.csv.yaml
+data.csv.yaml: stamped `updated` + checksum
 $ prov check
 ok: no findings
 ```
@@ -579,8 +601,8 @@ folder was touched by something else":
 
 <!-- exec -->
 ```console
-$ prov stamp notes/rust.md
-notes/rust.md: checksum still matches the bytes — nothing to stamp
+$ prov stamp data.csv.yaml
+data.csv.yaml: checksum still matches the bytes — nothing to stamp
 ```
 
 Use `--no-timestamp` to correct the checksum without claiming an edit time, and

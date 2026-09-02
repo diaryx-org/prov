@@ -312,7 +312,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         // files in it now should record them the way this workspace records
         // everything else.
         let hashed = if current.files.is_empty() {
-            self.fixity().covers_payloads()
+            self.fixity().is_on()
         } else {
             current.is_hashed()
         };
@@ -364,7 +364,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         // The node pins the manifest, so a rewritten manifest is a stale pin
         // until this lands with it — one change set, never two.
         let (node_text, node_doc) = self.load(&node).await?;
-        if node_doc.meta.get("content_hash").is_some() || self.fixity().covers_payloads() {
+        if node_doc.meta.get("content_hash").is_some() || self.fixity().is_on() {
             let restamped = prov_store::edit::set_in_text(
                 &node_text,
                 node_doc.carrier,
@@ -388,7 +388,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// either file. Files under `dir` are *not* moved, rewritten or read as
     /// documents — only, when hashing, read as bytes.
     pub async fn attach_manifest(&mut self, dir: &Path, parent: &Path) -> Result<PathBuf> {
-        let hash = self.fixity().covers_payloads();
+        let hash = self.fixity().is_on();
         self.attach_manifest_titled(dir, parent, None, hash).await
     }
 
@@ -491,11 +491,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             ),
         );
         // Fixity: the node pins the manifest's bytes, exactly as an attachment
-        // sidecar pins its payload's. Recorded whenever the workspace covers
-        // payloads — and note it is decided by the *workspace*, not by `hash`:
-        // pinning the list costs one hash of one small file, and it is what makes
-        // the per-row hashes worth anything.
-        if self.fixity().covers_payloads() {
+        // sidecar pins its payload's. Recorded whenever the workspace records
+        // checksums at all — and note it is decided by the *workspace*, not by
+        // `hash`: pinning the list costs one hash of one small file, and it is
+        // what makes the per-row hashes worth anything.
+        if self.fixity().is_on() {
             map.insert(
                 "content_hash".into(),
                 Value::String(crate::fixity::digest(manifest_text.as_bytes())),

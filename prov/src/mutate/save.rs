@@ -26,9 +26,11 @@ use prov_store::index::IndexStore;
 /// folded into one of the first two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentState {
-    /// The document records no `content_hash` — fixity is off for its kind, or
-    /// it predates fixity. Nothing has drifted *from* nothing; a caller that
-    /// wants to stamp anyway is making a claim of its own, not restating one.
+    /// The document records no `content_hash` — fixity is off, the document is
+    /// a shape prov does not checksum (a combined document, whose hash could
+    /// only cover its own parsed body), or it predates fixity. Nothing has
+    /// drifted *from* nothing; a caller that wants to stamp anyway is making a
+    /// claim of its own, not restating one.
     Unrecorded,
     /// A recorded digest spelled in an algorithm this build cannot compute (a
     /// newer prov wrote it). Left alone rather than compared or overwritten.
@@ -54,10 +56,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// bookkeeping an edit implies, done as one crash-safe write.
     ///
     /// Two independent effects, each self-gating:
-    /// - **Fixity**: (re)stamp `content_hash` when the workspace records fixity
-    ///   for this document's kind (a payload for an attachment, a body otherwise)
-    ///   *and* the bytes have actually drifted from what is recorded — so an
-    ///   unchanged document restamps nothing.
+    /// - **Fixity**: (re)stamp `content_hash` when [`Fixity::covers`](crate::Fixity::covers) this
+    ///   document — checksums on, and the document points `content` at a file of
+    ///   its own — *and* the bytes have actually drifted from what is recorded,
+    ///   so an unchanged document restamps nothing. A combined document is never
+    ///   covered, and this is the seam that decides it for every write verb.
     /// - **Timestamp**: when `updated` is `Some((field, at))`, set that frontmatter
     ///   `field` to `at`. The *caller* decides an edit happened and supplies the
     ///   time — the library stays clockless and deterministic (DESIGN §2: the
@@ -65,8 +68,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///   convention). Pass `None` to reconcile the checksum only.
     ///
     /// Returns whether anything was written. Hashes the same bytes `check`
-    /// verifies: the `content` sibling for a document that points at one, else the
-    /// document's own body.
+    /// verifies: the `content` sibling a covered document points at.
     pub async fn record_content_update(
         &mut self,
         path: impl AsRef<Path>,
@@ -89,19 +91,23 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// *has* the new text rather than one reconciling text already on disk.
     ///
     /// Same two stamps, decided the same way and documented there: `content_hash`
-    /// where the workspace records fixity for this document's kind and the bytes
-    /// have drifted, and the `updated` frontmatter field when a caller supplies
-    /// one. The difference is only when they are applied. Stamping text on its way
+    /// where [`Fixity::covers`](crate::Fixity::covers) the document and the bytes have drifted, and the
+    /// `updated` frontmatter field when a caller supplies one. The difference is
+    /// only when they are applied. Stamping text on its way
     /// to the disk costs one journaled write; stamping it afterwards costs the
     /// first write, a read back, and a second write of the same document —
     /// three atomic-write protocols where one will do, and, on a synced
     /// filesystem, two uploads of one document per save.
     ///
     /// It is sound to stamp first because neither stamp can invalidate the other
-    /// or itself: both live in the frontmatter, and the hash covers the body (or a
-    /// `content` sibling), so amending the frontmatter cannot change what the hash
-    /// is *of*. The hash the caller's text arrived carrying is what drift is
-    /// measured against, exactly as if the text had been read back.
+    /// or itself: both live in the frontmatter, and a hash prov writes covers a
+    /// *different file*, so amending this document's frontmatter cannot change
+    /// what the hash is of. (Under the retired `all` tier that argument had to be
+    /// made rather than observed — the hash covered this file's own body, and
+    /// held only because prov hashes the parsed body and never the frontmatter.
+    /// It is now true by construction.) The hash the caller's text arrived
+    /// carrying is what drift is measured against, exactly as if the text had
+    /// been read back.
     pub async fn save_document(
         &mut self,
         path: impl AsRef<Path>,
@@ -139,13 +145,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         doc: &prov_graph::document::Document,
         updated: Option<(&str, &str)>,
     ) -> Result<Option<String>> {
-        // Fixity: does this document's kind get hashed, and has it drifted?
-        let covered = if doc.is_attachment() {
-            self.fixity().covers_payloads()
-        } else {
-            self.fixity().covers_bodies()
-        };
-        let new_hash = if covered {
+        // Fixity: does this document get hashed, and has it drifted? The first
+        // half is [`Fixity::covers`](crate::Fixity::covers) — on, and pointing at a file of its own.
+        let new_hash = if self.fixity().covers(doc) {
             let hash = self.covered_digest(path, doc).await?;
             (recorded_hash(doc) != Some(hash.as_str())).then_some(hash)
         } else {
@@ -255,7 +257,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Reconcile the content checksum for the document at `path` — [
     /// `record_content_update`](Self::record_content_update) with no timestamp.
     /// The prov-mediated way to keep fixity true across an edit, and how a
-    /// document first *earns* a body hash under the `full` tier.
+    /// covered document that predates fixity first *earns* a checksum.
     pub async fn restamp_fixity(&mut self, path: impl AsRef<Path>) -> Result<bool> {
         self.record_content_update(path, None).await
     }
@@ -268,13 +270,77 @@ mod tests {
     use crate::validate::Finding;
     use std::path::Path;
 
+    /// The shape fixity covers: a node whose `content` names the prose file
+    /// beside it. `note.yaml` records the checksum, `note.md` is the bytes it
+    /// covers — two files, so the record is one artifact vouching for another.
+    fn separated(tag: &str) -> std::path::PathBuf {
+        let dir = tempdir(tag);
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- note.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "note.yaml",
+            "title: Note\npart_of: index.md\ncontent: note.md\n",
+        );
+        write(&dir, "note.md", "hello world\n");
+        dir
+    }
+
     #[test]
-    fn full_tier_body_fixity_round_trips_through_restamp_and_check() {
-        // The `full` tier: a document's *body* carries its own checksum. The whole
-        // prov-edit loop, exercised at the library level (no $EDITOR needed):
-        // stamp → verify → out-of-band body edit is caught → restamp re-blesses.
-        use crate::config::Fixity;
-        let dir = tempdir("fixity-body");
+    fn a_separated_body_round_trips_through_restamp_and_check() {
+        // The whole prov-edit loop over the covered shape, at the library level
+        // (no $EDITOR needed): stamp → verify → out-of-band body edit is caught
+        // → restamp re-blesses.
+        let dir = separated("fixity-separated");
+        let mut w = ws(&dir);
+
+        // The node earns a hash; restamping unchanged bytes is a no-op.
+        assert!(
+            block_on(w.restamp_fixity("note.yaml")).unwrap(),
+            "first stamp records a hash"
+        );
+        assert!(
+            !block_on(w.restamp_fixity("note.yaml")).unwrap(),
+            "restamp of unchanged bytes writes nothing"
+        );
+
+        // What is recorded is the digest of `note.md` *entire* — reproducible by
+        // `sha256sum` with no knowledge of prov, which is the property that
+        // decides which shapes are covered at all.
+        let expected = crate::fixity::digest(&std::fs::read(dir.join("note.md")).unwrap());
+        let node = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
+        assert!(
+            node.contains(&format!("content_hash: {expected}")),
+            "{node}"
+        );
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // Edit the body out-of-band (bypassing `prov edit`) — check catches it,
+        // and names the node that made the claim rather than the file.
+        std::fs::write(dir.join("note.md"), "goodbye world\n").unwrap();
+        let findings = block_on(w.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(
+                |f| matches!(f, Finding::FixityMismatch { doc, .. } if doc == Path::new("note.yaml"))
+            ),
+            "an out-of-band body edit must be caught: {findings:?}"
+        );
+
+        // Restamp (what `prov edit` does on save) re-blesses it.
+        assert!(block_on(w.restamp_fixity("note.yaml")).unwrap());
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_combined_document_is_never_given_a_body_checksum() {
+        // The coverage the retired `all` tier wrote, and why it is gone: a
+        // combined document's hash could only cover `Document::body`, a parsed
+        // substring there is no file to hand `sha256sum`. Fixity is on here and
+        // the document goes through both write verbs; it never earns one.
+        let dir = tempdir("fixity-combined");
         write(
             &dir,
             "index.md",
@@ -285,86 +351,55 @@ mod tests {
             "note.md",
             "---\ntitle: Note\npart_of: index.md\n---\nhello world\n",
         );
+        let mut w = ws(&dir);
 
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-
-        // The document earns a body hash; restamping unchanged bytes is a no-op.
-        assert!(
-            block_on(w.restamp_fixity("note.md")).unwrap(),
-            "first stamp records a hash"
-        );
         assert!(
             !block_on(w.restamp_fixity("note.md")).unwrap(),
-            "restamp of unchanged bytes writes nothing"
+            "a combined document has nothing to stamp"
         );
-        assert!(
-            std::fs::read_to_string(dir.join("note.md"))
-                .unwrap()
-                .contains("content_hash: sha256:")
-        );
-        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
-
-        // Edit the body out-of-band (bypassing `prov edit`) — check catches it.
-        let stamped = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        std::fs::write(
-            dir.join("note.md"),
-            stamped.replace("hello world", "goodbye world"),
-        )
-        .unwrap();
-        let findings = block_on(w.check("index.md")).unwrap();
-        assert!(
-            findings.iter().any(
-                |f| matches!(f, Finding::FixityMismatch { doc, .. } if doc == Path::new("note.md"))
-            ),
-            "an out-of-band body edit must be caught: {findings:?}"
-        );
-
-        // Restamp (what `prov edit` does on save) re-blesses it.
-        assert!(block_on(w.restamp_fixity("note.md")).unwrap());
-        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
-    }
-
-    #[test]
-    fn content_state_tells_the_four_situations_apart() {
-        use crate::config::Fixity;
-        let dir = tempdir("content-state");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-
-        // No `content_hash` yet: nothing has drifted *from* nothing.
         assert_eq!(
             block_on(w.content_state("note.md")).unwrap(),
             ContentState::Unrecorded
         );
 
-        // Earning one makes the document verifiable, and intact.
-        assert!(block_on(w.restamp_fixity("note.md")).unwrap());
+        // A save still lands the text and the timestamp — only the checksum half
+        // is declined, so nothing about the edit itself is lost.
+        block_on(w.save_document(
+            "note.md",
+            "---\ntitle: Note\npart_of: index.md\n---\nedited\n",
+            Some(("updated", "2026-09-02T00:00:00Z")),
+        ))
+        .unwrap();
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        assert!(text.contains("edited"), "{text}");
+        assert!(text.contains("updated: 2026-09-02T00:00:00Z"), "{text}");
+        assert!(!text.contains("content_hash"), "{text}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn content_state_tells_the_four_situations_apart() {
+        let dir = separated("content-state");
+        let mut w = ws(&dir);
+
+        // No `content_hash` yet: nothing has drifted *from* nothing.
         assert_eq!(
-            block_on(w.content_state("note.md")).unwrap(),
+            block_on(w.content_state("note.yaml")).unwrap(),
+            ContentState::Unrecorded
+        );
+
+        // Earning one makes the document verifiable, and intact.
+        assert!(block_on(w.restamp_fixity("note.yaml")).unwrap());
+        assert_eq!(
+            block_on(w.content_state("note.yaml")).unwrap(),
             ContentState::Intact
         );
 
         // An out-of-band body edit is drift — the same fact `check` reports as
         // a `FixityMismatch`, which is the agreement `stamp` relies on.
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        std::fs::write(dir.join("note.md"), text.replace("body", "edited")).unwrap();
+        std::fs::write(dir.join("note.md"), "edited\n").unwrap();
         assert_eq!(
-            block_on(w.content_state("note.md")).unwrap(),
+            block_on(w.content_state("note.yaml")).unwrap(),
             ContentState::Drifted
         );
         assert!(
@@ -377,26 +412,25 @@ mod tests {
 
         // A digest from an algorithm this build cannot compute is left alone
         // rather than compared — the same judgment `check` declines to make.
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        let text = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
         let line = text
             .lines()
             .find(|l| l.starts_with("content_hash:"))
             .unwrap()
             .to_string();
         std::fs::write(
-            dir.join("note.md"),
+            dir.join("note.yaml"),
             text.replace(&line, "content_hash: blake9:deadbeef"),
         )
         .unwrap();
         assert_eq!(
-            block_on(w.content_state("note.md")).unwrap(),
+            block_on(w.content_state("note.yaml")).unwrap(),
             ContentState::Unverifiable
         );
     }
 
     #[test]
     fn content_state_reads_the_payload_for_an_attachment_not_the_sidecar() {
-        use crate::config::Fixity;
         let dir = tempdir("content-state-payload");
         write(
             &dir,
@@ -409,10 +443,7 @@ mod tests {
             "photo.jpg.yaml",
             "title: Photo\npart_of: index.md\ncontent: photo.jpg\n",
         );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
+        let mut w = ws(&dir);
         assert!(block_on(w.restamp_fixity("photo.jpg.yaml")).unwrap());
         assert_eq!(
             block_on(w.content_state("photo.jpg.yaml")).unwrap(),
@@ -433,8 +464,7 @@ mod tests {
         // A manifest node's checksum covers the manifest document it declares,
         // not its own (nonexistent) body — `stamp` cannot restamp it the way it
         // restamps an ordinary document, and must say so rather than silently
-        // comparing against the wrong bytes (or, under `full`, overwriting a
-        // correct pin with a wrong one).
+        // comparing against the wrong bytes.
         let dir = tempdir("content-state-manifest");
         write(&dir, "index.md", "---\ntitle: Home\n---\n");
         std::fs::create_dir_all(dir.join("photos")).unwrap();
@@ -450,49 +480,31 @@ mod tests {
             "{err}"
         );
 
-        // The write path agrees, under the tier where it would otherwise reach
-        // `covered_digest` at all.
-        use crate::config::Fixity;
-        let mut full = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-        let err = block_on(full.restamp_fixity("photos.yaml")).unwrap_err();
-        assert!(err.to_string().contains("manifest"), "{err}");
+        // The write path no longer reaches `covered_digest` for one at all: a
+        // manifest node points `manifest`, not `content`, so `Fixity::covers` is
+        // false and the restamp *declines* rather than erroring. The guidance
+        // above is still what a user meets — `stamp <node>` asks `content_state`
+        // first, and that is the error it prints.
+        assert!(!block_on(w.restamp_fixity("photos.yaml")).unwrap());
     }
 
     #[test]
     fn content_state_never_writes() {
-        use crate::config::Fixity;
-        let dir = tempdir("content-state-readonly");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
-        block_on(w.restamp_fixity("note.md")).unwrap();
-        let before = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        std::fs::write(dir.join("note.md"), before.replace("body", "edited")).unwrap();
-        let drifted = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        let dir = separated("content-state-readonly");
+        let mut w = ws(&dir);
+        block_on(w.restamp_fixity("note.yaml")).unwrap();
+        std::fs::write(dir.join("note.md"), "edited\n").unwrap();
+        let drifted = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
 
         // Asking the question is what makes the sweep safe: `stamp --all` calls
         // this on every document it reaches, and must leave the ones it decides
         // against byte-identical.
         assert_eq!(
-            block_on(w.content_state("note.md")).unwrap(),
+            block_on(w.content_state("note.yaml")).unwrap(),
             ContentState::Drifted
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("note.md")).unwrap(),
+            std::fs::read_to_string(dir.join("note.yaml")).unwrap(),
             drifted,
             "content_state must not write"
         );
@@ -500,31 +512,19 @@ mod tests {
 
     #[test]
     fn record_content_update_stamps_the_timestamp_field_and_the_hash_together() {
-        use crate::config::Fixity;
-        let dir = tempdir("content-update");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
+        let dir = separated("content-update");
+        let mut w = ws(&dir);
 
         // A content edit at a caller-supplied instant: both the `updated` field
         // (the client's chosen name + RFC-3339 value) and the body hash land in
         // one write.
         assert!(
-            block_on(w.record_content_update("note.md", Some(("updated", "2026-07-16T10:00:00Z"))))
-                .unwrap()
+            block_on(
+                w.record_content_update("note.yaml", Some(("updated", "2026-07-16T10:00:00Z")))
+            )
+            .unwrap()
         );
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        let text = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
         assert!(text.contains("updated: 2026-07-16T10:00:00Z"), "{text}");
         assert!(text.contains("content_hash: sha256:"), "{text}");
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
@@ -532,11 +532,13 @@ mod tests {
         // The library never reads a clock: the exact string it is handed is what
         // it writes (DESIGN §2 — the client produces the instant).
         assert!(
-            block_on(w.record_content_update("note.md", Some(("updated", "2099-01-01T00:00:00Z"))))
-                .unwrap()
+            block_on(
+                w.record_content_update("note.yaml", Some(("updated", "2099-01-01T00:00:00Z")))
+            )
+            .unwrap()
         );
         assert!(
-            std::fs::read_to_string(dir.join("note.md"))
+            std::fs::read_to_string(dir.join("note.yaml"))
                 .unwrap()
                 .contains("updated: 2099-01-01T00:00:00Z")
         );
@@ -545,33 +547,23 @@ mod tests {
     #[test]
     fn save_document_lands_the_new_text_and_both_stamps_in_one_write() {
         // The stamp-first path has to reach the same place the read-back path
-        // does: new body on disk, `updated` set, `content_hash` covering the body
-        // that was actually saved — and `check` agreeing the hash is true, which
-        // is the assertion that would fail if the hash were taken of the wrong
-        // bytes (the old body, or the text before its frontmatter was stamped).
-        use crate::config::Fixity;
-        let dir = tempdir("save-document");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-        );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-        );
-        let mut w = Workspace::builder(StdFs)
-            .root(&dir)
-            .fixity(Fixity::Full)
-            .build();
+        // does: new text on disk, `updated` set, `content_hash` covering the
+        // body file the node points at — and `check` agreeing the hash is true,
+        // which is the assertion that would fail if the hash were taken of the
+        // wrong bytes or written before the frontmatter it sits in was stamped.
+        let dir = separated("save-document");
+        let mut w = ws(&dir);
 
-        let edited = "---\ntitle: Note\npart_of: index.md\n---\na different body\n";
-        block_on(w.save_document("note.md", edited, Some(("updated", "2026-08-06T09:00:00Z"))))
-            .unwrap();
+        let edited = "title: Renamed\npart_of: index.md\ncontent: note.md\n";
+        block_on(w.save_document(
+            "note.yaml",
+            edited,
+            Some(("updated", "2026-08-06T09:00:00Z")),
+        ))
+        .unwrap();
 
-        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
-        assert!(text.contains("a different body"), "{text}");
+        let text = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
+        assert!(text.contains("title: Renamed"), "{text}");
         assert!(text.contains("updated: 2026-08-06T09:00:00Z"), "{text}");
         assert!(text.contains("content_hash: sha256:"), "{text}");
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
@@ -583,41 +575,21 @@ mod tests {
         // through the old two-step route must produce the same file. Anything
         // else would be a silent format or ordering change in every document a
         // client saves.
-        use crate::config::Fixity;
-        let one_step = tempdir("save-equivalence-new");
-        let two_step = tempdir("save-equivalence-old");
-        let edited = "---\ntitle: Note\npart_of: index.md\n---\nrewritten\n";
+        let one_step = separated("save-equivalence-new");
+        let two_step = separated("save-equivalence-old");
+        let edited = "title: Rewritten\npart_of: index.md\ncontent: note.md\n";
         let stamp = Some(("updated", "2026-08-06T09:00:00Z"));
 
-        for dir in [&one_step, &two_step] {
-            write(
-                dir,
-                "index.md",
-                "---\ntitle: Home\ncontents:\n- note.md\n---\n",
-            );
-            write(
-                dir,
-                "note.md",
-                "---\ntitle: Note\npart_of: index.md\n---\nbody\n",
-            );
-        }
+        let mut w = ws(&one_step);
+        block_on(w.save_document("note.yaml", edited, stamp)).unwrap();
 
-        let mut w = Workspace::builder(StdFs)
-            .root(&one_step)
-            .fixity(Fixity::Full)
-            .build();
-        block_on(w.save_document("note.md", edited, stamp)).unwrap();
-
-        let mut old = Workspace::builder(StdFs)
-            .root(&two_step)
-            .fixity(Fixity::Full)
-            .build();
-        std::fs::write(two_step.join("note.md"), edited).unwrap();
-        assert!(block_on(old.record_content_update("note.md", stamp)).unwrap());
+        let mut old = ws(&two_step);
+        std::fs::write(two_step.join("note.yaml"), edited).unwrap();
+        assert!(block_on(old.record_content_update("note.yaml", stamp)).unwrap());
 
         assert_eq!(
-            std::fs::read_to_string(one_step.join("note.md")).unwrap(),
-            std::fs::read_to_string(two_step.join("note.md")).unwrap(),
+            std::fs::read_to_string(one_step.join("note.yaml")).unwrap(),
+            std::fs::read_to_string(two_step.join("note.yaml")).unwrap(),
         );
     }
 

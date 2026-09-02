@@ -897,17 +897,14 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
             Fixity::Off => "Nothing here is checksummed. A file's contents are \
                             whatever the file says."
                 .to_string(),
-            Fixity::Payloads => format!(
-                "Attachment payloads record a {}, written as `sha256:<hex>` so any \
-                 checksum tool can verify it. Document bodies are not hashed.",
-                code("content_hash")
-            ),
-            Fixity::Full => format!(
-                "Every document records a {} of its body, and every attachment \
-                 payload one of its bytes, written as `sha256:<hex>` so any \
-                 checksum tool can verify it independently. Editing a document \
-                 outside this tool will leave its checksum stale — repairable, \
-                 not lost.",
+            Fixity::On => format!(
+                "Anything kept in a file of its own — an attachment's payload, a \
+                 document whose prose sits beside it — is recorded with a {} in \
+                 the small file that points at it, written as `sha256:<hex>` so \
+                 any checksum tool can verify it independently: run `sha256sum` \
+                 on the file and compare. A document that keeps its prose inline \
+                 is not checksummed here; whatever backs up or version-controls \
+                 this directory is what says its text changed.",
                 code("content_hash")
             ),
         }
@@ -1729,7 +1726,7 @@ mod tests {
             reference_target: Addressing::Id,
             id_storage: IdStorage::FrontmatterOnly,
             record_deletions: false,
-            fixity: Fixity::Full,
+            fixity: Fixity::Off,
             updated: "modified".into(),
             ..WorkspaceConfig::default()
         };

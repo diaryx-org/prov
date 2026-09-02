@@ -114,9 +114,13 @@ as its payload. Everything in the tree is plain text, always.
   links to it by id, or when it is published — not before. The id is
   stamped into the document's own metadata, and a registry file mirrors
   it. Because the id lives in the file, it survives being moved or copied.
-- **Checksums.** Attachment payloads record a `content_hash`, written as
-  `sha256:<hex>` so any checksum tool can verify it. Document bodies are
-  not hashed.
+- **Checksums.** Anything kept in a file of its own — an attachment's
+  payload, a document whose prose sits beside it — is recorded with a
+  `content_hash` in the small file that points at it, written as
+  `sha256:<hex>` so any checksum tool can verify it independently: run
+  `sha256sum` on the file and compare. A document that keeps its prose
+  inline is not checksummed here; whatever backs up or version-controls
+  this directory is what says its text changed.
 - **Deleting.** A deletion destroys the file. What is kept is a record of
   it — where the document sat, what it was called, and which document
   listed it — so that if you get the file back from wherever this

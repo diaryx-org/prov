@@ -653,7 +653,6 @@ pub(crate) fn cmd_init(
     let path_format_possible =
         link_style.is_none() && matches!(reference, None | Some(ReferenceArg::Path));
     let id_storage_prompt_possible = id_storage.is_none() && identity != Some(IdentityArg::Off);
-    let fixity_prompt_possible = fixity.is_none();
     let prompting = interactive
         && (use_walk
             || title.is_none()
@@ -665,8 +664,7 @@ pub(crate) fn cmd_init(
             || identity.is_none()
             || reference_prompt_possible
             || path_format_possible
-            || id_storage_prompt_possible
-            || fixity_prompt_possible);
+            || id_storage_prompt_possible);
     if prompting {
         cliclack::intro("prov init")?;
     }
@@ -830,15 +828,13 @@ pub(crate) fn cmd_init(
         }
     };
 
-    // The archival safety axes. Fixity is prompted (three meaningful tiers);
-    // deletion recording (on unless opted out) and the updated-timestamp field
-    // are flag-only — a delete that says what it destroyed is the right default
-    // without asking, and a timestamp field name is a niche text input.
-    let fixity = match fixity {
-        Some(f) => f,
-        None if interactive => prompt_fixity()?,
-        None => FixityArg::Payloads,
-    };
+    // The archival safety axes, all flag-only. Fixity used to be prompted, and
+    // was worth a question while it had three meaningful tiers to choose
+    // between; with coverage decided by each document's shape it is down to
+    // on/off, and on is right for the same reason recording deletions is —
+    // asking would be asking whether to want the feature. The
+    // updated-timestamp field stays flag-only as a niche text input.
+    let fixity = fixity.unwrap_or(FixityArg::On);
     let record_deletions = !no_record_deletions;
     let updated_field = updated_field.unwrap_or_default();
 
@@ -1260,26 +1256,6 @@ fn prompt_reference(identity: IdentityArg, wrapper: WrapperArg) -> std::io::Resu
 /// Prompt for where IDs are stored — registry vs. a self-describing frontmatter
 /// shadow. The `frontmatter-only` mode (no registry) is intentionally not offered
 /// here; it forfeits tombstones and is reachable only via `--id-storage`.
-/// Prompt for content-checksum coverage — the archival bit-rot guard. Payloads
-/// is the frictionless default; full extends it to editable bodies (paired with
-/// `prov edit`); off records nothing.
-fn prompt_fixity() -> std::io::Result<FixityArg> {
-    cliclack::select("Content checksums (bit-rot detection)")
-        .initial_value(FixityArg::Payloads)
-        .item(
-            FixityArg::Payloads,
-            "Attachments",
-            "checksum attachment files; verified by `check` (recommended)",
-        )
-        .item(
-            FixityArg::Full,
-            "Attachments + document bodies",
-            "also checksum bodies; restamped by `prov edit`",
-        )
-        .item(FixityArg::Off, "Off", "record no checksums")
-        .interact()
-}
-
 fn prompt_id_storage() -> std::io::Result<IdStorageArg> {
     cliclack::select("Where IDs are stored")
         .initial_value(IdStorageArg::Frontmatter)

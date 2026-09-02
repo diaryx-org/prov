@@ -9,12 +9,13 @@
 //!
 //! ## Why this sits in the read core
 //!
-//! Everything here is a pure function of bytes: a policy enum, a digest, and
-//! two predicates over a recorded string. None of it opens a file, and none of
-//! it can change one — the same reason [`identity`](crate::identity) sits here
-//! rather than above the read boundary. The *writes* that record a digest
-//! (`attach`, `save`, the manifest verbs) live in `prov`, and the pass that
-//! reads bytes back to compare them is `prov`'s `check`.
+//! Everything here is a pure function of its inputs: a policy enum, a digest,
+//! two predicates over a recorded string, and one over a parsed document's
+//! shape. None of it opens a file, and none of it can change one — the same
+//! reason [`identity`](crate::identity) sits here rather than above the read
+//! boundary. The *writes* that record a digest (`attach`, `save`, the manifest
+//! verbs) live in `prov`, and the pass that reads bytes back to compare them is
+//! `prov`'s `check`.
 //!
 //! ## Why SHA-256
 //!
@@ -43,35 +44,70 @@
 
 use sha2::{Digest, Sha256};
 
-/// How far content checksums cover a workspace.
+/// Whether a workspace records content checksums.
+///
+/// Not a coverage scale, though it was one — `off | attachments | all`, where
+/// `all` additionally checksummed a combined document's *body*. What a checksum
+/// covers is now read off the document's shape instead, and the shape answers
+/// better than a setting could, so all that is left to configure is whether
+/// checksums are written at all. [`covers`](Fixity::covers) is the rule and why.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Fixity {
-    /// No content checksums are recorded or verified.
+    /// No content checksums are recorded.
     Off,
-    /// Attachment payloads only.
+    /// Every node whose content is a file of its own records one.
     #[default]
-    Payloads,
-    /// Attachment payloads and document bodies.
-    Full,
+    On,
 }
 
 impl Fixity {
-    /// Whether attachment payloads are checksummed.
-    pub fn covers_payloads(self) -> bool {
-        matches!(self, Self::Payloads | Self::Full)
+    /// Whether a `content_hash` is written for `doc`: fixity is on, **and** the
+    /// hash would cover a file other than the one recording it — an attachment's
+    /// payload, or a separated document's prose body.
+    ///
+    /// That second half is the whole rule, and it is a claim about what a
+    /// checksum is *worth*, not about how much work to do. A hash covering a
+    /// sibling file is one artifact vouching for another, whole-file:
+    /// `sha256sum body.md` reproduces it by hand, which is the tool-agnostic
+    /// verifiability this module's choice of SHA-256 exists to buy. A hash of a
+    /// combined document's own body buys none of it. It covers
+    /// [`Document::body`](crate::document::Document::body), a parsed substring —
+    /// and not reliably a contiguous one, since a metadata block need not sit at
+    /// a file's edge and the body is then the prose from both sides of it,
+    /// concatenated. There is no file to hand `sha256sum`, and no rule to state
+    /// to an outside verifier short of reimplementing prov's parser. A guarantee
+    /// that silently changed strength with the carrier is what retired the tier.
+    ///
+    /// A **manifest node** is not covered here, and is not thereby exempt: its
+    /// checksum pins the manifest document it declares, so it is recorded and
+    /// refreshed by the manifest verbs — the only ones that know what rebuilding
+    /// it costs. See [`manifest`](crate::manifest).
+    pub fn covers(self, doc: &crate::document::Document) -> bool {
+        self == Self::On && doc.content_attr().is_some()
     }
 
-    /// Whether document bodies are checksummed.
-    pub fn covers_bodies(self) -> bool {
-        matches!(self, Self::Full)
+    /// Whether checksums are recorded at all — the axis on its own, for a caller
+    /// with no parsed document to ask about: a sidecar being minted, whose shape
+    /// is not in question because the verb is what is giving it one.
+    pub fn is_on(self) -> bool {
+        self == Self::On
     }
 
     /// Parse the configuration spelling; unknown values return `None`.
+    ///
+    /// `attachments` is still read. It was this axis's default spelling while
+    /// coverage was tiered, so it is written into every `prov.yaml` predating
+    /// this, and it names a subset of what `on` now covers — nothing an author
+    /// asked for is lost by taking it at its word. `all` is deliberately *not*
+    /// read, though it was the other live spelling: what it asked for was body
+    /// checksums, which is precisely the thing that went away, and a workspace
+    /// that asked for them is owed the news rather than something quietly
+    /// narrower. It lands as an invalid value on a recognized axis — the default
+    /// is kept and `check` reports it, listing the spellings that remain.
     pub fn from_config_str(value: &str) -> Option<Self> {
         match value {
             "off" => Some(Self::Off),
-            "attachments" => Some(Self::Payloads),
-            "all" => Some(Self::Full),
+            "on" | "attachments" => Some(Self::On),
             _ => None,
         }
     }
@@ -80,14 +116,13 @@ impl Fixity {
     pub fn as_config_str(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Payloads => "attachments",
-            Self::Full => "all",
+            Self::On => "on",
         }
     }
 }
 
 /// The fixity digest of `bytes`, spelled `sha256:<lowercase-hex>` — the form
-/// recorded in a sidecar, a frontmatter field, or a recycle-bin tombstone, and
+/// recorded in an attachment sidecar, a manifest row, or a node's frontmatter, and
 /// the form [`verify`] checks against. The `sha256:` prefix names the algorithm,
 /// so the record is self-describing and a future digest can be distinguished.
 pub fn digest(bytes: &[u8]) -> String {
@@ -159,6 +194,50 @@ mod tests {
         let recorded = digest(b"the original bytes");
         assert!(verify(b"the original bytes", &recorded));
         assert!(!verify(b"the corrupted bytes", &recorded));
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn covers_exactly_the_documents_whose_hash_would_name_another_file() {
+        use crate::document::Document;
+        let parse = |p: &str, t: &str| Document::parse(p, t).unwrap();
+
+        // A separated node and an attachment sidecar both point `content` at a
+        // sibling — one file vouching for another, which is the covered shape.
+        let separated = parse("notes/a.yaml", "title: A\ncontent: a.md\n");
+        let sidecar = parse("photo.jpg.yaml", "title: Photo\ncontent: photo.jpg\n");
+        assert!(Fixity::On.covers(&separated));
+        assert!(Fixity::On.covers(&sidecar));
+
+        // A combined document's hash could only cover its own parsed body. That
+        // is the coverage this axis dropped, so it is not covered at any setting.
+        let combined = parse("note.md", "---\ntitle: Note\n---\nhello\n");
+        assert!(!Fixity::On.covers(&combined));
+
+        // A manifest node pins its manifest, but through the manifest verbs.
+        let node = parse(
+            "photos.yaml",
+            "title: Photos\nmanifest: photos.manifest.yaml\n",
+        );
+        assert!(!Fixity::On.covers(&node));
+
+        // `off` covers nothing, whatever the shape.
+        assert!(!Fixity::Off.covers(&separated));
+        assert!(!Fixity::Off.covers(&sidecar));
+    }
+
+    #[test]
+    fn reads_the_retired_default_spelling_but_not_the_retired_tier() {
+        // `attachments` named a subset of what `on` covers, so it is honored.
+        assert_eq!(Fixity::from_config_str("attachments"), Some(Fixity::On));
+        assert_eq!(Fixity::from_config_str("on"), Some(Fixity::On));
+        assert_eq!(Fixity::from_config_str("off"), Some(Fixity::Off));
+        // `all` asked for body checksums, which is the thing that went away —
+        // it is reported, not silently reinterpreted.
+        assert_eq!(Fixity::from_config_str("all"), None);
+        // What is written back is always the current spelling.
+        assert_eq!(Fixity::On.as_config_str(), "on");
+        assert_eq!(Fixity::Off.as_config_str(), "off");
     }
 
     #[test]

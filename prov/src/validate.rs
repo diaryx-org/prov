@@ -310,6 +310,27 @@ pub enum Finding {
         recorded: String,
         actual: String,
     },
+    /// Documents carrying a `content_hash` of their **own body** — the coverage
+    /// the retired `fixity: all` tier wrote, which nothing writes now. `count` is
+    /// how many were reached and `example` names one, because reporting each
+    /// would mean one finding per document in a workspace that ran that tier.
+    ///
+    /// The checksums themselves are still verified: `check` honors any hash on
+    /// record regardless of the setting, so a flipped bit in one of these bodies
+    /// is still a [`FixityMismatch`](Finding::FixityMismatch). What has gone is
+    /// their *upkeep* — no write verb restamps one any more, so the next ordinary
+    /// edit will drift the hash and leave a mismatch that only `check --fix` can
+    /// settle, once per edit, forever.
+    ///
+    /// **Diagnosis only.** Two answers are defensible and they are not prov's to
+    /// pick between: unset the field, which is the coverage this build stands
+    /// behind, or keep it as a private record and re-stamp on demand. Either
+    /// beats the treadmill, and only the author knows which the archive wants.
+    LegacyBodyHash {
+        root: PathBuf,
+        count: usize,
+        example: PathBuf,
+    },
     /// A key in the workspace's config document that [`WorkspaceConfig::apply`]
     /// silently ignores — a misspelled key that resembles a real axis, or a
     /// recognized axis with a value prov does not understand. In both cases
@@ -531,6 +552,8 @@ impl Finding {
             // The root is what declares the outdated spelling, and what the
             // rename edits; the log it names is fine as it is.
             Finding::LegacyDeletionsPointer { root, .. } => root,
+            // The workspace, not the example: the finding is about a population.
+            Finding::LegacyBodyHash { root, .. } => root,
             Finding::AboutStale { path, .. } => path,
             Finding::ManifestDrift { node, .. } => node,
             // The one corrupted file, not the node covering ten thousand.
@@ -565,6 +588,7 @@ impl Finding {
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
             Finding::LegacyDeletionsPointer { .. } => "legacy_deletions_pointer",
+            Finding::LegacyBodyHash { .. } => "legacy_body_hash",
             Finding::AboutStale { .. } => "about_stale",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
@@ -773,6 +797,19 @@ impl fmt::Display for Finding {
                 f,
                 "{}: `{field}: {value}` is not a known term — did you mean `{suggestion}`?",
                 doc.display(),
+            ),
+            Finding::LegacyBodyHash {
+                root,
+                count,
+                example,
+            } => write!(
+                f,
+                "{}: {count} document(s) record a `content_hash` of their own body \
+                 (e.g. {}) — coverage prov no longer writes, so nothing restamps \
+                 one after an edit; unset the field, or keep it and re-stamp with \
+                 `check --fix`",
+                root.display(),
+                example.display(),
             ),
             Finding::LegacyDeletionsPointer {
                 root,
@@ -1281,6 +1318,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .await?;
 
         let mut findings = Vec::new();
+        // Documents whose recorded hash covers their own body — see
+        // [`Finding::LegacyBodyHash`]. Counted here rather than in a pass of its
+        // own because this loop already has the two facts it takes, so the
+        // report costs no read that `check` was not making anyway.
+        let mut body_hashed: (usize, Option<PathBuf>) = (0, None);
         for path in reachable {
             // A reached payload file (a `.png`) will not parse as a document —
             // skip it; it is verified through its sidecar, not on its own.
@@ -1311,7 +1353,15 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         Err(_) => continue,
                     }
                 }
-                None => crate::fixity::digest(doc.body.as_bytes()),
+                // Neither pointer: the hash covers this document's own parsed
+                // body. Still verified — a hash on record is always checked —
+                // but it is a hash nothing maintains, so note the document and
+                // report the population once the walk is done.
+                None => {
+                    body_hashed.0 += 1;
+                    body_hashed.1.get_or_insert_with(|| path.clone());
+                    crate::fixity::digest(doc.body.as_bytes())
+                }
             };
             if actual != recorded {
                 findings.push(Finding::FixityMismatch {
@@ -1320,6 +1370,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     actual,
                 });
             }
+        }
+        if let (count, Some(example)) = body_hashed {
+            findings.push(Finding::LegacyBodyHash {
+                root: start.to_path_buf(),
+                count,
+                example,
+            });
         }
         Ok(findings)
     }
@@ -1587,6 +1644,65 @@ mod tests {
     }
 
     #[test]
+    fn a_body_hash_a_workspace_kept_from_the_retired_tier_is_reported_once() {
+        // A workspace that ran `fixity: all` arrives here with a `content_hash`
+        // in every combined document. They are still *verified* — a hash on
+        // record is always checked — but nothing restamps one after an edit, so
+        // the population is reported so the author can settle it.
+        let dir = tempdir("legacy-body-hash");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n- b.md\n---\n");
+        for (name, body) in [("a.md", "alpha\n"), ("b.md", "beta\n")] {
+            write(
+                &dir,
+                name,
+                format!(
+                    "---\npart_of: index.md\ncontent_hash: {}\n---\n{body}",
+                    crate::fixity::digest(body.as_bytes())
+                ),
+            );
+        }
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        // One finding for two documents: reporting each would mean one per
+        // document in exactly the workspaces that have the problem.
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [Finding::LegacyBodyHash { count: 2, .. }]
+            ),
+            "{findings:?}"
+        );
+
+        // Diagnosis only: unsetting the field and keeping it are both
+        // defensible, and prov does not pick.
+        assert_eq!(block_on(ws.remedies(&findings[0])).unwrap().len(), 0);
+
+        // The checksums still do their job in the meantime — corrupt one body
+        // and the mismatch is raised alongside.
+        std::fs::write(dir.join("a.md"), "---\npart_of: index.md\ncontent_hash: sha256:0000000000000000000000000000000000000000000000000000000000000000\n---\nalpha\n").unwrap();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(
+                |f| matches!(f, Finding::FixityMismatch { doc, .. } if doc == Path::new("a.md"))
+            ),
+            "a recorded hash is verified whatever the setting says: {findings:?}"
+        );
+
+        // Unsetting the field is what clears it, and nothing else has to move.
+        for name in ["a.md", "b.md"] {
+            let text = std::fs::read_to_string(dir.join(name)).unwrap();
+            let kept: String = text
+                .lines()
+                .filter(|l| !l.starts_with("content_hash:"))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            std::fs::write(dir.join(name), kept).unwrap();
+        }
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
     fn a_clean_workspace_has_no_findings() {
         let dir = tempdir("clean");
         write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
@@ -1601,23 +1717,24 @@ mod tests {
     #[test]
     fn check_reads_each_document_once() {
         let dir = tempdir("memo");
-        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        write(&dir, "index.md", "---\ncontents:\n- a.yaml\n---\n");
         write(
             &dir,
-            "a.md",
+            "a.yaml",
             format!(
-                "---\npart_of: index.md\ncontent_hash: {}\n---\nalpha\n",
+                "part_of: index.md\ncontent: a.md\ncontent_hash: {}\n",
                 crate::fixity::digest(b"alpha\n")
             ),
         );
+        write(&dir, "a.md", "alpha\n");
         let fs = crate::fs_faults::CountingFs::default();
         let ws = Workspace::builder(fs.clone()).root(&dir).build();
 
         assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
-        // `a.md` is wanted by the walk (for the census) and again by the fixity
-        // pass (to hash its body) at the very least.
+        // `a.yaml` is wanted by the walk (for the census) and again by the
+        // fixity pass (for the hash it records) at the very least.
         assert_eq!(
-            fs.doc_reads(&dir, "a.md"),
+            fs.doc_reads(&dir, "a.yaml"),
             1,
             "a document was read more than once inside one `check`"
         );

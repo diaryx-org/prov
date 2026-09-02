@@ -121,7 +121,7 @@ impl Default for Settings {
             reference_style: None,
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
-            fixity: Fixity::Payloads,
+            fixity: Fixity::On,
             record_deletions: true,
             id_storage: IdStorage::Registry,
             workspace_id: String::new(),

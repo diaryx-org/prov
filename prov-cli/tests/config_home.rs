@@ -35,7 +35,7 @@ fn read(dir: &Path, rel: &str) -> String {
 fn policy_round_trips_between_the_two_homes_without_changing_the_effective_config() {
     let dir = vault("round-trip");
     // Two settings land in the sidecar (the default write home).
-    assert!(run(&dir, &["config", "fixity", "all"]).0);
+    assert!(run(&dir, &["config", "fixity", "off"]).0);
     assert!(run(&dir, &["config", "identity", "eager"]).0);
     assert!(dir.join("prov.yaml").exists());
 
@@ -47,7 +47,7 @@ fn policy_round_trips_between_the_two_homes_without_changing_the_effective_confi
         read(&dir, "index.md").contains("prov:"),
         "inline block present"
     );
-    assert_eq!(run(&dir, &["config", "fixity"]).1.trim(), "all");
+    assert_eq!(run(&dir, &["config", "fixity"]).1.trim(), "off");
     assert_eq!(run(&dir, &["config", "identity"]).1.trim(), "eager");
     assert!(run(&dir, &["check"]).0, "clean after --home root");
 
@@ -61,7 +61,7 @@ fn policy_round_trips_between_the_two_homes_without_changing_the_effective_confi
         read(&dir, "index.md")
     );
     // The effective config is unchanged by the round-trip.
-    assert_eq!(run(&dir, &["config", "fixity"]).1.trim(), "all");
+    assert_eq!(run(&dir, &["config", "fixity"]).1.trim(), "off");
     assert_eq!(run(&dir, &["config", "identity"]).1.trim(), "eager");
     assert!(run(&dir, &["check"]).0, "clean after --home sidecar");
 }
@@ -69,7 +69,7 @@ fn policy_round_trips_between_the_two_homes_without_changing_the_effective_confi
 #[test]
 fn only_recognized_policy_travels_and_hand_added_fields_are_never_lost() {
     let dir = vault("safety");
-    assert!(run(&dir, &["config", "fixity", "all"]).0);
+    assert!(run(&dir, &["config", "fixity", "off"]).0);
     // Hand-add a non-policy field to the sidecar.
     let mut sidecar = read(&dir, "prov.yaml");
     sidecar.push_str("note: keep me\n");
@@ -85,12 +85,12 @@ fn only_recognized_policy_travels_and_hand_added_fields_are_never_lost() {
     );
     // The policy moved to the root; the user field did not leak into it.
     assert!(
-        read(&dir, "index.md").contains("fixity: all"),
+        read(&dir, "index.md").contains("fixity: off"),
         "policy inlined"
     );
     assert!(
         !read(&dir, "index.md").contains("note:"),
         "user field did not leak into the prov: block"
     );
-    assert_eq!(run(&dir, &["config", "fixity"]).1.trim(), "all");
+    assert_eq!(run(&dir, &["config", "fixity"]).1.trim(), "off");
 }

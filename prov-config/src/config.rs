@@ -412,8 +412,9 @@ pub struct WorkspaceConfig {
     /// Spelled `recycle_bin` before the log replaced the bin; that spelling is
     /// still read.
     pub record_deletions: bool,
-    /// How far content-checksum (fixity) coverage extends — attachments only (the
-    /// default), attachments plus document bodies, or off.
+    /// Whether content checksums (fixity) are recorded — on by default. What a
+    /// checksum covers is not configured: it follows the document's shape, and
+    /// every node whose content is a file of its own gets one. See [`Fixity`].
     pub fixity: Fixity,
     /// Whether the workspace generates **`about.md`**, the prose page that tells
     /// a stranger how to read this directory. On by default; see [`About`].
@@ -523,7 +524,7 @@ impl Default for WorkspaceConfig {
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
             record_deletions: true,
-            fixity: Fixity::Payloads,
+            fixity: Fixity::On,
             about: About::Structure,
             updated: String::new(),
             workspace_id: String::new(),
@@ -1309,7 +1310,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     key,
                     value,
                     |s| Fixity::from_config_str(s).is_some(),
-                    &["off", "attachments", "all"],
+                    &["off", "on"],
                 );
             }
             "record_deletions" | "recycle_bin" => bool_axis(&mut issues, key, value),
@@ -2425,7 +2426,7 @@ mod tests {
             embed_style: EmbedStyle::CodeBlock,
             content_format: ContentFormat::Djot,
             record_deletions: false,
-            fixity: Fixity::Full,
+            fixity: Fixity::Off,
             // Non-default, so the round trip actually exercises the axis.
             // Likewise non-default — `structure` is the default, so `off` is
             // what proves the value survives the mapping rather than being
@@ -2590,7 +2591,7 @@ mod tests {
             ("id", "abc123"),
             ("spec", "1"),
             ("identity", "lazy"),
-            ("fixity", "all"),
+            ("fixity", "on"),
             ("record_deletions", "false"),
             ("content_format", "djot"),
             ("id_storage", "both"),
@@ -2744,10 +2745,30 @@ mod tests {
         match &issues[0].kind {
             ConfigIssueKind::InvalidValue { value, expected } => {
                 assert_eq!(value, "alll");
-                assert!(expected.contains(&"all".to_string()), "{expected:?}");
+                assert!(expected.contains(&"on".to_string()), "{expected:?}");
             }
             other => panic!("expected InvalidValue, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_retired_fixity_tier_is_reported_and_the_retired_default_is_read() {
+        // `all` asked for body checksums. Nothing writes those now, so a
+        // workspace that asked is told rather than quietly given something
+        // narrower — it lands as an invalid value listing what remains.
+        let issues = diagnose(&config_doc(&[("fixity", "all")]));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            matches!(&issues[0].kind, ConfigIssueKind::InvalidValue { value, expected }
+                if value == "all" && expected.contains(&"on".to_string())),
+            "{issues:?}"
+        );
+        // `attachments` named a subset of what `on` covers, so it stays silent
+        // and keeps working — every `prov.yaml` written before this says it.
+        assert!(diagnose(&config_doc(&[("fixity", "attachments")])).is_empty());
+        let mut config = WorkspaceConfig::default();
+        config.apply(&config_doc(&[("fixity", "attachments")]));
+        assert_eq!(config.fixity, Fixity::On);
     }
 
     #[test]

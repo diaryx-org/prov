@@ -140,9 +140,11 @@ sha256sum photos.manifest.yaml
 cd photos && sha256sum -c <(…)   # or read the rows and check what you care about
 ```
 
-The node's pin is written whenever the workspace's `fixity` axis covers payloads
-(the default), independently of whether the rows carry hashes: pinning one small
-file costs nothing, and it is what the rest hangs from.
+The node's pin is written whenever the workspace records checksums at all
+(`fixity: on`, the default), independently of whether the rows carry hashes:
+pinning one small file costs nothing, and it is what the rest hangs from. It is
+the same shape every other checksum prov writes has — a small file vouching for
+a file beside it, which `sha256sum` can check without prov.
 
 ## 5. What `check` does, and what it does not
 

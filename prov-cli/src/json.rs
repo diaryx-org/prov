@@ -297,6 +297,15 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("value", s(value)));
             fields.push(("suggestion", s(suggestion)));
         }
+        Finding::LegacyBodyHash {
+            root,
+            count,
+            example,
+        } => {
+            fields.push(("root", p(root)));
+            fields.push(("count", J::Int(*count as i64)));
+            fields.push(("example", p(example)));
+        }
         Finding::LegacyDeletionsPointer {
             root,
             relation,

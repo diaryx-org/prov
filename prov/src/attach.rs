@@ -248,7 +248,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// is the exhibit, not a claim about this workspace. [`adopt`](Workspace::adopt)
     /// would write an inverse link into that block and so edit the thing being
     /// demonstrated; its example links would then be censused as real. Shadowing
-    /// it keeps the bytes exact (and, under `fixity: attachments`, pinned by a
+    /// it keeps the bytes exact (and, under `fixity: on`, pinned by a
     /// `content_hash` that `check` verifies).
     ///
     /// The sidecar carries `attachment: true`, which the reader already honors
@@ -347,9 +347,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         map.insert("attachment".into(), Value::Bool(true));
         // Fixity: record a checksum of the payload's bytes, so `check` can later
         // detect bit-rot. Unambiguous for an attachment — its bytes are never
-        // edited — so it is recorded whenever the workspace covers payloads, with
-        // no per-file opt-in. The payload is read once here, at attach time.
-        if self.fixity().covers_payloads() {
+        // edited — so it is recorded whenever the workspace records checksums at
+        // all. `is_on` rather than `covers` because the sidecar being built here
+        // has no parsed form yet; the `content` key three lines up is what would
+        // answer, and this verb is what writes it. The payload is read once here,
+        // at attach time.
+        if self.fixity().is_on() {
             let bytes = self.read_bytes(&payload).await?;
             map.insert(
                 "content_hash".into(),

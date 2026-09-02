@@ -139,7 +139,7 @@ prov:
 
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
   identity: lazy              # none (a.k.a. off) | lazy | eager
-  fixity: all                # off | attachments | all
+  fixity: on                 # off | on — what a checksum covers follows the document's shape
   record_deletions: true     # bool — a delete records what it destroyed
   about: structure           # off | structure — generate about.md, the page that explains this directory
   out_of_scope:               # directories beside the workspace that are not the workspace
@@ -151,7 +151,7 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
-`fixity: attachments`, `record_deletions: true`, `about: structure`,
+`fixity: on`, `record_deletions: true`, `about: structure`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
 is described (every such field is ordinary carried content); absent `views` ⇒ the
@@ -507,6 +507,8 @@ applies to path targets only.
 | `identity: off` | `identity: none` | clearer — `off` still accepted as a synonym |
 | `fixity: payloads` | `fixity: attachments` | says what it covers |
 | `fixity: full` | `fixity: all` | attachments + bodies |
+| `fixity: attachments` | `fixity: on` | coverage is no longer a scale — a `content_hash` is written wherever it covers a file of its own (an attachment's payload, a separated body), which is where `sha256sum` can reproduce it. Old spelling still read |
+| `fixity: all` | **dropped** → `fixity: on` | a combined document's body hash covered a parsed substring, not a file, so it was checkable only by prov. **Not** read as a synonym: it asked for the coverage that went away, so it lands as an invalid value (default kept, `check` reports it) rather than being quietly narrowed. Hashes already on record are still verified — see the `legacy_body_hash` finding |
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
 | — | `spec: 1` | new version marker |
 | `config`/`registry`/`deletions`/`history` pointers | unchanged, top-level | structure, not policy |
@@ -520,7 +522,8 @@ applies to path targets only.
 config document — reporting a `Finding::ConfigIssue` per key prov would
 silently ignore:
 
-- **Invalid value** on a recognized axis (e.g. `fixity: alll`) — keeps the
+- **Invalid value** on a recognized axis (e.g. `fixity: alll`, or `fixity: all`
+  now that the tier is gone) — keeps the
   default; the finding lists the accepted spellings.
 - **Unknown key** that is a near-miss of a real axis (e.g. `notaton`) — a likely
   typo, reported with the suggestion. A key resembling *no* axis is left alone (a
