@@ -43,8 +43,9 @@
 //!   (`reparent`).
 //! - `rename` — a document's path changes and every link that touched it
 //!   follows; `retitle` — its title changes and every inbound *label* follows.
-//! - `delete` — the hard delete; `recycle` — the recoverable one, with
-//!   `restore` and `empty_bin` beside it.
+//! - `delete` — the one verb that destroys a document; `tombstone` — the record
+//!   it leaves in the workspace's deletion log, with `restore` (the graph
+//!   repair that record is for) and `clear_deletions` beside it.
 //! - `separate` — one combined document split into a metadata node and a body
 //!   file, and `combine` back.
 //! - `duplicate` — a shallow copy as a fresh sibling.
@@ -70,12 +71,12 @@ mod create;
 pub(crate) mod delete;
 mod duplicate;
 pub(crate) mod maintain;
-mod recycle;
 mod rename;
 mod reparent;
 mod retitle;
 mod save;
 mod separate;
+pub(crate) mod tombstone;
 
 pub use create::Created;
 pub use delete::Diagnosis;

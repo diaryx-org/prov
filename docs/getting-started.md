@@ -318,16 +318,24 @@ index.md — My Vault
 └── zig.md — Zig
 ```
 
-`rm` removes a document's parent entry and, by default, moves the file to the
-workspace **recycle bin** (recoverable with `prov restore`). Pass `--purge`
-for an immediate hard delete. It refuses to orphan children unless you pass
-`--force`, and warns about any links left dangling:
+`rm` removes a document's parent entry and destroys the file. prov does not keep
+a copy — getting the bytes back belongs to whatever tool this folder is
+version-controlled or backed up with — but it **records what it deleted**, and
+that record is the half no such tool has:
 
 <!-- exec -->
 ```sh
 $ prov rm zig.md
-moved zig.md to the recycle bin (restore with `prov restore`)
+deleted zig.md (recorded; `prov restore` relinks it once the file is back)
 ```
+
+Bring the file back yourself (`git checkout zig.md`, a copy out of a snapshot)
+and `prov restore zig.md` does the rest: re-registers the id it held and re-adds
+the parent's entry, which is what a plain file-level restore leaves broken.
+`prov clear-deletions` forgets the records when you no longer want them.
+
+`rm` refuses to orphan children unless you pass `--force`, and warns about any
+links left dangling.
 
 ---
 
@@ -470,7 +478,7 @@ id_storage: both
 updated: ''
 identity: lazy
 fixity: attachments
-recycle_bin: true
+record_deletions: true
 $ prov config references.target id
 set references.target = id in prov.yaml
 ```
@@ -489,7 +497,7 @@ The knobs (dotted keys address nested axes):
 | `metadata.embed`          | `delimited`, `code_block`, `html_script`, `html_code`, `separate` | how that config language is embedded          |
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
 | `fixity`                  | `off`, `attachments`, `all`                                    | how far content-checksum coverage extends        |
-| `recycle_bin`             | `true`/`false`                                                 | route a delete to the recoverable bin            |
+| `record_deletions`        | `true`/`false`                                                 | a delete records what it destroyed               |
 | `updated`                 | *a field name*                                                 | the machine-maintained "last updated" field      |
 
 The two `init` identity prompts map onto these keys: **Identity** sets
@@ -627,8 +635,8 @@ the status rather than piping through it:
 ## 12. Handing the folder to another tool
 
 The workspace is what the graph reaches from the root. Everything else in the
-directory — an editor's dotfiles, a scratch note nothing links, the bytes the
-recycle bin is holding, the page prov generates for you — is on disk without
+directory — an editor's dotfiles, a scratch note nothing links, the page prov
+generates for you — is on disk without
 being *of* the workspace, and a tool that copies, syncs, backs up or
 version-controls the folder has no way to know the difference. `prov ignore`
 tells it:
@@ -638,7 +646,6 @@ tells it:
 $ echo "notes to self" > scratch.md
 $ prov ignore
 /about.md
-/recyclebin/items/
 /scratch.md
 ```
 
@@ -650,7 +657,6 @@ them under the reason each rule is there:
 $ prov ignore --why
 # bookkeeping
 /about.md
-/recyclebin/items/
 
 # unreached
 /scratch.md
@@ -687,8 +693,9 @@ rules as records for a program making it.
 | `new TITLE --in P`              | create a child document, linking both directions         |
 | `mv FROM TO [--in P]`           | move/rename, maintaining every affected link             |
 | `reparent PATH --in P`          | change a document's parent, leaving the file put         |
-| `rm PATH [--force] [--purge]`   | delete (to recycle bin by default), removing the parent's entry |
-| `restore PATH` / `empty-bin`    | recover a binned document / purge the bin                |
+| `rm PATH [--force]`             | delete the file, removing the parent's entry and recording it |
+| `restore PATH`                  | put a deleted document back in the graph, once its bytes are back |
+| `clear-deletions`               | forget every deletion the log records                    |
 | `attach FILE [--in P]`          | give a non-document file a metadata sidecar, linked in    |
 | `attach FILE --opaque`          | the same for a file prov *could* read — a specimen it must not interpret |
 | `attach DIR --manifest`         | cover a whole directory with one node and one file list, instead of a sidecar each |

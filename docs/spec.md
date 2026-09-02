@@ -89,7 +89,7 @@ off the default relations you do not use. The point of the base is that
 extending the vocabulary by one pair costs one pair, rather than a restatement of
 everything you were already happy with.
 
-The five **pointer** names (`config`, `registry`, `recycle_bin`, `history`,
+The five **pointer** names (`config`, `registry`, `deletions`, `history`,
 `about`) are read from the root regardless. Turning one off takes it out of the
 vocabulary a reader walks, but the root's key by that name is still how the
 workspace's own machinery is found (§6) — that pointer is not the vocabulary's
@@ -194,7 +194,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | Target | Declared as | Contract |
 | --- | --- | --- |
 | **Content node** | a relation (`contents`/`part_of`/`links`/your vocabulary) | in the graph; two-way (inverse maintained); ID-able; rewritten on move; orphan-checked |
-| **Machinery** | a one-way pointer relation (`registry`, `config`, `recycle_bin`, `history`, a *flat* `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
+| **Machinery** | a one-way pointer relation (`registry`, `config`, `deletions`, `history`, a *flat* `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
 | **Opaque payload** | the `content` field | *not a node* — the bytes are the body of a sidecar node (an attachment); hashed for fixity, never parsed |
 | **A directory of opaque payloads** | the `manifest` field (exclusive with `content`) | *not nodes* — one node stands for the whole set through a manifest store listing every opaque file under a directory it claims completely, each row optionally hashed; the node hashes the manifest. Not in the graph, not orphan-checked, never parsed. See [Manifests](/docs/manifests.md) |
 | **Controlled term** | a `fields` value | resolved by term *key* against the field's vocabulary, checked (§3) — not traversed, and no more traversed when the terms are nodes (below) than when they are rows |
@@ -258,7 +258,7 @@ identical* (both unfold from the root), where a thing lives is an ergonomic
 choice, never an architectural one. Two rules:
 
 - **MUST — record stores are whole-file config documents.** The id registry, the
-  recycle-bin index, and *flat* vocabularies are files prov re-lays-out as sorted
+  deletion log, and *flat* vocabularies are files prov re-lays-out as sorted
   records (DESIGN §5). Prose has no stable home there, so these must be
   `.yaml`/`.json`/`.figl` documents, never markdown-with-frontmatter. prov
   refuses a markdown carrier at load (`require_whole_file`) and `check` reports it

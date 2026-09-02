@@ -117,8 +117,11 @@ as its payload. Everything in the tree is plain text, always.
 - **Checksums.** Attachment payloads record a `content_hash`, written as
   `sha256:<hex>` so any checksum tool can verify it. Document bodies are
   not hashed.
-- **Deleting.** Deleted documents go to a recycle bin and can be brought
-  back until it is emptied.
+- **Deleting.** A deletion destroys the file. What is kept is a record of
+  it — where the document sat, what it was called, and which document
+  listed it — so that if you get the file back from wherever this
+  directory is backed up or version-controlled, the record says what it
+  was part of. Nothing here can give you the file itself back.
 - **Timestamps.** No modification times are maintained. Any date you find
   in a file was written by a person.
 

@@ -236,11 +236,14 @@ fn config_setup_materializes_the_full_effective_config() {
 fn check_flags_a_typo_in_the_config_document() {
     let dir = workspace("lint");
     let mut cfg = std::fs::read_to_string(dir.join("prov.yaml")).unwrap();
-    cfg.push_str("recyle_bin: false\n");
+    cfg.push_str("record_deletion: false\n");
     std::fs::write(dir.join("prov.yaml"), cfg).unwrap();
     let (ok, out) = run(&dir, &["check"]);
     assert!(!ok, "check fails on a config issue: {out}");
-    assert!(out.contains("recycle_bin"), "suggests the real key: {out}");
+    assert!(
+        out.contains("record_deletions"),
+        "suggests the real key: {out}"
+    );
 }
 
 #[test]

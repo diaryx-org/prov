@@ -46,8 +46,8 @@ mod ignore;
 pub use ignore::{Ignore, IgnoreList, Reason};
 
 /// A byte-parking store's directory — the parent of the index document that
-/// names it. The recycle bin's `items/` hangs off its index this way, and the
-/// retired history store's archive did too.
+/// names it. A retired recycle bin's `items/` hangs off its index this way, and
+/// the retired history store's archive did too.
 fn store_dir(store_index: &Path) -> PathBuf {
     store_index.parent().unwrap_or(Path::new("")).to_path_buf()
 }
@@ -94,6 +94,9 @@ pub struct Settings {
     pub embed_style: EmbedStyle,
     /// How far content checksums are recorded — see [`Workspace::fixity`].
     pub fixity: Fixity,
+    /// Whether a delete records what it destroyed in the deletion log — see
+    /// [`Workspace::record_deletions`].
+    pub record_deletions: bool,
     /// Where a document's stable id is persisted — see
     /// [`Workspace::id_storage`].
     pub id_storage: IdStorage,
@@ -119,6 +122,7 @@ impl Default for Settings {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             fixity: Fixity::Payloads,
+            record_deletions: true,
             id_storage: IdStorage::Registry,
             workspace_id: String::new(),
             out_of_scope: Vec::new(),
@@ -151,6 +155,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             default_embed_format: config.default_embed_format,
             embed_style: config.embed_style,
             fixity: config.fixity,
+            record_deletions: config.record_deletions,
             id_storage: config.id_storage,
             workspace_id: config.workspace_id.clone(),
             out_of_scope: config.out_of_scope.iter().map(PathBuf::from).collect(),
@@ -343,6 +348,16 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
         self.settings.fixity
     }
 
+    /// Whether [`delete`](Self::delete) records what it destroyed in the
+    /// workspace's deletion log (`record_deletions`, on by default).
+    ///
+    /// The delete is a hard delete either way — prov does not keep the bytes.
+    /// What the record adds is what
+    /// [`restore`](Self::restore) repairs the graph from once they are back.
+    pub fn record_deletions(&self) -> bool {
+        self.settings.record_deletions
+    }
+
     /// How this workspace embeds metadata — the family (`delimited`,
     /// `code-block`, `html-script`, …) that, with
     /// [`default_embed_format`](Self::default_embed_format), resolves to the
@@ -426,7 +441,7 @@ impl<FS, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     ///
     /// A freshly minted id cannot collide, which is why most registrations need
     /// no check. The ones that do are the ops that carry an id in from somewhere
-    /// else: a recycle-bin record re-registering a document's old id, and a
+    /// else: a deletion record re-registering a document's old id, and a
     /// history restore re-registering an id out of a captured manifest. In both,
     /// time has passed, and the workspace may have acquired that id — or that
     /// path — meanwhile.
@@ -520,16 +535,42 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         }
     }
 
-    /// The recycle-bin index document this root declares via the recycle-bin
-    /// pointer relation (§6, the same reachability move as the registry). `None`
-    /// when the vocabulary has no recycle relation or the root declares none —
-    /// the workspace has no bin yet, so a deletion is a hard delete until one is
-    /// bootstrapped.
-    pub async fn recycle_bin_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
-        match self.relations().recycle_relation() {
-            Some(relation) => self.pointer_target(root_doc, relation).await,
-            None => Ok(None),
+    /// The **deletion log** this root declares via the deletions pointer
+    /// relation (§6, the same reachability move as the registry). `None` when
+    /// the vocabulary has no deletions relation or the root declares none — the
+    /// workspace has no log yet, so the first recorded delete bootstraps one.
+    ///
+    /// A root written before the rename reaches its log through the legacy
+    /// `recycle_bin` spelling, which resolves here too; see
+    /// [`deletions_pointer`](Self::deletions_pointer) for which one answered.
+    pub async fn deletions_path(&self, root_doc: &Path) -> Result<Option<PathBuf>> {
+        Ok(self
+            .deletions_pointer(root_doc)
+            .await?
+            .map(|(path, _)| path))
+    }
+
+    /// [`deletions_path`](Self::deletions_path), and the relation that found it.
+    ///
+    /// The two spellings are tried in order — `deletions` first, then the legacy
+    /// `recycle_bin` — so a root that somehow carries both is read through the
+    /// current one. `check` compares the answer against
+    /// [`deletions_relation`](prov_graph::relation::RelationSet::deletions_relation)
+    /// to report the old spelling as a rename to make, and `parked_dirs` uses it
+    /// to know whether there may be bytes parked under the log.
+    pub async fn deletions_pointer(&self, root_doc: &Path) -> Result<Option<(PathBuf, String)>> {
+        for relation in [
+            self.relations().deletions_relation(),
+            self.relations().recycle_relation(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(path) = self.pointer_target(root_doc, relation).await? {
+                return Ok(Some((path, relation.to_string())));
+            }
         }
+        Ok(None)
     }
 
     /// The retired event store's index document, if this root still declares
@@ -545,8 +586,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         }
     }
 
-    /// The directories a **byte-parking store** keeps its contents under — the
-    /// recycle bin's `items/`, and a retired event store's archive.
+    /// The directories a **byte-parking store** keeps its contents under — a
+    /// retired recycle bin's `items/`, and a retired event store's archive.
     ///
     /// These are machinery, not the workspace's documents, and every walk is
     /// blind to them by decision. The line matters most for **names**: a
@@ -581,7 +622,16 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             dirs.push(store_dir(&index).join("events"));
             dirs.push(store_dir(&index).join("blobs"));
         }
-        if let Some(index) = self.recycle_bin_path(root_doc).await? {
+        // A recycle bin the root still points at. The deletion log that replaced
+        // it parks nothing — a delete destroys the bytes and records that it
+        // did — so this is only ever the bin of an unmigrated workspace, whose
+        // parked items must stay out of every walk for exactly the reason above:
+        // a binned document keeps its title, and indexing `items/` would resolve
+        // `[[Some Note]]` to a copy of a note its author deleted. A `deletions/`
+        // store has no `items/`, so the parking costs it nothing.
+        if let Some((index, relation)) = self.deletions_pointer(root_doc).await?
+            && Some(relation.as_str()) == self.relations().recycle_relation()
+        {
             dirs.push(store_dir(&index).join("items"));
         }
         Ok(dirs)
@@ -1209,7 +1259,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 /// *is* `prov-graph`'s traversal, not a second implementation that happens to
 /// agree with it today. What the workspace adds is the two things the read core
 /// deliberately does not know — where prov parks its own bytes (a history
-/// store's interiors, the recycle bin), which the scoped walks must not index,
+/// store's interiors, a retired recycle bin), which the scoped walks must not index,
 /// and the config layer those parked directories are declared in.
 impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// Read and split the document at a workspace-relative `path`, served from
@@ -1399,8 +1449,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// [`check`](Self::check); a caller resolving a name through the tree wants
     /// a broken sibling to be a reason to keep looking, not a reason to fail.
     ///
-    /// Nothing is skipped for being *parked* (a history store's interior, the
-    /// recycle bin). Those bound a walk because a walk would descend into them;
+    /// Nothing is skipped for being *parked* (a history store's interior, a
+    /// retired recycle bin). Those bound a walk because a walk would descend into them;
     /// one generation of declared children cannot wander in, and a document that
     /// genuinely declares a parked path as its child is stating something the
     /// caller asked to be told.
@@ -1501,6 +1551,13 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// Set how far content checksums are recorded (attachments only by default).
     pub fn fixity(mut self, fixity: Fixity) -> Self {
         self.settings.fixity = fixity;
+        self
+    }
+
+    /// Set whether a delete records what it destroyed (on by default) — see
+    /// [`Workspace::record_deletions`].
+    pub fn record_deletions(mut self, record_deletions: bool) -> Self {
+        self.settings.record_deletions = record_deletions;
         self
     }
 
@@ -1672,6 +1729,7 @@ mod tests {
             default_embed_format: fig::Format::Json,
             embed_style: EmbedStyle::CodeBlock,
             fixity: Fixity::Off,
+            record_deletions: false,
             id_storage: IdStorage::Frontmatter,
             workspace_id: "notes".into(),
             out_of_scope: vec![PathBuf::from("history")],
@@ -1688,6 +1746,7 @@ mod tests {
         assert_eq!(ws.default_embed_format(), fig::Format::Json);
         assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
         assert_eq!(ws.fixity(), Fixity::Off);
+        assert!(!ws.record_deletions());
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
         assert_eq!(ws.workspace_id(), "notes");
         assert_eq!(ws.out_of_scope(), [PathBuf::from("history")]);
@@ -1713,6 +1772,7 @@ mod tests {
         let config = crate::config::WorkspaceConfig {
             id_storage: IdStorage::Frontmatter,
             fixity: Fixity::Off,
+            record_deletions: false,
             embed_style: EmbedStyle::CodeBlock,
             default_embed_format: fig::Format::Json,
             workspace_id: "notes".into(),
@@ -1726,6 +1786,7 @@ mod tests {
 
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
         assert_eq!(ws.fixity(), Fixity::Off);
+        assert!(!ws.record_deletions());
         assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
         assert_eq!(ws.default_embed_format(), fig::Format::Json);
         assert_eq!(ws.workspace_id(), "notes");

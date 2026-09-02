@@ -107,7 +107,7 @@ pub struct RelationDef {
     ///
     /// The other fields are meaningless beside it: an entry that retracts a name
     /// has no cardinality, no inverse and nothing to gloss. Retracting one of the
-    /// five **pointer** names (`registry`/`config`/`recycle_bin`/`history`/`about`)
+    /// five **pointer** names (`registry`/`config`/`deletions`/`history`/`about`)
     /// takes it out of the vocabulary but not out of the machinery — prov still
     /// reads the root's key by that name to find the thing it points at.
     pub off: bool,
@@ -399,11 +399,19 @@ pub struct WorkspaceConfig {
     /// — the format `render` and code-aware link scanning assume, and the
     /// intended default for new documents.
     pub content_format: ContentFormat,
-    /// Whether a `delete` moves the document to the **recycle bin** (recoverable)
-    /// rather than destroying it. On by default — the safe posture for archival
-    /// use, where a deletion should never be silently unrecoverable — and opt-out
-    /// per workspace for those who genuinely want a hard delete as the default.
-    pub recycle_bin: bool,
+    /// Whether a `delete` **records what it destroyed** in the workspace's
+    /// deletion log. On by default.
+    ///
+    /// The delete is a hard delete either way — prov does not keep the bytes, and
+    /// recovering them is the job of whatever version-control or backup tool the
+    /// workspace is kept under. What the record adds is the half no such tool
+    /// has: the path, the title, the id and the parent entry, which is what
+    /// `restore` repairs the graph from once the bytes are back. Off is for a
+    /// workspace that wants a deletion to leave no trace at all.
+    ///
+    /// Spelled `recycle_bin` before the log replaced the bin; that spelling is
+    /// still read.
+    pub record_deletions: bool,
     /// How far content-checksum (fixity) coverage extends — attachments only (the
     /// default), attachments plus document bodies, or off.
     pub fixity: Fixity,
@@ -514,7 +522,7 @@ impl Default for WorkspaceConfig {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
-            recycle_bin: true,
+            record_deletions: true,
             fixity: Fixity::Payloads,
             about: About::Structure,
             updated: String::new(),
@@ -928,8 +936,14 @@ impl WorkspaceConfig {
         {
             self.fixity = v;
         }
+        // `recycle_bin` is the spelling this axis had when a delete parked bytes
+        // in a bin. Read first so the new name overrides it in a document that
+        // somehow carries both, rather than depending on key order.
         if let Some(v) = meta.get("recycle_bin").and_then(Value::as_bool) {
-            self.recycle_bin = v;
+            self.record_deletions = v;
+        }
+        if let Some(v) = meta.get("record_deletions").and_then(Value::as_bool) {
+            self.record_deletions = v;
         }
         if let Some(v) = meta
             .get("about")
@@ -1114,7 +1128,10 @@ impl WorkspaceConfig {
             "fixity".into(),
             Value::String(self.fixity.as_config_str().into()),
         );
-        map.insert("recycle_bin".into(), Value::Bool(self.recycle_bin));
+        map.insert(
+            "record_deletions".into(),
+            Value::Bool(self.record_deletions),
+        );
         map.insert(
             "about".into(),
             Value::String(self.about.as_config_str().into()),
@@ -1215,6 +1232,9 @@ const TOP_KEYS: &[&str] = &[
     "workspace_id",
     "identity",
     "fixity",
+    "record_deletions",
+    // The spelling `record_deletions` replaced. Listed so a config written
+    // before the rename is read rather than reported as an unknown key.
     "recycle_bin",
     "about",
     "out_of_scope",
@@ -1292,7 +1312,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     &["off", "attachments", "all"],
                 );
             }
-            "recycle_bin" => bool_axis(&mut issues, key, value),
+            "record_deletions" | "recycle_bin" => bool_axis(&mut issues, key, value),
             "about" => {
                 enum_axis(
                     &mut issues,
@@ -2236,6 +2256,7 @@ mod tests {
             vec![
                 "registry",
                 "config",
+                "deletions",
                 "recycle_bin",
                 "history",
                 "about",
@@ -2403,7 +2424,7 @@ mod tests {
             default_embed_format: fig::Format::Yaml,
             embed_style: EmbedStyle::CodeBlock,
             content_format: ContentFormat::Djot,
-            recycle_bin: false,
+            record_deletions: false,
             fixity: Fixity::Full,
             // Non-default, so the round trip actually exercises the axis.
             // Likewise non-default — `structure` is the default, so `off` is
@@ -2537,6 +2558,30 @@ mod tests {
         assert_eq!(config.content_format, ContentFormat::Djot);
     }
 
+    /// The axis was spelled `recycle_bin` when a delete parked bytes in a bin.
+    /// A config written then still means what it said — "record what a delete
+    /// destroyed" — so it is read, not reported as an unknown key, and the
+    /// current spelling wins if a document somehow carries both.
+    #[test]
+    fn the_old_spelling_of_the_deletion_axis_is_still_read() {
+        let mut cfg = WorkspaceConfig::default();
+        assert!(cfg.record_deletions, "on by default");
+        cfg.apply(&config_doc(&[("recycle_bin", "false")]));
+        assert!(!cfg.record_deletions, "the old spelling still turns it off");
+        assert!(
+            diagnose(&config_doc(&[("recycle_bin", "false")])).is_empty(),
+            "and is not reported as an unknown key"
+        );
+
+        // Both, in either order, resolve to the current one.
+        let mut cfg = WorkspaceConfig::default();
+        cfg.apply(&config_doc(&[
+            ("record_deletions", "false"),
+            ("recycle_bin", "true"),
+        ]));
+        assert!(!cfg.record_deletions, "the current spelling decides");
+    }
+
     #[test]
     fn diagnose_is_silent_on_a_clean_config_and_on_user_fields() {
         let doc = config_doc(&[
@@ -2546,7 +2591,7 @@ mod tests {
             ("spec", "1"),
             ("identity", "lazy"),
             ("fixity", "all"),
-            ("recycle_bin", "false"),
+            ("record_deletions", "false"),
             ("content_format", "djot"),
             ("id_storage", "both"),
             ("author", "someone"),

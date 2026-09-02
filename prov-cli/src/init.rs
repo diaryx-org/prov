@@ -479,7 +479,7 @@ pub(crate) fn cmd_init(
     identity: Option<IdentityArg>,
     id_storage: Option<IdStorageArg>,
     fixity: Option<FixityArg>,
-    no_recycle_bin: bool,
+    no_record_deletions: bool,
     updated_field: Option<String>,
     workspace_id: Option<String>,
     adopt: Option<AdoptArg>,
@@ -831,15 +831,15 @@ pub(crate) fn cmd_init(
     };
 
     // The archival safety axes. Fixity is prompted (three meaningful tiers);
-    // recycle-bin (on unless opted out) and the updated-timestamp field are
-    // flag-only — a recoverable delete is the right default without asking, and a
-    // timestamp field name is a niche text input.
+    // deletion recording (on unless opted out) and the updated-timestamp field
+    // are flag-only — a delete that says what it destroyed is the right default
+    // without asking, and a timestamp field name is a niche text input.
     let fixity = match fixity {
         Some(f) => f,
         None if interactive => prompt_fixity()?,
         None => FixityArg::Payloads,
     };
-    let recycle_bin = !no_recycle_bin;
+    let record_deletions = !no_record_deletions;
     let updated_field = updated_field.unwrap_or_default();
 
     // Assemble the workspace preferences these choices encode. The wrapper +
@@ -868,7 +868,7 @@ pub(crate) fn cmd_init(
         default_embed_format: meta.into(),
         embed_style: embed,
         content_format: content.into(),
-        recycle_bin,
+        record_deletions,
         fixity: fixity.into(),
         // On, and deliberately not prompted for either — but for the opposite
         // reason. A workspace that explains itself to a stranger by default is
@@ -1149,9 +1149,13 @@ pub(crate) fn cmd_init(
     } else {
         String::new()
     };
-    // The safety axes: recycle bin (when on), fixity (when recording anything),
-    // and the updated-timestamp field (when named).
-    let recycle_note = if recycle_bin { ", recycle bin" } else { "" };
+    // The safety axes: deletion recording (when on), fixity (when recording
+    // anything), and the updated-timestamp field (when named).
+    let deletions_note = if record_deletions {
+        ", records deletions"
+    } else {
+        ""
+    };
     let fixity_note = if fixity != FixityArg::Off {
         format!(", fixity {}", fixity.label())
     } else {
@@ -1164,7 +1168,7 @@ pub(crate) fn cmd_init(
     };
     let details = format!(
         "root: {root_name} — {title}{author_note}\n\
-         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{recycle_note}{fixity_note}{updated_note}{about_note}",
+         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{deletions_note}{fixity_note}{updated_note}{about_note}",
         content.label(),
         embed.as_config_str(),
         embed_label.to_lowercase(),

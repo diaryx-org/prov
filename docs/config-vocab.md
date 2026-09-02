@@ -54,21 +54,23 @@ nothing implicit.)
 
 ### Pointers stay top-level
 
-The `config`, `registry`, `recycle_bin`, `history`, and `about` **pointer relations** are
+The `config`, `registry`, `deletions`, `history`, and `about` **pointer relations** are
 *not* policy — they are structural links the root declares so the workspace
 unfolds from its own root (DESIGN §6). They remain at the root's top level
-alongside `part_of`/`contents`, resolved by the same link machinery. This also
-resolves the `recycle_bin` name clash by location: the top-level key is a
-*pointer* (a path to the bin index); the `prov:`-block key of the same name is
-a *policy* (a bool). (`history` points at a retired event store and survives
-only so an unmigrated one stays out of every walk — nothing writes one.)
+alongside `part_of`/`contents`, resolved by the same link machinery. The
+top-level key is a *pointer* (a path to the log); the policy that governs
+whether a delete writes to it is `record_deletions`, a bool in the `prov:`
+block. (`history` points at a retired event store and survives only so an
+unmigrated one stays out of every walk — nothing writes one. `recycle_bin` is
+the spelling `deletions` replaced: it is still read, so a root written before
+the rename resolves, and `check` reports it as a rename to make.)
 
 ```yaml
 title: My Vault
 author: adammharris
 config: prov.yaml             # pointer (structure) — top level
 registry: registry.yaml           # pointer — top level
-recycle_bin: recyclebin/index.md  # pointer (a path) — top level
+deletions: deletions/index.yaml   # pointer (a path) — top level
 history: history/index.md         # pointer (a path) — top level
 about: about.md                   # pointer (a path) — top level
 tags: [personal]                  # user field — prov never reads it
@@ -138,7 +140,7 @@ prov:
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
   identity: lazy              # none (a.k.a. off) | lazy | eager
   fixity: all                # off | attachments | all
-  recycle_bin: true          # bool — route delete to the recoverable bin
+  record_deletions: true     # bool — a delete records what it destroyed
   about: structure           # off | structure — generate about.md, the page that explains this directory
   out_of_scope:               # directories beside the workspace that are not the workspace
     - history                 # another tool's store, a sync cache, a vendored checkout
@@ -149,7 +151,7 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
-`fixity: attachments`, `recycle_bin: true`, `about: structure`,
+`fixity: attachments`, `record_deletions: true`, `about: structure`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
 is described (every such field is ordinary carried content); absent `views` ⇒ the
@@ -179,7 +181,7 @@ anything else is a `check` finding naming both shapes. `check` also flags a
 `spanning` relation the same surface turns off.
 
 Retracting one of the five **pointer** names
-(`config`/`registry`/`recycle_bin`/`history`/`about`) takes it out of the
+(`config`/`registry`/`deletions`/`history`/`about`) takes it out of the
 vocabulary but not out of the machinery: prov still reads the root's key by that
 name to find what it points at (see "Pointers stay top-level" above).
 
@@ -507,7 +509,9 @@ applies to path targets only.
 | `fixity: full` | `fixity: all` | attachments + bodies |
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
 | — | `spec: 1` | new version marker |
-| `config`/`registry`/`recycle_bin`/`history` pointers | unchanged, top-level | structure, not policy |
+| `config`/`registry`/`deletions`/`history` pointers | unchanged, top-level | structure, not policy |
+| `recycle_bin: <path>` pointer | `deletions: <path>` | there is no bin; the log records what a delete destroyed. Old spelling still read |
+| `recycle_bin: <bool>` policy | `record_deletions: <bool>` | likewise. Old spelling still read |
 | — | `about: structure` | new axis — the generated `about.md`, **on** by default |
 
 ## Linting (`check`)
@@ -534,7 +538,7 @@ silently ignore:
 
 Beyond the two config surfaces, `check` also validates the workspace's **stores**
 and **controlled fields** (see [Spec](/docs/spec.md)): a `MalformedStore` finding
-for a registry/recycle/*flat*-vocabulary pointer that resolves to a markdown
+for a registry/deletions/*flat*-vocabulary pointer that resolves to a markdown
 document rather than a whole-file config document (a `reify: true` vocabulary is
 content, so the rule does not reach it); `UnknownTerm` for a closed-field value
 that is not a known term; and `TermNearMiss` for an open-field value that closely

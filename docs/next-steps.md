@@ -151,7 +151,7 @@ Still open here:
   sequence items, so a position taken from it is not the fig index —
   `[a, 3, b]` yields `["a", "b"]`, and `remove_item(key, 1)` would delete `3`.
   `entry_index` + `remove_item` carry that skew at three sites
-  (`delete`/`reparent`/`recycle`); harmless while relation sequences hold only
+  (`delete`/`reparent`); harmless while relation sequences hold only
   strings. The new `written_entry_index` enumerates the raw sequence instead.
 - **A persisted fix policy.** "All of this kind" lasts one run. A `fix:` block in
   the workspace config mapping finding kind → remedy kind would make a choice

@@ -297,14 +297,14 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("value", s(value)));
             fields.push(("suggestion", s(suggestion)));
         }
-        Finding::RecycledBytesMissing {
-            index,
-            from,
-            missing,
+        Finding::LegacyDeletionsPointer {
+            root,
+            relation,
+            log,
         } => {
-            fields.push(("index", p(index)));
-            fields.push(("from", p(from)));
-            fields.push(("missing", paths(missing)));
+            fields.push(("root", p(root)));
+            fields.push(("relation", s(relation)));
+            fields.push(("log", p(log)));
         }
         Finding::AboutStale { path, missing, .. } => {
             fields.push(("path", p(path)));

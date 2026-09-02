@@ -1,9 +1,14 @@
-//! `delete` — the hard delete, and the only one that destroys bytes outright.
+//! `delete` — the one verb that destroys a document, and what it writes down.
 //!
 //! The parent's spanning entry goes with the document; every *other* inbound
 //! reference is reported rather than rewritten, because a link records intent
-//! and there is no new target to send it to. [`recycle`](super::recycle) is the
-//! recoverable counterpart, and the CLI's default.
+//! and there is no new target to send it to.
+//!
+//! prov does not keep the bytes. Recovering those belongs to whatever tool the
+//! workspace is recorded under; what the delete leaves behind is the record of
+//! what it would take to put the *graph* back around them, in the workspace's
+//! deletion log — see [`tombstone`](super::tombstone), and
+//! [`restore`](crate::Workspace::restore), its inverse.
 
 use std::path::{Path, PathBuf};
 
@@ -19,14 +24,14 @@ use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
 use super::maintain::paired_file;
+use super::tombstone::Deletion;
 
 /// Whether a removal should work out what it breaks.
 ///
-/// [`delete`](Workspace::delete) and [`recycle`](Workspace::recycle) return the
-/// inbound references they leave dangling, and finding them is a census of the
-/// whole reachable graph — the removal's entire cost on any workspace bigger
-/// than a few hundred documents. This is how a caller says it does not want the
-/// answer.
+/// [`delete`](Workspace::delete) returns the inbound references it leaves
+/// dangling, and finding them is a census of the whole reachable graph — the
+/// removal's entire cost on any workspace bigger than a few hundred documents.
+/// This is how a caller says it does not want the answer.
 ///
 /// Not a judgment about which is right. A person at a terminal who has just
 /// deleted something wants to be told what now points at nothing; a GUI that
@@ -73,27 +78,46 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// That diagnosis is a whole-workspace census, and it is most of what a
     /// delete costs — see [`delete_with`](Self::delete_with) for the caller that
-    /// does not want it.
+    /// does not want it, or that wants to date the record.
+    ///
+    /// # What it writes down
+    ///
+    /// Unless the workspace turns it off
+    /// ([`record_deletions`](Self::record_deletions)), the delete records what
+    /// it destroyed in the workspace's **deletion log** — the path, the title,
+    /// the id it retired, the parent whose entry it removed, and the body that
+    /// went with it. That is what [`restore`](Self::restore) repairs the graph
+    /// from once the bytes are back, and it is the half no version-control tool
+    /// has. The record lands in the same [`ChangeSet`](crate::ChangeSet) as the
+    /// removal, so a delete is never recorded without happening or the reverse.
     pub async fn delete(&mut self, path: &Path, force: bool) -> Result<Vec<Finding>> {
-        self.delete_with(path, force, Diagnosis::Report).await
+        self.delete_with(path, force, None, Diagnosis::Report).await
     }
 
-    /// [`delete`](Self::delete), told whether to work out what it breaks.
+    /// [`delete`](Self::delete), told whether to work out what it breaks, and
+    /// when the deletion happened.
     ///
     /// `Diagnosis::Report` is exactly `delete`. [`Diagnosis::Skip`] returns an
     /// empty list and skips the census behind it — the difference between
     /// reading every document in the workspace and reading the handful this
     /// edits. Everything else about the delete is unchanged: the same refusals,
-    /// the same parent edit, the same id tombstone, the same change set.
+    /// the same parent edit, the same id tombstone, the same deletion record,
+    /// the same change set.
+    ///
+    /// `at` is an optional caller-supplied deletion timestamp for that record
+    /// (the CLI passes the current time). The library takes it as an argument
+    /// rather than reading a clock, so the op stays deterministic.
     pub async fn delete_with(
         &mut self,
         path: &Path,
         force: bool,
+        at: Option<&str>,
         diagnosis: Diagnosis,
     ) -> Result<Vec<Finding>> {
-        // Same shape as `recycle`: the dangler census reads every reachable
-        // document, and the subject and its parent are read again by name on
-        // either side of it. One scope, one read apiece.
+        // The dangler census reads every reachable document, and the subject,
+        // its parent and the root are all among them — each of which this verb
+        // then goes back for by name. One scope makes that one read apiece
+        // instead of two.
         let _scope = self.read_scope();
         let path = link::normalize(path);
         let (spanning, inverse) = self.spanning_pair()?;
@@ -165,18 +189,60 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             None => false,
         };
 
+        let id = self.index().id_for_path(&path);
+
         let mut cs = self.change();
         cs.remove(&path);
         if let (Some(body), true) = (&body_file, body_exists) {
             cs.remove(body);
         }
+
+        // What this destroyed, written down — in the same change set, so the
+        // record and the removal cannot come apart.
+        if self.record_deletions() {
+            let deletion = Deletion {
+                title: doc
+                    .meta
+                    .get("title")
+                    .and_then(prov_graph::meta::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| link::path_to_title(&path)),
+                id: id.clone(),
+                from: path.clone(),
+                parent: parent.clone(),
+                body: body_exists.then(|| body_file.clone()).flatten(),
+                at: at.map(str::to_owned),
+            };
+            let root = self.spanning_root(&path, &inverse).await?;
+            // The root is very often the deleted document's parent, and the
+            // pointer to a just-created log has to go into the *same* rendering
+            // as the parent edit — two writes to one path in one change set is
+            // one of them silently winning.
+            let root_base = parent_write
+                .as_ref()
+                .filter(|(parent, _)| *parent == root)
+                .map(|(_, text)| text.clone());
+            if let Some(text) = self
+                .stage_deletion(&mut cs, &root, &deletion, root_base)
+                .await?
+            {
+                match &mut parent_write {
+                    Some((parent, parent_text)) if *parent == root => *parent_text = text,
+                    _ => {
+                        cs.write(root.clone(), text);
+                    }
+                }
+            }
+        }
+
         if let Some((parent, text)) = parent_write {
             cs.write(parent, text);
         }
 
         // Identity hook — retire the ID (a tombstoning store keeps it known
-        // forever, so it is never minted again to mean something else).
-        if let Some(id) = self.index().id_for_path(&path) {
+        // forever, so it is never minted again to mean something else). The
+        // record above keeps its value, so `restore` can re-register it.
+        if let Some(id) = id {
             self.index_mut().unregister(&id);
         }
         self.commit(cs).await?;
@@ -245,7 +311,8 @@ mod tests {
         let fs = crate::fs_faults::CountingFs::default();
         let mut workspace = Workspace::builder(fs.clone()).root(&dir).build();
         let danglers =
-            block_on(workspace.delete_with(Path::new("a.md"), false, Diagnosis::Skip)).unwrap();
+            block_on(workspace.delete_with(Path::new("a.md"), false, None, Diagnosis::Skip))
+                .unwrap();
 
         assert!(danglers.is_empty(), "{danglers:?}");
         // The delete itself happened, in full.
@@ -284,7 +351,8 @@ mod tests {
         let fs = crate::fs_faults::CountingFs::default();
         let mut workspace = Workspace::builder(fs.clone()).root(&dir).build();
         let danglers =
-            block_on(workspace.delete_with(Path::new("a.md"), false, Diagnosis::Report)).unwrap();
+            block_on(workspace.delete_with(Path::new("a.md"), false, None, Diagnosis::Report))
+                .unwrap();
 
         assert_eq!(danglers.len(), 1, "{danglers:?}");
         assert_eq!(
@@ -318,7 +386,8 @@ mod tests {
 
         let fs = crate::fs_faults::CountingFs::default();
         let mut workspace = Workspace::builder(fs.clone()).root(&dir).build();
-        block_on(workspace.delete_with(Path::new("day/a.md"), false, Diagnosis::Skip)).unwrap();
+        block_on(workspace.delete_with(Path::new("day/a.md"), false, None, Diagnosis::Skip))
+            .unwrap();
 
         assert!(!dir.join("day/a.md").exists());
         for bystander in ["day/b.md", "day/c.md"] {

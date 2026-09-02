@@ -156,15 +156,17 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     }
 
     /// The path prefixes that are prov's own bookkeeping rather than content —
-    /// where the bin parks the bytes a person has already consigned, and the
-    /// page prov derives rather than the author writing.
+    /// where a retired recycle bin parked the bytes a person had already
+    /// consigned, and the page prov derives rather than the author writing.
     ///
     /// The about page is *reachable* — its pointer is what keeps it from lying
     /// loose — and excluded even so, which is why this is consulted before
     /// reachability rather than after.
     async fn bookkeeping(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
         let mut prefixes = Vec::new();
-        if let Some(index) = self.recycle_bin_path(root_doc).await? {
+        if let Some((index, relation)) = self.deletions_pointer(root_doc).await?
+            && Some(relation.as_str()) == self.relations().recycle_relation()
+        {
             prefixes.push(super::store_dir(&index).join("items"));
         }
         if let Some(about) = self.about_path(root_doc).await? {

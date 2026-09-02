@@ -130,6 +130,10 @@ fn a_hidden_file_is_ruled_with_its_own_reason() {
 
 #[test]
 fn bookkeeping_is_ruled_where_it_stands_reachable_or_not() {
+    // The bin is the unmigrated shape — a deletion log parks nothing, so the
+    // only bookkeeping prefix a current workspace has is its generated page.
+    // A workspace still declaring a bin still has an `items/` to rule, and that
+    // is what keeps its parked bytes out of a tool copying the folder.
     let dir = tempdir("bookkeeping");
     write(
         &dir,

@@ -5,7 +5,7 @@ id_storage: both
 updated: ''
 identity: lazy
 fixity: attachments
-recycle_bin: true
+record_deletions: true
 metadata:
   format: yaml
   embed: delimited

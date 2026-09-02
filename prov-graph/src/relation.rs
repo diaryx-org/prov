@@ -91,6 +91,7 @@ pub struct RelationSet {
     spanning: Option<String>,
     registry: Option<String>,
     config: Option<String>,
+    deletions: Option<String>,
     recycle: Option<String>,
     history: Option<String>,
     about: Option<String>,
@@ -155,14 +156,30 @@ impl RelationSet {
         self
     }
 
-    /// Mark the named relation as the **recycle-bin pointer**: the root document
-    /// links its recycle-bin index through this relation — the same reachability
-    /// move as the registry and config (§6). A deleted document is not destroyed
-    /// but moved into the bin, and the bin's index (a self-describing member,
-    /// discovered by following this link from the root) records where it came
-    /// from so it can be restored. Making the bin *reachable* is what keeps it
-    /// honest: `check` validates it like any other member, and nothing about a
-    /// deletion is hidden in an app-private folder.
+    /// Mark the named relation as the **deletion-log pointer**: the root
+    /// document links its deletion log through this relation — the same
+    /// reachability move as the registry and config (§6). A delete destroys the
+    /// bytes and records what it destroyed: where the document sat, what it was
+    /// called, which id it held, and which parent listed it. That record is what
+    /// [`restore`] repairs the graph from once the bytes are back. Making the
+    /// log *reachable* is what keeps it honest: `check` validates it like any
+    /// other member, and nothing about a deletion is hidden in an app-private
+    /// folder.
+    ///
+    /// [`restore`]: https://docs.rs/prov/latest/prov/struct.Workspace.html#method.restore
+    pub fn deletions(mut self, name: impl Into<String>) -> Self {
+        self.deletions = Some(name.into());
+        self
+    }
+
+    /// Mark the named relation as the **legacy recycle-bin pointer** — the
+    /// spelling [`deletions`](Self::deletions) replaced.
+    ///
+    /// Kept only so a root written before the rename still resolves: the log is
+    /// read through this pointer when the document declares no `deletions`, and
+    /// `check` reports the old spelling as a rename to make. Nothing writes it.
+    /// A workspace that parked bytes under this pointer's `items/` keeps them
+    /// parked out of every walk for as long as it declares it.
     pub fn recycle(mut self, name: impl Into<String>) -> Self {
         self.recycle = Some(name.into());
         self
@@ -170,7 +187,7 @@ impl RelationSet {
 
     /// Mark the named relation as the **history pointer**: the root document links
     /// its history-store index through this relation — the same reachability move
-    /// as the registry, config and recycle bin (§6). The store holds one immutable
+    /// as the registry, config and deletion log (§6). The store holds one immutable
     /// event document per capture plus a content-addressed blob store, so a bad
     /// sync merge can be rolled back file by file. Making it *reachable* is what
     /// lets `check` validate it like any other member, and what keeps prov's own
@@ -182,7 +199,7 @@ impl RelationSet {
 
     /// Mark the named relation as the **about pointer**: the root document links
     /// its generated `about.md` through this relation — structurally the same
-    /// one-way move as the registry, config, recycle bin and history (§6), but a
+    /// one-way move as the registry, config, deletion log and history (§6), but a
     /// distinct target kind (spec §4, *generated prose*), because the file is
     /// entirely prose in the workspace's content format rather than a whole-file
     /// record store.
@@ -201,9 +218,13 @@ impl RelationSet {
     /// The diaryx vocabulary: `contents`/`part_of` containment (spanning),
     /// `links`/`link_of` arbitrary cross-references, `registry` (the root's
     /// pointer to its ID registry document), `config` (the root's pointer to its
-    /// workspace-config document), `recycle_bin` (the root's pointer to its
-    /// recycle-bin index), `history` (the root's pointer to its history
-    /// store), and `about` (the root's pointer to its generated `about.md`).
+    /// workspace-config document), `deletions` (the root's pointer to its
+    /// deletion log), `history` (the root's pointer to its history store), and
+    /// `about` (the root's pointer to its generated `about.md`).
+    ///
+    /// `recycle_bin` is here too, and is not one of those. It is the spelling
+    /// `deletions` replaced, kept readable so a root written before the rename
+    /// still resolves — see [`recycle`](Self::recycle).
     pub fn diaryx() -> Self {
         Self::new()
             .with(Relation::many("contents").inverse("part_of"))
@@ -212,12 +233,14 @@ impl RelationSet {
             .with(Relation::many("link_of").inverse("links"))
             .with(Relation::one("registry"))
             .with(Relation::one("config"))
+            .with(Relation::one("deletions"))
             .with(Relation::one("recycle_bin"))
             .with(Relation::one("history"))
             .with(Relation::one("about"))
             .spanning("contents")
             .registry("registry")
             .config("config")
+            .deletions("deletions")
             .recycle("recycle_bin")
             .history("history")
             .about("about")
@@ -294,7 +317,14 @@ impl RelationSet {
         self.config.as_deref()
     }
 
-    /// The name of the recycle-bin-pointer relation, if one is configured.
+    /// The name of the deletion-log-pointer relation, if one is configured.
+    pub fn deletions_relation(&self) -> Option<&str> {
+        self.deletions.as_deref()
+    }
+
+    /// The name of the **legacy** recycle-bin-pointer relation, if one is
+    /// configured — the spelling [`deletions_relation`](Self::deletions_relation)
+    /// replaced, resolved only when a root declares no `deletions` pointer.
     pub fn recycle_relation(&self) -> Option<&str> {
         self.recycle.as_deref()
     }
@@ -375,15 +405,19 @@ mod tests {
     }
 
     #[test]
-    fn diaryx_declares_registry_config_recycle_history_and_about_pointers() {
+    fn diaryx_declares_registry_config_deletions_history_and_about_pointers() {
         let set = RelationSet::diaryx();
         assert_eq!(set.registry_relation(), Some("registry"));
         assert_eq!(set.config_relation(), Some("config"));
-        assert_eq!(set.recycle_relation(), Some("recycle_bin"));
+        assert_eq!(set.deletions_relation(), Some("deletions"));
         assert_eq!(set.history_relation(), Some("history"));
         assert_eq!(set.about_relation(), Some("about"));
+        // The spelling `deletions` replaced, still resolvable so a root written
+        // before the rename keeps working.
+        assert_eq!(set.recycle_relation(), Some("recycle_bin"));
         // Each is a single-valued pointer relation in the vocabulary.
         assert!(set.relations().iter().any(|r| r.name == "config"));
+        assert!(set.relations().iter().any(|r| r.name == "deletions"));
         assert!(set.relations().iter().any(|r| r.name == "recycle_bin"));
         assert!(set.relations().iter().any(|r| r.name == "history"));
         assert!(set.relations().iter().any(|r| r.name == "about"));
@@ -407,7 +441,7 @@ mod tests {
         assert_eq!(set.registry_relation(), Some("registry"));
         // Removing a name the set does not have is a no-op, not a panic.
         let untouched = RelationSet::diaryx().without("nonexistent");
-        assert_eq!(untouched.relations().len(), 9);
+        assert_eq!(untouched.relations().len(), 10);
     }
 
     #[test]

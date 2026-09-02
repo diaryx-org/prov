@@ -354,32 +354,27 @@ pub enum Finding {
         value: String,
         suggestion: String,
     },
-    /// A recycle-bin record promises a recovery it cannot deliver: the bytes it
-    /// parked under `recyclebin/items/` are not on disk. `index` is the bin
-    /// index holding the record, `from` the path the document was deleted from
-    /// (the record's identity), and `missing` the absent parked file(s) — two
-    /// when a separated document lost both its metadata and its prose body.
+    /// The root reaches its deletion log through `recycle_bin`, the pointer
+    /// relation `deletions` replaced. `root` is the document declaring it,
+    /// `relation` the old spelling, and `log` what it points at.
     ///
-    /// The parked bytes are deliberately *unreached* (nothing links into
-    /// `items/`, so §8's orphan walk ignores them), which is exactly why they
-    /// need their own check: no other pass looks inside the bin. Without this,
-    /// the loss surfaces only when [`restore`](crate::Workspace::restore) fails
-    /// to rename a file that is not there.
+    /// Nothing is broken: the old spelling still resolves, and every verb reads
+    /// the log through it. What the workspace has is a key whose name outlived
+    /// its meaning — there is no bin, because prov no longer keeps the bytes of
+    /// a deleted document — and a `recyclebin/items/` that is still parked out
+    /// of every walk on the strength of that name.
     ///
-    /// Reachable by ordinary means — a partial sync, a transport pruning an
-    /// unreached subtree, a hand-deletion inside `recyclebin/` — and also the
-    /// residue of restoring an old bin index that lists items since purged.
-    ///
-    /// **Diagnosis only.** Dropping the record would destroy the last evidence
-    /// of what was deleted and foreclose the real repair (putting the bytes
-    /// back from a backup, which makes the record valid again); purging the
-    /// records wholesale is what [`empty_bin`](crate::Workspace::empty_bin) is
-    /// for. The same judgment [`FixityMismatch`](Finding::FixityMismatch)
-    /// declines to make on the author's behalf.
-    RecycledBytesMissing {
-        index: PathBuf,
-        from: PathBuf,
-        missing: Vec<PathBuf>,
+    /// **Diagnosis only,** and deliberately: renaming the key is one edit, but
+    /// the parked bytes under the old store are the last copy of whatever was
+    /// binned before the rename, and prov will not decide their fate. Restore
+    /// what is worth keeping ([`restore`](crate::Workspace::restore) still moves
+    /// parked bytes home), or forget the rest
+    /// ([`clear_deletions`](crate::Workspace::clear_deletions)), and then rename
+    /// the pointer.
+    LegacyDeletionsPointer {
+        root: PathBuf,
+        relation: String,
+        log: PathBuf,
     },
     /// The generated `about.md` does not match what prov would produce from the
     /// current configuration — or the `about` pointer names a file that is not
@@ -533,9 +528,9 @@ impl Finding {
             // The child is what gains the back-link; `doc` is the parent that
             // reported it missing.
             Finding::MissingInverse { child, .. } => child,
-            // The bin index holds the record; the path it was deleted *from* is
-            // by definition not on disk.
-            Finding::RecycledBytesMissing { index, .. } => index,
+            // The root is what declares the outdated spelling, and what the
+            // rename edits; the log it names is fine as it is.
+            Finding::LegacyDeletionsPointer { root, .. } => root,
             Finding::AboutStale { path, .. } => path,
             Finding::ManifestDrift { node, .. } => node,
             // The one corrupted file, not the node covering ten thousand.
@@ -569,7 +564,7 @@ impl Finding {
             Finding::MalformedStore { .. } => "malformed_store",
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
-            Finding::RecycledBytesMissing { .. } => "recycled_bytes_missing",
+            Finding::LegacyDeletionsPointer { .. } => "legacy_deletions_pointer",
             Finding::AboutStale { .. } => "about_stale",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
@@ -779,20 +774,18 @@ impl fmt::Display for Finding {
                 "{}: `{field}: {value}` is not a known term — did you mean `{suggestion}`?",
                 doc.display(),
             ),
-            Finding::RecycledBytesMissing {
-                index,
-                from,
-                missing,
-            } => {
-                let gone: Vec<String> = missing.iter().map(|p| p.display().to_string()).collect();
-                write!(
-                    f,
-                    "{}: {} cannot be restored — parked bytes missing ({})",
-                    index.display(),
-                    from.display(),
-                    gone.join(", ")
-                )
-            }
+            Finding::LegacyDeletionsPointer {
+                root,
+                relation,
+                log,
+            } => write!(
+                f,
+                "{}: reaches its deletion log ({}) through `{relation}`, the pointer \
+                 `deletions` replaced — restore or forget anything still parked \
+                 under it, then rename the key",
+                root.display(),
+                log.display(),
+            ),
             // The expected content is deliberately not printed: it is the whole
             // page, and the repair is one command away.
             // Covers both shapes of "missing": a pointer naming a page that is
@@ -978,10 +971,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         );
         findings.extend(self.config_findings(start).await?);
         findings.extend(self.store_findings(start).await?);
-        // The bin index's own validity is established above; this reads its
-        // records and checks the parked bytes they point at, which live in an
-        // unreached subtree no other pass visits.
-        findings.extend(self.recycle_findings(start).await?);
+        findings.extend(self.deletions_findings(start).await?);
         findings.extend(
             self.vocabulary_findings(start, &census, &content_bodies)
                 .await?,
@@ -1043,7 +1033,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 
     /// Verify every **record store** the workspace reaches — the id registry, the
-    /// recycle-bin index, and each `fields` vocabulary — is a whole-file config
+    /// deletion log, and each `fields` vocabulary — is a whole-file config
     /// document, emitting a [`Finding::MalformedStore`] for any found in a markdown
     /// carrier (DESIGN §5, the whole-file rule). This *reports* rather than aborts:
     /// the loaders themselves hard-error on a markdown store, but `check` surfaces
@@ -1053,8 +1043,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let Some(p) = self.registry_path(start).await? {
             stores.push(("registry", p));
         }
-        if let Some(p) = self.recycle_bin_path(start).await? {
-            stores.push(("recycle_bin", p));
+        if let Some((p, relation)) = self.deletions_pointer(start).await? {
+            // Named by the relation that found it, so a workspace still on the
+            // old spelling reads its own key back in the finding.
+            let label: &'static str =
+                if Some(relation.as_str()) == self.relations().deletions_relation() {
+                    "deletions"
+                } else {
+                    "recycle_bin"
+                };
+            stores.push((label, p));
         }
         let config = self.effective_config(start).await?;
         for spec in config.fields.values() {
@@ -1089,69 +1087,31 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(findings)
     }
 
-    /// Verify that every recycle-bin record's **parked bytes are still on
-    /// disk**, emitting one [`Finding::RecycledBytesMissing`] per record that
-    /// has lost any of them.
+    /// Report a root that reaches its deletion log through the legacy
+    /// `recycle_bin` pointer — one [`Finding::LegacyDeletionsPointer`], or none.
     ///
-    /// This is the one pass that looks inside `recyclebin/items/`. Those bytes
-    /// are deliberately unreached — nothing links into the items directory, so
-    /// §8's reachability-bounded walk ignores them, which is what keeps a binned
-    /// document from being reported as an orphan. The same exclusion means a
-    /// vanished parked file is invisible to every other check, and would surface
-    /// only as a raw rename failure inside
-    /// [`restore`](crate::Workspace::restore).
+    /// The old spelling resolves everywhere, so this is not a repair prov is
+    /// withholding for want of information: it is one the workspace has to make
+    /// in the right order, because whatever the bin parked under `items/` is
+    /// still parked on the strength of that pointer and stops being so the
+    /// moment it is renamed.
     ///
-    /// Checked per *record* rather than per file: a separated document parks its
-    /// metadata and its prose body, both move in one [`ChangeSet`](crate::ChangeSet),
-    /// and losing either one makes the record equally unrestorable — so the two
-    /// paths belong in one finding, not two.
-    ///
-    /// A bin index that cannot be loaded contributes nothing here; the walk
-    /// reports it as `Unreadable` and [`store_findings`](Self::store_findings)
-    /// reports a markdown carrier, and neither wants a second complaint layered
-    /// on top. A record carrying no `bin` key at all (only reachable by hand
-    /// editing) likewise names no parked path, so it yields no finding —
-    /// malformed record *shape* is a separate question from missing bytes.
-    async fn recycle_findings(&self, start: &Path) -> Result<Vec<Finding>> {
-        let Some(index) = self.recycle_bin_path(start).await? else {
+    /// Nothing here reads the log's *records*. There is nothing left to check in
+    /// them: a record names no bytes prov is keeping, so the only way for one to
+    /// be wrong is for a caller to have hand-edited it, and `store_findings`
+    /// already establishes the document itself.
+    async fn deletions_findings(&self, start: &Path) -> Result<Vec<Finding>> {
+        let Some((log, relation)) = self.deletions_pointer(start).await? else {
             return Ok(Vec::new());
         };
-        let Ok((_, bin_doc)) = self.load(&index).await else {
+        if Some(relation.as_str()) == self.relations().deletions_relation() {
             return Ok(Vec::new());
-        };
-        let bin_meta = fig::Value::from(&bin_doc.meta);
-        let records: Vec<fig::Value> = bin_meta
-            .get("deleted")
-            .and_then(fig::Value::as_seq)
-            .map(<[fig::Value]>::to_vec)
-            .unwrap_or_default();
-
-        let mut findings = Vec::new();
-        for record in &records {
-            let field = |key: &str| record.get(key).and_then(fig::Value::as_str);
-            // `from` is the record's identity — the path the user would name to
-            // restore it, and so the path the finding must report.
-            let Some(from) = field("from") else { continue };
-            let mut missing = Vec::new();
-            // `bin` holds the document itself; `body_bin` the prose body of a
-            // separated document, present only when one travelled with it.
-            for key in ["bin", "body_bin"] {
-                if let Some(parked) = field(key) {
-                    let parked = PathBuf::from(parked);
-                    if !self.exists(&parked).await? {
-                        missing.push(parked);
-                    }
-                }
-            }
-            if !missing.is_empty() {
-                findings.push(Finding::RecycledBytesMissing {
-                    index: index.clone(),
-                    from: PathBuf::from(from),
-                    missing,
-                });
-            }
         }
-        Ok(findings)
+        Ok(vec![Finding::LegacyDeletionsPointer {
+            root: start.to_path_buf(),
+            relation,
+            log,
+        }])
     }
 
     /// Check every controlled `fields` value against its vocabulary over the
@@ -1780,10 +1740,62 @@ mod tests {
         );
     }
 
-    /// Every parked-bytes test needs the same starting point: a workspace with
-    /// one document binned and its bytes sitting in `recyclebin/items/`.
-    fn with_a_binned_note(tag: &str) -> PathBuf {
+    /// A workspace whose root still declares the pointer `deletions` replaced,
+    /// with one document binned by it and its bytes parked under `items/` —
+    /// exactly what an unmigrated workspace looks like on disk.
+    fn with_a_legacy_bin(tag: &str) -> PathBuf {
         let dir = tempdir(tag);
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\nrecycle_bin: recyclebin/index.yaml\ncontents:\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: My Note\npart_of: index.md\n---\nbody\n",
+        );
+        write(
+            &dir,
+            "recyclebin/index.yaml",
+            "title: Recycle Bin\ndeleted:\n- from: gone.md\n  title: Gone\n  bin: recyclebin/items/gone.md\n  parent: index.md\n",
+        );
+        write(&dir, "recyclebin/items/gone.md", "---\ntitle: Gone\n---\n");
+        dir
+    }
+
+    #[test]
+    fn a_root_on_the_old_pointer_spelling_is_reported_once() {
+        let dir = with_a_legacy_bin("legacy-pointer");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings: Vec<Finding> = block_on(ws.check("index.md"))
+            .unwrap()
+            .into_iter()
+            .filter(|f| matches!(f, Finding::LegacyDeletionsPointer { .. }))
+            .collect();
+
+        assert_eq!(
+            findings,
+            vec![Finding::LegacyDeletionsPointer {
+                root: PathBuf::from("index.md"),
+                relation: "recycle_bin".to_string(),
+                log: PathBuf::from("recyclebin/index.yaml"),
+            }],
+        );
+        // The message has to say what to do *before* renaming, since renaming is
+        // what un-parks the bytes the old store is still holding.
+        let text = findings[0].to_string();
+        assert!(text.contains("`recycle_bin`"), "{text}");
+        assert!(text.contains("rename the key"), "{text}");
+        // Diagnosis only: the parked bytes are prov's to report, not to judge.
+        assert!(block_on(ws.suggest_fix(&findings[0])).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_root_on_the_current_pointer_spelling_is_not_reported() {
+        // The load-bearing negative: every workspace that has been through a
+        // recorded delete declares `deletions`, and none of them wants a finding.
+        let dir = tempdir("current-pointer");
         write(
             &dir,
             "index.md",
@@ -1795,99 +1807,41 @@ mod tests {
             "---\ntitle: My Note\npart_of: index.md\n---\nbody\n",
         );
         let mut w = Workspace::builder(StdFs).root(&dir).build();
-        block_on(w.recycle(Path::new("note.md"), false, None)).unwrap();
-        assert!(dir.join("recyclebin/items/note.md").exists());
-        dir
-    }
-
-    fn missing_bytes(dir: &Path) -> Vec<Finding> {
-        let ws = Workspace::builder(StdFs).root(dir).build();
-        block_on(ws.check("index.md"))
-            .unwrap()
-            .into_iter()
-            .filter(|f| matches!(f, Finding::RecycledBytesMissing { .. }))
-            .collect()
-    }
-
-    #[test]
-    fn a_bin_record_with_its_parked_bytes_intact_is_not_flagged() {
-        let dir = with_a_binned_note("bin-intact");
-        assert_eq!(missing_bytes(&dir), vec![]);
-    }
-
-    #[test]
-    fn a_bin_record_whose_parked_bytes_vanished_is_reported() {
-        // The bytes go behind prov's back — a partial sync, a transport pruning
-        // an unreached subtree, a hand-deletion inside the bin. The record still
-        // promises a restore it can no longer perform.
-        let dir = with_a_binned_note("bin-vanished");
-        std::fs::remove_file(dir.join("recyclebin/items/note.md")).unwrap();
-
-        let findings = missing_bytes(&dir);
-        assert_eq!(
-            findings,
-            vec![Finding::RecycledBytesMissing {
-                index: PathBuf::from("recyclebin/index.yaml"),
-                from: PathBuf::from("note.md"),
-                missing: vec![PathBuf::from("recyclebin/items/note.md")],
-            }],
-        );
-        // The finding names the document the user would ask to restore, not the
-        // internal parked path — which is all `restore`'s raw rename failure
-        // would have given them.
+        block_on(w.delete(Path::new("note.md"), false)).unwrap();
         assert!(
-            findings[0]
-                .to_string()
-                .contains("note.md cannot be restored"),
-            "{}",
-            findings[0]
+            std::fs::read_to_string(dir.join("index.md"))
+                .unwrap()
+                .contains("deletions")
         );
-        // Diagnosis only: there is no mechanical repair for absent bytes.
+
+        let findings = block_on(
+            Workspace::builder(StdFs)
+                .root(&dir)
+                .build()
+                .check("index.md"),
+        )
+        .unwrap();
+        assert!(
+            findings.is_empty(),
+            "a recorded delete leaves check clean: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn the_legacy_bin_still_parks_its_items_out_of_the_orphan_walk() {
+        // The reason the finding is diagnosis-only. `items/` is unreached by
+        // design, and it is the old pointer that keeps it parked — so as long as
+        // the workspace declares one, a binned document must not surface as an
+        // orphan on top of the rename notice.
+        let dir = with_a_legacy_bin("legacy-parked");
         let ws = Workspace::builder(StdFs).root(&dir).build();
-        assert!(block_on(ws.suggest_fix(&findings[0])).unwrap().is_none());
-    }
-
-    #[test]
-    fn a_separated_document_that_lost_only_its_body_is_reported() {
-        // A separated document parks two files and they move as one ChangeSet,
-        // so losing either makes the record equally unrestorable — but the
-        // finding must name which one actually went.
-        let dir = tempdir("bin-body");
-        write(
-            &dir,
-            "index.md",
-            "---\ntitle: Home\ncontents:\n- note.md\n---\n",
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings
+                .iter()
+                .all(|f| matches!(f, Finding::LegacyDeletionsPointer { .. })),
+            "the parked bytes were walked: {findings:?}"
         );
-        write(
-            &dir,
-            "note.md",
-            "---\ntitle: My Note\npart_of: index.md\ncontent: note.body.md\n---\n",
-        );
-        write(&dir, "note.body.md", "prose\n");
-        let mut w = Workspace::builder(StdFs).root(&dir).build();
-        block_on(w.recycle(Path::new("note.md"), false, None)).unwrap();
-        std::fs::remove_file(dir.join("recyclebin/items/note.body.md")).unwrap();
-
-        assert_eq!(
-            missing_bytes(&dir),
-            vec![Finding::RecycledBytesMissing {
-                index: PathBuf::from("recyclebin/index.yaml"),
-                from: PathBuf::from("note.md"),
-                missing: vec![PathBuf::from("recyclebin/items/note.body.md")],
-            }],
-        );
-    }
-
-    #[test]
-    fn emptying_the_bin_removes_the_records_with_the_bytes_so_nothing_is_reported() {
-        // The load-bearing negative: `empty_bin` deletes exactly these bytes on
-        // purpose. If the finding could not tell a deliberate purge from a loss,
-        // every emptied bin would report one finding per document ever deleted.
-        let dir = with_a_binned_note("bin-emptied");
-        let mut w = Workspace::builder(StdFs).root(&dir).build();
-        assert_eq!(block_on(w.empty_bin(Path::new("index.md"))).unwrap(), 1);
-        assert!(!dir.join("recyclebin/items/note.md").exists());
-        assert_eq!(missing_bytes(&dir), vec![]);
     }
 
     #[test]

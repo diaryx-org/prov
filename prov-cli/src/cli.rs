@@ -199,10 +199,11 @@ pub(crate) enum Command {
         /// paired with `prov edit`), or off. Verified by `prov check`.
         #[arg(long, value_enum)]
         fixity: Option<FixityArg>,
-        /// Delete straight to a hard delete instead of the recoverable recycle bin
-        /// (the recycle bin is on by default — the safe archival posture).
+        /// Delete without recording what was deleted. Recording is on by
+        /// default: the delete destroys the file either way, and the record is
+        /// what lets `prov restore` relink it once you have the file back.
         #[arg(long)]
-        no_recycle_bin: bool,
+        no_record_deletions: bool,
         /// Frontmatter field `prov edit` stamps with an RFC 3339 UTC timestamp
         /// on a content change (e.g. `updated`). Omitted → the feature is off.
         #[arg(long, value_name = "FIELD")]
@@ -626,10 +627,13 @@ pub(crate) enum Command {
         dry_run: bool,
     },
     /// Delete a document, removing its parent's spanning entry. Refuses when
-    /// the document has children unless --force. By default the document is moved
-    /// to the workspace recycle bin (recoverable with `restore`); pass `--purge`
-    /// for an immediate hard delete. The default is governed by the `recycle_bin`
-    /// config axis (on unless opted out).
+    /// the document has children unless --force.
+    ///
+    /// The file is destroyed. prov does not keep a copy — getting the bytes back
+    /// is your version-control or backup tool's job — but it records what it
+    /// deleted, and `prov restore` uses that record to put the document back
+    /// into the graph once you have the file again. Recording is governed by the
+    /// `record_deletions` config axis (on unless opted out).
     Rm {
         /// The document to delete: a path, a title route (`@Daily/2026/07`), or an
         /// id (`id:fpk38j`).
@@ -638,28 +642,38 @@ pub(crate) enum Command {
         /// Delete even when the document still contains children (orphans them).
         #[arg(long)]
         force: bool,
-        /// Hard-delete: destroy the document instead of moving it to the recycle
-        /// bin. Irreversible.
-        #[arg(long)]
-        purge: bool,
     },
-    /// Restore a document from the recycle bin to the path it was deleted from,
-    /// re-linking it under its original parent.
+    /// Put a deleted document back into the graph: re-register the id it held
+    /// and re-link it under the parent that listed it.
     ///
-    /// Refuses when something already occupies that path, or when the record's
-    /// id has been claimed in the meantime — by another document, or by another
-    /// id at that path. Ids travel in frontmatter, so a sync can hand one to a
-    /// second document while this one sits in the bin; restoring over that would
-    /// take the id from a document that still spells it, and only you can say
-    /// which should keep it.
+    /// **Restore the file first.** prov did not keep its bytes, so recover them
+    /// however this directory is backed up or version-controlled (`git checkout
+    /// <path>`, a copy out of a snapshot) and put them back at the original
+    /// path; this command does the half no such tool can. It refuses when
+    /// nothing is at that path, and says so.
+    ///
+    /// Also refuses when the record's id has been claimed in the meantime — by
+    /// another document, or by another id at that path. Ids travel in
+    /// frontmatter, so a sync can hand one to a second document while the record
+    /// sat in the log; restoring over that would take the id from a document
+    /// that still spells it, and only you can say which should keep it.
+    ///
+    /// A workspace still on the recycle bin this replaced *did* keep the bytes,
+    /// and restoring one of its records moves them home as before — nothing to
+    /// put back first.
     Restore {
-        /// The original path of a binned document (as listed in the recycle bin).
+        /// The original path of a deleted document (as listed in the deletion
+        /// log).
         #[arg(value_name = "PATH")]
         path: String,
     },
-    /// Permanently purge every document in the recycle bin. Irreversible; the
-    /// only hard delete of binned documents.
-    EmptyBin,
+    /// Forget every deletion the log records. Irreversible: the records are the
+    /// last evidence of what was deleted, and `prov restore` needs them.
+    ///
+    /// A workspace still on the recycle bin this replaced also has bytes parked
+    /// under it, and this destroys those too — which is what emptying a bin
+    /// always meant.
+    ClearDeletions,
     /// Convert a document along a config axis. Five axes are supported.
     /// Two restyle the document's own outbound path links: `notation` (how a
     /// target is wrapped — `markdown` `[Title](target)` or `bare` `target`) and

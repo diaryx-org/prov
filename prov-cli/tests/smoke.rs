@@ -106,11 +106,19 @@ fn every_command_runs_end_to_end() {
     // ── convert a document's link spelling ──
     ok(&dir, &["convert", "index.md", "path_style", "relative"]);
 
-    // ── recycle bin: delete → restore → empty ──
+    // ── deletion log: delete → put the bytes back → restore → forget ──
+    // The delete destroys the file; standing in for the version-control tool
+    // that would hand it back is one `std::fs::write`, which is exactly the
+    // division of labour the log exists to express.
+    let copy = std::fs::read_to_string(dir.join("zig-copy.md")).unwrap();
     ok(&dir, &["rm", "zig-copy.md"]);
+    assert!(!dir.join("zig-copy.md").exists(), "rm destroys the file");
+    std::fs::write(dir.join("zig-copy.md"), &copy).unwrap();
     ok(&dir, &["restore", "zig-copy.md"]);
+    ok(&dir, &["check"]);
+
     ok(&dir, &["rm", "zig-copy.md"]);
-    ok(&dir, &["empty-bin"]);
+    ok(&dir, &["clear-deletions"]);
 
     // ── ignore: what a tool copying this folder should leave alone ──
     std::fs::write(dir.join("loose.md"), "a note nothing links\n").unwrap();

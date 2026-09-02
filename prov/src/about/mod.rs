@@ -125,8 +125,8 @@ pub struct AboutContext {
     pub config_doc: Option<PathBuf>,
     /// The id registry the root points at, if any.
     pub registry_doc: Option<PathBuf>,
-    /// The recycle-bin index the root points at, if any.
-    pub recycle_doc: Option<PathBuf>,
+    /// The deletion log the root points at, if any.
+    pub deletions_doc: Option<PathBuf>,
     /// The history-store index the root points at, if any.
     pub history_doc: Option<PathBuf>,
     /// The generating tool's version, for the byline (`"0.3.2"`).
@@ -762,7 +762,7 @@ fn machinery_section(
             format!("the list of permanent ids ({})", code(&display_path(path))),
         ));
     }
-    if let (Some(rel), Some(path)) = (relations.recycle_relation(), &ctx.recycle_doc) {
+    if let (Some(rel), Some(path)) = (relations.deletions_relation(), &ctx.deletions_doc) {
         pointers.push((
             rel.to_string(),
             format!("what has been deleted ({})", code(&display_path(path))),
@@ -915,9 +915,12 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
 
     bullets.push(format!(
         "**Deleting.** {}",
-        if config.recycle_bin {
-            "Deleted documents go to a recycle bin and can be brought back until \
-             it is emptied."
+        if config.record_deletions {
+            "A deletion destroys the file. What is kept is a record of it — where \
+             the document sat, what it was called, and which document listed it — \
+             so that if you get the file back from wherever this directory is \
+             backed up or version-controlled, the record says what it was part \
+             of. Nothing here can give you the file itself back."
                 .to_string()
         } else {
             let recoverable = if ctx.history_doc.is_some() {
@@ -926,7 +929,8 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
                 ""
             };
             format!(
-                "There is no recycle bin here. A deletion is immediate and permanent.{recoverable}"
+                "A deletion is immediate and permanent, and nothing here records \
+                 that it happened.{recoverable}"
             )
         }
     ));
@@ -1470,6 +1474,7 @@ fn is_pointer(relations: &RelationSet, name: &str) -> bool {
     [
         relations.registry_relation(),
         relations.config_relation(),
+        relations.deletions_relation(),
         relations.recycle_relation(),
         relations.history_relation(),
         relations.about_relation(),
@@ -1723,7 +1728,7 @@ mod tests {
             )]),
             reference_target: Addressing::Id,
             id_storage: IdStorage::FrontmatterOnly,
-            recycle_bin: false,
+            record_deletions: false,
             fixity: Fixity::Full,
             updated: "modified".into(),
             ..WorkspaceConfig::default()
@@ -1888,7 +1893,7 @@ mod tests {
         let (config, ctx) = default_workspace();
         let page = render(&config, &ctx);
         let table = rows_under(&page, "| relation | means | how many | its opposite |").join("\n");
-        for pointer in ["`registry`", "`recycle_bin`", "`history`", "`about`"] {
+        for pointer in ["`registry`", "`deletions`", "`history`", "`about`"] {
             assert!(
                 !table.contains(pointer),
                 "{pointer} is machinery, not a relation a reader should follow"

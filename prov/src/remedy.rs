@@ -58,9 +58,9 @@ use prov_store::index::IndexStore;
 /// `[label](target)` can.
 ///
 /// **Never deletes bytes.** A fix may drop a link — a broken entry, a dangling
-/// reference — but files, blobs, and recycle-bin records are outside its reach.
-/// Destroying data is what a deliberate verb (`rm`, `empty-bin`) is for, on
-/// request and by name.
+/// reference — but files, blobs, and deletion records are outside its reach.
+/// Destroying data is what a deliberate verb (`rm`, `clear-deletions`) is for,
+/// on request and by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fix {
     /// Repair a [`Finding::MissingInverse`]: declare `relation` in `doc` pointing
@@ -720,8 +720,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// Empty means prov genuinely has nothing to do — either because the repair
     /// is outside prov (bytes a transport has not delivered yet, a `spec` newer
-    /// than this build) or because performing it would destroy the evidence of
-    /// what went wrong ([`Finding::RecycledBytesMissing`]).
+    /// than this build) or because performing it has to happen in an order only
+    /// the author can drive ([`Finding::LegacyDeletionsPointer`]).
     ///
     /// Where more than one repair is defensible, they are all here and the caller
     /// picks; see [`Remedy`] for why that replaced a single-answer signature.

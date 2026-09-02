@@ -82,7 +82,7 @@ fn main() -> ExitCode {
             identity,
             id_storage,
             fixity,
-            no_recycle_bin,
+            no_record_deletions,
             updated_field,
             workspace_id,
             adopt,
@@ -101,7 +101,7 @@ fn main() -> ExitCode {
             identity,
             id_storage,
             fixity,
-            no_recycle_bin,
+            no_record_deletions,
             updated_field,
             workspace_id,
             adopt,
@@ -195,9 +195,9 @@ fn main() -> ExitCode {
             layout,
             dry_run,
         } => cmd_reparent(&path, &in_target, parents, layout.into(), dry_run),
-        Command::Rm { path, force, purge } => cmd_rm(&path, force, purge),
+        Command::Rm { path, force } => cmd_rm(&path, force),
         Command::Restore { path } => cmd_restore(&path),
-        Command::EmptyBin => cmd_empty_bin(),
+        Command::ClearDeletions => cmd_clear_deletions(),
         Command::Duplicate { source } => cmd_duplicate(&source),
         Command::Convert {
             file,
@@ -2388,31 +2388,35 @@ fn cmd_reparent(
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_rm(path: &str, force: bool, purge: bool) -> CmdResult {
+fn cmd_rm(path: &str, force: bool) -> CmdResult {
     let resolved = resolve_target(path)?;
     let ctx = find_root()?;
     let mut ws = workspace(&ctx)?;
     let target = ws_rel(&ctx, &resolved)?;
 
-    // The safe default — move to the recycle bin — unless the workspace opted out
-    // (`recycle_bin: false`) or the caller asked for a hard delete (`--purge`).
-    let danglers = if ctx.config.recycle_bin && !purge {
-        let danglers = block_on(ws.recycle(&target, force, None))?;
-        persist(&ctx, &mut ws)?;
+    // The `record_deletions` axis reaches the library through `Settings`, so the
+    // one verb covers both postures; what the CLI adds is the clock, which the
+    // library takes as an argument rather than reading.
+    let recorded = ctx.config.record_deletions;
+    let now = now_rfc3339();
+    let danglers = block_on(ws.delete_with(
+        &target,
+        force,
+        recorded.then_some(now.as_str()),
+        prov::Diagnosis::Report,
+    ))?;
+    persist(&ctx, &mut ws)?;
+    if recorded {
         println!(
-            "moved {} to the recycle bin (restore with `prov restore`)",
+            "deleted {} (recorded; `prov restore` relinks it once the file is back)",
             resolved.display()
         );
-        danglers
     } else {
-        let danglers = block_on(ws.delete(&target, force))?;
-        persist(&ctx, &mut ws)?;
         println!("deleted {}", resolved.display());
-        danglers
-    };
-    // The first recycle *bootstraps* the bin and adds the root's `recycle_bin`
-    // pointer — another machinery file the page lists. A no-op on every later
-    // delete, since the pointer already exists.
+    }
+    // The first recorded delete *bootstraps* the log and adds the root's
+    // `deletions` pointer — another machinery file the page lists. A no-op on
+    // every later delete, since the pointer already exists.
     refresh_about(&ctx.root_dir)?;
     for finding in &danglers {
         eprintln!("warning: now dangling — {finding}");
@@ -2423,8 +2427,10 @@ fn cmd_rm(path: &str, force: bool, purge: bool) -> CmdResult {
 fn cmd_restore(path: &str) -> CmdResult {
     let ctx = find_root()?;
     let mut ws = workspace(&ctx)?;
-    // The document is deleted, so its path cannot be `resolve_target`-ed (that
-    // reads the file); take it as given, relative to the workspace root.
+    // The path names a document that was deleted, so it cannot be
+    // `resolve_target`-ed — that reads the file, and under the ordinary restore
+    // the caller has only just put one back there. Take it as given, relative to
+    // the workspace root.
     let from = ws_rel(&ctx, Path::new(path))?;
     block_on(ws.restore(&from, &ctx.root_doc))?;
     persist(&ctx, &mut ws)?;
@@ -2433,13 +2439,14 @@ fn cmd_restore(path: &str) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_empty_bin() -> CmdResult {
+fn cmd_clear_deletions() -> CmdResult {
     let ctx = find_root()?;
     let mut ws = workspace(&ctx)?;
-    let purged = block_on(ws.empty_bin(&ctx.root_doc))?;
+    let forgotten = block_on(ws.clear_deletions(&ctx.root_doc))?;
     persist(&ctx, &mut ws)?;
-    // A bulk purge yields no object to name — narration only, stdout stays empty.
-    eprintln!("purged {purged} document(s) from the recycle bin");
+    // A bulk operation yields no object to name — narration only, stdout stays
+    // empty.
+    eprintln!("forgot {forgotten} deletion record(s)");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2455,7 +2462,7 @@ fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
         root_doc: ctx.root_doc.clone(),
         config_doc: block_on(probe.config_path(&ctx.root_doc))?,
         registry_doc: block_on(probe.registry_path(&ctx.root_doc))?,
-        recycle_doc: block_on(probe.recycle_bin_path(&ctx.root_doc))?,
+        deletions_doc: block_on(probe.deletions_path(&ctx.root_doc))?,
         history_doc: block_on(probe.history_path(&ctx.root_doc))?,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
