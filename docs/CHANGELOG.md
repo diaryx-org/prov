@@ -28,6 +28,12 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.11.0 — 2026-09-02
+
 ### Breaking
 
 - **delete** — a deletion log, in place of the recycle bin ([`3045e28`](https://github.com/diaryx-org/prov/commit/3045e281a8f1d6606e38fe58ad249e10f294fd06))
@@ -118,7 +124,6 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
   it; it now holds documents back, and one that does not name a field
   makes the export unreadable.
 
-<!-- git-cliff:end -->
 
 ## v0.10.0 — 2026-08-27
 
