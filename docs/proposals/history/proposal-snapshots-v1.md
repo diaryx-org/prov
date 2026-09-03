@@ -1,7 +1,35 @@
 ---
+title: Snapshots — a pre-sync safety net
+author: adammharris
+created: 2026-07-31
+updated: 2026-09-02
+status: rejected
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # Snapshots — a pre-sync safety net
+
+## Status: rejected (2026-09-02)
+
+Superseded twice, and the line of thought it opened is now closed.
+[v2](proposal-snapshots-v2.md) rejected this draft's central choice — events
+recording *deltas*, folded over their ancestry to read one snapshot — and
+[v3](proposal-history-v3.md) renamed the feature *history* and carried the rest
+forward. That store shipped in 0.4.0 and was retired in 0.7.0; v3's status
+records why, and the answer prov settled on is written up there rather than
+repeated here.
+
+One half of this document did survive intact. **`backup` shipped as proposed**
+and is still a verb: a plain, opaque, whole-tree copy to an arbitrary
+filesystem location, outside the reachable graph, with no config axis
+(`prov backup`, `prov-cli/src/backup.rs`). Everything on the snapshots side —
+`snapshots/`, the `snapshots` config axis, `snapshot-create` and its siblings,
+the snapshot `check` findings — was never built under that name and does not
+exist under any other.
+
+The argument is left as written, including the two failure modes it identified
+first: a sync transport reconciling bytes it cannot read as a graph, and a
+recycle bin that answers only a single-device delete. Both outlived the design
+that was proposed for them.
 
 > Working proposal. What prov should do to make multi-device sync recoverable
 > when it goes wrong. Complements DESIGN §5 (the index's two natures), §8

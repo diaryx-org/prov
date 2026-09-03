@@ -1,7 +1,50 @@
 ---
+title: History — a versioned safety net for the workspace
+author: adammharris
+created: 2026-07-31
+updated: 2026-09-02
+status: rejected
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # History — a versioned safety net for the workspace
+
+## Status: rejected (2026-09-02) — built in 0.4.0, retired in 0.7.0
+
+This proposal was accepted and implemented, and then the feature was withdrawn.
+Phase 0 — the event store, `history-capture` and `history-list` — landed in
+0.4.0 (`600ec97`), followed by `history-show`, `history-log`, `history-restore`,
+`history-diff`, and the rest of the verb surface. **0.7.0 retired all of it**
+(`6d4b7f4`): recording a workspace's history is another tool's whole subject —
+revisions, merge, amendment, forgetting, a store a person reads with `cat` — and
+a captured-pre-image event store maintained beside a document graph could only
+fall behind one. The immediate replacement was an integration (prov generating a
+region inside one specific tool's skiplist), and 0.8.0 rejected that too
+(`b5475d1`), because serving a single tool put that tool's store format, its
+tracked set, and a `history` config axis inside prov and left every other tool
+with nothing.
+
+**What prov says instead.** `prov ignore` states the one thing the graph knows
+and no recording tool does — which files *are* the workspace — as gitignore
+rules, naming no tool and writing nothing. The rule the retirement established,
+and the one to apply the next time a feature here overlaps a version-control
+tool: keep only the half that needs the graph, and hand the bytes to whatever
+records the folder. 0.11.0's deletion log is that rule applied again — a `rm`
+touches the file, the parent's spanning entry and the registry, so `delete`
+records what it would take to repair the graph and `restore` performs that
+repair around bytes the caller recovered elsewhere. prov does not keep the
+bytes.
+
+**What is still normative.** [`docs/history-format.md`](/docs/history-format.md)
+is the compatibility contract for the stores already on disk, and stays so
+forever: event documents were immutable, so nothing about them can be
+retrofitted, and a person must be able to read one by hand with tools that are
+not prov. The `history` pointer relation survives for the same reason — to keep
+an unmigrated store parked. Nothing writes one.
+
+The design below is left as argued. Its OCFL section — output format, never the
+live store — is the part most likely to be worth re-reading, since exporting a
+workspace to a preservation format is a question the retirement did not answer
+and did not remove.
 
 > Working proposal, third draft. Supersedes `proposal-snapshots.md` (v1) and
 > `proposal-snapshots-v2.md`. Complements DESIGN §5 (the index: one artifact,

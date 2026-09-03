@@ -1,7 +1,34 @@
 ---
+title: Snapshots v2 — a pre-sync safety net
+author: adammharris
+created: 2026-07-31
+updated: 2026-09-02
+status: rejected
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # Snapshots v2 — a pre-sync safety net
+
+## Status: rejected (2026-09-02)
+
+Superseded by [v3](proposal-history-v3.md), which took this draft's structure
+whole — one immutable event per capture carrying the **full manifest** of the
+capture set, content-addressed deduplicated blobs, no fold and no load-bearing
+ancestry — and changed three things around it: the feature was renamed
+*history*, `backup` had shipped and stopped being proposed, and the OCFL
+question was settled as output rather than store.
+
+So the correction this draft made to v1 was right and was built. What was built
+is gone: the store shipped in 0.4.0 and was retired in 0.7.0 for reasons that
+have nothing to do with the delta-versus-manifest argument, and v3's status is
+where that account lives.
+
+Two of this draft's smaller corrections outlived it. The manifest's `id` column
+— rename-robust, per-document lineage as a derived query — is the same
+observation that makes 0.11.0's deletion log record a document's id and parent
+rather than just its path. And the retention correction ("any document captured
+while live leaves its bytes in the store, which no purge touches") is exactly
+the property that decided the division prov now draws: a workspace that wants a
+deletion to leave no trace can have it, because prov no longer keeps the bytes.
 
 > Working proposal, second draft. Supersedes `proposal-snapshots.md`.
 > Complements DESIGN §5 (the index: one artifact, two natures), §8 (validation
