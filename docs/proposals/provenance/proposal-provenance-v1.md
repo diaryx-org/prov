@@ -2,10 +2,58 @@
 title: provenance and attestation
 author: adammharris
 created: 2026-08-14
-status: early draft
+updated: 2026-09-02
+status: draft
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # Provenance — who wrote this, who checked it, and against what
+
+## Status: still a draft (2026-09-02)
+
+Open on purpose. §2's questions are unanswered, and phase 0 is still "carry
+only" — every field here is legal tier-3 frontmatter that prov transports
+untouched, so a workspace can try the vocabulary today without prov gaining a
+line of code for it. Two things have moved underneath the draft since it was
+written, and the first changes an answer.
+
+**§5's digest binding is no longer nearly free, and question #2 is harder for
+it.** That section reasons "because prov already stamps `sha256:`, binding is
+nearly free." It was true when a checksum could cover a document's own body. It
+is not now: the fixity rule of 0.11.0 (`cb0054e`, DESIGN row 464) reads
+coverage off the document's *shape* and writes a `content_hash` exactly where
+it covers **a file other than the one recording it** — an attachment sidecar's
+payload, a separated node's prose body, a manifest node's manifest. A combined
+document gets none. So `of: sha256:…` can bind on those three, and an ordinary
+single-file note has no digest to name and nothing for `VerificationStale` to
+fire against.
+
+The idea survives the change — the test that decided the fixity rule is the one
+this section is built on, that an outsider can check the claim with `sha256sum`
+— but the questions come out differently. #2 stops being about OKF
+compatibility and becomes the first question to settle, because most documents
+in a workspace are combined ones and unbound-therefore-uncheckable would be
+their normal state, not an interop edge. #7 is partly pre-answered: the
+documents that can carry a *bound* verification are exactly the ones prov
+already gives a `content_hash`. Whether an unbound `verified` is worth
+recording on the rest, or whether the family should bind to something that is
+not a fixity digest, is what a second draft has to decide before anything else
+here can be built.
+
+**Three citations name machinery that is gone.** §1's lineage opens "prov has
+fixity, an immutable history store, a crash journal, a recycle bin": the store
+was retired in 0.7.0 ([history v3's
+status](/docs/proposals/history/proposal-history-v3.md)) and the bin in 0.11.0,
+where a deletion log stands in its place. §3's worked example of a document
+prov itself authors — a history event carrying `generated: {by:
+process:prov-history, …}` — is therefore about a document nothing writes; the
+point it makes holds for the pages prov does generate, `about.md` first. §10's
+OKF export gate would draw `log.md` from a store that no longer exists. And §5
+quotes a fixity-cache rule from DESIGN's status table that is not there any
+more: the cache retired with the capture verbs that were its only consumer.
+
+The distinction that quote illustrated is untouched, and is still the strongest
+thing in this document: `check` is the attester, `verified` is the record, and
+neither is evidence for the other.
 
 > **Early draft.** Deliberately unfinished: the open questions in §2 are not
 > yet answered, and several of them change the shape of everything after

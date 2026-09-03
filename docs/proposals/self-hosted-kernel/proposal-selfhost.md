@@ -2,14 +2,58 @@
 title: self-hosted kernels
 author: adammharris
 created: 2026-07-31
-updated: 2026-08-01
-status: implemented (phases 0 and 1)
+updated: 2026-09-02
+status: implemented
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 contents:
 - '[Prov 1.draft](/docs/proposals/self-hosted-kernel/examples/prov-1.draft.md.yaml)'
 - '[ORGANIZATION](/docs/proposals/self-hosted-kernel/examples/ORGANIZATION.md.yaml)'
 ---
 # Self-hosted kernels — the workspace carries its own reading instructions
+
+## Status: implemented (closed 2026-09-02)
+
+Both phases shipped and nothing here is outstanding. The generator has since
+moved from the single `prov/src/about.rs` the note below names into
+`prov/src/about/` (`mod.rs` and `io.rs`); everything else in that note holds,
+and the four open questions are answered under [What implementation
+settled](#what-implementation-settled). What stayed unscheduled — the
+machine-readable kernel, an `about: all` with corpus facts, localization — is
+deferred on purpose, and none of it touches the pointer relation, the axis
+spelling, or the typology row.
+
+Three passages below describe machinery prov has retired since. They are left
+as argued, and corrected here rather than edited into the body:
+
+- **The root's pointers are `registry`, `config`, and `deletions`.** 0.11.0
+  replaced the recycle bin with a deletion log, so where [Where it
+  lives](#where-it-lives-a-fourth-link-target-kind) and the table in
+  [Relationship to history's manifests](#relationship-to-historys-manifests)
+  name `recycle_bin` as `about`'s peer, read `deletions`. The page itself
+  followed: it now tells a reader that a deletion destroys the file and keeps a
+  record of what it was part of, so that bytes recovered from wherever the
+  directory is version-controlled can be put back where they belong
+  (`prov/src/about/mod.rs:915`).
+- **One regeneration trigger went with the store, and the argument is
+  unharmed.** "The first id minted writes the registry, the first delete writes
+  the recycle bin, the first capture writes the history store" — the first two
+  still bootstrap a pointer and still refresh the page (`ensure_registry` and
+  `cmd_rm`, `prov-cli/src/main.rs:446` and `:2447`), now the deletion log's
+  rather than the bin's; the third has nothing left to trigger it. The freshness
+  story never depended on the count: the refresh writes only when the page would
+  actually change, so it is a no-op on every mutation that changes nothing.
+- **The history manifest is gone; the division it drew is the one prov kept.**
+  0.7.0 retired the event store ([history v3's
+  status](/docs/proposals/history/proposal-history-v3.md)), so [Relationship to
+  history's manifests](#relationship-to-historys-manifests) reasons against a
+  manifest that no longer exists — and reaches the answer that outlived it.
+  `about` still does not list the files. The record that does is now the
+  bulk-attachment manifest (`attach --manifest`, DESIGN row 465), and the
+  table reads true with that in the history manifest's row: it answers "what is
+  here, and are the bytes intact?", it is derived from the corpus, and it
+  changes when the corpus does. The generated sentence about a per-file record
+  survives only for the pointer to an unmigrated store
+  (`prov/src/about/mod.rs:859`).
 
 > **Implemented.** Phases 0 and 1 have shipped: `prov/src/about.rs` holds the
 > generator, `prov about [--check] [--print]` the CLI surface, and `AboutStale`
