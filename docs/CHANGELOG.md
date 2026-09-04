@@ -32,6 +32,27 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.11.1 — 2026-09-03
+
+### Breaking
+
+- **graph** — invert the shadow probe — index the listing, not the file ([`a0c3569`](https://github.com/diaryx-org/prov/commit/a0c35690374bd1b34805cc07ae9de96033e4340d))
+
+### Changed
+
+- **graph** — the read memo holds directory listings, not just documents ([`c435665`](https://github.com/diaryx-org/prov/commit/c435665c25c55f530a6a78c513c36e6d459bd771))
+- **graph** — one body parse for both halves of a body-link scan ([`3911869`](https://github.com/diaryx-org/prov/commit/3911869f42cfd7b37a42f07475795b4f1575b0d0))
+
+### Behavioural changes
+
+- within an open `read_scope`, a directory listing is
+now read once and reused, so `Graph::census` and everything built on it
+no longer observe a concurrent external creation or deletion partway
+through one operation — the same bound the memo has always placed on
+document reads, now extended to the listings resolution consults. Nothing
+outside a scope is affected, and a scope still ends where it always did.
+
+
 ## v0.11.0 — 2026-09-02
 
 ### Breaking
