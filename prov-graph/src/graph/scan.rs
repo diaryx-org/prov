@@ -19,7 +19,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use super::{Graph, Target};
+use super::{Graph, ShadowProbe, Target};
 use crate::content::ContentFormat;
 use crate::document::is_opaque_payload;
 use crate::error::Result;
@@ -75,9 +75,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         }
         let mut index = TitleIndex::new();
         let files = self.direct_child_files(&dirs).await?;
-        let listing: BTreeSet<PathBuf> = files.iter().cloned().collect();
+        let probe = ShadowProbe::over(files.iter());
         for rel in files {
-            if !is_document_path(&rel) || self.is_shadowed_payload(&rel, &listing).await {
+            if !is_document_path(&rel) || self.is_shadowed_payload(&rel, &probe).await {
                 continue;
             }
             if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
@@ -300,7 +300,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
-            let listing = file_listing(&rel_dir, &entries);
+            let probe = shadow_probe(&rel_dir, &entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -323,7 +323,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     && is_document_path(&rel)
                     // An `id:` inside a shadowed payload is an example, not a
                     // claim on the registry (see `attach_opaque`).
-                    && !self.is_shadowed_payload(&rel, &listing).await
+                    && !self.is_shadowed_payload(&rel, &probe).await
                     && let Ok((_, doc)) = self.load(&rel).await
                 {
                     let meta = fig::Value::from(&doc.meta);
@@ -360,7 +360,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
-            let listing = file_listing(&rel_dir, &entries);
+            let probe = shadow_probe(&rel_dir, &entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -383,7 +383,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     && is_document_path(&rel)
                     // A shadowed payload is bytes prov agreed not to read: its
                     // title is a specimen's, and must not answer `[[alias]]`.
-                    && !self.is_shadowed_payload(&rel, &listing).await
+                    && !self.is_shadowed_payload(&rel, &probe).await
                 {
                     // Always index by stem (name-based resolution, Obsidian-style)…
                     if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
@@ -411,12 +411,11 @@ fn is_document_path(path: &Path) -> bool {
     !is_opaque_payload(path)
 }
 
-/// The workspace-relative paths of the *files* among a directory's `entries`,
-/// the listing a shadow check probes
+/// The shadow probe over the *files* among a directory's `entries`
 /// ([`is_shadowed_payload`](Graph::is_shadowed_payload)). Hidden entries are
 /// skipped, matching the scans that build this.
-fn file_listing(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> BTreeSet<PathBuf> {
-    entries
+fn shadow_probe(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> ShadowProbe {
+    let files: Vec<PathBuf> = entries
         .iter()
         .filter(|e| e.file_type().is_file())
         .filter_map(|e| e.file_name().and_then(|n| n.to_str()).map(str::to_owned))
@@ -428,5 +427,6 @@ fn file_listing(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> BTreeSet<Pat
                 rel_dir.join(name)
             }
         })
-        .collect()
+        .collect();
+    ShadowProbe::over(files.iter())
 }

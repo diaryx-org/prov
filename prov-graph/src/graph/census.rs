@@ -281,14 +281,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     ) -> Result<BTreeSet<PathBuf>> {
         let reachable = reachable_set(start, census, content_bodies);
         let reached_dirs = Self::reached_dirs(&reachable);
-        let listing: BTreeSet<PathBuf> = self
-            .direct_child_files(&reached_dirs)
-            .await?
-            .into_iter()
-            .collect();
+        let probe = super::ShadowProbe::over(self.direct_child_files(&reached_dirs).await?.iter());
         let mut documents = BTreeSet::new();
         for path in reachable {
-            if !self.is_shadowed_payload(&path, &listing).await {
+            if !self.is_shadowed_payload(&path, &probe).await {
                 documents.insert(path);
             }
         }

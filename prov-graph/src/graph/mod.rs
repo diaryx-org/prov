@@ -96,7 +96,7 @@ pub mod tree;
 pub use census::{Backlink, CensusEntry, LinkSite, Resolution, StructuralFact, inbound, invert};
 pub use census::{Walk, reachable_set};
 pub use resolve::Target;
-pub use shadow::sidecar_candidates;
+pub use shadow::{ShadowProbe, sidecar_candidates};
 pub use tree::{Node, NodeKind, TreeOptions};
 
 use std::path::{Path, PathBuf};

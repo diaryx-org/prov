@@ -13,7 +13,7 @@
 //! not found by probing, which is why `attach`'s own sweep confirms the pointer
 //! rather than trusting the name.
 
-use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::Graph;
@@ -38,6 +38,68 @@ pub fn sidecar_candidates(payload: &Path) -> impl Iterator<Item = PathBuf> + '_ 
     SIDECAR_EXTENSIONS
         .iter()
         .map(move |ext| payload.with_file_name(format!("{name}.{ext}")))
+}
+
+/// A directory listing turned around: which of its files are conventionally
+/// named sidecars, and for what.
+///
+/// The lookup used to run the other way — build all six `<payload>.<ext>`
+/// candidates for a file and ask an ordered set of the listing whether it holds
+/// any of them. That is six `PathBuf` allocations and six ordered-set probes
+/// *per file scanned*, to answer "no" in every workspace with no attachments in
+/// it; over twenty thousand documents it was 16% of a `check`, most of it
+/// comparing paths component by component inside the set.
+///
+/// Inverting it costs one pass over the listing — the same
+/// `<payload>.<ext>` convention read backwards, so the two are exact inverses —
+/// and leaves the per-file question a single hash lookup that usually misses.
+/// A workspace with no attachments builds an empty map and every probe is that
+/// miss.
+///
+/// The `content` pointer is still what confirms a hit
+/// ([`Graph::sidecar_claims`]); this only says which files are worth asking
+/// about.
+#[derive(Debug, Default, Clone)]
+pub struct ShadowProbe {
+    /// Payload path → the conventionally named sidecars actually present, in
+    /// [`sidecar_candidates`]' preference order.
+    sidecars: HashMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl ShadowProbe {
+    /// Index the workspace-relative files a scan enumerated.
+    pub fn over<'a>(listing: impl IntoIterator<Item = &'a PathBuf>) -> Self {
+        let mut ranked: HashMap<PathBuf, Vec<(usize, PathBuf)>> = HashMap::new();
+        for entry in listing {
+            let Some(rank) = entry
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(|ext| SIDECAR_EXTENSIONS.iter().position(|known| *known == ext))
+            else {
+                continue;
+            };
+            // `photo.jpg.yaml` names `photo.jpg` — `sidecar_candidates` run
+            // backwards, which is what makes this the same question.
+            ranked
+                .entry(entry.with_extension(""))
+                .or_default()
+                .push((rank, entry.clone()));
+        }
+        let sidecars = ranked
+            .into_iter()
+            .map(|(payload, mut found)| {
+                found.sort_by_key(|(rank, _)| *rank);
+                (payload, found.into_iter().map(|(_, path)| path).collect())
+            })
+            .collect();
+        Self { sidecars }
+    }
+
+    /// The sidecars the listing holds for `payload`, in preference order —
+    /// empty for a file nothing beside it could be claiming.
+    fn sidecars_for(&self, payload: &Path) -> &[PathBuf] {
+        self.sidecars.get(payload).map_or(&[], Vec::as_slice)
+    }
 }
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
@@ -69,19 +131,79 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// never checked against a vocabulary, and any `content_hash` it shows is
     /// never treated as its own.
     ///
-    /// `listing` is the set of workspace-relative files the calling scan already
-    /// enumerated (its directory read), so a shadow check costs a set lookup
-    /// rather than a stat per metadata extension — this runs per file in the flat
-    /// title and id scans, and per reachable path in the vocabulary and fixity
-    /// passes (`validate::Workspace::reachable_documents`). A sidecar outside
-    /// the listing therefore does not shadow, which is the same bound the scans
-    /// themselves observe.
-    pub async fn is_shadowed_payload(&self, path: &Path, listing: &BTreeSet<PathBuf>) -> bool {
-        for candidate in sidecar_candidates(path) {
-            if listing.contains(&candidate) && self.sidecar_claims(&candidate, path).await {
+    /// `probe` is the [`ShadowProbe`] over the workspace-relative files the
+    /// calling scan already enumerated (its directory read), so a shadow check
+    /// costs one hash lookup rather than a stat per metadata extension — this
+    /// runs per file in the flat title and id scans, and per reachable path in
+    /// the vocabulary and fixity passes
+    /// (`validate::Workspace::reachable_documents`). A sidecar outside the
+    /// listing the probe was built over therefore does not shadow, which is the
+    /// same bound the scans themselves observe.
+    pub async fn is_shadowed_payload(&self, path: &Path, probe: &ShadowProbe) -> bool {
+        for candidate in probe.sidecars_for(path) {
+            if self.sidecar_claims(candidate, path).await {
                 return true;
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    /// The probe is `sidecar_candidates` read backwards, so the two must agree
+    /// about every file in a listing — that equivalence is the whole argument
+    /// for inverting the lookup.
+    #[test]
+    fn the_probe_answers_what_probing_every_candidate_answered() {
+        let listing = paths(&[
+            "photo.jpg",
+            "photo.jpg.yaml",
+            "notes/scan.pdf",
+            "notes/scan.pdf.json",
+            "notes/a.md",
+            "loose.toml",
+        ]);
+        let probe = ShadowProbe::over(listing.iter());
+        for path in &listing {
+            let by_candidate: Vec<PathBuf> = sidecar_candidates(path)
+                .filter(|c| listing.contains(c))
+                .collect();
+            assert_eq!(
+                probe.sidecars_for(path),
+                by_candidate.as_slice(),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    /// A payload with more than one conventional sidecar is reported in
+    /// `SIDECAR_EXTENSIONS` order however the directory listed them, because the
+    /// caller confirms them in that order and stops at the first that claims.
+    #[test]
+    fn several_sidecars_come_back_in_preference_order() {
+        let listing = paths(&["photo.jpg.figl", "photo.jpg.yaml", "photo.jpg.json"]);
+        let probe = ShadowProbe::over(listing.iter());
+        assert_eq!(
+            probe.sidecars_for(Path::new("photo.jpg")),
+            paths(&["photo.jpg.yaml", "photo.jpg.json", "photo.jpg.figl"]).as_slice()
+        );
+    }
+
+    /// The common case: nothing in the listing could be a sidecar, so every
+    /// file's probe is a miss and no candidate path is ever built.
+    #[test]
+    fn a_listing_with_no_sidecars_claims_nothing() {
+        let listing = paths(&["index.md", "a.md", "b.md"]);
+        let probe = ShadowProbe::over(listing.iter());
+        assert!(probe.sidecars.is_empty());
+        assert!(probe.sidecars_for(Path::new("a.md")).is_empty());
     }
 }
