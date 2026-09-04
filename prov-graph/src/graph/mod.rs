@@ -253,6 +253,17 @@ impl<FS, Ix> Graph<FS, Ix> {
     pub(crate) fn memo_remember(&self, path: &Path, text: &str, doc: &crate::document::Document) {
         self.memo.lock().unwrap().remember(path, text, doc);
     }
+
+    /// The indexed listing of the workspace-relative directory `path`, if this
+    /// operation has already read it.
+    pub(crate) fn memo_dir(&self, path: &Path) -> Option<Arc<crate::memo::DirNames>> {
+        crate::memo::lock(&self.memo).dir(path)
+    }
+
+    /// Remember a directory read for the rest of the operation.
+    pub(crate) fn memo_remember_dir(&self, path: &Path, names: Arc<crate::memo::DirNames>) {
+        crate::memo::lock(&self.memo).remember_dir(path, names);
+    }
 }
 
 impl<FS: Clone, Ix: Clone> Clone for Graph<FS, Ix> {

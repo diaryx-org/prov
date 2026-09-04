@@ -13,6 +13,21 @@
 //!
 //! So remember the answer for as long as the operation lasts, and no longer.
 //!
+//! ## Directories, for the same reason and at a worse ratio
+//!
+//! The memo holds *listings* beside documents, because the same argument runs
+//! harder there. Resolution asks whether a link's target exists and — when it
+//! does not — whether some entry beside it differs only in case, which
+//! [`exact_name`] answers by reading the target's parent directory. That is one
+//! directory read **per link**, where the document memo saves one read per
+//! *pass*: a flat workspace of N documents holding N links into one directory
+//! read that directory N times, each read enumerating N entries, and `check`
+//! went quadratic on exactly that. Listings are also indexed rather than
+//! stored raw (`DirNames`), so the answer is a hash lookup and not a scan of
+//! everything the directory holds.
+//!
+//! [`exact_name`]: crate::graph::Graph
+//!
 //! ## Why the scope, and why it is explicit
 //!
 //! A memo with no end is a cache, and a cache has to be invalidated. A memo
@@ -42,7 +57,8 @@
 //! [`load`]: crate::graph::Graph::load
 //! [`Workspace::commit`]: https://docs.rs/prov
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -76,6 +92,76 @@ const BUDGET: usize = 32 * 1024 * 1024;
 /// enough that keeping it would evict nothing useful and buy nothing.
 const MAX_DOCUMENT: usize = 1024 * 1024;
 
+/// One directory's entry names, indexed for the two questions a name lookup
+/// asks: is this name here, and is a name that differs from it only in ASCII
+/// case here?
+///
+/// Two maps rather than one, because a directory on a case-sensitive
+/// filesystem may hold both `Notes.md` and `notes.md`, and an exact match must
+/// win however the listing happened to be ordered — a single folded map would
+/// answer "the other one" whenever the wrong one was inserted last.
+///
+/// Keyed by [`OsString`], not `String`: the scan this replaced compared
+/// [`OsStr`]s, so a name that is not UTF-8 still matched itself exactly, and
+/// dropping such an entry here would turn a document prov can open into one it
+/// reports as missing.
+///
+/// [`OsStr`]: std::ffi::OsStr
+#[derive(Debug, Default)]
+pub(crate) struct DirNames {
+    /// Every entry name, as listed.
+    exact: HashSet<OsString>,
+    /// ASCII-lowercased name → the name as listed. Last writer wins, which only
+    /// matters when a directory holds two names differing in case, and then only
+    /// for the *inexact* answer — [`exact`](Self::exact) has already settled the
+    /// other one.
+    folded: HashMap<OsString, OsString>,
+}
+
+impl DirNames {
+    /// Index a directory read.
+    pub(crate) fn index(entries: &[crate::fs::DirEntry]) -> Self {
+        let mut names = Self::default();
+        for entry in entries {
+            let Some(name) = entry.file_name() else {
+                continue;
+            };
+            names
+                .folded
+                .insert(name.to_ascii_lowercase(), name.to_os_string());
+            names.exact.insert(name.to_os_string());
+        }
+        names
+    }
+
+    /// Whether the directory holds exactly this name.
+    pub(crate) fn holds(&self, name: &OsStr) -> bool {
+        self.exact.contains(name)
+    }
+
+    /// The name the directory holds that differs from `name` in ASCII case
+    /// alone, if any. Ask [`holds`](Self::holds) first: this will happily
+    /// return `name` itself.
+    pub(crate) fn case_variant(&self, name: &OsStr) -> Option<&OsStr> {
+        self.folded
+            .get(&name.to_ascii_lowercase())
+            .map(OsString::as_os_str)
+    }
+
+    /// Roughly the bytes this holds, for the memo's budget. Approximate on
+    /// purpose — the budget is a ceiling that keeps an unusual workspace from
+    /// eating memory, not an allocator.
+    fn weight(&self) -> usize {
+        let names = self.exact.iter().map(|n| n.len()).sum::<usize>();
+        let folded = self
+            .folded
+            .iter()
+            .map(|(k, v)| k.len() + v.len())
+            .sum::<usize>();
+        names + folded
+    }
+}
+
 /// What one operation has already read.
 #[derive(Debug, Default)]
 pub struct ReadMemo {
@@ -83,7 +169,10 @@ pub struct ReadMemo {
     /// outermost exit is what clears it.
     depth: usize,
     docs: HashMap<PathBuf, (String, Document)>,
-    /// Text held, against [`BUDGET`].
+    /// Listings held, keyed workspace-relative like [`docs`](Self::docs) — which
+    /// is what lets [`forget`](Self::forget) drop the one a write invalidates.
+    dirs: HashMap<PathBuf, Arc<DirNames>>,
+    /// Text and listing names held, against [`BUDGET`].
     bytes: usize,
 }
 
@@ -121,15 +210,49 @@ impl ReadMemo {
             .insert(path.to_path_buf(), (text.to_string(), doc.clone()));
     }
 
+    /// The indexed listing of the workspace-relative directory `path`, if it
+    /// was read this operation. `None` outside a scope, like
+    /// [`get`](Self::get).
+    pub(crate) fn dir(&self, path: &Path) -> Option<Arc<DirNames>> {
+        if self.depth == 0 {
+            return None;
+        }
+        self.dirs.get(path).cloned()
+    }
+
+    /// Remember a directory read. A no-op outside a scope or once the budget is
+    /// spent — a listing that is not remembered costs a re-read and nothing
+    /// else.
+    pub(crate) fn remember_dir(&mut self, path: &Path, names: Arc<DirNames>) {
+        let weight = names.weight();
+        if self.depth == 0 || self.bytes + weight > BUDGET {
+            return;
+        }
+        self.bytes += weight;
+        self.dirs.insert(path.to_path_buf(), names);
+    }
+
     /// Forget `path` — what a write to it means.
+    ///
+    /// Its **parent's listing** goes too. A write may create the name or a
+    /// remove may take it away, and the listing that enumerated the parent is
+    /// the only one that can be wrong about it — so the operation that stages a
+    /// change and then reads the workspace back does not resolve against a
+    /// directory as it stood beforehand.
     pub fn forget(&mut self, path: &Path) {
         if let Some((text, _)) = self.docs.remove(path) {
             self.bytes -= text.len();
+        }
+        if let Some(parent) = path.parent()
+            && let Some(names) = self.dirs.remove(parent)
+        {
+            self.bytes -= names.weight();
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.docs.clear();
+        self.dirs.clear();
         self.bytes = 0;
     }
 
@@ -137,6 +260,12 @@ impl ReadMemo {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.docs.len()
+    }
+
+    /// How many directory listings are remembered, likewise.
+    #[cfg(test)]
+    pub(crate) fn dirs_len(&self) -> usize {
+        self.dirs.len()
     }
 }
 
@@ -239,6 +368,79 @@ mod tests {
         memo.forget(Path::new("a.md"));
         assert!(memo.get(Path::new("a.md")).is_none());
         assert_eq!(memo.len(), 0);
+    }
+
+    fn names(entries: &[&str]) -> Arc<DirNames> {
+        let entries: Vec<crate::fs::DirEntry> = entries
+            .iter()
+            .map(|n| crate::fs::DirEntry::new(*n, crate::fs::FileType::FILE))
+            .collect();
+        Arc::new(DirNames::index(&entries))
+    }
+
+    #[test]
+    fn a_listing_answers_an_exact_name_and_a_case_variant_apart() {
+        let names = names(&["Notes.md", "photo.jpg"]);
+        assert!(names.holds(OsStr::new("Notes.md")));
+        assert!(!names.holds(OsStr::new("notes.md")));
+        assert_eq!(
+            names.case_variant(OsStr::new("notes.md")),
+            Some(OsStr::new("Notes.md"))
+        );
+        assert_eq!(names.case_variant(OsStr::new("gone.md")), None);
+    }
+
+    /// Both spellings are present, so the exact one must win however the
+    /// listing was ordered — the reason the index keeps two maps.
+    #[test]
+    fn an_exact_name_wins_over_a_case_variant_of_itself() {
+        let names = names(&["notes.md", "Notes.md"]);
+        assert!(names.holds(OsStr::new("notes.md")));
+        assert!(names.holds(OsStr::new("Notes.md")));
+    }
+
+    #[test]
+    fn a_scope_remembers_a_directory_and_its_exit_forgets() {
+        let mut memo = ReadMemo::default();
+        memo.remember_dir(Path::new("notes"), names(&["a.md"]));
+        assert_eq!(memo.dirs_len(), 0, "nothing is remembered outside a scope");
+
+        memo.enter();
+        memo.remember_dir(Path::new("notes"), names(&["a.md"]));
+        assert!(memo.dir(Path::new("notes")).is_some());
+        memo.leave();
+        assert_eq!(memo.dirs_len(), 0);
+    }
+
+    /// A write creates or removes a name, so the listing that enumerated the
+    /// parent is stale — and it is the only listing that can be.
+    #[test]
+    fn forgetting_a_written_document_forgets_its_parent_listing() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        memo.remember_dir(Path::new("notes"), names(&["a.md"]));
+        memo.remember_dir(Path::new("other"), names(&["b.md"]));
+
+        memo.forget(Path::new("notes/new.md"));
+        assert!(
+            memo.dir(Path::new("notes")).is_none(),
+            "the directory the write lands in still answers from before it"
+        );
+        assert!(
+            memo.dir(Path::new("other")).is_some(),
+            "an unrelated directory was dropped"
+        );
+    }
+
+    /// A write at the workspace root forgets the root listing — `parent()` of a
+    /// bare name is the empty path, which is how the root is keyed.
+    #[test]
+    fn forgetting_a_root_document_forgets_the_root_listing() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        memo.remember_dir(Path::new(""), names(&["index.md"]));
+        memo.forget(Path::new("new.md"));
+        assert!(memo.dir(Path::new("")).is_none());
     }
 
     /// A memo is an optimization, so exceeding its budget must cost speed and

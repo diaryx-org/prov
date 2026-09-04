@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::Graph;
 use crate::error::Result;
@@ -13,6 +14,7 @@ use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
 use crate::index::IdIndex;
 use crate::link::{self, Link};
+use crate::memo::DirNames;
 use crate::title::{self, TitleIndex, TitleMatch};
 
 use super::Target;
@@ -726,28 +728,34 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
     /// How `path`'s final component matches its parent directory's listing:
     /// exactly, only case-insensitively (the portability hazard), or not at all.
+    ///
+    /// Answered from the read scope's directory memo where there is one
+    /// ([`crate::memo`]). This runs once per link resolved, and a workspace's
+    /// links point overwhelmingly at directories the same walk has already
+    /// asked about — without the memo, a flat workspace of N documents reads
+    /// one directory of N entries N times over, which is where `check`'s cost
+    /// went quadratic. Outside a scope it is the plain directory read it always
+    /// was.
     async fn exact_name(&self, path: &Path) -> NameMatch {
-        let full = self.root().join(path);
-        let (Some(parent), Some(name)) = (full.parent(), full.file_name()) else {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return NameMatch::None;
         };
-        let Ok(entries) = self.fs().read_dir(parent).await else {
-            return NameMatch::None;
+        let names = match self.memo_dir(parent) {
+            Some(hit) => hit,
+            None => {
+                let Ok(entries) = self.fs().read_dir(&self.root().join(parent)).await else {
+                    return NameMatch::None;
+                };
+                let names = Arc::new(DirNames::index(&entries));
+                self.memo_remember_dir(parent, Arc::clone(&names));
+                names
+            }
         };
-        let mut case_only = None;
-        for entry in entries {
-            let Some(entry_name) = entry.file_name() else {
-                continue;
-            };
-            if entry_name == name {
-                return NameMatch::Exact;
-            }
-            if entry_name.eq_ignore_ascii_case(name) {
-                case_only = Some(entry_name.to_string_lossy().into_owned());
-            }
+        if names.holds(name) {
+            return NameMatch::Exact;
         }
-        match case_only {
-            Some(actual) => NameMatch::CaseOnly(actual),
+        match names.case_variant(name) {
+            Some(actual) => NameMatch::CaseOnly(actual.to_string_lossy().into_owned()),
             None => NameMatch::None,
         }
     }
@@ -765,6 +773,100 @@ mod tests {
     use prov_testkit::write;
     fn tempdir(tag: &str) -> PathBuf {
         prov_testkit::scratch("census", tag)
+    }
+
+    /// A [`StdFs`] that counts its directory reads — the observable behind the
+    /// claim that resolution asks a directory about itself once per operation
+    /// and not once per link.
+    #[derive(Debug, Default)]
+    struct CountingFs {
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl CountingFs {
+        fn dir_reads(&self) -> usize {
+            self.reads.get()
+        }
+    }
+
+    impl ReadStorage for CountingFs {
+        async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            StdFs.read(path).await
+        }
+        async fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+            StdFs.read_to_string(path).await
+        }
+        async fn read_dir(&self, path: &Path) -> std::io::Result<Vec<crate::fs::DirEntry>> {
+            self.reads.set(self.reads.get() + 1);
+            StdFs.read_dir(path).await
+        }
+        async fn metadata(&self, path: &Path) -> std::io::Result<crate::fs::Metadata> {
+            StdFs.metadata(path).await
+        }
+    }
+
+    /// The regression this memo exists for. Every link resolved asks its target's
+    /// parent directory whether the name is there, so without a memo a workspace
+    /// of N documents in one directory reads that directory ~N times — the
+    /// quadratic term that made `check` unusable on a few thousand documents.
+    /// One directory, one read.
+    #[test]
+    fn a_walk_reads_each_directory_once_however_many_links_point_into_it() {
+        let dir = tempdir("dir-memo");
+        let children: Vec<String> = (0..24).map(|i| format!("n{i}.md")).collect();
+        let contents = children
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write(
+            &dir,
+            "index.md",
+            format!("---\ncontents:\n{contents}\n---\n"),
+        );
+        for child in &children {
+            write(&dir, child, "---\npart_of: index.md\n---\n");
+        }
+
+        let ws = Graph::new(
+            CountingFs::default(),
+            &dir,
+            NoIndex,
+            ReadSettings::default(),
+        );
+        let census = block_on(ws.census("index.md")).unwrap();
+        assert_eq!(census.len(), 48, "24 children, each edge and its inverse");
+        assert_eq!(
+            ws.fs().dir_reads(),
+            1,
+            "48 links into one directory should cost one listing, not 48"
+        );
+    }
+
+    /// The memo is bounded by a scope, and `census` opens its own — so a second
+    /// census sees the directory as it stands now, not as the first one found it.
+    #[test]
+    fn a_directory_read_does_not_outlive_the_operation_that_made_it() {
+        let dir = tempdir("dir-memo-scope");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let before = block_on(ws.census("index.md")).unwrap();
+        assert!(
+            before
+                .iter()
+                .any(|e| matches!(e.resolution, Resolution::Broken)),
+            "a.md is not there yet: {before:?}"
+        );
+
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        let after = block_on(ws.census("index.md")).unwrap();
+        assert!(
+            after
+                .iter()
+                .all(|e| !matches!(e.resolution, Resolution::Broken)),
+            "the second census resolved against a stale listing: {after:?}"
+        );
     }
 
     #[test]
