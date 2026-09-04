@@ -17,6 +17,7 @@
 //! actually uses it) to keep a body-link scan from ever treating code as
 //! prose.
 
+use std::ops::Range;
 use std::path::Path;
 
 /// Which body-prose grammar a document is written in. Maps to a `twig`
@@ -159,6 +160,47 @@ fn is_code(kind: &twig::Kind) -> bool {
         kind,
         twig::Kind::Verbatim | twig::Kind::CodeBlock | twig::Kind::RawInline | twig::Kind::RawBlock
     )
+}
+
+/// What one parse of a body yields for a link scan: the spans twig reads as
+/// code, and the spans it reads as inline links, each sorted by start offset.
+///
+/// A named pair rather than a bare tuple because the two lists are the same
+/// shape, and telling them apart at a call site should not depend on getting
+/// their order right.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BodySpans {
+    /// Everything a link scan must treat as opaque — see [`code_spans`].
+    pub code: Vec<Range<usize>>,
+    /// Each inline `[label](target)` construct — see [`link_spans`].
+    pub links: Vec<Range<usize>>,
+}
+
+/// The code spans and the inline-link spans of `body`, in **one parse**.
+///
+/// Both are read off the same node array, because a body-link scan wants both
+/// and twig's parse is the expensive part: [`crate::link::scan_body_links`]
+/// asked for them separately and so parsed every document's prose twice, which
+/// a profile of `check` put at 41% of the run. The two lists come back sorted
+/// by start offset, each exactly as its single-kind accessor would have
+/// returned it.
+pub fn code_and_link_spans(body: &str, format: ContentFormat) -> crate::error::Result<BodySpans> {
+    let mut doc = parse(body, format)?;
+    let nodes = doc
+        .nodes()
+        .map_err(|e| crate::error::Error::Content(format!("twig nodes: {e}")))?;
+    let mut code = Vec::new();
+    let mut links = Vec::new();
+    for node in nodes {
+        if is_code(&node.kind) {
+            code.push(node.span);
+        } else if node.kind == twig::Kind::Link {
+            links.push(node.span);
+        }
+    }
+    code.sort_by_key(|s: &Range<usize>| s.start);
+    links.sort_by_key(|s: &Range<usize>| s.start);
+    Ok(BodySpans { code, links })
 }
 
 /// The spans of every node in `body` whose kind satisfies `want`, sorted by
@@ -349,6 +391,31 @@ mod tests {
                 "{format:?}"
             );
         }
+    }
+
+    /// The combined accessor exists only to save a parse, so it must answer
+    /// exactly what the two single-kind ones do — including the sort order and
+    /// the footnote-definition subtrees a walk from the root would miss.
+    #[test]
+    fn one_parse_reports_what_the_two_separate_ones_do() {
+        let body = concat!(
+            "A [real](a.md) link and `[[code]]` and a [second](b.md).\n\n",
+            "```\n[fenced](c.md)\n```\n\n",
+            "Text[^fn]\n\n[^fn]: a note with [a link](d.md) and `code`.\n",
+        );
+        let spans = code_and_link_spans(body, ContentFormat::Markdown).unwrap();
+        assert_eq!(
+            spans.code,
+            code_spans(body, ContentFormat::Markdown).unwrap()
+        );
+        assert_eq!(
+            spans.links,
+            link_spans(body, ContentFormat::Markdown).unwrap()
+        );
+        assert!(
+            !spans.code.is_empty() && !spans.links.is_empty(),
+            "fixture found nothing"
+        );
     }
 
     #[test]

@@ -1065,8 +1065,19 @@ pub fn exclude_code_spans(links: Vec<Wikilink>, code_spans: &[Range<usize>]) -> 
 /// as its own match. Keeping code spans out of the scan in the first place
 /// is the only fix; this function is that fix.
 pub fn scan_wikilinks(path: &Path, body: &str) -> Vec<Wikilink> {
-    match code_spans_for(path, body) {
-        Some(spans) if !spans.is_empty() => scan_outside_spans(body, &merge_spans(spans)),
+    wikilinks_within(body, code_spans_for(path, body).as_deref())
+}
+
+/// The lexical wikilink scan, given a code mask already computed: prose runs
+/// outside `code` scanned separately, or the whole body when there is no mask
+/// (no grammar for the extension, or a parse that failed) and when the mask is
+/// empty (nothing to scan around).
+///
+/// Split out so [`scan_body_links`] can pass the mask from the parse it already
+/// made instead of provoking a second one.
+fn wikilinks_within(body: &str, code: Option<&[Range<usize>]>) -> Vec<Wikilink> {
+    match code {
+        Some(spans) if !spans.is_empty() => scan_outside_spans(body, &merge_spans(spans.to_vec())),
         _ => parse_wikilinks(body),
     }
 }
@@ -1122,8 +1133,21 @@ impl BodyLink {
 ///
 /// Falls back to wikilinks only when the extension names no `twig` grammar or the
 /// parse fails — the same graceful degradation [`scan_wikilinks`] already has.
+///
+/// The two finders take **one parse between them**
+/// ([`crate::content::code_and_link_spans`]) rather than one each. Calling
+/// `scan_wikilinks` and `parsed_link_spans` in turn — which is what this did —
+/// parsed every body twice for the two halves of the same node array, and this
+/// runs once per document in every census: 41% of a `check` over twenty
+/// thousand documents was that second parse.
 pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
-    let mut out: Vec<BodyLink> = scan_wikilinks(path, body)
+    // No grammar for this extension, or a parse that failed: the lexical scan
+    // over the whole body, and no markdown links — exactly what the two finders
+    // degrade to on their own.
+    let spans = crate::content::ContentFormat::from_extension(path)
+        .and_then(|format| crate::content::code_and_link_spans(body, format).ok())
+        .unwrap_or_default();
+    let mut out: Vec<BodyLink> = wikilinks_within(body, Some(&spans.code))
         .into_iter()
         .map(|wl| BodyLink {
             link: Link {
@@ -1134,7 +1158,7 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
             span: wl.span,
         })
         .collect();
-    for span in parsed_link_spans(path, body) {
+    for span in spans.links {
         let link = Link::parse(&body[span.clone()]);
         // Keep only inline `[label](target)` links (a labeled markdown parse):
         // reference/autolink spans parse to a bare or external target and are
