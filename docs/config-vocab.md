@@ -17,17 +17,32 @@ places — the same keys, the same values:
   structural links, identity, and user-owned fields; nesting policy under one key
   keeps it apart, so it is unambiguous to read *and* to lint. This is the
   **description** home — how the workspace is written.
-- **The dedicated config document** (`prov.<ext>`, the `config`-relation
-  target), where keys sit at **top level** (the whole document is policy, so no
-  wrapper is needed). This is the **policy** home — how prov behaves.
+- **The dedicated config document** (`prov.<ext>`), where keys sit at **top
+  level** (the whole document is policy, so no wrapper is needed). This is the
+  **policy** home — how prov behaves. It is reached two ways: the root names it
+  through the `config` relation, *or* prov finds it by convention as the
+  **workspace node** — stem `prov`, at the top level, then `config/`, then
+  `.config/`. In the ordinary case those are the same file.
 
 This mirrors the `.prettierrc` / `package.json` `"prettier"` duality: a tool's
 config sits bare in its own file and namespaced in a shared one. Precedence, both
 applied over the defaults:
 
 ```
-default  <  root `prov:` block  <  config document (top-level)
+default  <  root `prov:` block  <  workspace node  <  named config document
 ```
+
+The last two rungs are the same document in every workspace that names its
+config, which is why the order is rarely observable. Where they differ, the
+explicit pointer wins — a workspace that went to the trouble of naming one meant
+that one — and `check` reports the disagreement rather than letting the
+precedence quietly decide.
+
+Finding the node by convention is what makes [`root`](#the-vocabulary) possible:
+it is the only policy home readable *before* the root is known, so it is the
+only one that can say which document the root is. That is also why `root` is
+read from the node alone — written in a root's own `prov:` block it names what
+has already been found.
 
 The split of *which* axes live *where* is a **convention** `init` authors, not a
 mechanism — both homes accept the whole vocabulary, and the config document wins
@@ -137,6 +152,7 @@ prov:
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
+  root: home.md               # which document is the root — read only from the workspace node (omit = found by the `index`/`readme` scan)
 
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
   identity: lazy              # none (a.k.a. off) | lazy | eager
@@ -151,8 +167,8 @@ prov:
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
-`id_storage: both`, `updated: ""`, `workspace_id: ""`, `identity: lazy`,
-`fixity: on`, `record_deletions: true`, `about: structure`,
+`id_storage: both`, `updated: ""`, `workspace_id: ""`, `root:` unset,
+`identity: lazy`, `fixity: on`, `record_deletions: true`, `about: structure`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
 is described (every such field is ordinary carried content); absent `views` ⇒ the

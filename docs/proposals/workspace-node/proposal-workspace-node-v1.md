@@ -3,10 +3,51 @@ title: the workspace node
 author: adammharris
 created: 2026-09-09
 updated: 2026-09-09
-status: draft
+status: implemented
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # The workspace node — the config document, found without the root
+
+## Status: implemented in 0.11.x (2026-09-09)
+
+Phases 0 through 2 shipped; the body below is left as it was argued.
+
+- **Phase 0**, `docs(spec): rule 1 says what discovery does` — rule 1 now
+  describes the algorithm `discovery.rs` actually runs. Four corrections, not
+  one: the `.prov` sentence is gone, the `README`/`index` order was inverted,
+  the candidate test was missing, and the rule said `.md` where prov accepts
+  three content formats and, under the conventional stem, whole-file metadata.
+- **Phases 1 and 2**, `feat(discovery)!` — `prov/src/node.rs` locates the node,
+  `WorkspaceConfig::root` names the root, and `build` layers the node between
+  the root's `prov:` block and the named config document.
+- **The findings**, `feat(check)!` — `shadowed_workspace_node`,
+  `config_homes_disagree`, `named_root_missing`, `named_root_contained`.
+- **Phase 3** (a foreign `part_of` on the node) is unscheduled, as proposed. It
+  is crossing the boundary's to schedule.
+
+**One claim here was too strong.** §7 said phase 1 changes no existing caller's
+behaviour "since one that names its config from the root still resolves it that
+way". That covers the workspace whose root *names* its config, and not the one
+holding a top-level `prov.yaml` the root never pointed at — which was ignored
+before and is policy now. That is the feature working as intended, and it is
+still a behaviour change someone can be surprised by; it is recorded as a
+`Behavioural-change:` trailer rather than left implied here.
+
+Two things the implementation settled that this document only proposed:
+
+- **Open question 1 — `root` does not point outside its directory.** A bare file
+  name, enforced by `is_valid_root_name`; a path is `MalformedRoot` and is
+  ignored rather than stripped to its last segment, because the stripped name is
+  a different claim.
+- **The named root is trusted without the candidate test.** The document does
+  not say this either way. The test exists to *guess* which document is the
+  root, and a workspace that names one has answered; a named root that declares
+  a spanning parent is `named_root_contained` rather than a reason to resume
+  guessing. Everything that can go wrong still falls back to the scan, so a typo
+  cannot lock a workspace shut.
+
+Open question 4 — whether the node participates in fixity — is untouched and
+still open. It belongs with the provenance draft's §5.
 
 ## Summary
 

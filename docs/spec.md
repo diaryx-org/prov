@@ -20,7 +20,13 @@ the kernel below freezes and the marker becomes a compatibility contract.
 Given a directory, a reader that knows only these five rules can traverse any
 prov workspace:
 
-1. **Find the root.** The root is the directory's sole **root candidate** — a
+1. **Find the root.** The directory's **workspace node** is a whole-file
+   metadata document stemmed `prov` — sought at the top level, then in
+   `config/`, then in `.config/`, the first found winning. If it carries a
+   `root`, that names the root document and the search is over. A node is not
+   required, and most workspaces have none.
+
+   Otherwise the root is the directory's sole **root candidate** — a
    document that carries a metadata block (rule 2), declares no spanning-parent,
    and does not carry a `generated_by: prov` byline. A candidate stemmed `index`
    wins, then one stemmed `readme`, then a lone candidate; two or more with
@@ -29,19 +35,27 @@ prov workspace:
    a whole-file metadata document, so that a stray `config.json` beside the root
    cannot pass for one. *(Invariant: the root is the reachable document with no
    spanning-parent, and the one that declares or points at the workspace's
-   policy (rule 3); the conventions only find it. The byline clause is what
-   keeps generated prose (§5) out of the running: it has a root's exact shape —
-   metadata, no spanning-parent, no id — but is derived from the root, so it can
-   never be the root.)*
+   policy (rule 3); the conventions only find it. A named root is taken at its
+   word, because the candidate test is there to guess which document is the root
+   and a workspace that names one has already answered. The byline clause is
+   what keeps generated prose (§5) out of the running: it has a root's exact
+   shape — metadata, no spanning-parent, no id — but is derived from the root,
+   so it can never be the root.)*
 2. **Read its metadata block.** Split frontmatter from body by fence — `---`
    (YAML), `;;;` (JSON), or a ```` ```fig ```` block. The block is a key→value map.
 3. **Read the policy, from both homes.** Workspace policy is one vocabulary
-   with two homes: the root's `prov:` key, and the **config document** the root
-   names through a top-level `config` pointer (`config: prov.yaml`), where the
-   same keys sit at *top level* because the whole document is policy. Resolve
-   per key, `config document > root prov: block > default`. A workspace may use
-   either home or both, so a reader that consults only one will miss policy that
-   is really there.
+   with two homes: the root's `prov:` key, and the **config document** — where
+   the same keys sit at *top level* because the whole document is policy. The
+   config document is reached two ways: the root names it through a top-level
+   `config` pointer (`config: prov.yaml`), or it is the workspace node rule 1
+   found by convention. In the ordinary case these are the same file. Resolve
+   per key, `named config document > workspace node > root prov: block >
+   default`. A workspace may use either home or both, so a reader that consults
+   only one will miss policy that is really there.
+
+   Only the node is readable *before* the root is known, which is what lets rule
+   1's `root` exist: a directory whose root cannot be chosen can still be told
+   which document it is.
 
    `spec` is an integer naming which version of these rules applies. A higher
    number than you know means you may still traverse structure (rules 4–5 are
