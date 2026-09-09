@@ -110,6 +110,11 @@ pub struct Settings {
     /// [`WorkspaceConfig::out_of_scope`](crate::config::WorkspaceConfig::out_of_scope).
     /// Workspace-relative, `/`-separated. Empty declares nothing.
     pub out_of_scope: Vec<PathBuf>,
+    /// The document the workspace node names as the root, if it names one — see
+    /// [`WorkspaceConfig::root`](crate::config::WorkspaceConfig::root) and
+    /// [`root_document`](Workspace::root_document). A bare file name in the root
+    /// directory. `None` means the root is chosen by the candidate scan.
+    pub root: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -126,6 +131,7 @@ impl Default for Settings {
             id_storage: IdStorage::Registry,
             workspace_id: String::new(),
             out_of_scope: Vec::new(),
+            root: None,
         }
     }
 }
@@ -159,6 +165,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             id_storage: config.id_storage,
             workspace_id: config.workspace_id.clone(),
             out_of_scope: config.out_of_scope.iter().map(PathBuf::from).collect(),
+            root: config.root.as_deref().map(PathBuf::from),
             ..Self::default()
         }
     }
@@ -372,6 +379,17 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// other.
     pub fn id_storage(&self) -> IdStorage {
         self.settings.id_storage
+    }
+
+    /// The root **document** the workspace node names, if it names one.
+    ///
+    /// Distinct from [`root`](Self::root), which is the root *directory*. `None`
+    /// means the node named none, or there is no node — the root is then the
+    /// candidate scan's answer, which is every workspace that has never needed
+    /// otherwise. See [`root_document`](Self::root_document), which prefers this
+    /// and falls back to the scan.
+    pub fn named_root(&self) -> Option<&Path> {
+        self.settings.root.as_deref()
     }
 
     /// What this workspace calls itself — the qualifier a cross-workspace
@@ -1733,6 +1751,7 @@ mod tests {
             id_storage: IdStorage::Frontmatter,
             workspace_id: "notes".into(),
             out_of_scope: vec![PathBuf::from("history")],
+            root: Some(PathBuf::from("home.md")),
         };
         let ws = Workspace::builder(DummyFs)
             .root("vault")

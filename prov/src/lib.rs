@@ -62,6 +62,7 @@ pub use prov_graph::fixity;
 mod fs_faults;
 pub mod intake;
 pub mod manifest;
+pub mod node;
 pub mod mutate;
 pub mod remedy;
 pub mod route;

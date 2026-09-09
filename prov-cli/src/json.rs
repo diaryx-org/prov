@@ -264,6 +264,10 @@ pub fn finding(f: &Finding) -> J {
                     fields.push(("issue", s("malformed_workspace_id")));
                     fields.push(("value", s(value)));
                 }
+                prov::ConfigIssueKind::MalformedRoot { value } => {
+                    fields.push(("issue", s("malformed_root")));
+                    fields.push(("value", s(value)));
+                }
             }
         }
         Finding::ConfigSpecAhead { doc, declared } => {

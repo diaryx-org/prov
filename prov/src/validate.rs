@@ -750,6 +750,11 @@ impl fmt::Display for Finding {
                     "{}: config `workspace_id` is `{value}` — a workspace name cannot be empty or contain `/`, `:` or whitespace (ignored; the workspace stays anonymous)",
                     doc.display(),
                 ),
+                crate::config::ConfigIssueKind::MalformedRoot { value } => write!(
+                    f,
+                    "{}: config `root` is `{value}` — the root must be named as a bare file name in this directory, with no `/` (ignored; the root is chosen by the usual `index`/`readme` scan)",
+                    doc.display(),
+                ),
                 crate::config::ConfigIssueKind::NestNotSingleValued { field } => write!(
                     f,
                     "{}: config `{}` nests by `{field}`, which is declared `type: seq` — a document with several values has several homes, and containment allows one (the view still groups; drop `nest`)",

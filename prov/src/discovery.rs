@@ -37,6 +37,9 @@ pub struct Discovered {
     pub root_doc: PathBuf,
     /// The registry document the root declares, relative to `root_dir`, if any.
     pub registry: Option<PathBuf>,
+    /// The **workspace node** found by convention, relative to `root_dir`, and
+    /// any others it shadowed. See [`node`](crate::node).
+    pub node: crate::node::Located,
     /// The effective workspace configuration.
     pub config: WorkspaceConfig,
 }
@@ -94,8 +97,17 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         let Ok(entries) = fs.read_dir(dir).await else {
             continue;
         };
+        // The workspace node, read before the root is chosen — which is the
+        // whole point of finding it by convention rather than through the
+        // root's `config` pointer. Free: the listing is already in hand.
+        let located = crate::node::locate_in(fs, dir, &entries).await;
+        if let Some(root_doc) = node_named_root(fs, dir, &located).await {
+            let discovered = build(fs, dir.to_path_buf(), root_doc, located).await?;
+            return Ok(Discovery::Found(discovered));
+        }
+
         let shaped: Vec<PathBuf> = entries
-            .into_iter()
+            .iter()
             .map(|entry| entry.path().to_path_buf())
             .filter(|path| can_be_root(path))
             .collect();
@@ -109,7 +121,8 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
             for path in shaped.iter().filter(|path| stem_is(path, preferred)) {
                 if root_candidate_name(fs, path).await.is_some() {
                     let root_doc = path.file_name().expect("candidate has a filename");
-                    let discovered = build(fs, dir.to_path_buf(), PathBuf::from(root_doc)).await?;
+                    let discovered =
+                        build(fs, dir.to_path_buf(), PathBuf::from(root_doc), located).await?;
                     return Ok(Discovery::Found(discovered));
                 }
             }
@@ -126,7 +139,8 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         }
         match choose_root(&candidates) {
             Some(root_doc) => {
-                let discovered = build(fs, dir.to_path_buf(), PathBuf::from(root_doc)).await?;
+                let discovered =
+                    build(fs, dir.to_path_buf(), PathBuf::from(root_doc), located).await?;
                 return Ok(Discovery::Found(discovered));
             }
             None if candidates.len() > 1 => {
@@ -215,6 +229,19 @@ impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Worksp
     /// [`spanning_root`](Workspace::spanning_root), which uses this to tell those
     /// two apart.
     pub async fn root_document(&self) -> Result<Option<PathBuf>> {
+        // What the workspace node named, if it named one and the file is there.
+        // Trusted without the candidate test: that test exists to *guess* which
+        // document is the root, and guessing is over once the workspace says.
+        // A `root` naming a document that carries `part_of` is a contradiction
+        // for `check` to report, not a reason to go back to guessing; a `root`
+        // naming nothing at all falls through, because a typo must not leave the
+        // workspace unopenable.
+        if let Some(named) = self.named_root().map(Path::to_path_buf)
+            && let Ok((_, doc)) = self.load(&named).await
+            && doc.has_meta()
+        {
+            return Ok(Some(named));
+        }
         let mut candidates = Vec::new();
         for entry in self.listing(Path::new("")).await? {
             if entry.file_type().is_dir() {
@@ -241,13 +268,56 @@ impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Worksp
     }
 }
 
+/// The root document the workspace node names, when it names one that is
+/// actually there.
+///
+/// The value is taken through [`WorkspaceConfig::apply`] rather than read
+/// straight off the mapping, so a malformed `root` is ignored here in exactly
+/// the way [`diagnose`](crate::config::diagnose) says it was — one validation,
+/// not two that can drift.
+///
+/// `None` falls through to the candidate scan. That is the safe direction for
+/// every way this can go wrong: a `root` naming a file that was moved or
+/// misspelled leaves the workspace discoverable as it was before the key was
+/// written, and `check` reports the dangling name. Refusing instead would mean
+/// a one-character typo in a config file locks the workspace shut.
+async fn node_named_root<FS: Storage>(
+    fs: &FS,
+    dir: &Path,
+    located: &crate::node::Located,
+) -> Option<PathBuf> {
+    let node = located.node.as_ref()?;
+    let text = fs.read_to_string(&dir.join(node)).await.ok()?;
+    let doc = Document::parse(node, &text).ok()?;
+    let mut config = WorkspaceConfig::default();
+    config.apply(&doc.meta);
+    let named = PathBuf::from(config.root?);
+    // Present and readable as a document is the whole test — see
+    // `Workspace::root_document` for why the candidate test is not applied to a
+    // root the workspace has named outright.
+    let text = fs.read_to_string(&dir.join(&named)).await.ok()?;
+    Document::parse(&named, &text)
+        .ok()
+        .filter(Document::has_meta)
+        .map(|_| named)
+}
+
 /// Assemble the [`Discovered`] for a chosen root: resolve the registry pointer
-/// and layer the effective config (defaults → root `prov:` block → linked
-/// config document), through a probe workspace rooted at `root_dir`.
+/// and layer the effective config, through a probe workspace rooted at
+/// `root_dir`.
+///
+/// The layering is defaults → the root's `prov:` block → the **workspace node**
+/// → the config document the root points at. The two policy homes of spec §1
+/// rule 3 share a rung, and an explicit pointer wins over a convention: a
+/// workspace that went to the trouble of naming its config document meant that
+/// one. In the ordinary case they are the same file and the order cannot be
+/// observed; where they differ, `check` reports it rather than letting the
+/// precedence quietly decide.
 async fn build<FS: Storage + Clone>(
     fs: &FS,
     root_dir: PathBuf,
     root_doc: PathBuf,
+    node: crate::node::Located,
 ) -> Result<Discovered> {
     let probe: Workspace<FS> = Workspace::builder(fs.clone()).root(&root_dir).build();
     let registry = probe.registry_path(&root_doc).await?;
@@ -259,6 +329,13 @@ async fn build<FS: Storage + Clone>(
         && let Some(block) = doc.meta.get(ROOT_CONFIG_KEY)
     {
         config.apply(block);
+    }
+    // The workspace node, found by convention rather than pointed at.
+    if let Some(node_doc) = &node.node
+        && let Ok(text) = fs.read_to_string(&root_dir.join(node_doc)).await
+        && let Ok(doc) = Document::parse(node_doc, &text)
+    {
+        config.apply(&doc.meta);
     }
     // The linked config document (the policy home) wins over the root block.
     if let Ok(Some(config_doc)) = probe.config_path(&root_doc).await
@@ -272,6 +349,7 @@ async fn build<FS: Storage + Clone>(
         root_dir,
         root_doc,
         registry,
+        node,
         config,
     })
 }
@@ -356,6 +434,19 @@ mod tests {
         Workspace::builder(StdFs).root(dir).build()
     }
 
+    /// A probe built from what `discover` worked out — the shape a real caller
+    /// has, and the only one whose `root_document` can honor a named root.
+    fn probe_with_node(dir: &Path) -> Workspace<StdFs> {
+        let config = match block_on(discover(&StdFs, dir)).unwrap() {
+            Discovery::Found(d) => d.config,
+            other => panic!("expected a discovered workspace, got {other:?}"),
+        };
+        Workspace::builder(StdFs)
+            .root(dir)
+            .settings((&config).into())
+            .build()
+    }
+
     #[test]
     fn root_document_names_the_root_of_a_located_workspace() {
         // The same judgment `discover` makes, asked of a workspace already rooted:
@@ -420,6 +511,137 @@ mod tests {
             block_on(probe(&root).root_document()).unwrap(),
             Some(PathBuf::from("readme.md"))
         );
+    }
+
+    #[test]
+    fn a_named_root_settles_a_directory_that_cannot_be_chosen_in() {
+        // The escape the `.prov` pointer was invented for and never provided.
+        // Two unnamed candidates is `Ambiguous`; a node that says which is the
+        // root makes it ordinary.
+        let root = tmp("named-root-tie");
+        std::fs::write(root.join("one.md"), "---\ntitle: One\n---\n").unwrap();
+        std::fs::write(root.join("two.md"), "---\ntitle: Two\n---\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Ambiguous { .. } => {}
+            other => panic!("expected a tie before the node exists, got {other:?}"),
+        }
+
+        std::fs::write(root.join("prov.yaml"), "root: two.md\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.root_doc, PathBuf::from("two.md"));
+                assert_eq!(d.node.node, Some(PathBuf::from("prov.yaml")));
+            }
+            other => panic!("expected two.md, got {other:?}"),
+        }
+        assert_eq!(
+            block_on(probe_with_node(&root).root_document()).unwrap(),
+            Some(PathBuf::from("two.md")),
+            "a located workspace makes the same judgment"
+        );
+    }
+
+    #[test]
+    fn a_named_root_beats_the_conventional_stem() {
+        // `index` wins the scan, but the scan is a guess and the node is not.
+        let root = tmp("named-root-wins");
+        std::fs::write(root.join("index.md"), "---\ntitle: Index\n---\n").unwrap();
+        std::fs::write(root.join("home.md"), "---\ntitle: Home\n---\n").unwrap();
+        std::fs::write(root.join("prov.yaml"), "root: home.md\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_doc, PathBuf::from("home.md")),
+            other => panic!("expected home.md, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_named_root_that_is_not_there_falls_back_to_the_scan() {
+        // A typo must not lock the workspace shut. `check` reports the dangling
+        // name; discovery answers as it did before the key was written.
+        let root = tmp("named-root-dangling");
+        std::fs::write(root.join("index.md"), "---\ntitle: Index\n---\n").unwrap();
+        std::fs::write(root.join("prov.yaml"), "root: hoem.md\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_doc, PathBuf::from("index.md")),
+            other => panic!("expected the scan's answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_malformed_named_root_is_ignored_like_a_malformed_workspace_id() {
+        // A path is not a bare file name, so `apply` drops it — and discovery
+        // must not half-honor it by stripping to the last segment, which would
+        // agree to a root this directory may not hold.
+        let root = tmp("named-root-malformed");
+        std::fs::write(root.join("index.md"), "---\ntitle: Index\n---\n").unwrap();
+        std::fs::write(root.join("prov.yaml"), "root: docs/index.md\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_doc, PathBuf::from("index.md")),
+            other => panic!("expected the scan's answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_node_is_policy_without_the_root_pointing_at_it() {
+        // The circle rule 3 could not close: the root names no `config`, and the
+        // node is read anyway.
+        let root = tmp("node-policy");
+        std::fs::write(root.join("index.md"), "---\ntitle: Home\n---\n").unwrap();
+        std::fs::write(root.join("prov.yaml"), "workspace_id: notes\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.config.workspace_id, "notes");
+                assert_eq!(d.node.node, Some(PathBuf::from("prov.yaml")));
+            }
+            other => panic!("expected a discovered workspace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_node_under_config_is_read_the_same_way() {
+        let root = tmp("node-under-config");
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::write(root.join("index.md"), "---\ntitle: Home\n---\n").unwrap();
+        std::fs::write(root.join("config/prov.yaml"), "workspace_id: notes\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.config.workspace_id, "notes");
+                assert_eq!(d.node.node, Some(PathBuf::from("config/prov.yaml")));
+            }
+            other => panic!("expected a discovered workspace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pointed_config_document_outranks_the_node() {
+        // Two policy homes on one rung, and the explicit pointer wins: a
+        // workspace that named its config document meant that one. `check`
+        // reports the disagreement rather than letting this decide quietly.
+        let root = tmp("node-vs-pointer");
+        std::fs::write(
+            root.join("index.md"),
+            "---\ntitle: Home\nconfig: settings.yaml\n---\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("prov.yaml"), "workspace_id: from_node\n").unwrap();
+        std::fs::write(root.join("settings.yaml"), "workspace_id: from_pointer\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.config.workspace_id, "from_pointer"),
+            other => panic!("expected a discovered workspace, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_workspace_with_no_node_discovers_exactly_as_before() {
+        let root = tmp("no-node");
+        std::fs::write(root.join("index.md"), "---\ntitle: Home\n---\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.root_doc, PathBuf::from("index.md"));
+                assert_eq!(d.node, crate::node::Located::default());
+            }
+            other => panic!("expected index.md, got {other:?}"),
+        }
     }
 
     #[test]

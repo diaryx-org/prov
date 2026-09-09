@@ -882,6 +882,10 @@ pub(crate) fn cmd_init(
         // have decided about. It is a thing the workspace learns later, when
         // another tool puts a store next to it.
         out_of_scope: Vec::new(),
+        // Not named: `init` writes a root under the conventional stem, which
+        // the candidate scan finds without help. The key is for a directory
+        // that cannot be chosen in, and a fresh workspace is never one.
+        root: None,
     };
     reference.write_onto(&mut ws_config);
 

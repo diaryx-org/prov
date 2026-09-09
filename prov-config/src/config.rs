@@ -441,6 +441,22 @@ pub struct WorkspaceConfig {
     /// Must be [well-formed](is_valid_workspace_id): a malformed value is
     /// reported by [`diagnose`] and ignored rather than half-honored.
     pub workspace_id: String,
+    /// The document this workspace calls its **root**, named by the workspace
+    /// node so that a directory prov cannot otherwise choose in does not have to
+    /// be guessed at (spec §1 rule 1).
+    ///
+    /// A bare file name in the node's own directory
+    /// ([`is_valid_root_name`]) — not a path. Where the root lives is the one
+    /// fact rule 1 is *for*, and letting the key reach into a subdirectory would
+    /// make "the root directory" and "the directory holding the node" two
+    /// different things for every walk downstream.
+    ///
+    /// Read only from the workspace node, because it is the only policy home
+    /// reachable before the root is known; written in a root's own `prov:` block
+    /// it names what has already been found, and is ignored. `None` (the
+    /// default) means the root is chosen by the candidate scan, which is every
+    /// workspace that has never needed otherwise.
+    pub root: Option<String>,
     /// The directories that are **on disk beside the workspace but are not the
     /// workspace** — another tool's store, a sync cache, a vendored checkout.
     ///
@@ -492,6 +508,21 @@ pub use prov_graph::link::is_valid_workspace_id;
 /// so a path would fail to match itself. A trailing slash is *accepted* and
 /// carries no meaning — every entry is a directory already — but it is not
 /// normalized away here, so [`WorkspaceConfig::apply`] trims it.
+/// Whether `name` can be a [`root`](WorkspaceConfig::root): a bare file name in
+/// the node's own directory.
+///
+/// Rejects anything with a separator, the relative segments, and the empty
+/// string. Deliberately says nothing about the extension — which formats can be
+/// a root document is rule 1's business and varies with the build's features,
+/// while the *shape* of the value is fixed.
+pub fn is_valid_root_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && name != "."
+        && name != ".."
+}
+
 pub fn is_valid_scope_path(path: &str) -> bool {
     let path = path.strip_suffix('/').unwrap_or(path);
     !path.is_empty()
@@ -528,6 +559,7 @@ impl Default for WorkspaceConfig {
             about: About::Structure,
             updated: String::new(),
             workspace_id: String::new(),
+            root: None,
             out_of_scope: Vec::new(),
         }
     }
@@ -759,6 +791,16 @@ impl WorkspaceConfig {
             .filter(|v| is_valid_workspace_id(v))
         {
             self.workspace_id = v.to_string();
+        }
+        // Which document is the root. Malformed values are ignored and reported,
+        // like `workspace_id` — half-honoring a path here would put the root in
+        // a directory the rest of discovery does not believe is the root.
+        if let Some(v) = meta
+            .get("root")
+            .and_then(Value::as_str)
+            .filter(|v| is_valid_root_name(v))
+        {
+            self.root = Some(v.to_string());
         }
         // Per-relation entries carry two orthogonal halves in one block:
         // *style* overrides (`notation`/`path_style`/`target`/`label`) and
@@ -1141,6 +1183,11 @@ impl WorkspaceConfig {
             "workspace_id".into(),
             Value::String(self.workspace_id.clone()),
         );
+        // Written only when the workspace names one, like `out_of_scope`: the
+        // default is "scan for it", which no key spells.
+        if let Some(root) = &self.root {
+            map.insert("root".into(), Value::String(root.clone()));
+        }
         // Written only when the workspace declares something, like `views` and
         // unlike the scalar axes: an empty sequence is the default said out
         // loud, and every existing config document would grow the key for it.
@@ -1215,6 +1262,15 @@ pub enum ConfigIssueKind {
     /// spellings to offer: the name is the user's to choose and only its *shape*
     /// is constrained.
     MalformedWorkspaceId { value: String },
+    /// `root` holds something that is not a bare file name in the node's own
+    /// directory — it contains a separator, is a relative segment, or is not a
+    /// string at all. `apply` ignored it, so the root is chosen by the candidate
+    /// scan as though the key were absent.
+    ///
+    /// Like [`MalformedWorkspaceId`](Self::MalformedWorkspaceId) and unlike
+    /// [`InvalidValue`](Self::InvalidValue) there is no list of accepted
+    /// spellings: the name is the user's to choose and only its shape is fixed.
+    MalformedRoot { value: String },
 }
 
 /// Top-level config keys (block names + scalar axes + the `spec` marker).
@@ -1231,6 +1287,7 @@ const TOP_KEYS: &[&str] = &[
     "id_storage",
     "updated",
     "workspace_id",
+    "root",
     "identity",
     "fixity",
     "record_deletions",
@@ -1372,6 +1429,19 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     issues.push(ConfigIssue {
                         key: key.clone(),
                         kind: ConfigIssueKind::MalformedWorkspaceId {
+                            value: value_summary(value),
+                        },
+                    });
+                }
+            }
+            // The same posture as `workspace_id`: a shape, not a vocabulary.
+            // An empty string is *not* the spelling of a default here — there is
+            // no "anonymous root" — so it is malformed like any other.
+            "root" => {
+                if !value.as_str().is_some_and(is_valid_root_name) {
+                    issues.push(ConfigIssue {
+                        key: key.clone(),
+                        kind: ConfigIssueKind::MalformedRoot {
                             value: value_summary(value),
                         },
                     });
@@ -2455,6 +2525,7 @@ mod tests {
             // list written in any other order would fail this round trip for
             // the right reason.
             out_of_scope: vec![".obsidian".to_string(), "history".to_string()],
+            root: Some("home.md".into()),
         };
         let back = WorkspaceConfig::from_meta(&Value::Mapping(config.to_mapping()));
         assert_eq!(back, config);

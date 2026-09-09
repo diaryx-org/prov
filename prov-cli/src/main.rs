@@ -3363,6 +3363,11 @@ fn cmd_config(
                             "prov: `{value}` is not a valid workspace name — it cannot be empty or contain `/`, `:` or whitespace"
                         );
                     }
+                    prov::ConfigIssueKind::MalformedRoot { value } => {
+                        eprintln!(
+                            "prov: `{value}` is not a valid root name — name the root as a bare file name in the node's own directory, with no `/`"
+                        );
+                    }
                     // Not reachable from a one-key probe (this needs a `fields`
                     // declaration alongside the view), but spelled out rather
                     // than wildcarded so a new issue kind arrives here as a

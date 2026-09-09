@@ -1139,6 +1139,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // and picking a name for them would put it in every reference
                 // that ever points here. Diagnosis only.
                 crate::config::ConfigIssueKind::MalformedWorkspaceId { .. } => Ok(Vec::new()),
+                // A path prov could strip to its file name, but the stripped
+                // name is a *different claim* — `root: docs/index.md` says the
+                // root is elsewhere, and rewriting it to `index.md` would
+                // silently agree to a root this directory may not even hold.
+                crate::config::ConfigIssueKind::MalformedRoot { .. } => Ok(Vec::new()),
                 // Two defensible repairs — drop the `nest`, or stop declaring
                 // the field a `seq` — and they mean different things about the
                 // workspace: one says this lens does not file, the other says
