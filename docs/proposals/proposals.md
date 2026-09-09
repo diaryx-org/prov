@@ -11,6 +11,7 @@ contents:
 - '[self-hosted kernels](/docs/proposals/self-hosted-kernel/proposal-selfhost.md)'
 - '[provenance and attestation](/docs/proposals/provenance/proposal-provenance-v1.md)'
 - '[crossing the boundary](/docs/proposals/boundary/proposal-boundary-v1.md)'
+- '[the workspace node](/docs/proposals/workspace-node/proposal-workspace-node-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a

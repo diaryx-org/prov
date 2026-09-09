@@ -282,11 +282,16 @@ below, not part of this proposal.
 
 ## Open questions
 
-1. **The `.prov` pointer.** Spec §1 rule 1 names a one-line `.prov` file as the
-   first way to find a root, ahead of the `README`/`index` convention. It does
-   not appear in `discovery.rs`. If it is live, it is the clean escape for a
-   sub-root that cannot win its directory's tie; if it is aspirational, phase 0
-   needs to say what such a directory does instead. Which is it?
+1. **The `.prov` pointer — answered (2026-09-09).** It is aspirational: the
+   string appears in no source file, and it is now rejected rather than
+   deferred, because a bare hidden entry at the top of the tree is clutter and
+   the document it would point at is one the workspace already has. What a
+   tie-losing directory does instead is
+   [the workspace node](/docs/proposals/workspace-node/proposal-workspace-node-v1.md) —
+   the config document found by convention, carrying a `root` key. That
+   proposal's §4 also argues the parent edge belongs on the node rather than on
+   the root document, which would close over phase 0 here; the two are
+   independent, and this one's second motivating case survives either way.
 2. **Anonymous sub-roots.** A sub-root with no `workspace_id` cannot be named by
    the parent's foreign edge, so the shape only works with a name — but prov
    mints a name only on request, never on its own initiative, and that should
