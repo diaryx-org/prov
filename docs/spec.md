@@ -20,11 +20,19 @@ the kernel below freezes and the marker becomes a compatibility contract.
 Given a directory, a reader that knows only these five rules can traverse any
 prov workspace:
 
-1. **Find the root.** The root document is the file named by a one-line `.prov`
-   pointer if present, else the first of `README.md`, `readme.md`, `index.md`
-   that exists. *(Invariant: the root is the reachable document with no
+1. **Find the root.** The root is the directory's sole **root candidate** — a
+   document that carries a metadata block (rule 2), declares no spanning-parent,
+   and does not carry a `generated_by: prov` byline. A candidate stemmed `index`
+   wins, then one stemmed `readme`, then a lone candidate; two or more with
+   neither conventional stem is an error, not a guess. A candidate is a content
+   document (Markdown, Djot, HTML), or — under the `index`/`readme` stem only —
+   a whole-file metadata document, so that a stray `config.json` beside the root
+   cannot pass for one. *(Invariant: the root is the reachable document with no
    spanning-parent, and the one that declares or points at the workspace's
-   policy (rule 3); the name convention just finds it without scanning.)*
+   policy (rule 3); the conventions only find it. The byline clause is what
+   keeps generated prose (§5) out of the running: it has a root's exact shape —
+   metadata, no spanning-parent, no id — but is derived from the root, so it can
+   never be the root.)*
 2. **Read its metadata block.** Split frontmatter from body by fence — `---`
    (YAML), `;;;` (JSON), or a ```` ```fig ```` block. The block is a key→value map.
 3. **Read the policy, from both homes.** Workspace policy is one vocabulary
