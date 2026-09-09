@@ -116,6 +116,50 @@ Three locations, in precedence order:
 `figl`, each feature-gated as it is today. The stem is fixed; the syntax is the
 workspace's own, which is the same rule the rest of prov's documents follow.
 
+### Why the stem is `prov`
+
+Every comparable specification names its top-level file after the *format*, and
+none of them names it after a generic concept:
+
+| specification | declares what the directory is | describes the directory itself |
+| --- | --- | --- |
+| OCFL 1.1 | `0=ocfl_object_1.1` (NAMASTE), `0=ocfl_1.1` at the storage root | `inventory.json`, `inventory.json.sha512`, `ocfl_layout.json` |
+| BagIt (RFC 8493) | `bagit.txt` — version and encoding, nothing else | `bag-info.txt`, `manifest-<alg>.txt` |
+| RO-Crate 1.1 | — (one file does both) | `ro-crate-metadata.json` |
+| Frictionless | — (one file does both) | `datapackage.json` |
+
+The role-named files — `inventory.json`, `manifest-<alg>.txt` — appear only
+*inside* a directory whose kind is already known. The asymmetry is the point: at
+the top of an arbitrary directory, `manifest.json` or `workspace.yaml` could
+belong to anything, and only a format name resolves it. OCFL and BagIt care
+enough about this to spend a whole file on it, whose entire content is the
+format's name and version.
+
+prov already writes that pair the same way and calls it something else: the spec
+is titled `prov/1`, and `spec: 1` is its version marker. So the name is not
+borrowed for the occasion — it is the one this format has had since the spec
+page was written.
+
+The deeper reason to keep it is what the node *is*. Spec §1 opens by conceding
+that self-description has an irreducible floor: a reader must share some
+convention to bootstrap. **The workspace node is that floor made into a file** —
+the part of prov that can be minimized but not deleted, and therefore the one
+place where naming the format rather than the concept is honest rather than
+parochial. A node called `workspace.yaml` would claim to be about workspaces in
+general while in fact being about this format's rules for them. `prov.yaml`
+admits what is specific to prov, which is exactly the admission spec §1 is
+already making in prose.
+
+The rejected alternatives, for the record. `workspace` names the concept exactly
+and is prov's own vocabulary, but collides with Cargo, npm, and VS Code
+workspaces — a `workspace.toml` beside a `Cargo.toml` is a real confusion in a
+Rust repository, and prov's own is one. `archive` reads as a deposit written
+once and kept, which is the preservation sense OCFL and BagIt occupy and the
+opposite of a workspace edited daily. `manifest` and `inventory` are taken by
+prov's manifests; `index` and `about` are taken by the root convention and the
+generated page. `corpus` and `collection` name the contents rather than the
+description of them.
+
 **It costs almost nothing.** `discover` already calls `read_dir` once per
 ancestor and filters the listing, so matching a stem is a filter over entries
 already in hand — the same shape as `stem_is(path, "index")`, and the read memo
@@ -208,12 +252,12 @@ by the root's pointer, and the two must agree.
    top. Useful, and it makes the root directory and the node's directory two
    different things everywhere downstream. Proposed answer: same directory only,
    until something needs otherwise.
-2. **`prov` as a stem, or the concept's name?** `prov.yaml` names the tool;
-   `workspace.yaml` names what the document is, which is the framing this whole
-   proposal rests on. `prov` is what exists in the wild and what this repository
-   already writes, and a rename is a migration for a gain that is only legibility.
-   Proposed answer: keep `prov`, and say in the spec that it is the workspace
-   node so the concept has a name even where the filename does not carry it.
+2. **~~`prov` as a stem, or the concept's name?~~ Settled (2026-09-09):
+   `prov`.** The argument is in §3 — every comparable specification names its
+   top-level file for the format, and the node is spec §1's irreducible floor
+   made into a file, so naming the format is the honest thing to call it. The
+   spec should still say *workspace node*, so the concept has a name even where
+   the filename does not carry it.
 3. **Should `check` report a workspace that has no node?** No — a `README`-only
    workspace is the common case and correct. Noted only because the same
    question was asked of anonymous sub-roots in crossing the boundary, and the
