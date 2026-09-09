@@ -141,8 +141,7 @@ pub async fn locate_in<FS: ReadStorage>(
         }
         // Only descend where the listing already says the directory is there.
         let present = entries.iter().any(|entry| {
-            entry.file_type().is_dir()
-                && entry.file_name().and_then(|n| n.to_str()) == Some(dir)
+            entry.file_type().is_dir() && entry.file_name().and_then(|n| n.to_str()) == Some(dir)
         });
         if !present {
             continue;
@@ -165,6 +164,22 @@ pub async fn locate<FS: ReadStorage>(fs: &FS, root_dir: &Path) -> Located {
         return Located::default();
     };
     locate_in(fs, root_dir, &entries).await
+}
+
+impl<FS: ReadStorage, Id, Ix: prov_graph::index::IdIndex> crate::workspace::Workspace<FS, Id, Ix> {
+    /// This workspace's node, asked of a workspace already located rather than
+    /// of a directory being searched for one — the counterpart to
+    /// [`root_document`](crate::workspace::Workspace::root_document).
+    ///
+    /// Goes to the storage port rather than through
+    /// [`listing`](crate::workspace::Workspace::listing) deliberately: a
+    /// workspace that declared `.config` `out_of_scope` would have the node
+    /// filtered out of its own listings, and policy is not content — it is the
+    /// document that says what the content *is*, so it is read whatever the
+    /// scope rules say about the directory it sits in.
+    pub async fn workspace_node(&self) -> Located {
+        locate(self.fs(), self.root()).await
+    }
 }
 
 #[cfg(test)]

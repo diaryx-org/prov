@@ -275,6 +275,22 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("declared", J::Int(*declared)));
             fields.push(("understood", J::Int(prov::config::SPEC_VERSION)));
         }
+        Finding::ShadowedWorkspaceNode { node, shadowed } => {
+            fields.push(("node", p(node)));
+            fields.push(("shadowed", p(shadowed)));
+        }
+        Finding::ConfigHomesDisagree { node, named } => {
+            fields.push(("node", p(node)));
+            fields.push(("named", p(named)));
+        }
+        Finding::NamedRootMissing { node, named } => {
+            fields.push(("node", p(node)));
+            fields.push(("named", s(named)));
+        }
+        Finding::NamedRootContained { node, named } => {
+            fields.push(("node", p(node)));
+            fields.push(("named", p(named)));
+        }
         Finding::MalformedStore { doc, pointer } => {
             fields.push(("doc", p(doc)));
             fields.push(("pointer", s(pointer)));

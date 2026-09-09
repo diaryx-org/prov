@@ -516,11 +516,7 @@ pub use prov_graph::link::is_valid_workspace_id;
 /// a root document is rule 1's business and varies with the build's features,
 /// while the *shape* of the value is fixed.
 pub fn is_valid_root_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('/')
-        && !name.contains('\\')
-        && name != "."
-        && name != ".."
+    !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
 
 pub fn is_valid_scope_path(path: &str) -> bool {

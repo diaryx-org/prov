@@ -349,6 +349,32 @@ pub enum Finding {
     /// may be silently ignoring settings a newer prov wrote. Diagnosis only —
     /// the resolution is to upgrade prov, not to edit the workspace.
     ConfigSpecAhead { doc: PathBuf, declared: i64 },
+    /// Two workspace nodes exist and only the first is read (`node`); `shadowed`
+    /// is one that is not.
+    ///
+    /// Resolved by [`NODE_DIRS`](crate::node::NODE_DIRS) precedence rather than
+    /// refused, because a workspace that cannot be opened cannot be repaired —
+    /// but a config file that looks live and is not is exactly the mistake
+    /// nobody finds by reading.
+    ShadowedWorkspaceNode { node: PathBuf, shadowed: PathBuf },
+    /// The workspace node found by convention (`node`) is not the config
+    /// document the root names (`named`).
+    ///
+    /// Both are policy homes and the named one wins, but two files disagreeing
+    /// about which is the policy is a mistake rather than a configuration: the
+    /// half that loses is edited by someone who believes it is being read.
+    ConfigHomesDisagree { node: PathBuf, named: PathBuf },
+    /// The node's `root` names `named`, and no such document is there.
+    ///
+    /// Discovery fell back to the candidate scan, so the workspace still opens —
+    /// which is why this has to be reported rather than left to be noticed.
+    NamedRootMissing { node: PathBuf, named: String },
+    /// The node's `root` names a document that declares a spanning parent, so
+    /// the workspace calls its root something that says it is contained.
+    ///
+    /// Discovery honors the name — a stated root is not a guess to be overruled
+    /// — which makes the contradiction invisible without this.
+    NamedRootContained { node: PathBuf, named: PathBuf },
     /// A record store — reached through the `pointer` relation (`registry`,
     /// `recycle_bin`, or a `fields` vocabulary) — is a **markdown** document
     /// (fenced frontmatter) rather than a whole-file config document. prov
@@ -549,6 +575,13 @@ impl Finding {
             // The child is what gains the back-link; `doc` is the parent that
             // reported it missing.
             Finding::MissingInverse { child, .. } => child,
+            // The node is what carries the mistake and what an edit changes:
+            // the shadowed file is deleted or the key is corrected, and either
+            // way the node is where the reader has to look.
+            Finding::ShadowedWorkspaceNode { node, .. }
+            | Finding::ConfigHomesDisagree { node, .. }
+            | Finding::NamedRootMissing { node, .. }
+            | Finding::NamedRootContained { node, .. } => node,
             // The root is what declares the outdated spelling, and what the
             // rename edits; the log it names is fine as it is.
             Finding::LegacyDeletionsPointer { root, .. } => root,
@@ -584,6 +617,10 @@ impl Finding {
             Finding::FixityMismatch { .. } => "fixity_mismatch",
             Finding::ConfigIssue { .. } => "config_issue",
             Finding::ConfigSpecAhead { .. } => "config_spec_ahead",
+            Finding::ShadowedWorkspaceNode { .. } => "shadowed_workspace_node",
+            Finding::ConfigHomesDisagree { .. } => "config_homes_disagree",
+            Finding::NamedRootMissing { .. } => "named_root_missing",
+            Finding::NamedRootContained { .. } => "named_root_contained",
             Finding::MalformedStore { .. } => "malformed_store",
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
@@ -767,6 +804,29 @@ impl fmt::Display for Finding {
                 "{}: config declares spec {declared}, newer than this build's spec {} — some settings may be ignored (upgrade prov)",
                 doc.display(),
                 crate::config::SPEC_VERSION
+            ),
+            Finding::ShadowedWorkspaceNode { node, shadowed } => write!(
+                f,
+                "{}: workspace policy is read from here, so {} is not read — two workspace nodes exist and only the first counts (delete the shadowed one, or move its settings into the node)",
+                node.display(),
+                shadowed.display(),
+            ),
+            Finding::ConfigHomesDisagree { node, named } => write!(
+                f,
+                "{}: the root names {} as its config document, so this node is read first and then overridden — two files disagree about which is the policy (point `config:` at this node, or delete it)",
+                node.display(),
+                named.display(),
+            ),
+            Finding::NamedRootMissing { node, named } => write!(
+                f,
+                "{}: `root` names `{named}`, which is not in this directory — the root fell back to the usual `index`/`readme` scan (fix the name, or drop the key)",
+                node.display(),
+            ),
+            Finding::NamedRootContained { node, named } => write!(
+                f,
+                "{}: `root` names {}, which declares a spanning parent — a root is the document nothing contains, and this one says it is contained",
+                node.display(),
+                named.display(),
             ),
             Finding::MalformedStore { doc, pointer } => write!(
                 f,
@@ -1269,8 +1329,86 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 findings.push(Finding::ConfigSpecAhead { doc, declared });
             }
         }
+        // The workspace node, found by convention (spec §1 rule 1). Diagnosed
+        // like any other policy home, plus the three things only a node can get
+        // wrong: being shadowed, disagreeing with the pointed config document,
+        // and naming a root that is not one.
+        let located = self.workspace_node().await;
+        // Resolved once, up front: the node and the pointed config document are
+        // the *same file* in the ordinary case — a root that says
+        // `config: prov.yaml` beside a `prov.yaml` — and diagnosing one file
+        // twice would report every misspelled key in it twice.
+        let pointed = self.config_path(start).await?;
+        if let Some(node) = &located.node {
+            for shadowed in &located.shadowed {
+                findings.push(Finding::ShadowedWorkspaceNode {
+                    node: node.clone(),
+                    shadowed: shadowed.clone(),
+                });
+            }
+            if let Ok((_, doc)) = self.load(node).await {
+                // The generic policy diagnosis belongs to whichever pass reads
+                // this file; when it is also the pointed config document, that
+                // pass is the one below.
+                if pointed.as_ref() != Some(node) {
+                    findings.extend(crate::config::diagnose(&doc.meta).into_iter().map(|issue| {
+                        Finding::ConfigIssue {
+                            doc: node.clone(),
+                            issue,
+                        }
+                    }));
+                    if let Some(declared) = crate::config::spec_ahead(&doc.meta) {
+                        findings.push(Finding::ConfigSpecAhead {
+                            doc: node.clone(),
+                            declared,
+                        });
+                    }
+                }
+                let mut config = crate::config::WorkspaceConfig::default();
+                config.apply(&doc.meta);
+                if let Some(named) = &config.root {
+                    let named_path = PathBuf::from(named);
+                    // The workspace's *own* spelling of the parent field, not
+                    // the default: `is_root_candidate` hardcodes `part_of`
+                    // because discovery runs before any config is known, and
+                    // here it is known.
+                    let parent_field = self
+                        .spanning_pair()
+                        .map(|(_, inverse)| inverse)
+                        .unwrap_or_else(|_| "part_of".to_string());
+                    match self.load(&named_path).await {
+                        // A root that says something contains it. Discovery
+                        // honors the name anyway — a stated root is not a guess
+                        // to be overruled — so the contradiction is only ever
+                        // visible here.
+                        Ok((_, root_doc)) if root_doc.meta.get(&parent_field).is_some() => {
+                            findings.push(Finding::NamedRootContained {
+                                node: node.clone(),
+                                named: named_path,
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(_) => findings.push(Finding::NamedRootMissing {
+                            node: node.clone(),
+                            named: named.clone(),
+                        }),
+                    }
+                }
+            }
+        }
+
         // The dedicated config document (the `config`-relation target).
-        if let Some(config_doc) = self.config_path(start).await? {
+        if let Some(config_doc) = pointed {
+            // Two policy homes that are not the same file. The named one wins in
+            // `build`; the disagreement is what nobody would otherwise see.
+            if let Some(node) = &located.node
+                && *node != config_doc
+            {
+                findings.push(Finding::ConfigHomesDisagree {
+                    node: node.clone(),
+                    named: config_doc.clone(),
+                });
+            }
             let (_, doc) = self.load(&config_doc).await?;
             findings.extend(crate::config::diagnose(&doc.meta).into_iter().map(|issue| {
                 Finding::ConfigIssue {
@@ -1646,6 +1784,162 @@ mod tests {
     pub(super) use prov_testkit::write;
     pub(super) fn tempdir(tag: &str) -> PathBuf {
         prov_testkit::scratch("check", tag)
+    }
+
+    #[test]
+    fn a_shadowed_workspace_node_is_reported_not_refused() {
+        let dir = tempdir("shadowed-node");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "prov.yaml", "workspace_id: notes\n");
+        write(&dir, "config/prov.yaml", "workspace_id: stale\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::ShadowedWorkspaceNode { node, shadowed }
+                    if node == Path::new("prov.yaml")
+                        && shadowed == Path::new("config/prov.yaml")
+            )),
+            "{findings:?}"
+        );
+        // Still discoverable — the whole point of a finding over a refusal.
+        assert!(matches!(
+            block_on(crate::discovery::discover(&StdFs, &dir)).unwrap(),
+            crate::discovery::Discovery::Found(_)
+        ));
+    }
+
+    #[test]
+    fn two_policy_homes_that_are_not_the_same_file_are_reported() {
+        let dir = tempdir("homes-disagree");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\nconfig: settings.yaml\n---\n",
+        );
+        write(&dir, "prov.yaml", "workspace_id: from_node\n");
+        write(&dir, "settings.yaml", "workspace_id: from_pointer\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::ConfigHomesDisagree { node, named }
+                    if node == Path::new("prov.yaml") && named == Path::new("settings.yaml")
+            )),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn one_file_serving_as_both_policy_homes_is_no_finding_and_is_diagnosed_once() {
+        // The ordinary shape, and this repository's own: a `prov.yaml` the root
+        // also names through `config:`. It must not disagree with itself, and a
+        // misspelling in it must be reported once rather than once per pass.
+        let dir = tempdir("homes-agree");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\nconfig: prov.yaml\n---\n",
+        );
+        write(&dir, "prov.yaml", "references:\n  notaton: markdown\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::ConfigHomesDisagree { .. })),
+            "{findings:?}"
+        );
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|f| matches!(f, Finding::ConfigIssue { .. }))
+                .count(),
+            1,
+            "the one file is diagnosed once: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_named_root_that_is_not_there_is_reported() {
+        let dir = tempdir("named-root-missing");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "prov.yaml", "root: hoem.md\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::NamedRootMissing { node, named }
+                    if node == Path::new("prov.yaml") && named == "hoem.md"
+            )),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_named_root_that_says_it_is_contained_is_reported() {
+        // Discovery honors the name — a stated root is not a guess to overrule —
+        // so the contradiction is visible only here.
+        let dir = tempdir("named-root-contained");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- home.md\n---\n",
+        );
+        write(
+            &dir,
+            "home.md",
+            "---\ntitle: Home\npart_of: index.md\n---\n",
+        );
+        write(&dir, "prov.yaml", "root: home.md\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::NamedRootContained { node, named }
+                    if node == Path::new("prov.yaml") && named == Path::new("home.md")
+            )),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_root_key_is_diagnosed_like_any_other_config_value() {
+        let dir = tempdir("named-root-malformed");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "prov.yaml", "root: docs/index.md\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::ConfigIssue { doc, issue }
+                    if doc == Path::new("prov.yaml")
+                        && matches!(
+                            issue.kind,
+                            crate::config::ConfigIssueKind::MalformedRoot { .. }
+                        )
+            )),
+            "{findings:?}"
+        );
+        // Ignored, not half-honored: no dangling-name finding follows, because
+        // `apply` never took the value.
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::NamedRootMissing { .. })),
+            "{findings:?}"
+        );
     }
 
     #[test]
