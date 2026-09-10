@@ -10,12 +10,12 @@ part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 
 ## Summary
 
-A **preset** is a named bundle of the configuration a common kind of workspace
-needs — the vocabularies, the fields, the views, the glosses — that `prov init`
-can write for you. The first is `tasks`: a `status` vocabulary, the views that
+A **preset** is a bundle of the configuration a common kind of workspace
+needs — the vocabularies, the fields, the views, the glosses — that prov can
+write for you. The first is `tasks`: a `status` vocabulary, the views that
 answer "what is open", and the sentences `about.md` should say about it.
 
-The proposal is one decision and one rule.
+The proposal is one decision, one rule, and one place.
 
 1. **A preset is a stencil, not a default.** It is written out, in full, into
    the workspace's own config, and prov's reader never learns the preset's name.
@@ -27,11 +27,16 @@ The proposal is one decision and one rule.
    config vocabulary cannot say, the question is whether that thing is a general
    mechanism; if it is, it is added as one, and if it is not, the preset does
    without.
+3. **A preset is a directory, and prov ships exactly one.** The one it ships is
+   the default — what `init` writes when told nothing — and it has no name.
+   Every other preset, `tasks` included, is a directory laid out like the root of
+   the workspace it will be merged into, and is named by its path. There is no
+   registry, and no list of names inside the binary for a registry to grow from.
 
 What this proposal does **not** do: no `preset:` key that a reader has to expand;
-no preset that a workspace can only partly take; no field declaration scoped to a
-subtree, which is the one shape two presets in one workspace would eventually
-want and which §6 defers.
+no preset that a workspace can only partly take; no name that resolves anywhere
+but the filesystem; no field declaration scoped to a subtree, which is the one
+shape two presets in one workspace would eventually want and which §7 defers.
 
 ## Why now
 
@@ -57,8 +62,9 @@ whole point of prov — then the bundle that writes it belongs where the format 
 public, beside `tasks`.
 
 **A plain notes directory.** The minimal workspace, which today is `init`'s
-defaults. It is already a preset in everything but name, and naming it is what
-makes the other two not special.
+defaults. It is already a preset in everything but the mechanism, and making it
+one — the single preset the binary carries — is what makes the other two
+ordinary rather than special.
 
 The pull toward convenience is real: a task tracker that needs a vocabulary file
 and four view declarations before `prov views` prints anything is one nobody
@@ -97,7 +103,7 @@ Take the tasks case. The bundle is a `status` vocabulary, a `fields` entry
 pointing at it, a view or two, and the glosses. There are two places it can
 live once a workspace uses it.
 
-**A stencil.** `prov init --preset tasks` writes the bundle out — into
+**A stencil.** `prov init --preset ./tasks` writes the bundle out — into
 `prov.yaml` and `vocab/statuses.yaml`, in full — and stops. From then on the
 workspace is ordinary, fully spelled-out config. prov's reader does not know the
 word `tasks`; the preset was a writer-side convenience and left no trace but the
@@ -155,7 +161,7 @@ Applied to what the tasks experiment (§4) found missing:
 | `prov views <name> --json` | mechanism | `check --json` and `meta --format json` exist; a consumer replacing its own loop with a view needs the same |
 | `sort:` on a view — newest `updated` first | mechanism, already deferred | DESIGN names it as the place the view format next grows teeth |
 | the nine `status` terms, the `open-tasks` view, "a task is a commitment with a done state" | stencil | config, a vocabulary file with `means:` glosses, and the fixture that pins them |
-| `status` meaning one thing under Tasks and another under Proposals | neither, yet | §6 |
+| `status` meaning one thing under Tasks and another under Proposals | neither, yet | §7 |
 
 ## 4. The `tasks` preset, concretely
 
@@ -234,13 +240,41 @@ reaches is a `check` finding"). Under this proposal the index's `contents` is
 the spine and lists everything; the **view** is what lists what is open. The
 rule and the prose change to say that; no code does.
 
-**Where the preset lives in the repository.** As a fixture: a directory prov's
-own tests initialize with `--preset tasks` and run `check` over, so that the
-stencil is verified by the same reader it is written for and cannot drift from
-the vocabulary it uses. This repository is also its first consumer — the config
-above, committed here, is the dogfood.
+**Where the preset lives in the repository.** As a directory, `presets/tasks/`,
+holding exactly the two files above (§5 says what a preset directory is). The
+test suite initializes a scratch workspace, applies that directory, and runs
+`check` over the result, so that the stencil is verified by the same reader it
+is written for and cannot drift from the vocabulary it uses. This repository is
+also its first consumer — its own `prov.yaml` and `vocab/statuses.yaml` are what
+applying the directory here wrote, and a test can say so by applying it again
+and finding nothing to add.
 
-## 5. What a preset contains, and what `about.md` says
+## 5. What a preset is, and what `about.md` says
+
+**On disk, a preset is a directory laid out like the root of the workspace it
+will be merged into.** It holds a `prov.yaml` carrying only the axes the preset
+declares, and beside it, at the paths that config's links name, the stores those
+axes point at. Nothing else in the directory is read. The `tasks` preset is:
+
+```
+presets/tasks/
+  prov.yaml             # fields: and views: — the block in §4, and no other key
+  vocab/statuses.yaml   # the vocabulary the fields entry links
+```
+
+Applying it is a copy with a merge: each file that does not exist in the
+workspace is written where it sits in the preset; the preset's `prov.yaml` is
+merged into the workspace's config document, key by key, under the collision
+rule below. Because the layout is the workspace's own, the root-relative link
+`[Statuses](/vocab/statuses.yaml)` means the same thing in the preset directory
+as it does after the copy, and the preset's author can read the preset the way
+its consumer will.
+
+A preset directory is not itself a workspace — it has no root document and no
+spine — so `prov check` does not run over it directly. It runs over a workspace
+the preset was applied to, which is what the fixture in §4 does, and that is a
+stronger check than the directory alone could pass: it proves the stencil is
+usable, not merely well-formed.
 
 A preset writes three things and no fourth.
 
@@ -266,10 +300,64 @@ question 3.
 that already has config adds entries and never rewrites one: a `fields.status`
 already present is a collision the command reports and stops on, because the two
 declarations mean different things and prov cannot choose. This is the
-conservative half of §6 — it makes two presets in one workspace *possible* when
+conservative half of §7 — it makes two presets in one workspace *possible* when
 their names do not collide and *loud* when they do.
 
-## 6. The edge: two presets in one workspace
+## 6. Where a preset comes from
+
+A preset is a small pile of files — `tasks` is two files and about forty
+lines — so "where presets come from" is only the question of where the command
+looks when it is handed one. There are three answers, and this proposal takes
+two of them.
+
+**Inside the binary: one, the default, unnamed.** prov ships exactly one preset,
+and it is the one `init` writes when given no `--preset`: the `created:` and
+`updated:` axes and nothing else, the minimal workspace that today is `init`'s
+defaults in everything but name. It has no name because it needs none — there is
+nothing else in the binary it could be confused with — and that keeps §1's
+observation true: prov has one built-in default and it is singular. The binary
+carries no list of preset names, so there is no list for a second entry to be
+added to.
+
+**A directory, by path.** Every other preset is a directory of the shape §5
+describes, and the command takes its path: `prov presets ./presets/tasks`. That
+covers the three cases this proposal has in hand without any of them being
+special. `tasks` is a directory in this repository. The diaryx bundle is a
+directory in diaryx's repository, which §8 comes back to. A preset someone
+outside the org writes is a directory in their repository, and publishing it is
+`git push`. Discovery, for a handful of presets, is a README.
+
+**A registry, by name: considered and declined.** A registry — an index that
+resolves `tasks` to a location and fetches it — is the third answer, and it is
+the wrong one for four reasons.
+
+- *It solves the problem §2 gave up.* A registry's value is that a bundle can be
+  fetched again and updated. §2 says an archive's format is the archive's, not
+  the tool's, and that re-running a stencil is a choice its author makes. A
+  registry exists to make that choice arrive from outside.
+- *It is a namespace prov must govern.* §2 calls "a family of named defaults" a
+  registry, as the failure case. A registry of stencils avoids the read-time
+  half of that debt, since the workspace never carries the name; it keeps the
+  other half — who owns `tasks`, what `tasks@2` means, and what prov does when
+  the index moves.
+- *It is infrastructure only presets use.* §3's rule is that nothing enters prov
+  that only one preset exercises. A fetcher, an index format, and a trust model
+  would enter prov for presets alone. prov has no network dependency today, and
+  this is a poor reason to take the first one.
+- *A preset can write `relations`.* Pulling a bundle by name from the network
+  and merging it into the config that says how the whole archive is read is a
+  larger trust step than the preview-and-write flow suggests. A path the author
+  chose is a smaller one.
+
+If fetching by URL is ever wanted, it is a `git clone` in front of the path form,
+and prov need not learn it.
+
+**The default and a directory compose.** `init --preset <dir>` writes the
+default first and the directory on top, under the same additive merge; a
+directory that declares `created:` itself is not a collision, because the two
+declarations agree (open question 4 is the one case where they might not).
+
+## 7. The edge: two presets in one workspace
 
 This repository is a docs workspace with a tasks corner and a proposals corner,
 and the org's rule has both use `status` with disjoint vocabularies. A `fields`
@@ -292,20 +380,23 @@ rename does not cover. The `tasks` preset is written so that it does not need
 the axis: one vocabulary, nine terms, and the views tell tasks from proposals by
 `under:`, which already scopes.
 
-## 7. Where the diaryx preset lives
+## 8. Where the diaryx preset lives
 
 The archive format's bundle — `audience` with its closed vocabulary and `reify`,
 the `[date_of_document, created]` chain, the `daily` view, the exports gate — is
-today written by diaryx at setup. If the format is meant to be read by tools
-other than diaryx, the bundle is a public fact about a public format and belongs
-here, as `--preset diaryx`, with diaryx's setup calling it. If it is not, diaryx
-keeps writing its own config and prov ships `tasks` and `notes` only.
+today written by diaryx at setup, in code. Under §6 it becomes a preset
+directory in diaryx's own repository, applied at setup through the same library
+call the CLI uses. That is not a boundary decision: the files move from one
+place in the private repository to another, and diaryx stops carrying the
+merge-and-write logic that prov now has.
 
-That is a boundary decision — moving the bundle from the private repository to
-this one is a one-way publication — and this proposal does not make it. The
-mechanism is the same either way.
+Whether the directory then moves *here* — so that the format is stated where
+the format is public, beside `tasks` — is the boundary decision, a one-way
+publication, and this proposal does not make it. It is a smaller decision than
+it was, because it is now a directory copy and not a port, and it can be made
+later without the mechanism changing.
 
-## 8. Staging
+## 9. Staging
 
 - **Phase 0 — the mechanisms.** In their own commits, each useful without a
   preset existing: `set`/`unset` go through `record_content_update` when a
@@ -313,11 +404,14 @@ mechanism is the same either way.
   `dx tasks` depends on); a `created:` axis stamped by `new`; a value at
   creation (`new --set` or `fields.<name>.default:`, open question 2);
   `views <name> --json`; `about.md` lists views.
-- **Phase 1 — the stencil.** `prov presets` lists what prov can write; `prov
-  presets <name>` prints it, touching nothing, in the shape `exports <name>`
-  previews; `prov presets <name> --write` applies it, additively, refusing a
-  collision; `init --preset <name>` is the shorthand at creation. `tasks` and
-  `notes`, as fixtures the test suite initializes and checks.
+- **Phase 1 — the stencil.** `prov presets` prints the default, touching
+  nothing, in the shape `exports <name>` previews; `prov presets <dir>` prints
+  what applying that directory would write; `--write` on either applies it,
+  additively, refusing a collision; `init --preset <dir>` is the shorthand at
+  creation, and `init` alone writes the default. The default is the one preset
+  in the binary; `presets/tasks/` is the one in this repository, a fixture the
+  test suite applies to a scratch workspace and checks. The library exposes the
+  apply so that diaryx can call it.
 - **Phase 2 — this repository takes it.** The `tasks` config committed here;
   `tasks.md`'s prose and the org rule corrected so that `contents` is the spine
   and the view is the open list; the proposals index says the same thing it
@@ -326,14 +420,16 @@ mechanism is the same either way.
   --json` replaces the per-file `prov meta` loop and the `KINDS` table, in
   repositories that are prov workspaces. Devtools work, after the above ships.
 - **Unscheduled** — `sort:` on views, and the subtree-scoped field declaration
-  of §6, each waiting on a second case.
+  of §7, each waiting on a second case. The diaryx directory moving here, §8,
+  when that is decided.
 
 ## Open questions
 
-1. **The verb.** `presets` follows `views` and `exports` (list with no name,
-   act with one), and `--write` is proposed because `--apply` reads as if it
-   might do more than write config. `adopt` is taken, by `init --adopt`, and
-   means something else.
+1. **The verb.** `presets` follows `views` and `exports` in taking a bare form
+   and an argument form, though the bare form previews the default rather than
+   listing, since with one built-in there is nothing to list. `--write` is
+   proposed because `--apply` reads as if it might do more than write config.
+   `adopt` is taken, by `init --adopt`, and means something else.
 2. **A value at creation: flag or declaration?** `new --set status=open` puts
    the knowledge in the caller's hands; `fields.status.default: open` puts it in
    the workspace, where a stencil can carry it and `about.md` can state it. The
@@ -344,8 +440,9 @@ mechanism is the same either way.
    scope alone, so the gloss is a nicety rather than a mechanism — but it is the
    one place a preset's author can say *why* a view exists, and that sentence is
    the thing a stranger most wants.
-4. **Whether `notes` is a preset or just `init`.** Naming the minimal workspace
-   makes `tasks` and `diaryx` ordinary rather than special, but a preset that
-   writes nothing is odd. Proposed: it exists, it writes the `created:` and
-   `updated:` axes and nothing else, and `init` with no `--preset` is `--preset
-   notes`.
+4. **Whether a directory can replace the default rather than add to it.** §6
+   has `init --preset <dir>` write the default and then the directory. A
+   workspace that wants no `updated:` axis at all — a read-only import, say —
+   cannot say so through a preset, only by unsetting it afterwards. A
+   `--no-default` flag, or a key in the preset's `prov.yaml` that means "instead
+   of", would say it; neither is proposed until a preset that needs it exists.
