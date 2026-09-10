@@ -3,12 +3,15 @@ title: crossing the boundary
 author: adammharris
 created: 2026-09-09
 updated: 2026-09-09
-status: accepted
+status: implemented
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # Crossing the boundary — a workspace that acknowledges a parent, and a reader that descends
 
-## Status: accepted; phase 0 landed 2026-09-09
+## Status: implemented in 0.11.x (2026-09-09)
+
+Phases 0 through 2 shipped, in three commits; the body below is left as it was
+argued. Phase 3 stays unscheduled.
 
 **Phase 0 shipped through the named root, not through the candidate clause.**
 `is_root_candidate` did not change. The mechanism is the one
@@ -44,9 +47,34 @@ legal and unreferenceable, exactly as an anonymous workspace already is, and
 nothing reports it. Same shape as the workspace-node proposal's open question 3,
 and for the same reason: prov mints a workspace name only on request.
 
-**Phases 1 and 2 are in progress** — `crossing` (`open_peer`, `descend`), then
-`tree --follow` / `check --follow` / `explore`. Phase 3 stays unscheduled. Open
-questions 3 and 4 are still open and belong to phase 1.
+**Phase 1, `feat(crossing)`** — `prov/src/crossing.rs`: `open_peer`,
+`open_discovered`, `descend`, and the `Federation` a descent answers with, every
+node saying which workspace it belongs to. Everything §2 refused is still
+refused: a `PeerLocation::Url` is never opened, nothing is written across a
+boundary, `Graph` has no resolver, and under `NoPeers` a descent is `tree` with
+every foreign leaf carrying `Refusal::Unknown`. A refusal is a leaf with its
+reason, never an error.
+
+**Phase 2, `feat(cli)`** — `tree --follow[=DEPTH]`, `check --follow[=DEPTH]`,
+`--unverified` on both, and `explore` stepping across a foreign link. `DEPTH`
+counts crossings, not tree levels, and defaults to 8. `check --follow` is each
+reachable workspace's own check, grouped, and refuses `--fix` and `--only`;
+it verifies no foreign reference, as §2 says it must not.
+
+**Open question 3 — answered (2026-09-09): a trail, on both keys.** Not a
+visited set. §2 asked for one, and the first cut had one, and it was wrong for
+the motivating shape: an org root that names two documents of one repository
+rendered the first and refused the second. `descend` now keeps a per-branch
+*trail* of the workspaces on the current path from the origin, exactly as
+`Graph::tree` keeps a trail of documents one level down, and only a back-edge to
+a workspace on that path is `Refusal::Cycle`. The trail is keyed on both the
+root directory and the declared name; the directory half is lexically
+normalized, because neither storage port offers a `canonicalize`, so it is the
+name half that catches a symlinked second checkout. Opened peers are memoized by
+name, so cost stays one open per peer however many times it is named.
+
+**Open question 4 is still open.** No layout resolver shipped; the peer file is
+the only map `prov-cli` reads.
 
 The body below is left as it was argued.
 
