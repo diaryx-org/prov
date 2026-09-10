@@ -54,6 +54,10 @@ compile_error!(
 pub mod about;
 pub mod attach;
 pub use prov_config as config;
+/// Crossing a workspace boundary — opening a peer a [`PeerResolver`] located,
+/// and descending the spanning tree into it. The layer above
+/// [`prov_graph::peer`], which stops at an address on purpose.
+pub mod crossing;
 pub mod discovery;
 /// Content fixity — the coverage policy, the digest, and the predicates that
 /// separate a verified hash from an unverifiable one.
@@ -185,6 +189,9 @@ pub use config::{
     RelationStyleConfig, WorkspaceConfig, diagnose, field_type_as_config_str,
     field_type_from_config_str, is_valid_scope_path, is_valid_workspace_id,
     metadata_format_from_str, metadata_format_str, spec_ahead,
+};
+pub use crossing::{
+    Boundary, Crossing, Descent, Federation, Peer, Reached, Refusal, Trust, descend, open_peer,
 };
 pub use discovery::{Discovered, Discovery, discover};
 /// Declarative views over the workspace — the `views:` config axis, the
