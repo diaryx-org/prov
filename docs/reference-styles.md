@@ -264,6 +264,76 @@ recognize its own name, and only prov is in a position to enforce that.
 An anonymous workspace has nothing to compare against, so it treats every
 qualifier as foreign — it must not guess that `id:notes/…` means itself.
 
+### A workspace inside a workspace
+
+A workspace can say what contains it without ceasing to be a workspace. The
+shape is three files and no new grammar:
+
+```yaml
+# notes/prov.yaml — the workspace node names its root
+workspace_id: notes
+root: README.md
+```
+
+```yaml
+# notes/README.md, in the frontmatter — the root says what contains it
+title: Notes
+id: 4kq20b1
+part_of: id:org/97jx77t
+```
+
+```yaml
+# ../README.md, in the frontmatter — the outer root lists it the same way
+title: The org
+id: 97jx77t
+prov:
+  workspace_id: org
+contents:
+  - '[Notes](id:notes/4kq20b1)'
+```
+
+The node is what makes this legal. Discovery trusts a root the workspace has
+*named* without applying the candidate test — that test exists to guess which
+document is the root, and a workspace that names one has answered — so the named
+root may carry a `part_of` the candidate test would have disqualified it for. A
+document with a foreign `part_of` that **no node names** is still not a root
+candidate: nothing about it changed, and a directory that had one root before
+still has exactly one.
+
+Everything downstream already behaves. The foreign parent resolves to
+`Target::Foreign`, so the spanning climb stops at the sub-root, the sub-root
+claims membership in nothing local, the census files the edge as
+`Resolution::Foreign` rather than broken, `tree` renders it as `NodeKind::Foreign`,
+and no rewrite site touches it. `check` inside the sub-workspace reports nothing
+about the edge. The one thing that *is* reported is a named root whose parent
+resolves **locally** — a path, an unresolved local id, or a reference qualified
+with this workspace's own name (which is local, per the rule above) — because
+that is a root saying something here contains it, and that is a contradiction
+(`named_root_contained`).
+
+Two rules come with it, and neither is one prov can enforce.
+
+**An edge into a sub-workspace is foreign, or it is not a boundary.** If the
+outer root *also* reaches the inner directory by a path link, the inner
+documents are censused by both roots and neither census is wrong. prov cannot
+raise a finding about it — the outer check is reachability-bounded and only sees
+the inner directory *because* the path link exists — so this is a rule for the
+writer, not a check.
+
+**Which root you opened decides where the boundary is.** The spanning climb
+falls back to the root document of the workspace it was given. Opened at the
+outer repository, the sub-root's spanning root is the outer README; opened at
+the sub-workspace, it is the sub-root. Both are correct answers to different
+questions, and `-C` is how a caller says which one it is asking.
+
+An **anonymous** sub-root — one whose workspace has no `workspace_id` — is
+legal, and nothing reports it. It simply cannot be *named* by the parent's edge,
+since a foreign reference is spelled with the target's name — so the boundary
+holds and the two sides are unlinked until the sub-workspace takes a name
+(`prov id --workspace`). That is the same silence a `README`-only workspace
+already gets, for the same reason: prov mints a workspace name only on request,
+never on its own initiative.
+
 ### What is not covered
 
 Registration stays a **publish-time** contract, as in diaryx's ROADMAP: prov
@@ -361,5 +431,11 @@ re-relativize, restyle and `check --fix` all preserve locators.
   `prov::identity::mint_workspace_id` (a double-width blade, since a workspace
   name has no arbiter to be rejected by). `prov init --workspace-id` and `prov
   config workspace_id` remain the other two ways in.
+- ✅ **A workspace inside a workspace** (§ "A workspace inside a workspace"): the
+  workspace node's `root` key (`node.rs`, `node_named_root` in `discovery.rs`)
+  carries the whole shape — `is_root_candidate` is unchanged, so a foreign
+  `part_of` that no node names is still not a root. `named_root_contained`
+  (`validate.rs`) resolves the parent and reports it only when it lands
+  *locally*, self-qualification included.
 - ⏳ **Staged:** `StaleLabel` finding + label refresh in `validate.rs`.
   Body-prose reference restyle during the `mutate` port.

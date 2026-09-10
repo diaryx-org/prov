@@ -197,6 +197,15 @@ fn can_be_root(path: &Path) -> bool {
 /// have to census the page as a tree member — so what settles it is the byline
 /// it already carries: a file prov generated is derived *from* the root and so
 /// can never be the root.
+///
+/// The second clause asks whether the *key is present*, not whether it resolves
+/// to anything here, and that is deliberate. A workspace inside a workspace says
+/// what contains it with a foreign `part_of` on its root
+/// (`docs/reference-styles.md`), and the escape it uses is
+/// [`node_named_root`] — the node names the root, so nothing has to be guessed.
+/// Widening this test instead would hand every directory a candidate it did not
+/// have, turning a settled root into a tie; a document with a foreign parent
+/// that no node names is therefore not a candidate.
 fn is_root_candidate(doc: &Document) -> bool {
     doc.has_meta() && doc.meta.get("part_of").is_none() && !crate::about::is_generated(&doc.meta)
 }
@@ -275,6 +284,13 @@ impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Worksp
 /// straight off the mapping, so a malformed `root` is ignored here in exactly
 /// the way [`diagnose`](crate::config::diagnose) says it was — one validation,
 /// not two that can drift.
+///
+/// The candidate test is not applied — see [`Workspace::root_document`] for why
+/// — which is what lets a **workspace inside a workspace** exist: a named root
+/// may carry a `part_of` naming a document in *another* workspace, the way a
+/// sub-workspace says what contains it. A local parent on a named root is still
+/// a contradiction, and `check` reports it
+/// ([`NamedRootContained`](crate::validate::Finding::NamedRootContained)).
 ///
 /// `None` falls through to the candidate scan. That is the safe direction for
 /// every way this can go wrong: a `root` naming a file that was moved or
@@ -642,6 +658,80 @@ mod tests {
             }
             other => panic!("expected index.md, got {other:?}"),
         }
+    }
+
+    /// An outer workspace holding a `sub/` directory that is a workspace in its
+    /// own right: `sub/prov.yaml` names `sub/README.md` as the root, and that
+    /// README says `part_of` an id in *another* workspace. Returns the outer
+    /// root directory.
+    fn nested_workspaces(tag: &str, with_node: bool) -> PathBuf {
+        let outer = tmp(tag);
+        std::fs::write(outer.join("index.md"), "---\ntitle: Outer\n---\n").unwrap();
+        std::fs::create_dir_all(outer.join("sub")).unwrap();
+        std::fs::write(
+            outer.join("sub/README.md"),
+            "---\ntitle: Inner\npart_of: id:outer/abc123\n---\n",
+        )
+        .unwrap();
+        if with_node {
+            std::fs::write(
+                outer.join("sub/prov.yaml"),
+                "workspace_id: inner\nroot: README.md\n",
+            )
+            .unwrap();
+        }
+        outer
+    }
+
+    #[test]
+    fn a_named_root_may_say_what_contains_it() {
+        // A workspace inside a workspace. The node names the root, so discovery
+        // never asks the candidate test — and the root's `part_of` is a foreign
+        // id, which names nothing here. Walking up from inside `sub/` stops at
+        // the inner root and reads the inner workspace's own policy.
+        let outer = nested_workspaces("nested-named", true);
+        std::fs::create_dir_all(outer.join("sub/deep")).unwrap();
+
+        match block_on(discover(&StdFs, &outer.join("sub/deep"))).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.root_dir, outer.join("sub"));
+                assert_eq!(d.root_doc, PathBuf::from("README.md"));
+                assert_eq!(d.config.workspace_id, "inner");
+            }
+            other => panic!("expected the inner root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_foreign_parent_alone_does_not_make_a_root() {
+        // The other half of the rule, and the reason `is_root_candidate` did not
+        // have to change: a document with a foreign `part_of` that *no node
+        // names* is still not a candidate. Without `sub/prov.yaml` the walk
+        // passes straight over `sub/README.md` and roots at the outer workspace.
+        let outer = nested_workspaces("nested-anonymous", false);
+
+        match block_on(discover(&StdFs, &outer.join("sub"))).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.root_dir, outer);
+                assert_eq!(d.root_doc, PathBuf::from("index.md"));
+            }
+            other => panic!("expected the outer root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn root_document_honors_a_named_root_that_says_what_contains_it() {
+        // The same judgment asked of the sub-workspace already located: the
+        // named root is trusted, foreign parent and all.
+        let outer = nested_workspaces("nested-root-doc", true);
+        let inner = outer.join("sub");
+        assert_eq!(
+            block_on(probe_with_node(&inner).root_document()).unwrap(),
+            Some(PathBuf::from("README.md"))
+        );
+        // And without the node there is nothing here to be the root.
+        let bare = nested_workspaces("nested-root-doc-bare", false).join("sub");
+        assert_eq!(block_on(probe(&bare).root_document()).unwrap(), None);
     }
 
     #[test]

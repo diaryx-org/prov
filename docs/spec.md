@@ -34,13 +34,19 @@ prov workspace:
    document (Markdown, Djot, HTML), or — under the `index`/`readme` stem only —
    a whole-file metadata document, so that a stray `config.json` beside the root
    cannot pass for one. *(Invariant: the root is the reachable document with no
-   spanning-parent, and the one that declares or points at the workspace's
-   policy (rule 3); the conventions only find it. A named root is taken at its
-   word, because the candidate test is there to guess which document is the root
-   and a workspace that names one has already answered. The byline clause is
-   what keeps generated prose (§5) out of the running: it has a root's exact
-   shape — metadata, no spanning-parent, no id — but is derived from the root,
-   so it can never be the root.)*
+   spanning-parent **in this workspace**, and the one that declares or points at
+   the workspace's policy (rule 3); the conventions only find it. A named root is
+   taken at its word, because the candidate test is there to guess which document
+   is the root and a workspace that names one has already answered — so such a
+   root may declare a spanning parent in *another* workspace (an
+   `id:<workspace>/<id>` reference, see
+   [Reference styles](/docs/reference-styles.md#a-workspace-inside-a-workspace)),
+   which is how a workspace says what contains it without ceasing to be one. The
+   candidate test asks the coarser question and stays that way: a document
+   carrying such a parent that no node names is not a candidate. The byline
+   clause is what keeps generated prose (§5) out of the running: it has a root's
+   exact shape — metadata, no spanning-parent, no id — but is derived from the
+   root, so it can never be the root.)*
 2. **Read its metadata block.** Split frontmatter from body by fence — `---`
    (YAML), `;;;` (JSON), or a ```` ```fig ```` block. The block is a key→value map.
 3. **Read the policy, from both homes.** Workspace policy is one vocabulary

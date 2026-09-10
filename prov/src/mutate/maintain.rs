@@ -839,3 +839,70 @@ fn rewrite_body_inbound(
     }
     splice_body(text, body, &new_body)
 }
+
+// The shared machinery has no fixtures of its own — each verb's tests exercise
+// it through that verb. What follows is the exception: the boundary a
+// sub-workspace draws is a property of `spanning_root` itself, and asking it
+// through `rename` alone would leave the stop condition implied.
+#[cfg(all(test, feature = "yaml"))]
+mod tests {
+    use super::super::support::*;
+    use super::*;
+
+    /// A workspace whose node names `README.md` as the root, and whose root says
+    /// `part_of` an id in another workspace — a workspace inside a workspace,
+    /// opened at the inner one.
+    fn sub_workspace(tag: &str) -> PathBuf {
+        let dir = tempdir(tag);
+        write(
+            &dir,
+            "README.md",
+            "---\ntitle: Inner\npart_of: id:outer/abc123\ncontents:\n- '[Note](/note.md)'\n---\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: '[Inner](/README.md)'\n---\n",
+        );
+        write(&dir, "prov.yaml", "workspace_id: inner\nroot: README.md\n");
+        dir
+    }
+
+    #[test]
+    fn spanning_root_stops_at_a_root_whose_parent_is_foreign() {
+        // The foreign edge resolves to nothing local, so `single_target` yields
+        // `None` and the climb ends here rather than walking out of the
+        // workspace. This is what makes the sub-workspace a boundary without a
+        // single line of boundary-handling code.
+        let dir = sub_workspace("spanning-root-foreign");
+        let ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .workspace_id("inner")
+            .build();
+        assert_eq!(
+            block_on(ws.spanning_root(Path::new("note.md"), "part_of")).unwrap(),
+            PathBuf::from("README.md")
+        );
+    }
+
+    #[test]
+    fn a_move_inside_a_sub_workspace_leaves_the_foreign_parent_alone() {
+        // Every rewrite site filters on a *path* target, and no id form is one —
+        // so the edge that says what contains this workspace survives a move
+        // that rewrites the root's `contents` right beside it.
+        let dir = sub_workspace("move-under-foreign-parent");
+        let mut ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .workspace_id("inner")
+            .build();
+        block_on(ws.rename(Path::new("note.md"), Path::new("renamed.md"))).unwrap();
+
+        let root = read(&dir, "README.md");
+        assert!(
+            root.contains("part_of: id:outer/abc123"),
+            "the foreign parent is carried, never rewritten: {root}"
+        );
+        assert!(root.contains("renamed.md"), "the move landed: {root}");
+        assert_eq!(block_on(ws.check("README.md")).unwrap(), vec![]);
+    }
+}

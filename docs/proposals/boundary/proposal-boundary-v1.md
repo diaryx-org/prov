@@ -3,10 +3,52 @@ title: crossing the boundary
 author: adammharris
 created: 2026-09-09
 updated: 2026-09-09
-status: draft
+status: accepted
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
 # Crossing the boundary — a workspace that acknowledges a parent, and a reader that descends
+
+## Status: accepted; phase 0 landed 2026-09-09
+
+**Phase 0 shipped through the named root, not through the candidate clause.**
+`is_root_candidate` did not change. The mechanism is the one
+[the workspace node](/docs/proposals/workspace-node/proposal-workspace-node-v1.md)
+had already built: a sub-workspace's node names its root (`root: README.md`),
+discovery trusts a named root without the candidate test, and *that* root carries
+the foreign `part_of`. §1's "why nothing downstream has to change" is exactly
+right and is what makes this work; only its premise moved.
+
+Three consequences of taking that route:
+
+- **The ambiguity regression §1 predicted does not exist.** No candidacy test was
+  widened, so no directory gains a candidate, and a document with a foreign
+  `part_of` that no node names is still not a root. Both are pinned by tests in
+  `discovery.rs`.
+- **The price is a node.** A sub-workspace must have one to be found as a
+  workspace — which it wants anyway, since it is where its own `workspace_id`,
+  `exports`, vocabulary and identity policy live. §2 of the workspace-node
+  proposal argued this; it is the whole of the cost.
+- **`named_root_contained` narrowed rather than disappearing.** It resolves the
+  named root's parent and reports only when the target is local — a path, an
+  unresolved local id, an alias, or a reference qualified with this workspace's
+  own name, which §1 correctly says *is* local. A `Target::Foreign` parent is
+  silent. That is the `Behavioural-change:` this carried, in place of the
+  ambiguity one it was expecting.
+
+The rules of §1's "Two rules that come with it" are now in
+`docs/reference-styles.md` under "A workspace inside a workspace", with the shape
+and the spec §1 rule 1 wording.
+
+**Open question 2 — answered (2026-09-09): silence.** An anonymous sub-root is
+legal and unreferenceable, exactly as an anonymous workspace already is, and
+nothing reports it. Same shape as the workspace-node proposal's open question 3,
+and for the same reason: prov mints a workspace name only on request.
+
+**Phases 1 and 2 are in progress** — `crossing` (`open_peer`, `descend`), then
+`tree --follow` / `check --follow` / `explore`. Phase 3 stays unscheduled. Open
+questions 3 and 4 are still open and belong to phase 1.
+
+The body below is left as it was argued.
 
 ## Summary
 
