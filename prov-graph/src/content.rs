@@ -163,9 +163,10 @@ fn is_code(kind: &twig::Kind) -> bool {
 }
 
 /// What one parse of a body yields for a link scan: the spans twig reads as
-/// code, and the spans it reads as inline links, each sorted by start offset.
+/// code, the spans it reads as inline links, and the spans it reads as images,
+/// each sorted by start offset.
 ///
-/// A named pair rather than a bare tuple because the two lists are the same
+/// A named struct rather than a bare tuple because the lists are the same
 /// shape, and telling them apart at a call site should not depend on getting
 /// their order right.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -174,11 +175,17 @@ pub struct BodySpans {
     pub code: Vec<Range<usize>>,
     /// Each inline `[label](target)` construct — see [`link_spans`].
     pub links: Vec<Range<usize>>,
+    /// Each `![alt](target)` construct, the leading `!` included. twig parses an
+    /// image as its own node kind, not as a link, so a scan that collected only
+    /// [`Self::links`] never saw one — and a move rewrote every link in a page's
+    /// body while leaving its pictures pointing at the old directory.
+    pub images: Vec<Range<usize>>,
 }
 
-/// The code spans and the inline-link spans of `body`, in **one parse**.
+/// The code spans, the inline-link spans and the image spans of `body`, in
+/// **one parse**.
 ///
-/// Both are read off the same node array, because a body-link scan wants both
+/// All are read off the same node array, because a body-link scan wants each
 /// and twig's parse is the expensive part: [`crate::link::scan_body_links`]
 /// asked for them separately and so parsed every document's prose twice, which
 /// a profile of `check` put at 41% of the run. The two lists come back sorted
@@ -191,16 +198,24 @@ pub fn code_and_link_spans(body: &str, format: ContentFormat) -> crate::error::R
         .map_err(|e| crate::error::Error::Content(format!("twig nodes: {e}")))?;
     let mut code = Vec::new();
     let mut links = Vec::new();
+    let mut images = Vec::new();
     for node in nodes {
         if is_code(&node.kind) {
             code.push(node.span);
         } else if node.kind == twig::Kind::Link {
             links.push(node.span);
+        } else if node.kind == twig::Kind::Image {
+            images.push(node.span);
         }
     }
     code.sort_by_key(|s: &Range<usize>| s.start);
     links.sort_by_key(|s: &Range<usize>| s.start);
-    Ok(BodySpans { code, links })
+    images.sort_by_key(|s: &Range<usize>| s.start);
+    Ok(BodySpans {
+        code,
+        links,
+        images,
+    })
 }
 
 /// The spans of every node in `body` whose kind satisfies `want`, sorted by
@@ -416,6 +431,27 @@ mod tests {
             !spans.code.is_empty() && !spans.links.is_empty(),
             "fixture found nothing"
         );
+    }
+
+    #[test]
+    fn image_spans_cover_the_whole_construct_in_both_grammars() {
+        // The `!` is in the span, an empty alt is still an image, a footnote
+        // definition is reached, and an image in a code span is code.
+        for format in [ContentFormat::Markdown, ContentFormat::Djot] {
+            let body = "![A photo](a.jpg) and ![](b.jpg) and `![c](c.jpg)`.[^n]\n\n\
+                        [^n]: ![n](n.png)\n";
+            let spans = code_and_link_spans(body, format).unwrap();
+            assert_eq!(
+                spans
+                    .images
+                    .iter()
+                    .map(|s| &body[s.clone()])
+                    .collect::<Vec<_>>(),
+                ["![A photo](a.jpg)", "![](b.jpg)", "![n](n.png)"],
+                "{format:?}"
+            );
+            assert!(spans.links.is_empty(), "{format:?}: an image is not a link");
+        }
     }
 
     #[test]

@@ -306,7 +306,7 @@ $ prov render rust.md
 
 This is prov's payoff. `mv` moves a file **and rewrites every link that
 pointed at it** — the parent's `contents` entry, the moved file's own relative
-links, overlay links, and body wikilinks across the whole workspace.
+links and images, overlay links, and body wikilinks across the whole workspace.
 
 <!-- exec -->
 ```sh

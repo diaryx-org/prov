@@ -4,13 +4,22 @@ description: Workspace::rename re-relativizes `[label](target)` in the moved doc
 author: adammharris
 created: 2026-09-10
 updated: 2026-09-10
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A move rewrites a document's body links but not its body images
 
-**Status.** Open.
+**Status.** Done, in `fix(rename): a move carries a document's body images`
+(2026-09-10). No twig change was needed: twig-doc 3.2.1 already parses
+`![…](…)` as an `image` node with the span of the whole construct, and prov
+was discarding it. `BodySpans` now reports image spans from the same parse,
+`scan_body_links` returns each as a `BodyLink` with `image: true` and a span
+that starts after the `!` — so the three rewrites (`rename`'s own-body pass,
+the inbound pass, and `convert`'s restyle) carry an image exactly as they
+carry a link and cannot drop the `!` — and an empty alt text is kept. The
+census and the spanning scan skip images, so `check` reports nothing new; the
+separate decision below is still not made.
 
 **Repro.** A workspace with `page.md` containing
 

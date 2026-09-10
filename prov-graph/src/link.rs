@@ -1084,18 +1084,33 @@ fn wikilinks_within(body: &str, code: Option<&[Range<usize>]>) -> Vec<Wikilink> 
 
 /// One link found in body prose: the parsed [`Link`] (target, label, and whether
 /// it was an Obsidian `[[…]]` wikilink or a markdown/djot `[label](target)`
-/// link) together with the byte [`span`](BodyLink::span) of the whole construct
-/// — exactly what a rewrite replaces. The unifying body-link currency: census,
+/// link) together with the byte [`span`](BodyLink::span) of the construct —
+/// exactly what a rewrite replaces. The unifying body-link currency: census,
 /// `check`, and the rename machinery all consume this, blind to which syntax the
 /// link was written in.
+///
+/// An image — `![alt](target)` — is one of these too, with [`image`](BodyLink::image)
+/// set, because a move that carries a page's links and not its pictures leaves
+/// a hole where each picture was. What makes an image different is only the
+/// `!`, and the span deliberately does not include it: it covers the
+/// `[alt](target)` that follows, which [`Link::parse`] reads and
+/// [`Link::render`] reproduces exactly as it does a link's, so every rewrite
+/// that replaces a span with a rendered link is already right for an image and
+/// none of them can drop the `!` by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BodyLink {
     /// The parsed link — [`render`](Link::render) reproduces its original
     /// wrapper, so a retargeted `[[a]]` stays a wikilink and a `[t](a)` stays a
     /// markdown link.
     pub link: Link,
-    /// Byte range of the whole link construct within the scanned body.
+    /// Byte range of the link construct within the scanned body. For an image
+    /// this starts at the `[` after the `!`, so the `!` sits just before it.
     pub span: Range<usize>,
+    /// Whether the construct was an image — `![alt](target)` rather than
+    /// `[label](target)`. The label is the alt text, and may be empty. An image
+    /// names a payload rather than a document, so the census and the spanning
+    /// scan leave images out; the rewrites carry them like any path target.
+    pub image: bool,
 }
 
 impl BodyLink {
@@ -1113,23 +1128,25 @@ impl BodyLink {
 }
 
 /// Scan `body` for **every** link a move or a check must account for — Obsidian
-/// `[[…]]` wikilinks *and* markdown/djot `[label](target)` links — each as a
-/// [`BodyLink`] in source order. This is the single body-scan seam
-/// `census`/`check`/rename use; it supersedes the wikilink-only
+/// `[[…]]` wikilinks, markdown/djot `[label](target)` links, *and* `![alt](target)`
+/// images — each as a [`BodyLink`] in source order. This is the single body-scan
+/// seam `census`/`check`/rename use; it supersedes the wikilink-only
 /// [`scan_wikilinks`] for callers that must also see markdown/djot links.
 ///
-/// Two syntaxes, two finders, both code-aware:
+/// Three syntaxes, two finders, both code-aware:
 /// - **Wikilinks** come from the lexical [`scan_wikilinks`] scan (code spans
 ///   excluded at the source, so a `[[` inside a fence can never eat a later real
 ///   link).
-/// - **Markdown/djot links** come from `twig`'s parser
+/// - **Markdown/djot links and images** come from `twig`'s parser
 ///   ([`crate::content::link_spans`]): it reports the span of each real `link`
-///   node, so a `[x](y)` in a code fence, an autolink, or bracket text that is
-///   not a link is never returned. Each span holds exactly one link, so parsing
-///   it with [`Link::parse`] cannot over-reach across a stray `)` — the
-///   balanced-paren hazard the lexical parser has is structurally absent here.
-///   Only inline `[label](target)` links are kept (a successful markdown parse);
-///   reference-style and autolink forms are left for a later pass.
+///   and `image` node, so a `[x](y)` in a code fence, an autolink, or bracket
+///   text that is not a link is never returned. Each span holds exactly one
+///   link, so parsing it with [`Link::parse`] cannot over-reach across a stray
+///   `)` — the balanced-paren hazard the lexical parser has is structurally
+///   absent here. Only inline `[label](target)` links are kept (a successful
+///   markdown parse); reference-style and autolink forms are left for a later
+///   pass. An image is kept with [`BodyLink::image`] set and its span starting
+///   after the `!`.
 ///
 /// Falls back to wikilinks only when the extension names no `twig` grammar or the
 /// parse fails — the same graceful degradation [`scan_wikilinks`] already has.
@@ -1156,9 +1173,21 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
                 wikilink: true,
             },
             span: wl.span,
+            image: false,
         })
         .collect();
-    for span in spans.links {
+    // An image span is the whole `![alt](target)`; what is kept is the
+    // `[alt](target)` after the `!`, which parses and renders as a link does
+    // (see `BodyLink::image`). A reference-style image — `![alt][ref]` — has
+    // no `](` and parses bare, so the same filter that skips a reference-style
+    // link skips it.
+    let links = spans.links.into_iter().map(|span| (span, false));
+    let images = spans.images.into_iter().filter_map(|span| {
+        body[span.clone()]
+            .starts_with('!')
+            .then(|| (span.start + 1..span.end, true))
+    });
+    for (span, image) in links.chain(images) {
         let link = Link::parse(&body[span.clone()]);
         // Keep only inline `[label](target)` links (a labeled markdown parse):
         // reference/autolink spans parse to a bare or external target and are
@@ -1172,7 +1201,7 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
         {
             continue;
         }
-        out.push(BodyLink { link, span });
+        out.push(BodyLink { link, span, image });
     }
     out.sort_by_key(|b| b.span.start);
     out
@@ -1840,6 +1869,50 @@ mod tests {
 
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].target, "notes/a.md");
+    }
+
+    #[test]
+    fn body_scan_reports_images_with_the_span_after_the_bang() {
+        // A move rewrote every link in a page and left its pictures behind,
+        // because twig parses `![…](…)` as an `image` node and the scan only
+        // asked for `link`s. Each image now comes back as a `BodyLink` whose
+        // span is the `[alt](target)` after the `!` — so slicing the span and
+        // rendering the link back replaces exactly what a link rewrite replaces,
+        // and the `!` cannot be lost — with an empty alt text kept rather than
+        // filtered as a labelless parse. A reference-style image, like a
+        // reference-style link, is not an inline construct and is skipped.
+        for ext in ["md", "dj"] {
+            let path = Path::new("page").with_extension(ext);
+            let body = "[The photo](attachments/photo.jpg)\n\
+                        ![A photo](attachments/photo.jpg)\n\
+                        ![](attachments/photo.jpg)\n\
+                        ![ref][photo]\n\n\
+                        [photo]: attachments/photo.jpg\n\n\
+                        `![code](attachments/photo.jpg)`\n";
+            let found = scan_body_links(&path, body);
+            let seen: Vec<(bool, &str, Option<&str>)> = found
+                .iter()
+                .map(|b| (b.image, &body[b.span.clone()], b.link.label.as_deref()))
+                .collect();
+            assert_eq!(
+                seen,
+                [
+                    (
+                        false,
+                        "[The photo](attachments/photo.jpg)",
+                        Some("The photo")
+                    ),
+                    (true, "[A photo](attachments/photo.jpg)", Some("A photo")),
+                    (true, "[](attachments/photo.jpg)", Some("")),
+                ],
+                "{ext}"
+            );
+            for image in found.iter().filter(|b| b.image) {
+                assert_eq!(&body[image.span.start - 1..image.span.start], "!", "{ext}");
+                assert_eq!(image.link.render(), &body[image.span.clone()], "{ext}");
+                assert!(image.is_path_target(), "{ext}");
+            }
+        }
     }
 
     #[test]

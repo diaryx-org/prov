@@ -682,6 +682,56 @@ mod tests {
     }
 
     #[test]
+    fn rename_carries_body_images_across_directories() {
+        // docs/tasks/rename-leaves-body-images-behind.md: the link on the first
+        // line moved and the two images below it did not, because twig parses
+        // `![…](…)` as an image rather than a link and the body scan asked only
+        // for links. Relative to the moved page they then named a directory
+        // that does not exist, and every reader that resolves media against
+        // the page's own directory showed a hole. All three now resolve, the
+        // `!` and the alt text — empty included — kept exactly as written.
+        let dir = tempdir("md-body-images");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- page.md\n---\n",
+        );
+        write(
+            &dir,
+            "page.md",
+            "---\npart_of: index.md\n---\n\
+             [The photo](attachments/photo.jpg)\n\
+             ![A photo](attachments/photo.jpg)\n\
+             ![](attachments/photo.jpg)\n\
+             ![remote](https://ex.com/p.jpg)\n\n\
+             ```\n![fake](attachments/photo.jpg)\n```\n",
+        );
+        std::fs::create_dir_all(dir.join("attachments")).unwrap();
+        std::fs::write(dir.join("attachments/photo.jpg"), b"jpeg").unwrap();
+
+        block_on(ws(&dir).rename(Path::new("page.md"), Path::new("page/index.md"))).unwrap();
+
+        let page = read(&dir, "page/index.md");
+        assert!(
+            page.contains("[The photo](/attachments/photo.jpg)\n"),
+            "{page}"
+        );
+        assert!(
+            page.contains("![A photo](/attachments/photo.jpg)\n"),
+            "{page}"
+        );
+        assert!(page.contains("![](/attachments/photo.jpg)\n"), "{page}");
+        // An external image and an image inside a code fence are not touched,
+        // for the same reasons a link in either place is not.
+        assert!(page.contains("![remote](https://ex.com/p.jpg)\n"), "{page}");
+        assert!(
+            page.contains("```\n![fake](attachments/photo.jpg)\n```"),
+            "{page}"
+        );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
     fn rename_leaves_cross_workspace_references_exactly_as_written() {
         // A move re-relativizes what says where it lives. A cross-workspace
         // reference does not: the qualifier names a workspace, not a directory,

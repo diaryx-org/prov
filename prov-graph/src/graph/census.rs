@@ -543,8 +543,14 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             }
 
             // Body links — `[[wikilinks]]` and markdown/djot `[t](a)` links
-            // alike — overlay references, censused but never spanning.
+            // alike — overlay references, censused but never spanning. An
+            // image is not: it names a payload, not a document, so whether a
+            // missing one is a finding is a question the census has not been
+            // asked yet. The rewrites still carry it (see `BodyLink::image`).
             for body_link in link::scan_body_links(&path, &doc.body) {
+                if body_link.image {
+                    continue;
+                }
                 let wl = body_link.link;
                 if titles.is_none() && title::is_alias_shaped(&wl.target) {
                     titles = Some(self.title_index_scoped(start, parked).await?);
