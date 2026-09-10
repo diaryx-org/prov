@@ -726,6 +726,7 @@ rules as records for a program making it.
 | `explore [FILE]`                | walk the graph interactively                             |
 | `check [ROOT] [--fix]`          | report (and optionally repair) integrity problems        |
 | `check --only F` / `--json`     | just one document's findings / the same as machine-readable JSON |
+| `tree --follow` / `check --follow` | cross into the other workspaces this one references, where this device's peer map says they are — the peer's own subtree, or its own check reported beside yours. Off by default; nothing is written across a boundary |
 | `show FILE`                     | summarize a document                                     |
 | `meta / get / links / body`     | read metadata or body                                    |
 | `set FILE KEY VALUE` / `unset`  | edit a metadata field, format-preserving                 |

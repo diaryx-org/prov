@@ -195,6 +195,25 @@ registry. diaryx resolves the same reference through its published ARK
 permalinks instead. Neither map is prov's business, and nothing depends on
 either: a foreign reference is carried whether or not it resolves.
 
+**Following one, when asked.** Given a map, prov ships the second step once
+instead of each host writing it: `prov tree --follow[=DEPTH]` hangs the peer's
+own subtree where the leaf was, `prov check --follow[=DEPTH]` runs each
+reachable workspace's *own* check and reports them grouped — one section per
+workspace, never one merged list, because a relative path means nothing once it
+has crossed a root — and `prov explore` steps into the peer and back. Only a
+peer the map records *and* the peer itself confirms is crossed;
+`--unverified` reaches an anonymous one, and nothing reaches a mismatched one.
+
+None of the refusals above moves. A URL peer is never opened, under any trust
+level, because prov does no network I/O. Nothing is written across a boundary,
+so `--follow` and `--fix` do not compose. No foreign reference is verified —
+the "never reported broken" reason does not weaken because one device happens
+to have the peer. And nothing follows by default: reachability-boundedness is
+what makes prov usable inside a larger repository (DESIGN §8), and a command
+that crossed on its own initiative would cost every invocation the size of the
+whole federation. DEPTH counts crossings rather than tree levels, and a
+boundary that was *not* crossed says why rather than going quiet.
+
 ### The peer port — the shape of a host's answer
 
 Holding no map is not the same as having nothing to say about one. Two things
@@ -437,5 +456,14 @@ re-relativize, restyle and `check --fix` all preserve locators.
   `part_of` that no node names is still not a root. `named_root_contained`
   (`validate.rs`) resolves the parent and reports it only when it lands
   *locally*, self-qualification included.
+- ✅ **Crossing a boundary** (§ "What prov does, and where it stops"):
+  `prov::crossing` — `open_peer`, `descend`, `Trust`, `Refusal`, `Boundary`,
+  `Federation` — composed *above* `Graph` out of `Workspace::tree` and the peer
+  port, so `prov-graph` learns nothing and a traversal that never crosses pays
+  nothing. Read-only, bounded by a crossing count and a per-branch trail, and
+  never a URL. In the CLI: `tree --follow[=DEPTH]` (the peer's subtree, marked
+  with the workspace it is in and where), `check --follow[=DEPTH]` (a report per
+  workspace; under `--json` an array of `{workspace, declares, root, findings}`
+  objects), `--unverified` on both, and `explore`'s crossing step.
 - ⏳ **Staged:** `StaleLabel` finding + label refresh in `validate.rs`.
   Body-prose reference restyle during the `mutate` port.

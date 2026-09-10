@@ -171,6 +171,21 @@ impl PeerMap {
     /// `unverified` accepts an [`Unconfirmed`](prov::Unconfirmed) peer — an
     /// anonymous workspace, or a directory that could not be opened as one. It
     /// does not, and cannot, accept a mismatched one.
+    ///
+    /// ## Why this is not [`prov::open_peer`]
+    ///
+    /// The library's crossing does the same three steps and one of them
+    /// differently, on purpose: it requires the recorded location to *be* a
+    /// workspace root, where this confirms through [`crate::find_root_quiet_at`],
+    /// which climbs. So a peer recorded at a directory *inside* a workspace
+    /// resolves here and is [`Unopenable`](prov::Refusal::Unopenable) there.
+    ///
+    /// Neither side moves. `prov peer add` records the directory the user named
+    /// and this resolves what it recorded; a descent, which follows a reference
+    /// it was not asked about into documents nobody looked at, holds the entry to
+    /// the claim it makes — that the name belongs to a *root* — because
+    /// promoting it to the enclosing workspace is how a reference lands in real
+    /// documents in the wrong archive.
     pub(crate) fn resolve_document(
         &self,
         workspace: &str,

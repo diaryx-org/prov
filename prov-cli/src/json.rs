@@ -117,6 +117,25 @@ fn paths(items: &[std::path::PathBuf]) -> J {
     J::Arr(items.iter().map(|i| p(i)).collect())
 }
 
+/// One workspace's whole report, for `check --follow`.
+///
+/// A different shape from the flat array `--json` prints without the flag, and
+/// deliberately so: eighteen workspaces' findings are not one list, because a
+/// `subject` is a path in one workspace's terms and means nothing once it has
+/// crossed a root. `root` is what those paths are relative to — an absolute
+/// directory on this device, and the only key here that is not a fact about the
+/// archive. `workspace` is the name the reference asked for and `declares` what
+/// the workspace calls itself; they differ only for an anonymous peer followed
+/// with `--unverified`, and both are empty for an anonymous origin.
+pub fn workspace_report(workspace: &str, declares: &str, root: &Path, findings: &[Finding]) -> J {
+    J::Obj(vec![
+        ("workspace", s(workspace)),
+        ("declares", s(declares)),
+        ("root", p(root)),
+        ("findings", J::Arr(findings.iter().map(finding).collect())),
+    ])
+}
+
 /// One finding as a JSON object.
 ///
 /// Every object carries the same three keys first — `kind` to branch on,

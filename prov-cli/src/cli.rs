@@ -71,6 +71,12 @@ pub(crate) fn sidecar_name(stem: &str, format: Format) -> String {
     format!("{stem}.{}", sidecar_ext(format))
 }
 
+/// The default `--follow` depth, as clap needs it: a string, because
+/// `default_missing_value` is parsed from one. Pinned to
+/// [`prov::crossing::DEFAULT_DEPTH`] by a test below, so the library's bound and
+/// the flag's cannot drift apart.
+pub(crate) const DEFAULT_FOLLOW_DEPTH: &str = "8";
+
 /// What `prov --version` prints.
 ///
 /// The package version on a clean build of the release tag, and the package
@@ -349,12 +355,44 @@ pub(crate) enum Command {
         /// The document to discover from (default: the workspace root).
         #[arg(value_name = "TARGET")]
         root: Option<String>,
+        /// Follow a cross-workspace reference (`id:<name>/<id>`) into the
+        /// workspace it names and keep walking there, hanging the peer's own
+        /// subtree where the leaf is. Paths under a crossing are printed in
+        /// *that* workspace's terms, with a marker naming it and where it is.
+        ///
+        /// Off by default, and DEPTH counts crossings rather than tree levels
+        /// (default 8). prov's walk is bounded by what one root reaches, which
+        /// is what makes it usable inside a larger repository; crossing on its
+        /// own initiative would cost every invocation the size of the whole
+        /// federation.
+        ///
+        /// Only a peer this device's map records *and* the peer itself confirms
+        /// is followed. Every other boundary stays the leaf it is without the
+        /// flag, now carrying the reason it was not followed.
+        #[arg(long, value_name = "DEPTH", num_args = 0..=1, default_missing_value = DEFAULT_FOLLOW_DEPTH)]
+        follow: Option<usize>,
+        /// Follow a peer whose name could not be checked — one that is
+        /// anonymous, or that could not be opened as a workspace. Never accepts
+        /// a peer that calls itself something else; that is not missing
+        /// evidence, it is evidence of the wrong archive.
+        #[arg(long, requires = "follow")]
+        unverified: bool,
     },
     /// Interactively explore the workspace: view a document and follow any of its
     /// links — or its backlinks — moving through the graph from the terminal.
+    ///
+    /// A cross-workspace reference is a step like any other when this device's
+    /// peer map records where the workspace is and the peer confirms its own
+    /// name: the screen moves into that workspace, and Back comes home.
     Explore {
         /// The document to start from (default: the workspace root).
         file: Option<PathBuf>,
+        /// Cross into a peer whose name could not be checked — one that is
+        /// anonymous, or that could not be opened as a workspace. Never accepts
+        /// a peer that calls itself something else; that is not missing
+        /// evidence, it is evidence of the wrong archive.
+        #[arg(long)]
+        unverified: bool,
     },
     /// Check workspace integrity from a root: broken links, case mismatches,
     /// duplicate containment, missing inverse links, dangling IDs. Exits 1 on
@@ -397,6 +435,41 @@ pub(crate) enum Command {
         /// findings a repair introduced).
         #[arg(long, conflicts_with = "fix")]
         json: bool,
+        /// Also check every workspace reachable across a confirmed
+        /// cross-workspace reference, and report them **grouped** — a header
+        /// line per workspace, and every finding line prefixed with the
+        /// workspace it belongs to. Never one merged list: a relative path
+        /// means nothing once it has crossed a root.
+        ///
+        /// This runs each reachable workspace's *own* check. It does not verify
+        /// foreign references, which stays refused for the reason it always
+        /// has been — a finding about a workspace this device cannot see is a
+        /// false positive on every device that lacks it.
+        ///
+        /// DEPTH counts crossings rather than tree levels (default 8), and a
+        /// boundary that was not crossed is narrated to stderr rather than
+        /// reported as a finding: it is the reason the report is shorter than
+        /// the federation, not something wrong with either workspace. The exit
+        /// code is non-zero if *any* reachable workspace has findings.
+        ///
+        /// With `--json` the output is an array of `{workspace, declares, root,
+        /// findings}` objects, the origin first — a different shape from the
+        /// flat array this command prints without the flag, because the
+        /// findings of eighteen workspaces are not one list.
+        ///
+        /// Not available with `--fix`: nothing prov does writes across a
+        /// boundary. Nor with `--only`, whose subject is a path in one
+        /// workspace's terms.
+        #[arg(long, value_name = "DEPTH", num_args = 0..=1,
+              default_missing_value = DEFAULT_FOLLOW_DEPTH,
+              conflicts_with_all = ["fix", "only"])]
+        follow: Option<usize>,
+        /// Cross into a peer whose name could not be checked — one that is
+        /// anonymous, or that could not be opened as a workspace. Never accepts
+        /// a peer that calls itself something else; that is not missing
+        /// evidence, it is evidence of the wrong archive.
+        #[arg(long, requires = "follow")]
+        unverified: bool,
     },
     /// Record that a document changed **outside prov** — restamp its content
     /// checksum, and stamp the workspace's `updated` field with the current
@@ -1320,5 +1393,37 @@ impl From<MetaFormat> for Format {
             #[cfg(feature = "fig-lang")]
             MetaFormat::Fig => Format::Fig,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_follow_flags_default_to_the_library_bound() {
+        // `default_missing_value` is a string clap parses, so the flag carries
+        // its own copy of the depth. This is the one thing keeping that copy
+        // honest.
+        assert_eq!(
+            DEFAULT_FOLLOW_DEPTH.parse::<usize>().unwrap(),
+            prov::crossing::DEFAULT_DEPTH
+        );
+    }
+
+    #[test]
+    fn follow_writes_nothing_and_narrows_nothing() {
+        use clap::Parser;
+        // Both refusals are clap's, so they cost the handler no branch: no
+        // writes across a boundary, and no subject path that means one
+        // workspace's file in another's terms.
+        assert!(Cli::try_parse_from(["prov", "check", "--follow", "--fix"]).is_err());
+        assert!(Cli::try_parse_from(["prov", "check", "--follow", "--only", "x.md"]).is_err());
+        // And `--unverified` is a modifier on following, not a mode of its own.
+        assert!(Cli::try_parse_from(["prov", "check", "--unverified"]).is_err());
+        assert!(Cli::try_parse_from(["prov", "tree", "--unverified"]).is_err());
+        assert!(Cli::try_parse_from(["prov", "tree", "--follow", "--unverified"]).is_ok());
+        assert!(Cli::try_parse_from(["prov", "tree", "--follow=2"]).is_ok());
+        assert!(Cli::try_parse_from(["prov", "explore", "--unverified"]).is_ok());
     }
 }

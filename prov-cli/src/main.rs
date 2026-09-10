@@ -115,19 +115,25 @@ fn main() -> ExitCode {
         Command::Unset { file, key } => resolve_target(&file).and_then(|f| cmd_unset(&f, &key)),
         Command::Views { name } => cmd_views(name.as_deref()),
         Command::Exports { name } => cmd_exports(name.as_deref()),
-        Command::Tree { root } => root
+        Command::Tree {
+            root,
+            follow,
+            unverified,
+        } => root
             .map(|r| resolve_target(&r))
             .transpose()
-            .and_then(|r| cmd_tree(r.as_deref())),
-        Command::Explore { file } => cmd_explore(file.as_deref()),
+            .and_then(|r| cmd_tree(r.as_deref(), follow, unverified)),
+        Command::Explore { file, unverified } => cmd_explore(file.as_deref(), unverified),
         Command::Check {
             root,
             fix,
             only,
             json,
+            follow,
+            unverified,
         } => root.map(|r| resolve_target(&r)).transpose().and_then(|r| {
             let only = only.map(|o| resolve_target(&o)).transpose()?;
-            cmd_check(r.as_deref(), fix, only.as_deref(), json)
+            cmd_check(r.as_deref(), fix, only.as_deref(), json, follow, unverified)
         }),
         Command::Stamp {
             target,
@@ -1304,32 +1310,124 @@ fn cmd_exports(name: Option<&str>) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_tree(root: Option<&Path>) -> CmdResult {
+fn cmd_tree(root: Option<&Path>, follow: Option<usize>, unverified: bool) -> CmdResult {
     let ctx = find_root()?;
     let root = match root {
         Some(r) => ws_rel(&ctx, r)?,
         None => ctx.root_doc.clone(),
     };
-    let node = block_on(workspace(&ctx)?.tree(&root))?;
-    print_node(&node, "", true, true);
+    let ws = workspace(&ctx)?;
+    // Without `--follow` this is the single-workspace walk it always was, byte
+    // for byte: `descend` under a resolver would give the same shape, but the
+    // unfollowed path should not pay for a peer map it never consults.
+    let Some(depth) = follow else {
+        let node = block_on(ws.tree(&root))?;
+        print_node(&node, "", true, true);
+        return Ok(ExitCode::SUCCESS);
+    };
+    let peers = peer::PeerMap::load();
+    let federation = block_on(prov::descend(
+        &ws,
+        &root,
+        &peers,
+        &descent(depth, unverified),
+    ))?;
+    print_crossed_node(&federation, &federation.tree, "", true, true);
     Ok(ExitCode::SUCCESS)
+}
+
+/// How far a `--follow` goes, and on whose say-so.
+fn descent(depth: usize, unverified: bool) -> prov::Descent {
+    prov::Descent {
+        trust: trust(unverified),
+        depth,
+    }
+}
+
+/// `--unverified`, as the library spells it. An absent name is what the flag
+/// buys past; a *different* name is refused under both, by the library.
+fn trust(unverified: bool) -> prov::Trust {
+    if unverified {
+        prov::Trust::Unverified
+    } else {
+        prov::Trust::Confirmed
+    }
 }
 
 /// Render one tree node: `path — title (marker)`, then its children with
 /// box-drawing connectors.
 fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
+    print_tree_line(
+        prefix,
+        is_last,
+        is_root,
+        &node_name(&node.path, node.title.as_deref(), node.label.as_deref()),
+        &node_marker(&node.kind),
+    );
+    let child_prefix = child_prefix(prefix, is_last, is_root);
+    for (i, child) in node.children.iter().enumerate() {
+        print_node(child, &child_prefix, i + 1 == node.children.len(), false);
+    }
+}
+
+/// [`print_node`]'s sibling for a tree that crossed a boundary. The connectors,
+/// the name and every marker a node can carry within one workspace are the same
+/// ones — what a crossing adds is a marker at the boundary itself, and nowhere
+/// else, so a federated tree with no crossings in it renders identically.
+fn print_crossed_node(
+    federation: &prov::Federation,
+    node: &prov::crossing::Node,
+    prefix: &str,
+    is_last: bool,
+    is_root: bool,
+) {
+    print_tree_line(
+        prefix,
+        is_last,
+        is_root,
+        &node_name(&node.path, node.title.as_deref(), node.label.as_deref()),
+        &boundary_marker(federation, node),
+    );
+    let child_prefix = child_prefix(prefix, is_last, is_root);
+    for (i, child) in node.children.iter().enumerate() {
+        print_crossed_node(
+            federation,
+            child,
+            &child_prefix,
+            i + 1 == node.children.len(),
+            false,
+        );
+    }
+}
+
+fn print_tree_line(prefix: &str, is_last: bool, is_root: bool, name: &str, marker: &str) {
     let connector = if is_root {
         String::new()
     } else {
         format!("{prefix}{}", if is_last { "└── " } else { "├── " })
     };
-    let name = node
-        .title
-        .as_deref()
-        .or(node.label.as_deref())
-        .map(|t| format!("{} — {t}", node.path.display()))
-        .unwrap_or_else(|| node.path.display().to_string());
-    let marker = match &node.kind {
+    println!("{connector}{name}{marker}");
+}
+
+fn child_prefix(prefix: &str, is_last: bool, is_root: bool) -> String {
+    if is_root {
+        String::new()
+    } else {
+        format!("{prefix}{}", if is_last { "    " } else { "│   " })
+    }
+}
+
+/// `path — title`, falling back to the link's label and then to the path alone.
+fn node_name(path: &Path, title: Option<&str>, label: Option<&str>) -> String {
+    title
+        .or(label)
+        .map(|t| format!("{} — {t}", path.display()))
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// What a node's resolution says about it, in its own workspace's terms.
+fn node_marker(kind: &NodeKind) -> String {
+    match kind {
         NodeKind::Doc => String::new(),
         NodeKind::Missing => " (missing)".to_string(),
         NodeKind::Cycle => " (cycle!)".to_string(),
@@ -1339,15 +1437,50 @@ fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
         NodeKind::Foreign { workspace, id } => {
             format!(" (workspace {workspace}, id {id} — not followed)")
         }
-    };
-    println!("{connector}{name}{marker}");
-    let child_prefix = if is_root {
-        String::new()
+    }
+}
+
+/// The marker for a node of a federated tree.
+///
+/// A followed boundary says which workspace the subtree below it is in and
+/// where that workspace is on this device — without which the paths underneath
+/// are relative to nothing the reader can see. A refused one keeps the marker an
+/// unfollowed tree prints and adds why, which is the whole difference between
+/// `--follow` and not.
+fn boundary_marker(federation: &prov::Federation, node: &prov::crossing::Node) -> String {
+    match &node.boundary {
+        None => node_marker(&node.kind),
+        Some(prov::Boundary::Followed { into }) => {
+            let reached = &federation.workspaces[*into];
+            format!(
+                "  ⇒ workspace {} ({})",
+                workspace_label(reached),
+                reached.root_dir.display()
+            )
+        }
+        Some(prov::Boundary::Refused(refusal)) => match &node.kind {
+            NodeKind::Foreign { workspace, id } => {
+                format!(" (workspace {workspace}, id {id} — not followed: {refusal})")
+            }
+            // Only a foreign leaf is ever crossed at, so this is unreachable
+            // through `descend` — naming it beats a panic on a shape a future
+            // boundary might take.
+            other => format!("{} (not followed: {refusal})", node_marker(other)),
+        },
+    }
+}
+
+/// What to call a workspace in output: the name the reference asked for, else
+/// what it calls itself, else that it calls itself nothing. An anonymous
+/// workspace is legal — prov mints a name only on request — so the reader is
+/// told the directory too, everywhere this appears.
+fn workspace_label(reached: &prov::Reached) -> &str {
+    if !reached.name.is_empty() {
+        &reached.name
+    } else if !reached.declares.is_empty() {
+        &reached.declares
     } else {
-        format!("{prefix}{}", if is_last { "    " } else { "│   " })
-    };
-    for (i, child) in node.children.iter().enumerate() {
-        print_node(child, &child_prefix, i + 1 == node.children.len(), false);
+        "<anonymous>"
     }
 }
 
@@ -1357,14 +1490,69 @@ enum ExploreAction {
     View,
     /// Open the current document in `$EDITOR`.
     Edit,
-    /// Navigate to another document (a resolved forward link or a backlink).
+    /// Navigate to another document of the workspace being explored (a resolved
+    /// forward link or a backlink).
     Goto(PathBuf),
+    /// Cross into another workspace: open the peer this device's map records,
+    /// ask *its* registry where the id lives, and carry on exploring there. The
+    /// one navigation that changes which workspace the screen is in.
+    Cross {
+        /// The workspace the reference names.
+        workspace: String,
+        /// The id it names there — resolved by the peer's own registry, which is
+        /// the one thing the reading workspace can never answer.
+        id: Id,
+    },
     /// A link that resolves to nothing followable (external, unresolved id,
     /// ambiguous alias) — selecting it just prints why.
     Note(String),
-    /// Return to the previously-visited document.
+    /// Return to the previously-visited document, in whichever workspace it was.
     Back,
     Quit,
+}
+
+/// One workspace the explorer has open, and everything a screen in it needs.
+///
+/// A struct because there can be several: crossing a boundary does not replace
+/// the workspace being explored, it adds one, and Back has to find the previous
+/// one exactly as it left it. Each is opened once, keyed on its root directory,
+/// and kept for the session — the title index and the backlink map are the
+/// expensive halves, and re-crossing a boundary should not pay for them twice.
+struct ExploreWs {
+    ctx: Ctx,
+    ws: Workspace<StdFs, Minter, FileIndex>,
+    /// The document title lookup and the backlink map, both scoped to what this
+    /// workspace reaches from its own root document.
+    titles: prov::TitleIndex,
+    backlinks: std::collections::BTreeMap<PathBuf, Vec<prov::Backlink>>,
+    /// What to call this workspace on a screen inside it.
+    label: String,
+}
+
+impl ExploreWs {
+    /// Open a workspace for exploring: the ordinary CLI workspace, plus the two
+    /// reachability-scoped indexes a screen reads. `name` is what the reference
+    /// that led here called it — for the origin, what it calls itself.
+    fn open(ctx: Ctx, name: &str) -> Result<Self, AnyError> {
+        let ws = workspace(&ctx)?;
+        let root = ctx.root_doc.clone();
+        // Both bounded/lazy, so cheap even at the root of a large repo — and
+        // computed once per workspace rather than once per screen.
+        let titles = block_on(ws.title_index_scoped(&root))?;
+        let backlinks = block_on(ws.backlinks(&root))?;
+        let label = if name.is_empty() {
+            "<anonymous>".to_string()
+        } else {
+            name.to_string()
+        };
+        Ok(Self {
+            ctx,
+            ws,
+            titles,
+            backlinks,
+            label,
+        })
+    }
 }
 
 /// Interactively walk the workspace graph: at each document, view or edit it, or
@@ -1372,28 +1560,40 @@ enum ExploreAction {
 /// over the library's resolution — the same path/id/alias resolution `tree` and
 /// `check` use, with the reachability-scoped title index and the backlink map
 /// each computed once up front.
-fn cmd_explore(file: Option<&Path>) -> CmdResult {
+///
+/// A cross-workspace reference is a step too, where this device's map says where
+/// the workspace is and the peer confirms its own name: the screen moves into
+/// the peer, subsequent links resolve in *its* terms, and Back crosses home.
+/// Read-only in the peer, as every crossing is — `Edit` opens `$EDITOR` on the
+/// file, which is the user editing their own other workspace, not prov writing
+/// across a boundary.
+fn cmd_explore(file: Option<&Path>, unverified: bool) -> CmdResult {
     let ctx = find_root()?;
-    let ws = workspace(&ctx)?;
-    let root = ctx.root_doc.clone();
     let mut current = match file {
         Some(f) => ws_rel(&ctx, f)?,
-        None => root.clone(),
+        None => ctx.root_doc.clone(),
     };
-    // Alias resolution and backlinks, computed once — both bounded/lazy, so cheap
-    // even at the root of a large repo.
-    let titles = block_on(ws.title_index_scoped(&root))?;
-    let backlinks = block_on(ws.backlinks(&root))?;
+    // Keyed on the root directory, which is what a crossing lands on and the one
+    // handle both sides of a boundary agree about.
+    let origin = ctx.root_dir.clone();
+    let name = ctx.config.workspace_id.clone();
+    let mut open: std::collections::BTreeMap<PathBuf, ExploreWs> =
+        std::collections::BTreeMap::new();
+    open.insert(origin.clone(), ExploreWs::open(ctx, &name)?);
+    let mut here = origin.clone();
 
-    let mut history: Vec<PathBuf> = Vec::new();
+    // Where the walk has been, workspace and all: a path alone would send Back
+    // to the same-named file in the wrong archive.
+    let mut history: Vec<(PathBuf, PathBuf)> = Vec::new();
     loop {
-        let full = ctx.root_dir.join(&current);
+        let full = open[&here].ctx.root_dir.join(&current);
         let (text, doc) = match load(&full) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("prov: cannot open {}: {e}", current.display());
                 match history.pop() {
-                    Some(prev) => {
+                    Some((prev_ws, prev)) => {
+                        here = prev_ws;
                         current = prev;
                         continue;
                     }
@@ -1401,112 +1601,14 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
                 }
             }
         };
-        let title = doc
-            .meta
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let (header, actions) = explore_screen(
+            &open[&here],
+            here != origin,
+            &current,
+            &doc,
+            !history.is_empty(),
+        );
 
-        // Build the menu: view/edit, every forward link (by relation), every
-        // backlink, then navigation.
-        let mut actions: Vec<(String, String, ExploreAction)> = Vec::new();
-        actions.push((
-            "View this document".into(),
-            "page the raw file".into(),
-            ExploreAction::View,
-        ));
-        actions.push(("Edit in $EDITOR".into(), String::new(), ExploreAction::Edit));
-
-        // Documents already reachable from this screen by a forward link. A
-        // backlink whose source is in this set is the inverse of a link we
-        // already show — the child's `part_of` mirroring our `contents`, most
-        // often — and navigates to the same place, so it is suppressed below to
-        // keep a folder-note's menu from listing every child twice.
-        let mut forward_targets: std::collections::HashSet<PathBuf> =
-            std::collections::HashSet::new();
-
-        // Once per screen, not once per link: every foreign reference on this
-        // document is answered against the same map, and a map edited between
-        // screens is picked up on the next one.
-        let peers = peer::PeerMap::load();
-        for relation in ws.relations().relations() {
-            let Some(value) = doc.meta.get(&relation.name) else {
-                continue;
-            };
-            for raw in value.link_strings() {
-                let parsed = link::Link::parse(&raw);
-                let (label, action) = match ws.resolve_link_with(&current, &parsed, Some(&titles)) {
-                    Target::Path(p) => {
-                        let t = doc_title(&ctx, &p);
-                        forward_targets.insert(p.clone());
-                        (
-                            format!("{}: {t}  ({})", relation.name, p.display()),
-                            ExploreAction::Goto(p),
-                        )
-                    }
-                    Target::External => (
-                        format!("{}: {} (external)", relation.name, parsed.target),
-                        ExploreAction::Note("external link — not followed".into()),
-                    ),
-                    Target::SameDocument => (
-                        format!("{}: {} (this document)", relation.name, parsed.target),
-                        ExploreAction::Note(
-                            "a place inside this document — prov does not read one".into(),
-                        ),
-                    ),
-                    Target::UnresolvedId(id) => (
-                        format!("{}: {id} (unresolved id)", relation.name),
-                        ExploreAction::Note("this id has no live registry entry".into()),
-                    ),
-                    Target::AmbiguousAlias(name) => (
-                        format!("{}: {name} (ambiguous alias)", relation.name),
-                        ExploreAction::Note("several documents share this title".into()),
-                    ),
-                    Target::Foreign { workspace, id } => (
-                        format!("{}: {id} (workspace {workspace})", relation.name),
-                        ExploreAction::Note(format!(
-                            "another workspace — {}",
-                            describe_peer(&peers.locate(&workspace), &workspace)
-                        )),
-                    ),
-                };
-                actions.push((label, String::new(), action));
-            }
-        }
-
-        if let Some(inbound) = backlinks.get(&current) {
-            for backlink in inbound {
-                // Skip the inverse of a forward link already on this screen — the
-                // same document, reached the same way (a child's `part_of` echoing
-                // our `contents`). Genuinely-new backlinks (a `related` from a
-                // document we don't link to) are unaffected.
-                if forward_targets.contains(&backlink.source) {
-                    continue;
-                }
-                let by = if backlink.by_id { "id" } else { "path" };
-                actions.push((
-                    format!("← {} [{}]", backlink.source.display(), backlink.site),
-                    format!("linked from, by {by}"),
-                    ExploreAction::Goto(backlink.source.clone()),
-                ));
-            }
-        }
-
-        if !history.is_empty() {
-            actions.push((
-                "Back".into(),
-                "the previous document".into(),
-                ExploreAction::Back,
-            ));
-        }
-        actions.push(("Quit".into(), String::new(), ExploreAction::Quit));
-
-        let header = if title.is_empty() {
-            current.display().to_string()
-        } else {
-            format!("{} — {title}", current.display())
-        };
         let mut menu = cliclack::select(header);
         for (i, (label, hint, _)) in actions.iter().enumerate() {
             menu = menu.item(i, label, hint);
@@ -1518,12 +1620,70 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
             ExploreAction::View => page_text(&text)?,
             ExploreAction::Edit => edit_file(&full)?,
             ExploreAction::Goto(p) => {
-                history.push(current.clone());
+                history.push((here.clone(), current.clone()));
                 current = p.clone();
+            }
+            ExploreAction::Cross { workspace, id } => {
+                let (workspace, id) = (workspace.clone(), id.clone());
+                // The map is read again per crossing for the same reason a
+                // screen reads it per screen: one edited between screens should
+                // take effect on the next one.
+                let peers = peer::PeerMap::load();
+                let crossing = match block_on(prov::open_peer(
+                    &StdFs,
+                    &peers,
+                    &workspace,
+                    trust(unverified),
+                )) {
+                    Ok(crossing) => crossing,
+                    Err(e) => {
+                        eprintln!("prov: cannot read `{workspace}`: {e}");
+                        continue;
+                    }
+                };
+                let peer = match crossing {
+                    prov::Crossing::Refused(refusal) => {
+                        eprintln!("prov: `{workspace}` — {refusal}");
+                        continue;
+                    }
+                    prov::Crossing::Opened(peer) => peer,
+                };
+                // `open_peer` is the confirmation — the peer map's claim checked
+                // against what the workspace there calls itself — and the root
+                // directory it vouched for is all that is carried over.
+                // Exploring wants the workspace this CLI builds anywhere else
+                // (its config, its identity policy, its registry), so the peer is
+                // opened again through the ordinary route.
+                let key = peer.discovered.root_dir.clone();
+                if !open.contains_key(&key) {
+                    let opened = find_root_quiet_at(&key)
+                        .and_then(|peer_ctx| ExploreWs::open(peer_ctx, &workspace));
+                    match opened {
+                        Ok(state) => {
+                            open.insert(key.clone(), state);
+                        }
+                        Err(e) => {
+                            eprintln!("prov: cannot explore `{workspace}`: {e}");
+                            continue;
+                        }
+                    }
+                }
+                // The peer's own registry answers where the id lives. A miss is
+                // not a broken link: registration is a publish-time contract, and
+                // the document may simply not be published yet.
+                match open[&key].ws.index().resolve(&id) {
+                    Some(path) => {
+                        history.push((here.clone(), current.clone()));
+                        here = key;
+                        current = path;
+                    }
+                    None => eprintln!("prov: `{workspace}` has no document registered as `{id}`"),
+                }
             }
             ExploreAction::Note(message) => eprintln!("prov: {message}"),
             ExploreAction::Back => {
-                if let Some(prev) = history.pop() {
+                if let Some((prev_ws, prev)) = history.pop() {
+                    here = prev_ws;
                     current = prev;
                 }
             }
@@ -1531,6 +1691,138 @@ fn cmd_explore(file: Option<&Path>) -> CmdResult {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One explore screen: its header, and every choice on it — view/edit, each
+/// forward link by relation, each backlink that is not already one of them, then
+/// navigation.
+fn explore_screen(
+    state: &ExploreWs,
+    away: bool,
+    current: &Path,
+    doc: &Document,
+    has_history: bool,
+) -> (String, Vec<(String, String, ExploreAction)>) {
+    let mut actions: Vec<(String, String, ExploreAction)> = Vec::new();
+    actions.push((
+        "View this document".into(),
+        "page the raw file".into(),
+        ExploreAction::View,
+    ));
+    actions.push(("Edit in $EDITOR".into(), String::new(), ExploreAction::Edit));
+
+    // Documents already reachable from this screen by a forward link. A
+    // backlink whose source is in this set is the inverse of a link we
+    // already show — the child's `part_of` mirroring our `contents`, most
+    // often — and navigates to the same place, so it is suppressed below to
+    // keep a folder-note's menu from listing every child twice.
+    let mut forward_targets: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    // Once per screen, not once per link: every foreign reference on this
+    // document is answered against the same map, and a map edited between
+    // screens is picked up on the next one.
+    let peers = peer::PeerMap::load();
+    for relation in state.ws.relations().relations() {
+        let Some(value) = doc.meta.get(&relation.name) else {
+            continue;
+        };
+        for raw in value.link_strings() {
+            let parsed = link::Link::parse(&raw);
+            let (label, hint, action) =
+                match state
+                    .ws
+                    .resolve_link_with(current, &parsed, Some(&state.titles))
+                {
+                    Target::Path(p) => {
+                        let t = doc_title(&state.ctx, &p);
+                        forward_targets.insert(p.clone());
+                        (
+                            format!("{}: {t}  ({})", relation.name, p.display()),
+                            String::new(),
+                            ExploreAction::Goto(p),
+                        )
+                    }
+                    Target::External => (
+                        format!("{}: {} (external)", relation.name, parsed.target),
+                        String::new(),
+                        ExploreAction::Note("external link — not followed".into()),
+                    ),
+                    Target::SameDocument => (
+                        format!("{}: {} (this document)", relation.name, parsed.target),
+                        String::new(),
+                        ExploreAction::Note(
+                            "a place inside this document — prov does not read one".into(),
+                        ),
+                    ),
+                    Target::UnresolvedId(id) => (
+                        format!("{}: {id} (unresolved id)", relation.name),
+                        String::new(),
+                        ExploreAction::Note("this id has no live registry entry".into()),
+                    ),
+                    Target::AmbiguousAlias(name) => (
+                        format!("{}: {name} (ambiguous alias)", relation.name),
+                        String::new(),
+                        ExploreAction::Note("several documents share this title".into()),
+                    ),
+                    // A step like any other, when the map knows where the
+                    // workspace is and the peer confirms its name — and the hint
+                    // says which of those is missing when it is not.
+                    Target::Foreign { workspace, id } => (
+                        format!("{}: {id} → workspace {workspace}", relation.name),
+                        describe_peer(&peers.locate(&workspace), &workspace),
+                        ExploreAction::Cross { workspace, id },
+                    ),
+                };
+            actions.push((label, hint, action));
+        }
+    }
+
+    if let Some(inbound) = state.backlinks.get(current) {
+        for backlink in inbound {
+            // Skip the inverse of a forward link already on this screen — the
+            // same document, reached the same way (a child's `part_of` echoing
+            // our `contents`). Genuinely-new backlinks (a `related` from a
+            // document we don't link to) are unaffected.
+            if forward_targets.contains(&backlink.source) {
+                continue;
+            }
+            let by = if backlink.by_id { "id" } else { "path" };
+            actions.push((
+                format!("← {} [{}]", backlink.source.display(), backlink.site),
+                format!("linked from, by {by}"),
+                ExploreAction::Goto(backlink.source.clone()),
+            ));
+        }
+    }
+
+    if has_history {
+        actions.push((
+            "Back".into(),
+            "the previous document".into(),
+            ExploreAction::Back,
+        ));
+    }
+    actions.push(("Quit".into(), String::new(), ExploreAction::Quit));
+
+    let title = doc
+        .meta
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Which workspace this is, but only once the walk has left home: naming it
+    // on every screen of an ordinary session would be noise about a boundary
+    // nobody crossed.
+    let where_ = if away {
+        format!("{} ▸ ", state.label)
+    } else {
+        String::new()
+    };
+    let header = if title.is_empty() {
+        format!("{where_}{}", current.display())
+    } else {
+        format!("{where_}{} — {title}", current.display())
+    };
+    (header, actions)
 }
 
 /// The title a linked document declares (its `title` frontmatter), else a title
@@ -1604,6 +1896,8 @@ fn cmd_check(
     fix: Option<FixModeArg>,
     only: Option<&Path>,
     as_json: bool,
+    follow: Option<usize>,
+    unverified: bool,
 ) -> CmdResult {
     // `check` reports config issues in full (Finding::ConfigIssue), so skip the
     // one-line find_root warning that would just duplicate them.
@@ -1656,6 +1950,12 @@ path that is not in the workspace would report clean",
     if let Some(mode) = fix {
         return cmd_check_fix(&mut ctx, &mut ws, &root, &findings, mode, only.as_deref());
     }
+    // Clap has already refused `--follow` beside `--fix` and `--only`, so what
+    // crosses the boundary is exactly the command above: the origin's own check,
+    // run again in each workspace this one reaches.
+    if let Some(depth) = follow {
+        return check_across(&ctx, &ws, &root, findings, as_json, depth, unverified);
+    }
     if as_json {
         print!(
             "{}",
@@ -1691,6 +1991,150 @@ path that is not in the workspace would report clean",
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::FAILURE)
+    }
+}
+
+/// `check --follow` — the same check the origin just ran, run again in every
+/// workspace the origin reaches across a confirmed boundary, reported grouped.
+///
+/// Grouped and not merged, because a finding's subject is a path in one
+/// workspace's terms and means nothing once it has crossed a root. So every
+/// line carries the workspace it belongs to, and the JSON shape is an array of
+/// workspaces rather than an array of findings.
+///
+/// What this is *not* is verification of foreign references. That stays refused
+/// for the reason it always has been: a finding raised about a workspace this
+/// device cannot see is a false positive on every device that lacks it. Each
+/// workspace here is checked exactly as `prov check` checks it standing inside
+/// it — no reference crosses, only the reader.
+///
+/// Read-only in every peer, including the recovery `check` performs at home: a
+/// journal left by an interrupted write in *another* workspace is that
+/// workspace's to roll forward, and rolling it forward from here would be
+/// writing across a boundary.
+fn check_across(
+    ctx: &Ctx,
+    ws: &Workspace<StdFs, Minter, FileIndex>,
+    root: &Path,
+    origin: Vec<prov::Finding>,
+    as_json: bool,
+    depth: usize,
+    unverified: bool,
+) -> CmdResult {
+    let peers = peer::PeerMap::load();
+    let federation = block_on(prov::descend(ws, root, &peers, &descent(depth, unverified)))?;
+
+    // One report per workspace reached, the origin first — whose findings are
+    // already in hand, since they are the ones this command has always printed.
+    let mut reports: Vec<WorkspaceReport> = vec![WorkspaceReport {
+        name: federation.workspaces[0].name.clone(),
+        declares: federation.workspaces[0].declares.clone(),
+        label: workspace_label(&federation.workspaces[0]).to_string(),
+        root_dir: ctx.root_dir.clone(),
+        findings: origin,
+    }];
+    for reached in federation.workspaces.iter().skip(1) {
+        let label = workspace_label(reached).to_string();
+        // Opened the way this CLI opens any workspace, rather than reusing the
+        // read-only handle `descend` already has: `check` wants the same
+        // workspace `prov check` would build standing inside the peer, config,
+        // identity policy and all.
+        let peer_ctx = find_root_quiet_at(&reached.root_dir)
+            .map_err(|e| format!("`{label}` at {}: {e}", reached.root_dir.display()))?;
+        let peer_ws = workspace(&peer_ctx)?;
+        let mut findings = block_on(peer_ws.check(&peer_ctx.root_doc))?;
+        let about_ctx = about_context(&peer_ctx)?;
+        if let Some(finding) =
+            block_on(peer_ws.check_about(&peer_ctx.root_doc, &peer_ctx.config, &about_ctx))?
+        {
+            findings.push(finding);
+        }
+        reports.push(WorkspaceReport {
+            name: reached.name.clone(),
+            declares: reached.declares.clone(),
+            label,
+            root_dir: peer_ctx.root_dir.clone(),
+            findings,
+        });
+    }
+
+    let total: usize = reports.iter().map(|r| r.findings.len()).sum();
+    if as_json {
+        print!(
+            "{}",
+            json::J::Arr(
+                reports
+                    .iter()
+                    .map(|r| json::workspace_report(&r.name, &r.declares, &r.root_dir, &r.findings))
+                    .collect()
+            )
+            .render()
+        );
+    } else {
+        for report in &reports {
+            // The header is narration and the findings are the machine value, so
+            // they go to different streams — which also means a piped stdout is
+            // still one self-describing finding per line.
+            eprintln!(
+                "── workspace {} ({}) ──",
+                report.label,
+                report.root_dir.display()
+            );
+            for finding in &report.findings {
+                println!("{}: {finding}", report.label);
+            }
+        }
+        // A boundary that was not crossed is why the report is shorter than the
+        // federation — not a finding about either workspace, and not something
+        // that changes the exit code. Once per distinct refusal: a dozen
+        // references to one absent peer are one fact about this device.
+        let mut refusals = Vec::new();
+        collect_refusals(&federation.tree, &mut refusals);
+        for refusal in &refusals {
+            eprintln!("not followed: {refusal}");
+        }
+        let across = format!(" across {} workspace(s)", reports.len());
+        if total == 0 {
+            eprintln!("ok: no findings{across}");
+        } else {
+            eprintln!("{total} finding(s){across}");
+        }
+    }
+    if total == 0 {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+/// One workspace's findings, and enough about the workspace to say whose they
+/// are on a line that may be read on its own.
+struct WorkspaceReport {
+    /// The name the reference asked for (empty for an anonymous origin).
+    name: String,
+    /// What the workspace calls itself (empty when anonymous).
+    declares: String,
+    /// What to print: [`workspace_label`] over the two above.
+    label: String,
+    /// The directory every subject in `findings` is relative to.
+    root_dir: PathBuf,
+    findings: Vec<prov::Finding>,
+}
+
+/// Every boundary a descent refused, once per distinct reason, in the order the
+/// walk met them.
+fn collect_refusals(node: &prov::crossing::Node, out: &mut Vec<String>) {
+    if let Some(prov::Boundary::Refused(refusal)) = &node.boundary {
+        let line = match &node.kind {
+            NodeKind::Foreign { workspace, .. } => format!("`{workspace}` — {refusal}"),
+            _ => refusal.to_string(),
+        };
+        if !out.contains(&line) {
+            out.push(line);
+        }
+    }
+    for child in &node.children {
+        collect_refusals(child, out);
     }
 }
 
