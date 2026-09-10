@@ -2,7 +2,7 @@
 title: `prov` proposals
 author: adammharris
 created: 2026-07-31
-updated: 2026-09-09
+updated: 2026-09-10
 part_of: '[prov](/README.md)'
 contents:
 - '[Snapshots — a pre-sync safety net](/docs/proposals/history/proposal-snapshots-v1.md)'
@@ -12,6 +12,7 @@ contents:
 - '[provenance and attestation](/docs/proposals/provenance/proposal-provenance-v1.md)'
 - '[crossing the boundary](/docs/proposals/boundary/proposal-boundary-v1.md)'
 - '[the workspace node](/docs/proposals/workspace-node/proposal-workspace-node-v1.md)'
+- '[presets](/docs/proposals/presets/proposal-presets-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a
