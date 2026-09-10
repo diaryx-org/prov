@@ -25,6 +25,7 @@ use fig::Segment;
 use crate::identity::IdentityPolicy;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
+use crate::workspace::inbound::Form;
 
 use super::delete::Diagnosis;
 use prov_graph::document::{Document, whole_file_format};
@@ -193,30 +194,22 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// `combine`. Id-form links are left untouched (the registry keeps them
     /// resolving); `from`'s own links are excluded (the mover rewrites those
     /// itself). Returns `(source_path, rewrite)` pairs.
+    ///
+    /// The sources come from the inbound index (`workspace::inbound`) — a
+    /// census the first time a verb asks, a stat sweep and a lookup after
+    /// that — which `retitle` shares, the two being the same question.
     pub(super) async fn collect_inbound_rewrites(
         &self,
         from: &Path,
         to: &Path,
     ) -> Result<Vec<(PathBuf, Rewrite)>> {
-        let (_spanning, inverse) = self.spanning_pair()?;
-        let root = self.spanning_root(from, &inverse).await?;
-        let mut sources: BTreeSet<PathBuf> = self
-            .census(&root)
-            .await?
-            .into_iter()
-            .filter(|e| {
-                matches!(&e.resolution,
-                    Resolution::Path(p) | Resolution::CaseMismatch { got: p, .. } if p == from)
-            })
-            .map(|e| e.source)
-            .collect();
-        sources.remove(from);
+        let sources = self.inbound_sources(from, Form::Path).await?;
         let mut writes = Vec::new();
         for source in sources {
             if let Some(updated) = self.rewrite_inbound_doc(&source, from, to).await? {
-                // A memo hit — the census above already read every source, and
-                // the caller holds the scope — so pairing the rewrite with the
-                // text it was computed from costs no I/O.
+                // A memo hit — the rewrite just read the source, and the caller
+                // holds the scope — so pairing the rewrite with the text it was
+                // computed from costs no I/O.
                 let (read, _) = self.load(&source).await?;
                 writes.push((
                     source,

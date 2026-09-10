@@ -42,6 +42,7 @@ use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
 mod ignore;
+pub(crate) mod inbound;
 
 pub use ignore::{Ignore, IgnoreList, Reason};
 
@@ -191,6 +192,15 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     /// document's id and the registry entry for it land in the same crash-atomic
     /// write — never one without the other.
     pending_stamps: Vec<(PathBuf, prov_graph::identity::Id)>,
+    /// The inverse of the link graph, kept from one verb to the next so that
+    /// a retitle or a rename asks "who links here?" of a lookup rather than a
+    /// census. Empty until a verb first asks; stat-validated on every ask;
+    /// updated or dropped by every set that lands. See [`inbound`].
+    ///
+    /// Interior mutability for the same reason the read memo has it: the
+    /// ask is made from `&self`, and `apply_set` — which every write passes
+    /// through — takes `&self` too.
+    inbound: std::sync::Mutex<Option<inbound::InboundIndex>>,
 }
 
 /// Hand-written rather than derived, because the read memo carries its own
@@ -200,6 +210,10 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
 /// preference. A [`ReadScope`] guard points at the memo it opened, and a clone
 /// has no guard pointing at it; inheriting a nonzero depth would leave the copy
 /// permanently scoped, remembering reads with nothing left to close it.
+///
+/// The **inbound index** starts empty for the same family of reason: what one
+/// handle has remembered, the other would have to be told about on every
+/// write, and a clone that begins with nothing simply censuses once.
 impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
     fn clone(&self) -> Self {
         Self {
@@ -207,6 +221,7 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
             identity: self.identity.clone(),
             settings: self.settings.clone(),
             pending_stamps: self.pending_stamps.clone(),
+            inbound: inbound::empty(),
         }
     }
 }
@@ -1140,6 +1155,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // before it lands, so a set that fails halfway leaves nothing behind
         // claiming to know what is on disk.
         self.forget_written(&cs);
+        // A registry write means an id may now resolve elsewhere, which is a
+        // change to the link graph no document's bytes show. The inbound index
+        // is dropped whole rather than asked to work it out.
+        if staged_index {
+            self.forget_inbound();
+        }
         match self.apply_set(&cs).await {
             Ok(()) => {
                 // Unconditional: the op succeeded, so its checkpoint is spent
@@ -1167,10 +1188,26 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// leave a journal nothing ever reads, stranding the change half-applied
     /// with no record of how to finish it. Routing every workspace write
     /// through here is what keeps the two ends naming the same file.
+    ///
+    /// It is also the one place every write passes, which makes it where the
+    /// inbound index learns what changed: decided from the staged bytes before
+    /// the apply, settled against the disk after it, and dropped if the apply
+    /// failed — see [`inbound`].
     pub async fn apply_set(&self, cs: &ChangeSet) -> Result<()> {
-        Ok(crate::journal::workspace_journal()
+        let plan = self.plan_inbound(cs);
+        match crate::journal::workspace_journal()
             .apply(cs, self.fs(), self.root())
-            .await?)
+            .await
+        {
+            Ok(()) => {
+                self.settle_inbound(plan).await;
+                Ok(())
+            }
+            Err(e) => {
+                self.forget_inbound();
+                Err(e.into())
+            }
+        }
     }
 
     /// Drain [`pending_stamps`](Self::pending_stamps) into `cs`: for each
@@ -1682,6 +1719,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             identity: self.identity,
             settings: self.settings,
             pending_stamps: Vec::new(),
+            inbound: inbound::empty(),
         }
     }
 }

@@ -3,14 +3,29 @@ title: A retitle censuses the whole workspace to find its inbound links
 description: Workspace::retitle (and rename) read every reachable document on every call to find the handful that link to the target, so a one-key edit costs O(workspace) reads — seconds on a large workspace, under whatever lock the consumer holds
 author: adammharris
 created: 2026-09-09
-updated: 2026-09-09
-status: open
+updated: 2026-09-10
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A retitle censuses the whole workspace to find its inbound links
 
-**Status.** Open.
+**Status.** Done, 2026-09-10, in `perf(mutate): retitle and rename find
+their inbound links through a stat-validated index kept across verbs`. The
+index is `prov/src/workspace/inbound.rs`; DESIGN §5 and the §9 table say where
+it lives and what invalidates it. Of the two shapes below, the first was taken
+— an index on the `Workspace`, dropped or updated by every set that lands
+through `apply_set` — with one addition the shape as written was missing:
+prov is not the only writer of a workspace (a consumer's own filesystem
+handle, a sync from another device), so every ask **stats** every document
+the index knows before trusting it, and any change drops it. A stat opens
+nothing, which is what makes it the right probe on a coordinated filesystem.
+The second shape was not taken: a consumer's sidebar walk covers the spanning
+relation only, so it cannot say who links to a document over any other
+relation, and would have needed the census as a fallback anyway. `rename`
+and `retitle` share the ask (`inbound_sources`), as required, and
+`a_second_retitle_reads_only_what_it_writes` pins the done state over a
+counting backend.
 
 **Repro.** On a workspace of a couple of thousand reachable documents, call
 `Workspace::retitle` on a leaf that nothing but its parent links to. It reads

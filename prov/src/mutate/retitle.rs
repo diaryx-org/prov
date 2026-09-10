@@ -6,13 +6,13 @@
 //! inbound link carries is refreshed — which is what lets a workspace author
 //! `[Title](id:…)` links whose label stays honest as titles evolve.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use fig::Segment;
 
 use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
+use crate::workspace::inbound::Form;
 use prov_graph::document::Document;
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::Target;
@@ -38,9 +38,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// are not rewritten here yet (a follow-up; a `StaleLabel` finding can flag
     /// them in the meantime).
     pub async fn retitle(&mut self, path: &Path, new_title: &str) -> Result<usize> {
-        // `collect_inbound_relabels` censuses the reachable graph and then loads
-        // every source that links here a second time, to relabel it — the same
-        // double read `rename` makes, for the same reason.
+        // `collect_inbound_relabels` asks the inbound index which documents
+        // link here — a census only the first time, or after the workspace
+        // changed underneath it (`workspace::inbound`) — and then loads each
+        // one to relabel it, the same way `rename` does.
         let _scope = self.read_scope();
         let path = link::normalize(path);
         if !self.exists(&path).await? {
@@ -86,29 +87,20 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// labels refreshed to `new_title`. Mirrors [`collect_inbound_rewrites`],
     /// but keeps id-form links (which retargeting skips): a retitle refreshes the
     /// label of both id- and path-addressed links, since the label is the same
-    /// human title either way. `resolved_path` collapses both forms to the target
-    /// path, so one filter catches them.
+    /// human title either way — [`Form::Any`] where a move asks for
+    /// [`Form::Path`].
     async fn collect_inbound_relabels(
         &self,
         path: &Path,
         new_title: &str,
     ) -> Result<Vec<(PathBuf, super::maintain::Rewrite)>> {
-        let (_spanning, inverse) = self.spanning_pair()?;
-        let root = self.spanning_root(path, &inverse).await?;
-        let mut sources: BTreeSet<PathBuf> = self
-            .census(&root)
-            .await?
-            .into_iter()
-            .filter(|e| e.resolution.resolved_path().map(PathBuf::as_path) == Some(path))
-            .map(|e| e.source)
-            .collect();
-        sources.remove(path);
+        let sources = self.inbound_sources(path, Form::Any).await?;
         let mut writes = Vec::new();
         for source in sources {
             if let Some(updated) = self.relabel_inbound_doc(&source, path, new_title).await? {
-                // A memo hit — the census already read every source, and the
-                // verb holds the scope — pairing the relabel with the text it
-                // was computed from, for the set's expectation.
+                // A memo hit — the relabel just read the source, and the verb
+                // holds the scope — pairing the relabel with the text it was
+                // computed from, for the set's expectation.
                 let (read, _) = self.load(&source).await?;
                 writes.push((
                     source,
