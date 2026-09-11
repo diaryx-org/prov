@@ -684,6 +684,13 @@ rule resolved to a concrete fact, every branch this workspace does not take left
 out. Where the spec says "the block is fenced by `---`, `;;;`, or ```` ```fig
 ````," the generated page says "every file here opens with a `---` line."
 
+Where the workspace declares [views](#views), the page lists them too — each
+one's label, the field chain and grain it groups by, the subtree `under:` scopes
+it to, and whether a `where:` leaves some of that scope out — because a
+containment tree is only one way through the files and a reader should be told
+what the others are. `nest:` and `icon:` are left out: one is a writing rule and
+the other a hint to a picker, and neither helps a person reading the directory.
+
 It is derived from configuration and from what prov accepts on read — **never**
 from a scan of what the files contain. That one rule is why it is both
 permanently accurate and almost never rewritten, and why a conflicted copy is

@@ -95,6 +95,7 @@ use prov_graph::error::{Error, Result};
 use prov_graph::link::{Addressing, Notation, PathStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, RelationSet};
+use prov_views::{Grain, ViewSpec};
 
 /// The `Workspace` methods that decide when to call [`generate`], where the
 /// result goes, and whether it differs from what is already on disk. Kept out
@@ -180,6 +181,7 @@ fn markdown_body(config: &WorkspaceConfig, relations: &RelationSet, ctx: &AboutC
         Some(reference_section(config, relations)),
         Some(relations_section(config, relations, ctx)),
         fields_section(config),
+        views_section(config),
         machinery_section(config, relations, ctx),
         history_section(ctx),
         Some(conventions_section(config, ctx)),
@@ -738,6 +740,118 @@ fn fields_section(config: &WorkspaceConfig) -> Option<String> {
         ));
     }
     Some(s)
+}
+
+/// The declared views — the ways through these documents that are not the
+/// containment tree. Absent when the workspace declares none, which is the
+/// common case: a view is something a workspace says about itself, and most
+/// say nothing.
+///
+/// Two of a view's keys are deliberately not on the page. `nest` says where a
+/// *new* record should be filed, which is a rule for someone writing into the
+/// directory rather than reading it, and this page is written for the reader.
+/// `icon` is a hint to a frontend's picker and means nothing to a person
+/// holding the files.
+fn views_section(config: &WorkspaceConfig) -> Option<String> {
+    if config.views.is_empty() {
+        return None;
+    }
+    let count = config.views.len();
+
+    let mut s = String::from("## Other ways through the files\n\n");
+    s.push_str(&para(&format!(
+        "The arrangement described above puts every document in exactly one \
+         place, which is what lets the whole directory be walked from its top. \
+         {} other {} of reading the same documents {} written down here as \
+         well. Each gathers the files into groups by something the files \
+         themselves say, and none of them is a second copy of anything: a \
+         document can turn up under several groups, or under none, and still \
+         sit in the one place the arrangement above gives it.",
+        capitalize(number_word(count)),
+        if count == 1 { "way" } else { "ways" },
+        if count == 1 { "is" } else { "are" },
+    )));
+    s.push('\n');
+
+    let rows: Vec<Vec<String>> = config
+        .views
+        .iter()
+        .map(|view| {
+            vec![
+                // The label, never the `views.<name>` key: the key is the token
+                // a program is handed, and nothing on this page is addressed to
+                // one. `display_label` humanizes the key when no label was
+                // given, which is the best a reader can be offered.
+                view.display_label(),
+                grouped_by_text(view),
+                match &view.under {
+                    Some(under) => format!(
+                        "what is filed under {}, however deep",
+                        code(&link_target_text(under))
+                    ),
+                    None => "every file here".to_string(),
+                },
+                // The condition is flagged, not rendered — the same call
+                // `prov views` makes for the same reason. A nested `where:`
+                // written out in a table cell is a formula a reader has to
+                // evaluate, and what they actually need to know is that this
+                // grouping is not showing them everything it reaches.
+                if view.filter.is_some() { "no" } else { "yes" }.to_string(),
+            ]
+        })
+        .collect();
+    s.push_str(&table(
+        &[
+            "what it is called",
+            "grouped by",
+            "covers",
+            "shows everything it covers",
+        ],
+        &rows,
+    ));
+
+    if config.views.iter().any(|v| v.filter.is_some()) {
+        s.push('\n');
+        s.push_str(&para(
+            "Where that last column says no, a further condition is set on the \
+             grouping — a value a file has to carry, or one it must not — and \
+             files in range that do not meet it are left out. The condition \
+             itself is written in this directory's settings rather than \
+             repeated here; the files it hides are still ordinary files, \
+             reachable the way everything else here is.",
+        ));
+    }
+
+    Some(s)
+}
+
+/// What a view's `group` and `by` say, as a sentence fragment for the table.
+///
+/// The chain is stated as a chain rather than reduced to its first key: which
+/// field a given file was grouped on is a fact about that file, and this page
+/// is never allowed to look at one.
+fn grouped_by_text(view: &ViewSpec) -> String {
+    let keys: Vec<String> = view.group.keys.iter().map(|k| code(k)).collect();
+    let field = match keys.as_slice() {
+        [one] => format!("what the file says under {one}"),
+        _ => format!("the first of {} the file fills in", join_list(&keys)),
+    };
+    match view.group.by {
+        Some(grain) => format!("{field}, {}", grain_text(grain)),
+        None => field,
+    }
+}
+
+/// How a grain reads to someone who has never seen the word — a coarsening of
+/// the value, described by what it leaves behind rather than named.
+fn grain_text(grain: Grain) -> String {
+    match grain {
+        Grain::Year => "shortened to the year".to_string(),
+        Grain::Month => "shortened to the month".to_string(),
+        Grain::Day => "shortened to the day".to_string(),
+        Grain::Initial(1) => "shortened to its first letter".to_string(),
+        Grain::Initial(n) => format!("shortened to its first {n} letters"),
+    }
 }
 
 /// The files the spine will never reach, and why that is deliberate.
@@ -1641,6 +1755,7 @@ mod tests {
     use super::*;
     use crate::config::{FieldSpec, OpenClosed, RelationDef};
     use prov_graph::relation::Cardinality;
+    use prov_views::{Condition, Grouping};
     use std::collections::BTreeMap;
 
     fn def(card: Cardinality, inverse: &str, means: &str) -> RelationDef {
@@ -2108,6 +2223,148 @@ mod tests {
         // And `id` is not listed among the fields to leave alone, because there
         // is no such field to protect.
         assert!(!flat.contains("**`id`** — a permanent handle"));
+    }
+
+    /// A workspace declaring two views: one scoped to a subtree and coarsened
+    /// to the month, one over everything with a condition on it. Between them
+    /// they exercise every cell the section can produce.
+    fn views_workspace() -> (WorkspaceConfig, AboutContext) {
+        let (mut config, ctx) = default_workspace();
+        config.views = vec![
+            ViewSpec {
+                name: "daily".into(),
+                label: Some("Daily entries".into()),
+                icon: Some("calendar".into()),
+                group: Grouping {
+                    keys: vec!["date_of_document".into(), "created".into()],
+                    by: Some(Grain::Month),
+                },
+                under: Some("[Daily](/Daily/daily_index.md)".into()),
+                filter: None,
+                nest: Some(Grain::Month),
+            },
+            ViewSpec {
+                name: "open_tasks".into(),
+                label: Some("Open tasks".into()),
+                icon: None,
+                group: Grouping::field("status"),
+                under: None,
+                filter: Some(Condition::Not(Box::new(Condition::Equals {
+                    field: "status".into(),
+                    value: "done".into(),
+                }))),
+                nest: None,
+            },
+        ];
+        (config, ctx)
+    }
+
+    /// The section, from its heading to the next one.
+    fn views_section_of(page: &str) -> String {
+        let start = page
+            .find("## Other ways through the files")
+            .expect("a views section");
+        let rest = &page[start..];
+        let end = rest[3..].find("\n## ").map(|i| i + 3).unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    #[test]
+    fn declared_views_are_introduced_as_other_ways_of_reading() {
+        let (config, ctx) = views_workspace();
+        let page = render(&config, &ctx);
+        let section = views_section_of(&page);
+        let flat = flat(&section);
+
+        // Each view is named by what a person calls it, and by nothing else —
+        // the `views.<name>` key is a token for a program and this page has no
+        // reader who holds one.
+        assert!(flat.contains("Daily entries"), "{section}");
+        assert!(flat.contains("Open tasks"), "{section}");
+        assert!(!flat.contains("open_tasks"), "{section}");
+
+        // The grouping chain is stated as a chain, coarsened where `by:` says.
+        assert!(
+            flat.contains("the first of `date_of_document` and `created` the file fills in, shortened to the month"),
+            "{section}"
+        );
+        assert!(
+            flat.contains("what the file says under `status`"),
+            "{section}"
+        );
+
+        // Scope: the anchor as the file it names, and the whole directory when
+        // there is no anchor.
+        assert!(
+            flat.contains("what is filed under `/Daily/daily_index.md`, however deep"),
+            "{section}"
+        );
+        assert!(flat.contains("every file here"), "{section}");
+
+        let rows = rows_under(
+            &page,
+            "| what it is called | grouped by | covers | shows everything it covers |",
+        );
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows[0].ends_with("| yes |"), "{rows:?}");
+        assert!(rows[1].ends_with("| no |"), "{rows:?}");
+        assert!(flat.contains("Where that last column says no"), "{section}");
+    }
+
+    #[test]
+    fn the_views_section_leaves_out_what_is_not_a_reading_instruction() {
+        // `nest:` is where a *new* record is filed and `icon:` is a hint to a
+        // picker. Neither helps the person this page is written for, and both
+        // would be read as claims about the files in front of them.
+        let (config, ctx) = views_workspace();
+        let section = views_section_of(&render(&config, &ctx));
+        for absent in ["nest", "file it", "calendar", "icon"] {
+            assert!(
+                !section.contains(absent),
+                "the section should not mention {absent:?}: {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_that_declares_no_views_has_no_such_section() {
+        // The section is `None` rather than an empty table: a page's length
+        // tracks how unusual its directory is, and most declare no views.
+        let (config, ctx) = default_workspace();
+        let page = render(&config, &ctx);
+        assert!(!page.contains("## Other ways through the files"));
+        assert!(!page.contains("grouped by"));
+
+        // ...and the same page with views declared is the longer one.
+        let (with_views, ctx) = views_workspace();
+        assert!(render(&with_views, &ctx).len() > page.len());
+    }
+
+    #[test]
+    fn the_views_section_keeps_the_pages_voice() {
+        // The sibling of `the_page_never_says_prov_or_addresses_a_tool_author`,
+        // run over a page that has the section: a view is the most jargon-prone
+        // axis in config, and its section must still read as being about this
+        // directory rather than about the format.
+        let (config, ctx) = views_workspace();
+        let page = render(&config, &ctx);
+        let body = flat(page.split("\n---\n\n<sub>").next().unwrap());
+        for forbidden in [
+            "prov/1",
+            "the spec",
+            "workspaces",
+            "your tool",
+            "DESIGN",
+            "view",
+            "grain",
+            "`where`",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "body should not fall back on the vocabulary of the format, \
+                 found {forbidden:?}"
+            );
+        }
     }
 
     #[test]
