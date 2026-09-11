@@ -15,10 +15,18 @@
 //! relation** below the anchor it names, never by matching a path prefix or a
 //! title. That is the difference between a view and a saved search: `path
 //! starts-with "Daily/"` breaks the moment someone renames the folder, and
-//! matching an index *titled* `2026` finds the one under `Trips/` just as
+//! matching every index *titled* `2026` finds the one under `Trips/` just as
 //! happily as the one under `Daily/`. A traversal survives a rename, a move and
 //! a retitle, because it follows the same declarations that make the workspace
 //! a workspace.
+//!
+//! The anchor itself is any link the workspace can resolve: a path
+//! (`[Daily](/daily.md)`), an id (`[Daily](id:abc1234)`), or a title
+//! (`[[Daily]]`). A title anchor names *one* index — several documents so
+//! titled is an error, not a union — which is what keeps this a traversal from
+//! a chosen node rather than a search. It is what lets a stencil declare a view
+//! before the index exists at any path: the workspace that applies it makes an
+//! index called `Daily` wherever it likes, and the view finds it.
 //!
 //! The scope is the whole subtree below the anchor, not its direct children —
 //! see the inheritance note in [`crate::spec`].
@@ -30,6 +38,7 @@ use prov_graph::graph::{Graph, NodeKind, Target, TreeOptions};
 use prov_graph::index::IdIndex;
 use prov_graph::link::Link;
 use prov_graph::meta::Value;
+use prov_graph::title::{self, TitleIndex};
 
 use crate::error::{Error, Result};
 use crate::spec::ViewSpec;
@@ -100,6 +109,25 @@ pub async fn select<FS: ReadStorage, Ix: IdIndex>(
     spec: &ViewSpec,
     root_doc: impl AsRef<Path>,
 ) -> Result<Selection> {
+    select_with(graph, spec, root_doc, None).await
+}
+
+/// [`select`], with a title index for a nominal anchor (`under: '[[Daily]]'`).
+///
+/// Without one, a title anchor is resolved through an index this function
+/// builds itself, scoped to what the workspace reaches from `root_doc` — one
+/// scan, only when the anchor is title-shaped, and never for a path or an id.
+/// What that scan cannot know is which directories are the workspace's own
+/// parked bookkeeping (a retired history store, a recycle bin's items), so a
+/// caller that does know — `prov`'s `Workspace` — passes an index built with
+/// them excluded, and a title kept only inside one cannot make an anchor
+/// ambiguous.
+pub async fn select_with<FS: ReadStorage, Ix: IdIndex>(
+    graph: &Graph<FS, Ix>,
+    spec: &ViewSpec,
+    root_doc: impl AsRef<Path>,
+    titles: Option<&TitleIndex>,
+) -> Result<Selection> {
     let root_doc = root_doc.as_ref();
     // One scope for the whole selection: the spanning walk reads every document
     // in scope, and so does the metadata pass immediately after. Without this
@@ -107,7 +135,7 @@ pub async fn select<FS: ReadStorage, Ix: IdIndex>(
     let _scope = graph.read_scope();
 
     let anchor = match &spec.under {
-        Some(under) => resolve_anchor(graph, spec, root_doc, under)?,
+        Some(under) => resolve_anchor(graph, spec, root_doc, under, titles).await?,
         None => root_doc.to_path_buf(),
     };
 
@@ -165,19 +193,41 @@ pub async fn select<FS: ReadStorage, Ix: IdIndex>(
     })
 }
 
+/// Whether `link` addresses a document by name rather than by path or id — the
+/// one case resolving needs a title index.
+fn is_nominal(link: &Link) -> bool {
+    !link.is_external()
+        && !link.is_same_document()
+        && link.id_ref().is_none()
+        && title::is_alias_shaped(link.addressed_target())
+}
+
 /// The path a view's `under:` link names, or why it does not name one.
-fn resolve_anchor<FS, Ix: IdIndex>(
+async fn resolve_anchor<FS: ReadStorage, Ix: IdIndex>(
     graph: &Graph<FS, Ix>,
     spec: &ViewSpec,
     root_doc: &Path,
     under: &str,
+    titles: Option<&TitleIndex>,
 ) -> Result<PathBuf> {
     let unresolved = |why: &str| Error::AnchorUnresolved {
         view: spec.name.clone(),
         under: under.to_string(),
         why: why.to_string(),
     };
-    match graph.resolve_link(root_doc, &Link::parse(under)) {
+    let link = Link::parse(under);
+    // A title index costs a scan, so it is built only for an anchor that needs
+    // one and that the caller did not already provide.
+    let scanned;
+    let titles = match titles {
+        Some(titles) => Some(titles),
+        None if is_nominal(&link) => {
+            scanned = graph.title_index_scoped(root_doc, &[]).await?;
+            Some(&scanned)
+        }
+        None => None,
+    };
+    match graph.resolve_link_with(root_doc, &link, titles) {
         Target::Path(path) => Ok(path),
         Target::UnresolvedId(id) => Err(unresolved(&format!(
             "no document is registered under the id `{}`",
@@ -318,6 +368,59 @@ mod tests {
             .iter()
             .map(|r| r.path.display().to_string())
             .collect()
+    }
+
+    /// An anchor by title resolves to the one index so titled, wherever it
+    /// sits — in either link notation — and the walk from there is the same
+    /// walk a path anchor gives. Two indexes with the title are a refusal with
+    /// the reason in it, and a title nothing carries reads as missing, like a
+    /// dead path.
+    #[test]
+    fn an_anchor_may_name_its_index_by_title() {
+        let dir = journal("title-anchor");
+        for under in ["[[Daily]]", "[Daily](Daily)"] {
+            let selection = block_on(select(&graph(&dir), &spec(Some(under), None), "index.md"))
+                .unwrap_or_else(|e| panic!("{under}: {e}"));
+            assert_eq!(
+                paths(&selection),
+                ["daily/07-24.md", "daily/08-01.md", "daily/2026.md"],
+                "{under}"
+            );
+        }
+        // The file stem is a name too, as it is for any nominal link.
+        let selection = block_on(select(
+            &graph(&dir),
+            &spec(Some("[[2026]]"), None),
+            "index.md",
+        ))
+        .unwrap();
+        assert_eq!(paths(&selection), ["daily/07-24.md", "daily/08-01.md"]);
+
+        let err = block_on(select(
+            &graph(&dir),
+            &spec(Some("[[Nowhere]]"), None),
+            "index.md",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no document exists there"), "{err}");
+
+        write(
+            &dir,
+            "trips.md",
+            "---\ntitle: Daily\npart_of: index.md\n---\n",
+        );
+        let err = block_on(select(
+            &graph(&dir),
+            &spec(Some("[[Daily]]"), None),
+            "index.md",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("several documents are titled `Daily`"),
+            "{err}"
+        );
     }
 
     /// The whole point of `under:`: the README carries a `created` date and is

@@ -216,7 +216,7 @@ spine cannot do.
 | -------- | --------------------------------------------------------------------- |
 | `group`  | a field name, or a list of field names tried in order (first non-empty wins). **Required** — an entry without one is not a view |
 | `by`     | a **grain** — cut the chosen value coarser before grouping (see below) |
-| `under`  | a link to an index; the view covers its whole spanning subtree. Absent = the whole workspace |
+| `under`  | a link to an index — by path, by `id:`, or by title (`[[Tasks]]`); the view covers its whole spanning subtree. A title several documents carry is an error, not a union. Absent = the whole workspace |
 | `where`  | conditions a document in scope must also meet. Absent = everything scope reaches |
 | `nest`   | a grain — how deep a *new* entry is filed. Only grains that chain, and only single-valued fields |
 | `label`  | what a person calls it (absent = the name, humanized)                 |

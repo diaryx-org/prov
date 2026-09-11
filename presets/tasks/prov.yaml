@@ -1,8 +1,9 @@
 # The `tasks` preset: deferred work kept as documents, with a `status` a tool
 # can read. Apply it with `prov presets ./presets/tasks --write` (or `prov init
-# --preset ./presets/tasks`), then make the index the views hang under:
-# `prov new Tasks --in <root>` — and `prov new "<title>" --in tasks.md` opens a
-# task, which starts as `status: open`.
+# --preset ./presets/tasks`), then make the indexes the views hang under —
+# `prov new Tasks --in <root>`, `prov new Proposals --in <root>`, at any path,
+# since the views name them by title — and `prov new "<title>" --in tasks.md`
+# opens a task, which starts as `status: open`.
 #
 # Only the axes the preset declares. The built-in preset supplies `created`
 # and `updated`; apply that too if the workspace was not made with it.
@@ -17,13 +18,13 @@ views:
   open-tasks:
     label: Open tasks
     group: status
-    under: '[Tasks](/tasks.md)'
+    under: '[[Tasks]]'
     where:
       not: { equals: { status: [done, dropped] } }
   proposals:
     label: Proposals
     group: status
-    under: '[Proposals](/proposals.md)'
+    under: '[[Proposals]]'
     where: { has: status }
   work:
     label: All work

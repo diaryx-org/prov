@@ -99,5 +99,5 @@ pub use error::{Error, Result};
 pub use filter::{CONDITION_KEYS, Condition};
 pub use group::{Group, RowSet, group};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};
-pub use select::{Row, Selection, select};
+pub use select::{Row, Selection, select, select_with};
 pub use spec::{GRAINS, Grain, Grouping, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize, views_from};

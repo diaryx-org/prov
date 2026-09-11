@@ -1301,7 +1301,7 @@ fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
     };
 
     let ws = workspace(&ctx)?;
-    let selection = block_on(prov::views::select(ws.graph(), view, &ctx.root_doc))?;
+    let selection = block_on(ws.select_view(&ctx.root_doc, view))?;
     let rows = prov::views::group(&selection, &view.group);
     if as_json {
         print!("{}", json::view_result(&selection, &rows).render());

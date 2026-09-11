@@ -1539,6 +1539,32 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.title_index_scoped(start, &parked).await
     }
 
+    /// Execute a view: the documents `spec` covers, walking from `root_doc`.
+    ///
+    /// [`prov_views::select`] with the one thing that crate cannot supply for
+    /// itself — a title index with the workspace's parked directories
+    /// excluded, for an anchor written by title (`under: '[[Tasks]]'`). Built
+    /// only when the anchor is a name; a path or an id anchor scans nothing.
+    pub async fn select_view(
+        &self,
+        root_doc: &Path,
+        spec: &prov_views::ViewSpec,
+    ) -> std::result::Result<prov_views::Selection, prov_views::Error> {
+        let nominal = spec.under.as_deref().is_some_and(|under| {
+            let link = Link::parse(under);
+            !link.is_external()
+                && !link.is_same_document()
+                && link.id_ref().is_none()
+                && prov_graph::title::is_alias_shaped(link.addressed_target())
+        });
+        let titles = if nominal {
+            Some(self.title_index_scoped(root_doc).await?)
+        } else {
+            None
+        };
+        prov_views::select_with(&self.graph, spec, root_doc, titles.as_ref()).await
+    }
+
     /// Every `id` spelled in a document's own frontmatter, with its path.
     pub async fn scan_ids(&self) -> Result<Vec<(prov_graph::identity::Id, PathBuf)>> {
         self.graph.scan_ids().await

@@ -419,7 +419,10 @@ later without the mechanism changing.
   `plan_preset`/`apply_preset` so that diaryx can call them. One thing the
   fixture showed: a `default` is workspace-global, so `new Tasks --in index.md`
   lands `status: open` on the index node too — `--set status=null` is the
-  escape, and §7's scoping axis is the fix.
+  escape, and §7's scoping axis is the fix. And a stencil cannot know where a
+  workspace will put its index, so a view's `under:` now takes any link the
+  workspace resolves — a path, an `id:`, or a title (`[[Tasks]]`) — and the
+  `tasks` preset anchors by title.
 - **Phase 2 — this repository takes it.** The `tasks` config committed here;
   `tasks.md`'s prose and the org rule corrected so that `contents` is the spine
   and the view is the open list; the proposals index says the same thing it

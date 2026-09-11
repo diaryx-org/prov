@@ -129,14 +129,27 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
         "the page was regenerated: {page}"
     );
 
-    // The workspace the preset is for: an index the views hang under, a task
-    // that opens as `status: open`, and a term the vocabulary refuses.
+    // The workspace the preset is for: an index the views hang under — at a
+    // path of the workspace's choosing, since the preset names it by title —
+    // a task that opens as `status: open`, and a term the vocabulary refuses.
     ok(
         &dir,
-        &["new", "Tasks", "--in", "index.md", "--set", "status=null"],
+        &[
+            "new",
+            "Tasks",
+            "--in",
+            "index.md",
+            "--as",
+            "docs/tasks/tasks.md",
+            "--set",
+            "status=null",
+        ],
     );
-    ok(&dir, &["new", "Fix the build", "--in", "tasks.md"]);
-    let task = read(&dir, "fix-the-build.md");
+    ok(
+        &dir,
+        &["new", "Fix the build", "--in", "docs/tasks/tasks.md"],
+    );
+    let task = read(&dir, "docs/tasks/fix-the-build.md");
     assert!(
         task.contains("status: open\n") && task.contains("created: 20"),
         "{task}"
@@ -145,14 +158,20 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
     assert!(err.contains("no findings"), "{out}{err}");
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
     assert!(
-        out.contains("open (1)") && out.contains("fix-the-build.md"),
+        out.contains("open (1)") && out.contains("docs/tasks/fix-the-build.md"),
         "{out}"
     );
 
-    ok(&dir, &["set", "fix-the-build.md", "status", "wontfix"]);
+    ok(
+        &dir,
+        &["set", "docs/tasks/fix-the-build.md", "status", "wontfix"],
+    );
     let (ok_, out, err) = run(&dir, &["check"]);
     assert!(!ok_ && (out + &err).contains("not a known term"));
-    ok(&dir, &["set", "fix-the-build.md", "status", "done"]);
+    ok(
+        &dir,
+        &["set", "docs/tasks/fix-the-build.md", "status", "done"],
+    );
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
     assert!(out.contains("no documents in scope"), "{out}");
 
