@@ -337,7 +337,11 @@ documents does this view cover* (scope, then conditions) and returns a flat,
 deduplicated set; **group** projects that into groups and is a pure function.
 So the count of documents a view covers and the count of rows it draws are
 different numbers — a document under two of a multi-valued field's groups is one
-document in two places — and `prov views <name>` prints both.
+document in two places — and `prov views <name>` prints both. `prov views <name>
+--json` gives the same answer machine-readable, each row carrying that
+document's whole metadata block, so a consumer that replaces its own per-file
+loop with a view still has what the loop was reading; `prov views --json` lists
+the declarations the same way.
 
 ### Exports
 

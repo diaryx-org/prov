@@ -115,7 +115,7 @@ fn main() -> ExitCode {
             resolve_target(&file).and_then(|f| cmd_set(&f, &key, &value))
         }
         Command::Unset { file, key } => resolve_target(&file).and_then(|f| cmd_unset(&f, &key)),
-        Command::Views { name } => cmd_views(name.as_deref()),
+        Command::Views { name, json } => cmd_views(name.as_deref(), json),
         Command::Exports { name } => cmd_exports(name.as_deref()),
         Command::Tree {
             root,
@@ -1228,10 +1228,24 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// workspace agrees it exists — which is also the fastest way to find out that
 /// a `views:` block went unread because a key was misspelled (the stderr
 /// warning `find_root` already prints covers the why).
-fn cmd_views(name: Option<&str>) -> CmdResult {
+///
+/// `--json` is the same two answers for a program rather than a person, and is
+/// what lets a consumer replace a per-file metadata loop with one view: every
+/// row carries the document's whole metadata block, so the result is the
+/// selection *and* what the caller went to the files for.
+fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
     let ctx = find_root()?;
     let views = &ctx.config.views;
     let Some(name) = name else {
+        if as_json {
+            // Including the empty case, which is `[]` — "declares no views" is
+            // narration for a person, and an empty array says it already.
+            print!(
+                "{}",
+                json::J::Arr(views.iter().map(json::view).collect()).render()
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
         if views.is_empty() {
             println!("this workspace declares no views");
             return Ok(ExitCode::SUCCESS);
@@ -1286,6 +1300,10 @@ fn cmd_views(name: Option<&str>) -> CmdResult {
     let ws = workspace(&ctx)?;
     let selection = block_on(prov::views::select(ws.graph(), view, &ctx.root_doc))?;
     let rows = prov::views::group(&selection, &view.group);
+    if as_json {
+        print!("{}", json::view_result(&selection, &rows).render());
+        return Ok(ExitCode::SUCCESS);
+    }
     for group in &rows.groups {
         println!("{} ({})", group.key, group.rows.len());
         for row in &group.rows {

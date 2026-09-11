@@ -344,11 +344,27 @@ pub(crate) enum Command {
     /// A view is the second way through the same documents the containment tree
     /// already holds — "the entries under Daily, by month". With no NAME, print
     /// what the workspace declares; with one, print its groups and the
-    /// documents under each.
+    /// documents under each. `--json` gives either as machine-readable records.
     Views {
         /// The view to execute (default: list every declared view).
         #[arg(value_name = "NAME")]
         name: Option<String>,
+        /// Print to stdout as JSON instead of a line each: one object per
+        /// declared view for the listing, and for an executed view its groups,
+        /// its ungrouped bucket, and both counts.
+        ///
+        /// Each row carries the document's path, its title, and its **whole
+        /// metadata block** — a consumer replacing a per-file loop with a view
+        /// was reading that metadata, and asking it to run `prov meta` over the
+        /// result would put the loop straight back. Empty groups print `[]`, so
+        /// "the view found nothing" and "the command printed nothing" stay
+        /// distinguishable.
+        ///
+        /// Nothing is written to stderr in this mode, and an error is still an
+        /// error: an anchor that names nothing exits non-zero with its message
+        /// on stderr rather than printing an empty view.
+        #[arg(long)]
+        json: bool,
     },
     /// List the exports this workspace declares, or preview one.
     ///
