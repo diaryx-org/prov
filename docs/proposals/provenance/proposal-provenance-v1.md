@@ -16,9 +16,10 @@ choices on each. A verification binds to the `updated` stamp rather than to a
 fixity digest, because the fixity rule of 0.11.0 left most documents with no
 digest to bind to (the note below is the account of that). A bare actor is a
 person and only a non-human carries a prefix, inverting §2's question #3
-rather than answering it as asked. The verb is `vouch` and the field is
-`vouched`, so that the record does not read as though something was checked
-mechanically. Path-valued fields (§6) were carried out of the line into a
+rather than answering it as asked. The verb is `confirm` and the field is
+`confirmed`, so that the record does not read as though something was checked
+mechanically — and not `vouch`, which v2 first chose and then gave up because
+the historica family already uses it for a signed claim over a revision. Path-valued fields (§6) were carried out of the line into a
 proposal of their own, and `status` (§7) is now the presets proposal's.
 
 What survived intact is §5's distinction — `check` is the attester, the stored
