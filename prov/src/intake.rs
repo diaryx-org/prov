@@ -246,8 +246,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for synth in &plan.synthesized {
             // Title the stub after its folder (not its `index` stem), so its own
             // title and the parent's spanning-entry label are authored in step.
-            self.create_titled(&synth.path, &synth.parent, Some(&synth.title))
-                .await?;
+            self.create_titled(
+                &synth.path,
+                &synth.parent,
+                Some(&synth.title),
+                &prov_graph::meta::Mapping::new(),
+            )
+            .await?;
             outcome.synthesized.push(synth.path.clone());
         }
         for edge in &plan.adoptions {

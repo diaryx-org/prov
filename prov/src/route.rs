@@ -454,8 +454,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// recreating them.
     pub async fn apply_route(&mut self, plan: &RoutePlan) -> Result<PathBuf> {
         for synth in &plan.synthesize {
-            self.create_titled(&synth.path, &synth.parent, Some(&synth.title))
-                .await?;
+            self.create_titled(
+                &synth.path,
+                &synth.parent,
+                Some(&synth.title),
+                &prov_graph::meta::Mapping::new(),
+            )
+            .await?;
         }
         Ok(plan.terminal.clone())
     }

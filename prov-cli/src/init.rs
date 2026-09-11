@@ -481,6 +481,7 @@ pub(crate) fn cmd_init(
     fixity: Option<FixityArg>,
     no_record_deletions: bool,
     updated_field: Option<String>,
+    created_field: Option<String>,
     workspace_id: Option<String>,
     adopt: Option<AdoptArg>,
     attach: bool,
@@ -837,6 +838,7 @@ pub(crate) fn cmd_init(
     let fixity = fixity.unwrap_or(FixityArg::On);
     let record_deletions = !no_record_deletions;
     let updated_field = updated_field.unwrap_or_default();
+    let created_field = created_field.unwrap_or_default();
 
     // Assemble the workspace preferences these choices encode. The wrapper +
     // path-format prompts fix the notation/path_style axes; `write_onto` then
@@ -872,6 +874,7 @@ pub(crate) fn cmd_init(
         // the one artifact that makes the directory readable without prov.
         about: prov::About::Structure,
         updated: updated_field.clone(),
+        created: created_field.clone(),
         // Anonymous unless asked for, and not prompted: a name only earns its
         // keep once some *other* workspace refers to this one, which is a thing
         // that happens later, to a minority of workspaces. `prov config
@@ -1169,9 +1172,14 @@ pub(crate) fn cmd_init(
     } else {
         format!(", updates `{updated_field}`")
     };
+    let created_note = if created_field.is_empty() {
+        String::new()
+    } else {
+        format!(", stamps `{created_field}`")
+    };
     let details = format!(
         "root: {root_name} — {title}{author_note}\n\
-         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{deletions_note}{fixity_note}{updated_note}{about_note}",
+         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{deletions_note}{fixity_note}{updated_note}{created_note}{about_note}",
         content.label(),
         embed.as_config_str(),
         embed_label.to_lowercase(),

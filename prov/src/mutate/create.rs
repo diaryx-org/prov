@@ -15,7 +15,7 @@ use crate::workspace::Workspace;
 use prov_graph::document::{MetaCarrier, whole_file_format};
 use prov_graph::error::{Error, Result};
 use prov_graph::link;
-use prov_graph::meta::Value;
+use prov_graph::meta::{Mapping, Value};
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -54,7 +54,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Returns the [`Created`] files: always the structural node, plus the prose
     /// body file when the child is a separated pair.
     pub async fn create(&mut self, path: &Path, parent: &Path) -> Result<Created> {
-        self.create_titled(path, parent, None).await
+        self.create_titled(path, parent, None, &Mapping::new())
+            .await
     }
 
     /// [`create`](Self::create) with an explicit `title` recorded in the new
@@ -70,7 +71,32 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         parent: &Path,
         title: &str,
     ) -> Result<Created> {
-        self.create_titled(path, parent, Some(title)).await
+        self.create_titled(path, parent, Some(title), &Mapping::new())
+            .await
+    }
+
+    /// [`create_with_title`](Self::create_with_title), with `fields` the new
+    /// document opens with beyond the ones prov authors — a `created` stamp,
+    /// a `status: open` the workspace's `fields` declares as the starting
+    /// value, a `--set` from the caller. Written after the title, the id and
+    /// the link back to the parent, in the order given.
+    ///
+    /// The library has no clock and reads no field declaration here: the
+    /// caller decides what a new document starts with and supplies it, the
+    /// same division as the `updated` stamp on
+    /// [`record_content_update`](Self::record_content_update). What prov
+    /// itself writes is not overridable from this seam — a `title`, `id`,
+    /// `content`, or the inverse link in `fields` is skipped, because each is
+    /// derived from the parent and the path, and a caller who wants a
+    /// different one is asking for a different document.
+    pub async fn create_with_fields(
+        &mut self,
+        path: &Path,
+        parent: &Path,
+        title: &str,
+        fields: &Mapping,
+    ) -> Result<Created> {
+        self.create_titled(path, parent, Some(title), fields).await
     }
 
     /// [`create`](Self::create) with an explicit title for the new document,
@@ -78,12 +104,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// (`index.md`) that should read as its folder (`intake.rs`). `None` falls
     /// back to the stem, the plain-`create` behavior. Authoring the title here
     /// (rather than retitling after) keeps the parent's spanning-entry *label* in
-    /// step with it, since that label is taken from the child's title.
+    /// step with it, since that label is taken from the child's title. `fields`
+    /// are the caller's opening values, per
+    /// [`create_with_fields`](Self::create_with_fields).
     pub(crate) async fn create_titled(
         &mut self,
         path: &Path,
         parent: &Path,
         title_override: Option<&str>,
+        fields: &Mapping,
     ) -> Result<Created> {
         let path = link::normalize(path);
         let parent = link::normalize(parent);
@@ -186,9 +215,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // Author the node's metadata: title, its own id (when stamped), inverse
         // link, and — for a separated child — a `content` pointer at its body
-        // file. A separated node is serialized from a mapping (a whole-file
-        // document, valid in any format including empty JSON); a combined child
-        // grows its block via the editor.
+        // file, then the caller's opening `fields`. A separated node is
+        // serialized from a mapping (a whole-file document, valid in any format
+        // including empty JSON); a combined child grows its block via the
+        // editor.
+        let own = |key: &str| key == "title" || key == "id" || key == "content" || key == inverse;
+        let opening = fields.iter().filter(|(key, _)| !own(key));
         let new_text = match (&node_carrier, &body) {
             (MetaCarrier::WholeFile(format), Some(body_path)) => {
                 let body_ref = body_path
@@ -196,13 +228,16 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .and_then(|n| n.to_str())
                     .unwrap_or_default()
                     .to_string();
-                let mut map = prov_graph::meta::Mapping::new();
+                let mut map = Mapping::new();
                 map.insert("title".into(), Value::String(title));
                 if let Some(id) = &stamp {
                     map.insert("id".into(), Value::String(id.0.clone()));
                 }
                 map.insert(inverse.clone(), Value::String(up));
                 map.insert("content".into(), Value::String(body_ref));
+                for (key, value) in opening {
+                    map.insert(key.clone(), value.clone());
+                }
                 prov_graph::meta::serialize_mapping(&map, *format)?
             }
             _ => {
@@ -212,6 +247,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     new_doc.set_value(&[Segment::Key("id")], fig::Value::Str(id.0.clone()))?;
                 }
                 new_doc.set_value(&[Segment::Key(&inverse)], fig::Value::Str(up))?;
+                for (key, value) in opening {
+                    new_doc.set_value(&[Segment::Key(key)], fig::Value::from(value))?;
+                }
                 new_doc.render()?
             }
         };
@@ -279,6 +317,88 @@ mod tests {
         assert!(
             !read(&dir, "index.md").contains("new.md"),
             "the parent must not link a child that was never created"
+        );
+    }
+
+    /// The opening fields land after prov's own, in the order given, in both
+    /// shapes a child can take — and the fields prov derives cannot be replaced
+    /// through them, because a `title` in `fields` is a different document, not
+    /// a different spelling of this one.
+    #[test]
+    fn create_with_fields_writes_the_opening_fields_after_provs_own() {
+        let dir = tempdir("create-fields");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut fields = Mapping::new();
+        fields.insert(
+            "created".into(),
+            Value::String("2026-09-11T10:00:00Z".into()),
+        );
+        fields.insert("status".into(), Value::String("open".into()));
+        fields.insert("priority".into(), Value::Int(2));
+        fields.insert("title".into(), Value::String("Not this".into()));
+        fields.insert("part_of".into(), Value::String("nowhere.md".into()));
+
+        let mut w = Workspace::builder(StdFs).root(&dir).build();
+        block_on(w.create_with_fields(
+            Path::new("task.md"),
+            Path::new("index.md"),
+            "Task",
+            &fields,
+        ))
+        .unwrap();
+        let child = read(&dir, "task.md");
+        let lines: Vec<&str> = child.lines().collect();
+        assert_eq!(lines[1], "title: Task", "{child}");
+        assert!(
+            lines[2].starts_with("part_of: ") && lines[2].contains("index.md"),
+            "{child}"
+        );
+        assert_eq!(
+            &lines[3..6],
+            &[
+                "created: 2026-09-11T10:00:00Z",
+                "status: open",
+                "priority: 2"
+            ],
+            "{child}"
+        );
+        assert!(
+            !child.contains("Not this") && !child.contains("nowhere"),
+            "{child}"
+        );
+
+        // A separated pair: the node is serialized from a mapping rather than
+        // grown by the editor, and the same fields follow the `content` pointer.
+        write(
+            &dir,
+            "sep.yaml",
+            "title: Separated\npart_of: index.md\ncontent: sep.md\n",
+        );
+        write(&dir, "sep.md", "");
+        let created = block_on(w.create_with_fields(
+            Path::new("entry.md"),
+            Path::new("sep.yaml"),
+            "Entry",
+            &fields,
+        ))
+        .unwrap();
+        assert_eq!(created.node, PathBuf::from("entry.yaml"));
+        let node = read(&dir, "entry.yaml");
+        let lines: Vec<&str> = node.lines().collect();
+        assert_eq!(lines[0], "title: Entry", "{node}");
+        assert_eq!(lines[2], "content: entry.md", "{node}");
+        assert_eq!(
+            &lines[3..6],
+            &[
+                "created: 2026-09-11T10:00:00Z",
+                "status: open",
+                "priority: 2"
+            ],
+            "{node}"
+        );
+        assert!(
+            !node.contains("Not this") && !node.contains("nowhere"),
+            "{node}"
         );
     }
 

@@ -476,6 +476,7 @@ references:
   label: false
 id_storage: both
 updated: ''
+created: ''
 identity: lazy
 fixity: on
 record_deletions: true
@@ -499,6 +500,7 @@ The knobs (dotted keys address nested axes):
 | `fixity`                  | `on`, `off`                                                    | whether content checksums are recorded           |
 | `record_deletions`        | `true`/`false`                                                 | a delete records what it destroyed               |
 | `updated`                 | *a field name*                                                 | the machine-maintained "last updated" field      |
+| `created`                 | *a field name*                                                 | the field `new` stamps when a document is made   |
 
 The two `init` identity prompts map onto these keys: **Identity** sets
 `identity`, and **References between documents** sets `references.target`. With
@@ -713,7 +715,7 @@ rules as records for a program making it.
 | Command                         | What it does                                             |
 | ------------------------------- | -------------------------------------------------------- |
 | `init [DIR] [flags]`            | create a workspace root (interactive; every prompt has a flag) |
-| `new TITLE --in P`              | create a child document, linking both directions         |
+| `new TITLE --in P [--set K=V]`  | create a child document, linking both directions; `--set` adds a field it opens with |
 | `mv FROM TO [--in P]`           | move/rename, maintaining every affected link             |
 | `reparent PATH --in P`          | change a document's parent, leaving the file put         |
 | `rm PATH [--force]`             | delete the file, removing the parent's entry and recording it |

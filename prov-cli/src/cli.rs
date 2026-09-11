@@ -215,6 +215,11 @@ pub(crate) enum Command {
         /// `updated`). Omitted → the feature is off.
         #[arg(long, value_name = "FIELD")]
         updated_field: Option<String>,
+        /// Frontmatter field `prov new` stamps with an RFC 3339 UTC timestamp
+        /// when a document is made (e.g. `created`). Omitted → the feature is
+        /// off.
+        #[arg(long, value_name = "FIELD")]
+        created_field: Option<String>,
         /// What this workspace calls itself, so another workspace can reference
         /// it (`id:<NAME>/<id>`). Omitted → anonymous, which is fine until
         /// something else needs to point here. No `/`, `:` or whitespace.
@@ -562,6 +567,14 @@ pub(crate) enum Command {
         /// ignored under `--as`. Default: the workspace's content format.
         #[arg(long)]
         ext: Option<String>,
+        /// A field the new document opens with, as `KEY=VALUE`; repeatable.
+        /// Typed like `set`'s value (`true`, `12`, `null`, else a string).
+        /// Written after what the workspace itself gives a new document — its
+        /// `created` stamp and each `fields.<name>.default` — and overriding a
+        /// default of the same name. `title`, `id`, `content` and the link
+        /// back to the parent are prov's own and cannot be set here.
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set: Vec<String>,
     },
     /// Give an arbitrary file (an image, a PDF, any binary) workspace-linked
     /// metadata: write a sidecar `<file>.yaml` beside it carrying its title,

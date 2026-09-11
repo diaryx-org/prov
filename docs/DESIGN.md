@@ -64,14 +64,14 @@ about it?** — and it sorts every field into three tiers:
    itself maintains*. A prov-maintained value must be machine-standard
    because prov has to parse, compare, and rewrite it reliably — years later,
    on another tool, after a merge. The `sha256:` fixity digest, the opaque id,
-   the registry, an RFC 3339 `updated` timestamp: all live here. They are
+   the registry, an RFC 3339 `updated` or `created` timestamp: all live here. They are
    standardized *precisely because* they are not for human eyes but for machine
    reasoning. Owning the format means owning the *resolution* too — timestamps
    carry six fractional digits, fixed width, so two of them written in the same
    second are orderable rather than tied.
 2. **Vocabulary & representation — configurable.** The *names and surface
    spellings* of those mechanisms: which fields are relations, the spanning one,
-   reference styles, id storage, embed format, the *name* of the `updated` field,
+   reference styles, id storage, embed format, the *names* of the `updated` and `created` fields,
    whether a feature is on. Configuring a workspace means re-spelling prov's
    fixed mechanisms for your vault — never redefining them. Essentially all
    prov config lives here.

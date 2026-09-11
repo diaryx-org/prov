@@ -84,6 +84,7 @@ fn main() -> ExitCode {
             fixity,
             no_record_deletions,
             updated_field,
+            created_field,
             workspace_id,
             adopt,
             attach,
@@ -103,6 +104,7 @@ fn main() -> ExitCode {
             fixity,
             no_record_deletions,
             updated_field,
+            created_field,
             workspace_id,
             adopt,
             attach,
@@ -152,6 +154,7 @@ fn main() -> ExitCode {
             dry_run,
             as_path,
             ext,
+            set,
         } => cmd_new(
             &title,
             &in_target,
@@ -160,6 +163,7 @@ fn main() -> ExitCode {
             dry_run,
             as_path.as_deref(),
             ext.as_deref(),
+            &set,
         ),
         Command::Attach {
             payload,
@@ -2676,8 +2680,12 @@ fn cmd_new(
     dry_run: bool,
     as_path: Option<&Path>,
     ext: Option<&str>,
+    set: &[String],
 ) -> CmdResult {
     let mut ctx = find_root()?;
+    // Parsed before anything is written, so a malformed `--set` refuses the
+    // command rather than leaving a document created without it.
+    let opening = opening_fields(&ctx, set)?;
     // Authoring a reference that registers (the default style, or any relation's
     // override — e.g. `part_of: id` in a split) mints IDs, as does an eager
     // policy; ensure a registry to persist them exists *before* the workspace is
@@ -2755,7 +2763,7 @@ fn cmd_new(
     }
     // (`ws` is the one built above — reusing it keeps any IDs a route just minted
     // in the same in-memory index this create registers into.)
-    let created = block_on(ws.create_with_title(&path, &parent_rel, title))?;
+    let created = block_on(ws.create_with_fields(&path, &parent_rel, title, &opening))?;
     persist(&ctx, &mut ws)?;
     // A separated child is a pair — the metadata node the parent links, plus its
     // prose body file. Name both in the narration so it is clear two files were
@@ -2777,6 +2785,39 @@ fn cmd_new(
     }
     println!("{}", created.node.display());
     Ok(ExitCode::SUCCESS)
+}
+
+/// The fields a document made by `new` opens with, beyond the ones prov
+/// authors itself, in the order they are written: the workspace's `created`
+/// stamp — the same clock and format as `updated`, and the library is as
+/// clockless here as it is there — then each `fields.<name>.default` the
+/// workspace declares, then every `--set`, which overrides a default of the
+/// same name. A `--set` without an `=` is a refusal, not an empty value.
+///
+/// Only the document `new` names gets these. The index nodes a route with
+/// `-p` synthesizes on the way are made by the library's route walk, and a
+/// `status: open` meant for a task is not meant for the month index above it.
+fn opening_fields(ctx: &Ctx, set: &[String]) -> Result<Mapping, AnyError> {
+    let mut fields = Mapping::new();
+    if !ctx.config.created.is_empty() {
+        fields.insert(ctx.config.created.clone(), Value::String(now_rfc3339()));
+    }
+    for (name, spec) in &ctx.config.fields {
+        if let Some(default) = &spec.default {
+            fields.insert(name.clone(), default.clone());
+        }
+    }
+    for pair in set {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(format!("--set {pair}: expected KEY=VALUE").into());
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("--set {pair}: expected KEY=VALUE").into());
+        }
+        fields.insert(key.to_string(), edit::infer_scalar(value).into());
+    }
+    Ok(fields)
 }
 
 /// Attach an arbitrary file — or, with `--all`, every loose file under the

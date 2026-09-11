@@ -1998,6 +1998,7 @@ mod reified_vocabulary_tests {
             values,
             vocabulary: Some("vocab/index.md".into()),
             reify: true,
+            default: None,
         }
     }
 
@@ -2164,6 +2165,7 @@ mod reified_vocabulary_tests {
             values: OpenClosed::Closed,
             vocabulary: None,
             reify: true,
+            default: None,
         };
         assert!(
             block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &none))

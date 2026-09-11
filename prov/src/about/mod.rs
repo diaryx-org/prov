@@ -934,22 +934,89 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
 
     bullets.push(format!(
         "**Timestamps.** {}",
-        if config.updated.is_empty() {
-            "No modification times are maintained. Any date you find in a file \
-             was written by a person."
-                .to_string()
-        } else {
-            format!(
+        match (config.created.is_empty(), config.updated.is_empty()) {
+            (true, true) => "No modification times are maintained. Any date you find in a file \
+                 was written by a person."
+                .to_string(),
+            (false, true) => format!(
+                "A field named {} is written when a document is made and holds a \
+                 UTC instant in RFC 3339 form (`1974-03-02T14:05:00Z`); it is not \
+                 touched after that. Any other date you find in a file was \
+                 written by a person.",
+                code(&config.created)
+            ),
+            (true, false) => format!(
                 "A field named {} is maintained automatically and holds a UTC \
                  instant in RFC 3339 form (`1974-03-02T14:05:00Z`). Any other \
                  date you find in a file was written by a person.",
                 code(&config.updated)
-            )
+            ),
+            (false, false) => format!(
+                "Two fields hold a UTC instant in RFC 3339 form \
+                 (`1974-03-02T14:05:00Z`): {} is written when a document is made \
+                 and not touched after that, and {} is maintained automatically \
+                 as the document changes. Any other date you find in a file was \
+                 written by a person.",
+                code(&config.created),
+                code(&config.updated)
+            ),
         }
     ));
 
+    // The values a document is given at birth. Stated because a reader who
+    // finds the same `status: open` on every recent file would otherwise take
+    // it for something each author chose to write.
+    let starting: Vec<String> = config
+        .fields
+        .iter()
+        .filter_map(|(name, spec)| {
+            spec.default.as_ref().map(|default| {
+                format!(
+                    "{} set to {}",
+                    code(name),
+                    code(&starting_value_text(default))
+                )
+            })
+        })
+        .collect();
+    if !starting.is_empty() {
+        bullets.push(format!(
+            "**Starting values.** A document made here opens with {}. That is \
+             where it starts, not a rule it has to keep: a file that says \
+             something else was changed on purpose.",
+            join_list(&starting)
+        ));
+    }
+
     s.push_str(&bullet_list(&bullets));
     s
+}
+
+/// A field's starting value as the text a reader would see in the file — a
+/// scalar as itself, a list or mapping in its inline form.
+fn starting_value_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Sequence(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(starting_value_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Mapping(map) => format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(k, v)| format!("{k}: {}", starting_value_text(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// The permission slip, and the short list of fields that are not yours.
@@ -1721,6 +1788,7 @@ mod tests {
                     values: OpenClosed::Closed,
                     vocabulary: Some("[Audiences](/vocab/audiences.yaml)".into()),
                     reify: true,
+                    default: None,
                 },
             )]),
             reference_target: Addressing::Id,
@@ -1913,6 +1981,7 @@ mod tests {
                     values: OpenClosed::Open,
                     vocabulary: Some("[Tags](/vocab/tags.yaml)".into()),
                     reify: false,
+                    default: None,
                 },
             ),
             (
@@ -1922,6 +1991,7 @@ mod tests {
                     values: OpenClosed::Closed,
                     vocabulary: Some("[Audiences](/vocab/audiences.md)".into()),
                     reify: true,
+                    default: None,
                 },
             ),
         ]);

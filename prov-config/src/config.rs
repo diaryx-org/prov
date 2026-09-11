@@ -165,7 +165,10 @@ impl OpenClosed {
 /// They compose (a closed vocabulary of strings is both), but neither implies
 /// the other: `created` is a date with no vocabulary, and a vocabulary field
 /// needs no declared type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// `PartialEq` without `Eq`: a starting value is a [`Value`], and a float has no
+// total equality. What the equality is for — the config round-trip tests, a
+// frontend asking whether two configs differ — needs only the partial one.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldSpec {
     /// The type the field's values are expected to take, if declared. Drives
     /// type-directed parsing and widget choice in a frontend (a `date` field
@@ -182,6 +185,14 @@ pub struct FieldSpec {
     /// body, stable id) rather than a bare key in a flat registry. A hint to
     /// tooling; prov validates membership either way.
     pub reify: bool,
+    /// The value a **new** document opens with in this field, if the
+    /// declaration names one — `status: open` on a task the moment it is
+    /// made. Written by `create` and never read back: it is a starting
+    /// value, not a rule about the field, and a document that unsets or
+    /// changes it is not wrong. Carried in the workspace rather than in a
+    /// caller's flags so that a stencil can state it and `about.md` can say
+    /// it.
+    pub default: Option<Value>,
 }
 
 /// The config spellings of [`FieldType`], in the order a diagnostic offers them.
@@ -323,7 +334,10 @@ impl About {
 }
 
 /// The workspace-wide policy a config declares.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` without `Eq`, for the reason [`FieldSpec`] gives: a field's
+/// starting value may be a float.
+#[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceConfig {
     /// When a document earns a stable ID — the identity registration triggers.
     pub identity: Registration,
@@ -428,6 +442,13 @@ pub struct WorkspaceConfig {
     /// human-friendly date is a *different*, user-owned field prov never
     /// touches (see DESIGN §2, "does prov read it back?").
     pub updated: String,
+    /// The frontmatter field `create` stamps with the current time when a
+    /// document is made — the sibling of [`updated`](Self::updated), written
+    /// once. Empty (the default) disables it. The same rule about name and
+    /// value applies: the name is yours, the value is RFC 3339 UTC, because
+    /// a value prov writes is one prov owns the format of, and a view
+    /// grouping by it (`by: month`) cuts ISO-8601 text.
+    pub created: String,
     /// What this workspace calls **itself** — the qualifier a cross-workspace
     /// reference (`id:<workspace>/<id>`) names it by. Empty (the default) means
     /// the workspace is anonymous: it can still *hold* foreign references, but
@@ -555,6 +576,7 @@ impl Default for WorkspaceConfig {
             fixity: Fixity::On,
             about: About::Structure,
             updated: String::new(),
+            created: String::new(),
             workspace_id: String::new(),
             root: None,
             out_of_scope: Vec::new(),
@@ -877,7 +899,8 @@ impl WorkspaceConfig {
                 }
             }
         }
-        // Field declarations: `fields: { <field>: { type, values, vocabulary, reify } }`.
+        // Field declarations:
+        // `fields: { <field>: { type, values, vocabulary, reify, default } }`.
         if let Some(fields) = meta.get("fields").and_then(Value::as_mapping) {
             for (name, spec) in fields {
                 let vocabulary = spec
@@ -888,12 +911,13 @@ impl WorkspaceConfig {
                     .get("type")
                     .and_then(Value::as_str)
                     .and_then(field_type_from_config_str);
-                // An entry that declares neither a type nor a vocabulary says
-                // nothing about the field that prov or a frontend could act on;
-                // recording it would only claim the field is described when it
-                // isn't. (`diagnose` reports the malformed spelling that most
-                // often causes this.)
-                if ty.is_none() && vocabulary.is_none() {
+                let default = spec.get("default").cloned();
+                // An entry that declares neither a type, nor a vocabulary, nor
+                // a starting value says nothing about the field that prov or a
+                // frontend could act on; recording it would only claim the
+                // field is described when it isn't. (`diagnose` reports the
+                // malformed spelling that most often causes this.)
+                if ty.is_none() && vocabulary.is_none() && default.is_none() {
                     continue;
                 }
                 let values = spec
@@ -909,6 +933,7 @@ impl WorkspaceConfig {
                         values,
                         vocabulary,
                         reify,
+                        default,
                     },
                 );
             }
@@ -961,6 +986,9 @@ impl WorkspaceConfig {
         }
         if let Some(v) = meta.get("updated").and_then(Value::as_str) {
             self.updated = v.to_string();
+        }
+        if let Some(v) = meta.get("created").and_then(Value::as_str) {
+            self.created = v.to_string();
         }
         if let Some(v) = meta
             .get("identity")
@@ -1134,6 +1162,9 @@ impl WorkspaceConfig {
                 if spec.reify {
                     entry.insert("reify".into(), Value::Bool(true));
                 }
+                if let Some(default) = &spec.default {
+                    entry.insert("default".into(), default.clone());
+                }
                 fields.insert(name.clone(), Value::Mapping(entry));
             }
             map.insert("fields".into(), Value::Mapping(fields));
@@ -1160,6 +1191,7 @@ impl WorkspaceConfig {
             Value::String(self.id_storage.as_config_str().into()),
         );
         map.insert("updated".into(), Value::String(self.updated.clone()));
+        map.insert("created".into(), Value::String(self.created.clone()));
         map.insert(
             "identity".into(),
             Value::String(registration_str(self.identity).into()),
@@ -1283,6 +1315,7 @@ const TOP_KEYS: &[&str] = &[
     "exports",
     "id_storage",
     "updated",
+    "created",
     "workspace_id",
     "root",
     "identity",
@@ -1303,7 +1336,7 @@ const REFERENCE_KEYS: &[&str] = &["notation", "path_style", "target", "label"];
 /// (`means` is free-form and never near-miss-matched, like `updated`).
 const RELATION_DEF_KEYS: &[&str] = &["cardinality", "inverse", "means"];
 /// Keys inside each `fields.<name>` entry.
-const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "reify"];
+const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "reify", "default"];
 
 /// If `meta` declares a `spec` newer than [`SPEC_VERSION`] — the version this
 /// build understands — the declared version. The signal that prov may be
@@ -1377,7 +1410,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     &["off", "structure"],
                 );
             }
-            "updated" => {} // free-form field name
+            "updated" | "created" => {} // free-form field names
             // A sequence of workspace-relative directory paths. Each entry is
             // judged on its own, so one malformed line is one issue naming
             // that line rather than a verdict on the whole list.
@@ -1740,6 +1773,11 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
                     }
                 }
                 "reify" => bool_axis(issues, &dotted, v),
+                // Any value: the starting value of a field is whatever the
+                // field holds, and a `seq` field's is a list. Whether it is a
+                // term of a closed vocabulary is `check`'s question, asked of
+                // the document that ends up carrying it.
+                "default" => {}
                 other => {
                     if let Some(sug) = nearest(other, FIELD_KEYS) {
                         issues.push(unknown(dotted, format!("{prefix}.{sug}")));
@@ -2434,6 +2472,9 @@ mod tests {
                         values: OpenClosed::Closed,
                         vocabulary: Some("[Audiences](/vocab/audiences.yaml)".to_string()),
                         reify: true,
+                        // A starting value, carried as the value it is rather
+                        // than as text, so a `default: 3` round-trips as an int.
+                        default: Some(Value::String("friends".to_string())),
                     },
                 ),
                 // A type with no vocabulary — the other half of a field
@@ -2445,6 +2486,7 @@ mod tests {
                         values: OpenClosed::default(),
                         vocabulary: None,
                         reify: false,
+                        default: None,
                     },
                 ),
             ]),
@@ -2515,6 +2557,7 @@ mod tests {
             // silently re-defaulted on the way back.
             about: About::Off,
             updated: "modified".to_string(),
+            created: "made".to_string(),
             // Non-default (the default is anonymous), so the round trip proves
             // the name survives rather than being silently dropped.
             workspace_id: "notes".to_string(),
@@ -3016,6 +3059,44 @@ mod tests {
         let spec = config.fields.get("created").expect("a recorded field");
         assert_eq!(spec.ty, Some(FieldType::Extended(ExtKind::LocalDate)));
         assert_eq!(spec.vocabulary, None);
+    }
+
+    /// The third independent half: a starting value alone describes something
+    /// `create` acts on, so it is a declaration on its own — and it is carried
+    /// as the value written, not as its spelling.
+    #[test]
+    fn a_field_may_declare_only_a_starting_value() {
+        let mut status = Mapping::new();
+        status.insert("default".into(), Value::String("open".into()));
+        let mut count = Mapping::new();
+        count.insert("default".into(), Value::Int(0));
+        let mut fields = Mapping::new();
+        fields.insert("status".into(), Value::Mapping(status));
+        fields.insert("count".into(), Value::Mapping(count));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+
+        let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
+        let status = config.fields.get("status").expect("a recorded field");
+        assert_eq!(status.default, Some(Value::String("open".into())));
+        assert_eq!(status.ty, None);
+        assert_eq!(status.vocabulary, None);
+        assert_eq!(
+            config.fields.get("count").and_then(|s| s.default.clone()),
+            Some(Value::Int(0))
+        );
+        // And `default` is a known key, so a near-miss is reported as one.
+        let mut typo = Mapping::new();
+        typo.insert("defualt".into(), Value::String("open".into()));
+        let mut fields = Mapping::new();
+        fields.insert("status".into(), Value::Mapping(typo));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+        let issues = diagnose(&Value::Mapping(top));
+        assert!(
+            issues.iter().any(|i| i.key == "fields.status.defualt"),
+            "{issues:?}"
+        );
     }
 
     /// The inverse guard: an entry that declares neither is not a description of

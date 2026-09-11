@@ -129,6 +129,7 @@ prov:
       values: closed          # open (folksonomy) | closed (must be a known term)
       vocabulary: '[Audiences](/vocab/audiences.yaml)'   # pointer to the term store
       reify: true             # each term is its own node (backlinks, prose, stable id)
+      default: friends        # what a new document opens with — see "Field types" below
     created:
       type: date              # a type alone is a complete declaration
   views:                      # declared lenses — see "Views" below
@@ -151,6 +152,7 @@ prov:
       view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
   updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
+  created: created            # name of the field stamped when a document is made (omit/"" = off)
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
   root: home.md               # which document is the root — read only from the workspace node (omit = found by the `index`/`readme` scan)
 
@@ -167,7 +169,7 @@ prov:
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
-`id_storage: both`, `updated: ""`, `workspace_id: ""`, `root:` unset,
+`id_storage: both`, `updated: ""`, `created: ""`, `workspace_id: ""`, `root:` unset,
 `identity: lazy`, `fixity: on`, `record_deletions: true`, `about: structure`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
@@ -442,11 +444,23 @@ prov config out_of_scope history,.obsidian
 
 ### Field types
 
-A `fields.<name>` entry declares two independent things, and needs at least one
-of them to be worth writing: a **type** (`type:` — what the value is) and a
-**controlled vocabulary** (`vocabulary:` + `values:` — which values are legal).
-Neither implies the other. `created` is a date nothing controls; an `audience`
-vocabulary needs no declared type. An entry with neither is ignored.
+A `fields.<name>` entry declares three independent things, and needs at least
+one of them to be worth writing: a **type** (`type:` — what the value is), a
+**controlled vocabulary** (`vocabulary:` + `values:` — which values are legal),
+and a **starting value** (`default:` — what a new document opens with). None
+implies another. `created` is a date nothing controls; an `audience` vocabulary
+needs no declared type; a `status` that starts as `open` need declare nothing
+else. An entry with none of the three is ignored.
+
+`default:` is written by `prov new` into the document it makes, after the title
+and the links prov authors itself, and is never read back: it is where a
+document starts, not a rule about the field, so a document that changes or
+unsets it is not a finding. A `--set name=value` on `new` overrides it for one
+document. The value is carried as written — `default: 0` is an int, `default:
+[]` an empty list — and whether it is a term of a closed vocabulary is
+`check`'s question, asked of the document that ends up holding it. It lives in
+the workspace rather than in a caller's flags so that a stencil can state it
+and `about.md` can say it.
 
 `reify:` says which *shape* the pointer's target takes, and only the default
 (`false`) is a whole-file store: a flat vocabulary is machinery holding a
