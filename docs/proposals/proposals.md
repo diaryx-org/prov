@@ -1,8 +1,8 @@
 ---
-title: `prov` proposals
+title: Proposals
 author: adammharris
 created: 2026-07-31
-updated: 2026-09-11
+updated: 2026-09-11T18:52:30.380775Z
 part_of: '[prov](/README.md)'
 contents:
 - '[Snapshots — a pre-sync safety net](/docs/proposals/history/proposal-snapshots-v1.md)'

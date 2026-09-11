@@ -2,7 +2,7 @@ title: prov config
 spec: 1
 content_format: markdown
 id_storage: both
-updated: ''
+updated: updated
 identity: lazy
 fixity: on
 record_deletions: true
@@ -14,3 +14,30 @@ references:
   path_style: root
   target: path
   label: false
+created: created
+fields:
+  status:
+    values: closed
+    vocabulary: '[Statuses](/vocab/statuses.yaml)'
+    default: open
+  created:
+    type: datetime
+  updated:
+    type: datetime
+views:
+  open-tasks:
+    label: Open tasks
+    group: status
+    under: '[[Tasks]]'
+    where:
+      not:
+        equals: { status: [done, dropped] }
+  proposals:
+    label: Proposals
+    group: status
+    under: '[[Proposals]]'
+    where: { has: status }
+  work:
+    label: All work
+    group: status
+    where: { has: status }

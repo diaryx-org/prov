@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-09-09
 updated: 2026-09-09
 status: implemented
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Crossing the boundary — a workspace that acknowledges a parent, and a reader that descends
 

@@ -17,6 +17,8 @@ Deferred work, one file per item, each with a `status` of `open`,
 naming the commit that resolved it, not deleting the file — and not delisting
 it either: a closed task keeps its place in `contents` above, as a resolved
 [proposal](/docs/proposals/proposals.md) does, because a document nothing
-reaches is a `check` finding. What is open is what `dx tasks` reads off the
+reaches is a `check` finding. What is open is what `prov views open-tasks`
+lists — the `status` vocabulary and the view are the `tasks` preset this
+repository ships in `presets/tasks/` — and what `dx tasks` reads off the
 `status` key. A bug is a task with a repro. Arguments for a change that may
 lose are proposals, not tasks.

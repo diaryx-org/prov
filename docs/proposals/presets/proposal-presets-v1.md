@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-09-10
 updated: 2026-09-11
 status: draft
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Presets — a common setup, written out rather than named
 
@@ -423,10 +423,12 @@ later without the mechanism changing.
   workspace will put its index, so a view's `under:` now takes any link the
   workspace resolves — a path, an `id:`, or a title (`[[Tasks]]`) — and the
   `tasks` preset anchors by title.
-- **Phase 2 — this repository takes it.** The `tasks` config committed here;
-  `tasks.md`'s prose and the org rule corrected so that `contents` is the spine
-  and the view is the open list; the proposals index says the same thing it
-  already does.
+- **Phase 2 — this repository takes it.** ✅ Both presets applied here — the
+  built-in for `created`/`updated`, `presets/tasks/` for the rest — and a test
+  applies each again to find nothing to add. The proposals index retitled to
+  `Proposals` so the view's title anchor finds it; `tasks.md`'s prose names
+  the view as the open list. The org rule is corrected separately, in the
+  repository that holds it.
 - **Phase 3 — `dx tasks` reads a view.** Per repository, `prov views work
   --json` replaces the per-file `prov meta` loop and the `KINDS` table, in
   repositories that are prov workspaces. Devtools work, after the above ships.

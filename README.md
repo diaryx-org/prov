@@ -14,7 +14,7 @@ contents:
 - '[Manifests](/docs/manifests.md)'
 - '[Releasing](/docs/releasing.md)'
 - '[Changelog](/docs/CHANGELOG.md)'
-- '[`prov` proposals](/docs/proposals/proposals.md)'
+- '[Proposals](/docs/proposals/proposals.md)'
 - '[Tasks](/docs/tasks/tasks.md)'
 - '[Author''s notes](/authors-notes.md)'
 config: prov.yaml

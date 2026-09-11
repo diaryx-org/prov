@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-08-14
 updated: 2026-09-11
 status: rejected
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Provenance — who wrote this, who checked it, and against what
 

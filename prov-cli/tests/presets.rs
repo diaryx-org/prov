@@ -224,3 +224,24 @@ fn a_directory_that_is_not_a_preset_is_refused() {
         "{err}"
     );
 }
+
+/// This repository is the preset's first consumer: its own `prov.yaml` and
+/// `vocab/statuses.yaml` are what applying `presets/tasks/` wrote, and the
+/// built-in preset was applied beside it. Applying either again finds nothing
+/// to add — which is the test that the stencil and the config cannot drift.
+#[test]
+fn this_repository_carries_both_presets() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .unwrap();
+    for args in [vec!["presets"], vec!["presets", &tasks_preset()]] {
+        let (out, err) = ok(&repo, &args);
+        assert!(
+            !out.contains("+ ") && !out.contains("! "),
+            "`prov {}`:\n{out}",
+            args.join(" ")
+        );
+        assert!(err.contains("nothing to write"), "{err}");
+    }
+}

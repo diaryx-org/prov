@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-09-11
 updated: 2026-09-11
 status: draft
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Provenance v2 — who wrote this, who vouched for it, and against what
 

@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-07-31
 updated: 2026-09-02
 status: implemented
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 contents:
 - '[Prov 1.draft](/docs/proposals/self-hosted-kernel/examples/prov-1.draft.md.yaml)'
 - '[ORGANIZATION](/docs/proposals/self-hosted-kernel/examples/ORGANIZATION.md.yaml)'

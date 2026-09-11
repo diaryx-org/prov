@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-09-09
 updated: 2026-09-09
 status: implemented
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # The workspace node — the config document, found without the root
 

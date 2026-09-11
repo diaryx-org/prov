@@ -4,7 +4,7 @@ author: adammharris
 created: 2026-07-31
 updated: 2026-09-02
 status: rejected
-part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Snapshots — a pre-sync safety net
 

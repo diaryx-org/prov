@@ -1,6 +1,6 @@
 ---
 title: How this workspace is organized
-generated_by: prov 0.10.0
+generated_by: prov 0.11.1
 ---
 
 # How this workspace is organized
@@ -92,12 +92,50 @@ it.
 with a single top. `links` and `link_of` are laid over that tree and may
 point anywhere; follow them for meaning, never to discover what is here.
 
+## Fields with fixed vocabularies
+
+One field does not hold free text. Its permitted values are listed in
+files of their own.
+
+| field | rule | values listed in |
+| --- | --- | --- |
+| `status` | **closed** — every value must appear in the list | `/vocab/statuses.yaml` |
+
+A closed field is worth taking seriously: a value not on the list is an
+error rather than a new category.
+
+## Other ways through the files
+
+The arrangement described above puts every document in exactly one place,
+which is what lets the whole directory be walked from its top. Three other
+ways of reading the same documents are written down here as well. Each
+gathers the files into groups by something the files themselves say, and
+none of them is a second copy of anything: a document can turn up under
+several groups, or under none, and still sit in the one place the
+arrangement above gives it.
+
+| what it is called | grouped by | covers | shows everything it covers |
+| --- | --- | --- | --- |
+| Open tasks | what the file says under `status` | what is filed under `Tasks`, however deep | no |
+| Proposals | what the file says under `status` | what is filed under `Proposals`, however deep | no |
+| All work | what the file says under `status` | every file here | no |
+
+Where that last column says no, a further condition is set on the grouping
+— a value a file has to carry, or one it must not — and files in range
+that do not meet it are left out. The condition itself is written in this
+directory's settings rather than repeated here; the files it hides are
+still ordinary files, reachable the way everything else here is.
+
 ## Files that are not part of the tree
 
-Following `contents` will never reach one file here. That is deliberate,
-not an omission. `README.md` points at it directly, through a key named
-`config`, and it points at nothing in return. It holds this directory's
-settings — the file this page was generated from (`prov.yaml`).
+Following `contents` will never reach some of the files here. That is
+deliberate, not an omission. `README.md` points at each of them directly,
+through a key that names what it is, and none of them points back.
+
+| key in `README.md` | what it points at |
+| --- | --- |
+| `config` | this directory's settings — the file this page was generated from (`prov.yaml`) |
+| `fields.status.vocabulary` | the permitted values of `status` (`/vocab/statuses.yaml`) |
 
 Files reached that way are machinery: they are not documents in the tree,
 they carry no `part_of`, and they are not counted when something asks what
@@ -126,14 +164,20 @@ as its payload. Everything in the tree is plain text, always.
   listed it — so that if you get the file back from wherever this
   directory is backed up or version-controlled, the record says what it
   was part of. Nothing here can give you the file itself back.
-- **Timestamps.** No modification times are maintained. Any date you find
-  in a file was written by a person.
+- **Timestamps.** Two fields hold a UTC instant in RFC 3339 form
+  (`1974-03-02T14:05:00Z`): `created` is written when a document is made
+  and not touched after that, and `updated` is maintained automatically as
+  the document changes. Any other date you find in a file was written by a
+  person.
+- **Starting values.** A document made here opens with `status` set to
+  `open`. That is where it starts, not a rule it has to keep: a file that
+  says something else was changed on purpose.
 
 ## What is safe to change
 
 All of it. It is your text, and the structure is in the text.
 
-Two fields are worth leaving alone, both because something else may
+Three fields are worth leaving alone, each because something else may
 already depend on them:
 
 - **`id`** — a permanent handle. Ids are never reissued, even after a
@@ -141,6 +185,7 @@ already depend on them:
   told apart from a reference to something that never existed.
 - **`content_hash`** — a checksum. Changing it by hand asserts something
   about the bytes that may not be true.
+- **`updated`** — maintained automatically, and in a fixed format.
 
 The relation fields — `contents`, `part_of`, `links` and `link_of` — are
 meant to be edited by hand. That is the whole point of keeping them in the
