@@ -32,6 +32,138 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.12.0 — 2026-09-11
+
+### Breaking
+
+- **discovery** — the workspace node — find the config document without the root ([`1f4a2f2`](https://github.com/diaryx-org/prov/commit/1f4a2f20f2f8625b54d12a9356b48eb9a57ae175))
+- **check** — report what only a workspace node can get wrong ([`c785583`](https://github.com/diaryx-org/prov/commit/c785583d99af7ddfde267f3b6b0fbd480eeb1175))
+- **check** — a named root may say what contains it ([`2e779b7`](https://github.com/diaryx-org/prov/commit/2e779b7c56937b20c5e7e102496aaf421b256589))
+
+### Added
+
+- **crossing** — open a peer and descend into it ([`cf1a296`](https://github.com/diaryx-org/prov/commit/cf1a296ab0509379ca7bfabdd3f628b8e5635dd2))
+- **cli** — tree, check and explore cross a confirmed boundary ([`66e61b0`](https://github.com/diaryx-org/prov/commit/66e61b051f32b045a4fe640ba298ecc1595f27c6))
+- **cli** — set and unset land their edit with the workspace's bookkeeping ([`b3a3c71`](https://github.com/diaryx-org/prov/commit/b3a3c71ddc63e05dfb821f25b1e65ee53193c308))
+- **config** — a created axis stamped by new, and the value a field starts with ([`c6f6347`](https://github.com/diaryx-org/prov/commit/c6f63473b286d7df0b2347bfc2bae6338ed7c13e))
+- **cli** — views --json prints a view's rows, each with its metadata ([`762ee9f`](https://github.com/diaryx-org/prov/commit/762ee9fd43e6b5779c2a6882640ae02f5356eac6))
+- **about** — the page lists the views a workspace declares ([`91fc90b`](https://github.com/diaryx-org/prov/commit/91fc90b6b7f7e23b50568f45372cd6032b6867ac))
+- **preset** — a preset is a directory written out in full, and the default is the one prov ships ([`cff11fe`](https://github.com/diaryx-org/prov/commit/cff11fe0129d6fcf56084fb42797eae397ccca33))
+- **views** — a view's anchor is any link the workspace resolves, a title included ([`8b0e6a0`](https://github.com/diaryx-org/prov/commit/8b0e6a0e861effe3e0e1422659d339656fb54a84))
+- **config** — a field declaration scoped to a subtree, and status declared per index ([`d9532e1`](https://github.com/diaryx-org/prov/commit/d9532e10e1067c1a13962a83acef8a74487e7700))
+- **provenance** — `prov confirm` — the keeper's record that a document was read and found right ([`64137dd`](https://github.com/diaryx-org/prov/commit/64137dd591811495c9d0c5c9a9e7996356d3a3b7))
+
+### Fixed
+
+- **rename** — a move carries a document's body images ([`6c4431a`](https://github.com/diaryx-org/prov/commit/6c4431a6b220a976e715e5b712ba5e201f60710b))
+
+### Changed
+
+- **mutate** — retitle and rename find their inbound links through a stat-validated index kept across verbs ([`53d768c`](https://github.com/diaryx-org/prov/commit/53d768cb48fde41243255f27ed38d6f9a9990898))
+
+### Behavioural changes
+
+- a top-level `prov.yaml` (or `prov.json`, …) that the root
+ does *not* name through `config:` is now read as workspace policy, where it was
+ previously ignored. A workspace holding an unrelated file under that exact
+ stem and a metadata extension will start applying it. Where the root does name
+ it — the ordinary case, and what this repository does — nothing changes, and a
+ pointed config document still outranks the conventionally-found one.
+
+- `WorkspaceConfig` gains `root`, `Settings` gains `root`, and
+ `Discovered` gains `node`, so exhaustive struct literals of those three need a
+ new field. `ConfigIssueKind` gains `MalformedRoot`, so exhaustive matches on it
+ need a new arm.
+
+- `Finding` gains four variants, so exhaustive matches on it
+ need new arms. A workspace holding a second file under the node stem, or a
+ `config:` pointer at something other than its `prov.yaml`, will start seeing
+ `check` findings it did not see before; both describe real ambiguities and
+ neither changes what prov reads.
+
+- `named_root_contained` is no longer reported for a named root whose spanning parent resolves to another workspace (`id:<workspace>/<id>`); it still is for a parent that resolves locally, including one qualified with the workspace's own name.
+
+- `prov explore` now crosses a cross-workspace reference when this device's peer map records the workspace and the peer confirms its own name. The menu item reads `<relation>: <id> → workspace <name>` with the peer's whereabouts as its hint, and selecting it moves the session into that workspace (Back returns); it previously printed a line describing the peer and stayed. Selecting one whose peer is unknown, mismatched, anonymous without `--unverified`, or a URL still prints the reason and stays.
+
+- a cross-directory `rename` (and `mv`) now rewrites
+`![alt](target)` path targets in the moved document's body, and an inbound
+`![alt](target)` naming the moved path, where before both were left as
+written. `convert` restyles image targets alongside links.
+
+- `prov_graph::link::BodyLink` has a new public field
+
+- A second `retitle` or `rename` on the same `Workspace`
+reads only the target and the documents it rewrites, plus one `metadata`
+call per reachable document, where each call previously read every
+reachable document. A document rewritten behind prov's back to the same
+length inside one modification-time tick of the read it followed is not
+seen by that verb's link maintenance until the index is next rebuilt; the
+change set's expectations still refuse to overwrite the racing edit, and
+`check` reports the label or link left behind. The inbound set is the
+documents reachable down the spanning relation from the root the index was
+built from; in a workspace whose `part_of` chain disagrees with its
+`contents`, that can differ from the census the climb from the target used
+to anchor.
+
+- inside a workspace whose config names an `updated`
+field, `prov set` and `prov unset` now stamp that field with the current
+RFC 3339 UTC instant and restate a recorded `content_hash`, writing
+through the workspace journal; before, they rewrote the file's text and
+nothing else. Outside a workspace they are unchanged. Both narrate the
+stamp on stderr; stdout is still the edited path.
+
+- `prov edit` and `prov stamp` no longer write the
+`updated` field into the workspace node, the registry, the deletion log,
+or a flat vocabulary store; the checksum half is unaffected.
+
+- `prov_config::WorkspaceConfig` and `FieldSpec` have a
+new public field each (`created: String`, `default: Option<Value>`), and
+neither derives `Eq` any more, since a starting value may be a float;
+code constructing either by struct literal without `..Default::default()`
+must name the field, and code relying on `Eq` must use `PartialEq`.
+
+- a `fields.<name>` entry carrying only a `default` is
+now recorded as a declaration, where before an entry with neither a type
+nor a vocabulary was ignored. `check` reports `defualt` as a near-miss of
+a known key.
+
+- a workspace that declares `views:` gains an "Other ways
+through the files" section in its generated `about.md`. Until the page is
+regenerated the workspace's existing one is stale: `prov about --check`
+exits non-zero and `check` reports `AboutStale`, which `prov about` or
+`check --fix` resolves. A workspace that declares no views renders exactly
+as before.
+
+- `prov init` with no `--preset` now writes `created:
+created` and `updated: updated` into the new workspace's config, where
+before both were `''`. Every document `new` makes there carries a
+`created` stamp, and `edit`, `set`, `unset` and `stamp` maintain
+`updated`. `--updated-field`/`--created-field` still win, and `init
+--preset `<dir>`` with a preset that names neither leaves both off. The
+`init` summary names them.
+
+- a `views.<name>.under` written as a bare name or a
+`[[wikilink]]` now resolves by title (or file stem) through the
+workspace's title index, where before it was read as a relative path
+and the view errored with "no document exists there". A workspace that
+happened to have a file at that literal path is unaffected only if no
+document carries the name as a title; if one does, the title now wins.
+
+- `prov_config::WorkspaceConfig::fields` is now a
+`BTreeMap<String, Vec<FieldSpec>>`, and `FieldSpec` has a new public
+field `under: Option<String>`; `WorkspaceConfig::field(name)` returns the
+unscoped declaration and `field_declarations()` flattens them all. A
+consumer that read `config.fields.get(name)` as one declaration reads a
+list; one that judged a document's terms without asking
+
+- `prov check` has a new finding, `field_scope_unresolved`
+(`check --json` kind), for a scoped declaration whose anchor names no
+document. A `fields.<name>` entry written as a sequence is now read as
+declarations, where before it was ignored as malformed.
+
+- `check` now reads a `confirmed` frontmatter list. A workspace that used that key for a list of `{by, at}` mappings of its own may see `confirmation_stale` findings where before the key was carried untouched; any other shape under the key is still ignored.
+
+
 ## v0.11.1 — 2026-09-03
 
 ### Breaking
