@@ -210,8 +210,9 @@ pub(crate) enum Command {
         /// what lets `prov restore` relink it once you have the file back.
         #[arg(long)]
         no_record_deletions: bool,
-        /// Frontmatter field `prov edit` stamps with an RFC 3339 UTC timestamp
-        /// on a content change (e.g. `updated`). Omitted → the feature is off.
+        /// Frontmatter field prov's own edits (`edit`, `set`, `unset`, `stamp`)
+        /// stamp with an RFC 3339 UTC timestamp on a content change (e.g.
+        /// `updated`). Omitted → the feature is off.
         #[arg(long, value_name = "FIELD")]
         updated_field: Option<String>,
         /// What this workspace calls itself, so another workspace can reference
@@ -308,6 +309,12 @@ pub(crate) enum Command {
     },
     /// Set a metadata field (comment- and format-preserving; creates the
     /// block when the document has none).
+    ///
+    /// Inside a workspace the edit is landed the way `edit` lands one: the
+    /// workspace's `updated` field is stamped with the current instant and a
+    /// recorded content checksum is restated, in one crash-safe write. Setting
+    /// the `updated` field itself keeps the value you gave. Outside a
+    /// workspace the file is simply rewritten.
     Set {
         /// Path to a document.
         #[arg(value_name = "TARGET")]
@@ -318,7 +325,8 @@ pub(crate) enum Command {
         /// everything else is a string.
         value: String,
     },
-    /// Remove a metadata field (comment- and format-preserving).
+    /// Remove a metadata field (comment- and format-preserving). Stamps
+    /// `updated` inside a workspace as `set` does.
     Unset {
         /// Path to a document.
         #[arg(value_name = "TARGET")]

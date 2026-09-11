@@ -994,6 +994,7 @@ pub(crate) fn cmd_init(
             root_dir: dir.clone(),
             root_doc: PathBuf::from(&root_name),
             registry: None,
+            node: Some(config_rel.clone()),
             config: ws_config.clone(),
         };
         let mints = ctx.config.mints_on_mutation();
@@ -1072,6 +1073,7 @@ pub(crate) fn cmd_init(
                 root_dir: dir.clone(),
                 root_doc: PathBuf::from(&root_name),
                 registry: None,
+                node: Some(config_rel.clone()),
                 config: ws_config.clone(),
             };
             let mints = ctx.config.mints_on_mutation();
@@ -1112,6 +1114,7 @@ pub(crate) fn cmd_init(
             root_dir: dir.clone(),
             root_doc: PathBuf::from(&root_name),
             registry: None,
+            node: Some(config_rel.clone()),
             config: ws_config.clone(),
         };
         match workspace(&ctx).and_then(|ws| {

@@ -529,7 +529,8 @@ these reminders.
 ## 11. When something changed outside prov
 
 `edit` restamps the checksum and the `updated` field when it saves, because it
-launched the editor and knows whether you changed anything. Nothing else does:
+launched the editor and knows whether you changed anything, and `set` and
+`unset` do the same, because they *are* the edit. Nothing else does:
 a sync client, another editor, a script, or `git checkout` all move bytes behind
 prov's back, and the document's own bookkeeping is then out of date.
 
@@ -729,7 +730,7 @@ rules as records for a program making it.
 | `tree --follow` / `check --follow` | cross into the other workspaces this one references, where this device's peer map says they are — the peer's own subtree, or its own check reported beside yours. Off by default; nothing is written across a boundary |
 | `show FILE`                     | summarize a document                                     |
 | `meta / get / links / body`     | read metadata or body                                    |
-| `set FILE KEY VALUE` / `unset`  | edit a metadata field, format-preserving                 |
+| `set FILE KEY VALUE` / `unset`  | edit a metadata field, format-preserving, stamping `updated` in a workspace |
 | `edit FILE`                     | open in `$EDITOR`, restamping fixity/`updated` on save    |
 | `stamp FILE` / `stamp --all`    | the same bookkeeping for an edit prov didn't host (a sync, another editor) |
 | `render FILE`                   | render the body to HTML                                  |

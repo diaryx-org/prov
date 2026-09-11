@@ -419,8 +419,9 @@ pub struct WorkspaceConfig {
     /// Whether the workspace generates **`about.md`**, the prose page that tells
     /// a stranger how to read this directory. On by default; see [`About`].
     pub about: About,
-    /// The frontmatter field `prov edit` stamps with the current time when a
-    /// document's content changes — the machine-maintained "last updated" field.
+    /// The frontmatter field prov's own edits (`edit`, `set`, `unset`, `stamp`)
+    /// stamp with the current time when a document's content changes — the
+    /// machine-maintained "last updated" field.
     /// Empty (the default) disables it. The *name* is yours (`updated`,
     /// `modified`, `lastmod`); the *value* is always machine-standard (RFC 3339
     /// UTC), because prov reads it back to know when to rewrite it. A

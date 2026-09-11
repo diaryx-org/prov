@@ -255,6 +255,11 @@ struct Ctx {
     root_doc: PathBuf,
     /// The registry document the root declares (relative to `root_dir`), if any.
     registry: Option<PathBuf>,
+    /// The workspace node (`prov.yaml`) found by convention, relative to
+    /// `root_dir`, if any — the one document a timestamp stamp must never land
+    /// in, because its `updated` key is the *name* of the field and not a
+    /// value of it.
+    node: Option<PathBuf>,
     /// The effective workspace config (root frontmatter overlaid by the linked
     /// config document, over defaults).
     config: WorkspaceConfig,
@@ -339,6 +344,7 @@ fn find_root_quiet_at(dir: &Path) -> Result<Ctx, AnyError> {
             root_dir: d.root_dir,
             root_doc: d.root_doc,
             registry: d.registry,
+            node: d.node.node,
             config: d.config,
         }),
         prov::Discovery::Ambiguous { dir, candidates } => Err(format!(
@@ -357,6 +363,72 @@ with metadata and no part_of\n\
                 .into(),
         ),
     }
+}
+
+/// The workspace around `dir`, if there is one — for a command that works on
+/// a *file* and keeps working outside any workspace (`set`, `unset`), but does
+/// the workspace's bookkeeping when it finds itself inside one. Every answer
+/// other than a clean find is `None`: an ambiguous root is a fault `check` and
+/// `edit` report, and a single-field edit is not the place to refuse over it.
+fn workspace_around(dir: &Path) -> Option<Ctx> {
+    match block_on(prov::discover(&StdFs, dir)) {
+        Ok(prov::Discovery::Found(d)) => Some(Ctx {
+            root_dir: d.root_dir,
+            root_doc: d.root_doc,
+            registry: d.registry,
+            node: d.node.node,
+            config: d.config,
+        }),
+        _ => None,
+    }
+}
+
+/// The documents that are the workspace's own record-keeping rather than its
+/// content — the node, the registry, the deletion log, and each flat `fields`
+/// vocabulary — as workspace-relative paths.
+///
+/// These are exactly the whole-file stores `check` holds to the whole-file
+/// rule, plus the node, and they are enumerated here for the opposite reason:
+/// a timestamp is a claim about *content*, and stamping one into a store
+/// corrupts it. The node's `updated:` key names the field, so a stamp there
+/// overwrites the name with a value; the registry is a record store prov
+/// re-lays-out from its own shape. A reified vocabulary is content — an index
+/// node with term documents under it — and is not listed.
+fn machinery(
+    ctx: &Ctx,
+    ws: &Workspace<StdFs, Minter, FileIndex>,
+) -> Result<Vec<PathBuf>, AnyError> {
+    let mut stores: Vec<PathBuf> = ctx.node.iter().cloned().collect();
+    stores.extend(ctx.registry.iter().cloned());
+    stores.extend(block_on(ws.deletions_path(&ctx.root_doc))?);
+    for spec in ctx.config.fields.values() {
+        if spec.reify {
+            continue;
+        }
+        if let Some(pointer) = &spec.vocabulary
+            && let Some(p) = ws.vocabulary_path(&ctx.root_doc, pointer)
+        {
+            stores.push(p);
+        }
+    }
+    Ok(stores)
+}
+
+/// The timestamp half of a content change to `rel`: the workspace's `updated`
+/// field and the instant `now`, or `None` when the workspace keeps no such
+/// field or `rel` is [machinery](machinery) rather than content. Shared by
+/// every verb that stamps — `edit`, `set`, `unset`, `stamp` — so they cannot
+/// disagree about which documents a timestamp may land in.
+fn updated_stamp<'a>(
+    ctx: &'a Ctx,
+    machinery: &[PathBuf],
+    rel: &Path,
+    now: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    if ctx.config.updated.is_empty() || machinery.iter().any(|m| m == rel) {
+        return None;
+    }
+    Some((ctx.config.updated.as_str(), now))
 }
 
 /// The workspace the multi-document commands drive: rooted at the discovered
@@ -808,7 +880,7 @@ fn cmd_render(file: &Path) -> CmdResult {
 fn cmd_set(file: &Path, key: &str, value: &str) -> CmdResult {
     let (text, doc) = load(file)?;
     let updated = edit::set_in_text(&text, doc.carrier, key, edit::infer_scalar(value))?;
-    std::fs::write(file, updated)?;
+    write_field_edit(file, key, &updated)?;
     println!("{}", file.display());
     Ok(ExitCode::SUCCESS)
 }
@@ -816,9 +888,52 @@ fn cmd_set(file: &Path, key: &str, value: &str) -> CmdResult {
 fn cmd_unset(file: &Path, key: &str) -> CmdResult {
     let (text, doc) = load(file)?;
     let updated = edit::unset_in_text(&text, doc.carrier, key)?;
-    std::fs::write(file, updated)?;
+    write_field_edit(file, key, &updated)?;
     println!("{}", file.display());
     Ok(ExitCode::SUCCESS)
+}
+
+/// Land a single-field edit — the new `text` of `file` after `key` was set or
+/// removed — with the bookkeeping the edit implies when the file is a
+/// document in a workspace, and as a bare rewrite when it is not.
+///
+/// Inside a workspace this is the same seam `edit` uses: one journaled write
+/// that stamps the `updated` field with the current instant and restates the
+/// content checksum where the document records one — because an edit that
+/// closes a task with `set status done` is an edit, and a `check` that later
+/// asks when the document last changed should get the answer. Outside one
+/// (a file in a tarball, a stray document, a workspace that cannot be opened)
+/// the command stays what it was — a text rewrite and nothing else — so a
+/// script reading and writing loose files keeps working.
+///
+/// The one field the stamp defers to is its own: `set <file> updated <at>`
+/// is the user naming the instant, and restamping it with now would make the
+/// argument unreachable. A dotted `key` is compared by its first segment, so
+/// setting *inside* the field defers too.
+fn write_field_edit(file: &Path, key: &str, text: &str) -> Result<(), AnyError> {
+    let dir = std::env::current_dir()?.join(file);
+    let ctx = dir.parent().and_then(workspace_around);
+    let Some(ctx) = ctx else {
+        std::fs::write(file, text)?;
+        return Ok(());
+    };
+    let Ok(rel) = ws_rel(&ctx, file) else {
+        std::fs::write(file, text)?;
+        return Ok(());
+    };
+    let mut ws = workspace(&ctx)?;
+    let now = now_rfc3339();
+    let machinery = machinery(&ctx, &ws)?;
+    let own_field = key.split('.').next() == Some(ctx.config.updated.as_str());
+    let stamp = (!own_field)
+        .then(|| updated_stamp(&ctx, &machinery, &rel, &now))
+        .flatten();
+    block_on(ws.save_document(&rel, text, stamp))?;
+    persist(&ctx, &mut ws)?;
+    if let Some((field, _)) = stamp {
+        eprintln!("{} — stamped `{field}`", rel.display());
+    }
+    Ok(())
 }
 
 fn cmd_edit(file: &Path) -> CmdResult {
@@ -843,8 +958,8 @@ fn cmd_edit(file: &Path) -> CmdResult {
     // no-op when neither is enabled.
     let mut ws = workspace(&ctx)?;
     let now = now_rfc3339();
-    let updated =
-        (!ctx.config.updated.is_empty()).then_some((ctx.config.updated.as_str(), now.as_str()));
+    let machinery = machinery(&ctx, &ws)?;
+    let updated = updated_stamp(&ctx, &machinery, &rel, &now);
     let wrote = block_on(ws.record_content_update(&rel, updated))?;
     persist(&ctx, &mut ws)?;
 
@@ -912,10 +1027,12 @@ fn cmd_stamp(target: Option<&Path>, all: bool, no_timestamp: bool, dry_run: bool
     let named = target.is_some();
 
     let now = now_rfc3339();
-    let field = &ctx.config.updated;
     // The workspace may not record an `updated` field at all, in which case
     // there is no timestamp half to this command and only the checksum moves.
-    let timestamp = (!no_timestamp && !field.is_empty()).then_some((field.as_str(), now.as_str()));
+    // Which documents may carry one is decided per path below, so that naming
+    // the workspace node stamps its checksum (it has none) and never its
+    // config.
+    let machinery = machinery(&ctx, &ws)?;
 
     let mut stamped = 0usize;
     let mut seeded = 0usize;
@@ -946,7 +1063,9 @@ fn cmd_stamp(target: Option<&Path>, all: bool, no_timestamp: bool, dry_run: bool
             ContentState::Unrecorded => (true, named),
             ContentState::Intact | ContentState::Unverifiable => (false, false),
         };
-        let timestamp = claims_edit.then_some(timestamp).flatten();
+        let timestamp = (claims_edit && !no_timestamp)
+            .then(|| updated_stamp(&ctx, &machinery, &path, &now))
+            .flatten();
         if !write {
             if named {
                 eprintln!(
