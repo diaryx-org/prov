@@ -220,6 +220,15 @@ pub(crate) enum Command {
         /// off.
         #[arg(long, value_name = "FIELD")]
         created_field: Option<String>,
+        /// A preset directory to write into the new workspace instead of the
+        /// built-in one: a `prov.yaml` carrying the axes it declares
+        /// (`fields`, `views`, …) and, beside it, the stores those axes
+        /// point at, laid out as the workspace root will be. Omitted → the
+        /// built-in preset, which turns on `created` and `updated`. A flag
+        /// that names an axis the preset also declares (`--updated-field`)
+        /// wins. `prov presets` shows either without writing.
+        #[arg(long, value_name = "DIR")]
+        preset: Option<PathBuf>,
         /// What this workspace calls itself, so another workspace can reference
         /// it (`id:<NAME>/<id>`). Omitted → anonymous, which is fine until
         /// something else needs to point here. No `/`, `:` or whitespace.
@@ -378,6 +387,28 @@ pub(crate) enum Command {
         /// The export to preview (default: list every declared export).
         #[arg(value_name = "NAME")]
         name: Option<String>,
+    },
+    /// Show what a preset would write into this workspace, or write it.
+    ///
+    /// A preset is a stencil: a directory laid out like the workspace root,
+    /// holding a `prov.yaml` with the axes it declares and the stores they
+    /// point at. Applying it writes those out, in full, into the workspace's
+    /// own config and files — and then the workspace is ordinary, fully
+    /// spelled-out config that no reader needs the preset to understand. With
+    /// no DIR, the built-in preset (`created` and `updated`, the one `init`
+    /// writes when told nothing else).
+    ///
+    /// Additive, and refuses collisions: an entry the workspace already
+    /// declares the same way is nothing to do; one it declares differently
+    /// is reported, and nothing is written. Without `--write`, prints the
+    /// plan and touches nothing.
+    Presets {
+        /// The preset directory (default: the built-in preset).
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
+        /// Write it, rather than only saying what would be written.
+        #[arg(long)]
+        write: bool,
     },
     /// Print the containment tree that unfolds from a root document.
     Tree {

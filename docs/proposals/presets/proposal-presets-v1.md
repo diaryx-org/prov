@@ -2,7 +2,7 @@
 title: presets
 author: adammharris
 created: 2026-09-10
-updated: 2026-09-10
+updated: 2026-09-11
 status: draft
 part_of: '[`prov` proposals](/docs/proposals/proposals.md)'
 ---
@@ -352,10 +352,14 @@ the wrong one for four reasons.
 If fetching by URL is ever wanted, it is a `git clone` in front of the path form,
 and prov need not learn it.
 
-**The default and a directory compose.** `init --preset <dir>` writes the
-default first and the directory on top, under the same additive merge; a
-directory that declares `created:` itself is not a collision, because the two
-declarations agree (open question 4 is the one case where they might not).
+**The default is a preset in its own right, and a directory replaces it.**
+`init` alone applies the built-in; `init --preset <dir>` applies the directory
+*instead*, under the same additive merge, so a workspace that wants no
+`updated:` axis at all is made from a preset that does not declare one. A
+workspace that wants both applies both — `prov presets --write` after the
+fact takes the built-in — and a flag that names an axis the preset also
+declares (`--updated-field`) wins, because it was said explicitly for this
+workspace. (Open question 4, decided.)
 
 ## 7. The edge: two presets in one workspace
 
@@ -398,20 +402,24 @@ later without the mechanism changing.
 
 ## 9. Staging
 
-- **Phase 0 — the mechanisms.** In their own commits, each useful without a
-  preset existing: `set`/`unset` go through `record_content_update` when a
+- **Phase 0 — the mechanisms.** ✅ In their own commits, each useful without a
+  preset existing: `set`/`unset` go through the same seam as `edit` when a
   workspace is found around the file (and stay workspace-less when not, which
-  `dx tasks` depends on); a `created:` axis stamped by `new`; a value at
-  creation (`new --set` or `fields.<name>.default:`, open question 2);
-  `views <name> --json`; `about.md` lists views.
-- **Phase 1 — the stencil.** `prov presets` prints the default, touching
+  `dx tasks` depends on) — `b3a3c71`; a `created:` axis stamped by `new`, and
+  `fields.<name>.default:` with `new --set` as the override — `c6f6347`;
+  `views <name> --json` — `762ee9f`; `about.md` lists views — `91fc90b`.
+- **Phase 1 — the stencil.** ✅ `prov presets` prints the built-in, touching
   nothing, in the shape `exports <name>` previews; `prov presets <dir>` prints
   what applying that directory would write; `--write` on either applies it,
-  additively, refusing a collision; `init --preset <dir>` is the shorthand at
-  creation, and `init` alone writes the default. The default is the one preset
-  in the binary; `presets/tasks/` is the one in this repository, a fixture the
-  test suite applies to a scratch workspace and checks. The library exposes the
-  apply so that diaryx can call it.
+  additively, refusing a collision; `init --preset <dir>` applies the directory
+  *instead of* the built-in at creation, and `init` alone applies the built-in.
+  The built-in is the one preset in the binary, `Preset::builtin`;
+  `presets/tasks/` is the one in this repository, a fixture the test suite
+  applies to a scratch workspace and checks. The library exposes
+  `plan_preset`/`apply_preset` so that diaryx can call them. One thing the
+  fixture showed: a `default` is workspace-global, so `new Tasks --in index.md`
+  lands `status: open` on the index node too — `--set status=null` is the
+  escape, and §7's scoping axis is the fix.
 - **Phase 2 — this repository takes it.** The `tasks` config committed here;
   `tasks.md`'s prose and the org rule corrected so that `contents` is the spine
   and the view is the open list; the proposals index says the same thing it
@@ -425,24 +433,28 @@ later without the mechanism changing.
 
 ## Open questions
 
-1. **The verb.** `presets` follows `views` and `exports` in taking a bare form
-   and an argument form, though the bare form previews the default rather than
-   listing, since with one built-in there is nothing to list. `--write` is
-   proposed because `--apply` reads as if it might do more than write config.
-   `adopt` is taken, by `init --adopt`, and means something else.
-2. **A value at creation: flag or declaration?** `new --set status=open` puts
-   the knowledge in the caller's hands; `fields.status.default: open` puts it in
-   the workspace, where a stencil can carry it and `about.md` can state it. The
-   second is proposed, with the flag as the override; the cost is that `default`
-   is a key every reader of `fields` has to at least carry.
+1. **The verb.** *Decided: `presets`, and `--write`.* `presets` follows `views`
+   and `exports` in taking a bare form and an argument form, though the bare
+   form previews the default rather than listing, since with one built-in there
+   is nothing to list. `--write` because `--apply` reads as if it might do more
+   than write config. `adopt` is taken, by `init --adopt`, and means something
+   else.
+2. **A value at creation: flag or declaration?** *Decided as proposed: the
+   declaration, with the flag as the override (`c6f6347`).* `new --set
+   status=open` puts the knowledge in the caller's hands;
+   `fields.status.default: open` puts it in the workspace, where a stencil can
+   carry it and `about.md` can state it. The cost is that `default` is a key
+   every reader of `fields` has to at least carry.
 3. **A `means:` gloss on views and fields.** Relations and terms have one;
    fields and views do not. `about.md` can list a view from its `label` and
    scope alone, so the gloss is a nicety rather than a mechanism — but it is the
    one place a preset's author can say *why* a view exists, and that sentence is
    the thing a stranger most wants.
-4. **Whether a directory can replace the default rather than add to it.** §6
-   has `init --preset <dir>` write the default and then the directory. A
-   workspace that wants no `updated:` axis at all — a read-only import, say —
-   cannot say so through a preset, only by unsetting it afterwards. A
-   `--no-default` flag, or a key in the preset's `prov.yaml` that means "instead
-   of", would say it; neither is proposed until a preset that needs it exists.
+4. **Whether a directory can replace the default rather than add to it.**
+   *Decided: it replaces it, and the default is a preset in its own right, the
+   built-in one — §6 says how.* The earlier draft had `init --preset <dir>`
+   write the default and then the directory, so that a workspace wanting no
+   `updated:` axis — a read-only import, say — could not say so through a
+   preset. Making the default one preset among others, and the directory a
+   replacement rather than an addition, says it without a `--no-default` flag
+   or an "instead of" key.

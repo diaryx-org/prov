@@ -68,6 +68,7 @@ pub mod intake;
 pub mod manifest;
 pub mod mutate;
 pub mod node;
+pub mod preset;
 pub mod remedy;
 pub mod route;
 pub mod validate;

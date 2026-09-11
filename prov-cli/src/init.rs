@@ -482,6 +482,7 @@ pub(crate) fn cmd_init(
     no_record_deletions: bool,
     updated_field: Option<String>,
     created_field: Option<String>,
+    preset: Option<&Path>,
     workspace_id: Option<String>,
     adopt: Option<AdoptArg>,
     attach: bool,
@@ -837,6 +838,7 @@ pub(crate) fn cmd_init(
     // updated-timestamp field stays flag-only as a niche text input.
     let fixity = fixity.unwrap_or(FixityArg::On);
     let record_deletions = !no_record_deletions;
+    let (updated_given, created_given) = (updated_field.is_some(), created_field.is_some());
     let updated_field = updated_field.unwrap_or_default();
     let created_field = created_field.unwrap_or_default();
 
@@ -981,6 +983,31 @@ pub(crate) fn cmd_init(
             edit::infer_scalar(&config_name),
         )?;
         std::fs::write(&root_full, updated)?;
+    }
+
+    // The preset: the built-in when none is named, else the directory — which
+    // *replaces* the built-in rather than adding to it, so a workspace that
+    // wants no `updated` axis at all can be made from a preset that does not
+    // declare one. A flag that names an axis the preset also declares wins,
+    // because it was said explicitly, for this workspace. Applied through the
+    // same additive seam `prov presets --write` uses, over the config document
+    // just written, and the in-memory config is re-read from disk afterwards
+    // so that everything below — the adoption, the about page, the summary —
+    // sees what the preset declared.
+    let mut stencil = match preset {
+        Some(dir) => prov::preset::Preset::load(dir)?,
+        None => prov::preset::Preset::builtin(),
+    };
+    if updated_given {
+        stencil = stencil.without("updated");
+    }
+    if created_given {
+        stencil = stencil.without("created");
+    }
+    {
+        let mut probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&dir).build();
+        block_on(probe.apply_preset(Path::new(&root_name), &stencil))?;
+        ws_config = block_on(probe.effective_config(Path::new(&root_name)))?;
     }
 
     // Adoption of pre-existing loose content (docs/init-adoption.md). `flat`
@@ -1167,19 +1194,25 @@ pub(crate) fn cmd_init(
     } else {
         String::new()
     };
-    let updated_note = if updated_field.is_empty() {
+    // Read from the config as it is on disk — the preset may have named
+    // either field — rather than from the flags.
+    let updated_note = if ws_config.updated.is_empty() {
         String::new()
     } else {
-        format!(", updates `{updated_field}`")
+        format!(", updates `{}`", ws_config.updated)
     };
-    let created_note = if created_field.is_empty() {
+    let created_note = if ws_config.created.is_empty() {
         String::new()
     } else {
-        format!(", stamps `{created_field}`")
+        format!(", stamps `{}`", ws_config.created)
+    };
+    let preset_note = match preset {
+        Some(dir) => format!(", preset {}", dir.display()),
+        None => String::new(),
     };
     let details = format!(
         "root: {root_name} — {title}{author_note}\n\
-         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{deletions_note}{fixity_note}{updated_note}{created_note}{about_note}",
+         config: {config_name} — content {}, embed {} ({}), language {}, identity {}, references {}{path_note}{id_storage_note}{deletions_note}{fixity_note}{updated_note}{created_note}{preset_note}{about_note}",
         content.label(),
         embed.as_config_str(),
         embed_label.to_lowercase(),

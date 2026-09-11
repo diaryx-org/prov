@@ -1,0 +1,31 @@
+# The `tasks` preset: deferred work kept as documents, with a `status` a tool
+# can read. Apply it with `prov presets ./presets/tasks --write` (or `prov init
+# --preset ./presets/tasks`), then make the index the views hang under:
+# `prov new Tasks --in <root>` — and `prov new "<title>" --in tasks.md` opens a
+# task, which starts as `status: open`.
+#
+# Only the axes the preset declares. The built-in preset supplies `created`
+# and `updated`; apply that too if the workspace was not made with it.
+fields:
+  status:
+    values: closed
+    vocabulary: '[Statuses](/vocab/statuses.yaml)'
+    default: open
+  created: { type: datetime }
+  updated: { type: datetime }
+views:
+  open-tasks:
+    label: Open tasks
+    group: status
+    under: '[Tasks](/tasks.md)'
+    where:
+      not: { equals: { status: [done, dropped] } }
+  proposals:
+    label: Proposals
+    group: status
+    under: '[Proposals](/proposals.md)'
+    where: { has: status }
+  work:
+    label: All work
+    group: status
+    where: { has: status }

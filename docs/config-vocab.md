@@ -666,6 +666,58 @@ hangs off the root's `about` pointer instead — so convert it directly
 (`prov convert about.md content_format djot`) or just regenerate it, which writes
 it in the configured grammar.
 
+## Presets — a common setup, written out rather than named
+
+A **preset** is a bundle of the configuration a common kind of workspace
+needs — a vocabulary, the fields a new document starts with, the views that
+answer "what is open" — that prov writes for you, in full, and then forgets. It
+is a stencil, not a default: nothing in the vocabulary above says `preset:`,
+and prov's reader never learns a preset's name. Once applied, the workspace is
+ordinary, fully spelled-out config, readable by anyone with the spec and no
+binary. The argument is
+[the proposal](/docs/proposals/presets/proposal-presets-v1.md); this is what
+shipped.
+
+**On disk, a preset is a directory laid out like the root of the workspace it
+will be merged into.** A node — `prov.yaml`, or any whole-file format —
+carrying only the axes the preset declares, and beside it, at the paths that
+config's links name, the stores those axes point at:
+
+```
+presets/tasks/
+  prov.yaml             # fields: and views: — and no other key
+  vocab/statuses.yaml   # the vocabulary the fields entry links
+```
+
+Because the layout is the workspace's own, `[Statuses](/vocab/statuses.yaml)`
+means the same thing in the preset directory as it does after the copy. This
+repository's [`presets/tasks/`](/presets/tasks/prov.yaml) is that example; its
+test applies it to a scratch workspace and runs `check` over the result.
+
+**prov ships exactly one preset, and it has no name.** It is what `init` writes
+when told nothing else — `created: created` and `updated: updated`, so that
+every document made here records when, and every edit prov lands records that
+it did — and it is a preset rather than a hard-coded default so that a
+directory can *replace* it: `init --preset <dir>` writes the directory instead.
+A flag that names an axis the preset also declares (`--updated-field`) wins.
+There is no registry and no list of names in the binary; every other preset is
+a directory, named by its path, and publishing one is `git push`.
+
+**Applying is additive and refuses collisions.** `prov presets <dir>` prints
+what applying would do — one line per config entry and per store — and touches
+nothing; `--write` applies it; with no `<dir>`, both act on the built-in. Each
+entry (`fields.status`, `views.open-tasks`, `updated`) is written where the
+workspace does not declare it, or declares it at its default; an entry already
+declared the same way is nothing to do; an entry declared *differently* is a
+collision, reported with the rest of the plan, and nothing is written, because
+the two declarations mean different things and prov cannot choose. A store is
+written where nothing sits at its path, skipped where the same bytes already
+do, and a collision where different ones do. Applying a preset a workspace
+already carries is not an error, which is how a repository can assert that its
+config *is* the preset. The library exposes the same two steps
+(`Workspace::plan_preset`, `apply_preset`) for a tool that sets workspaces up
+itself.
+
 ## Making config explicit
 
 Because every axis has a default, a workspace need not spell config out. For

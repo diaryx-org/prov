@@ -125,8 +125,12 @@ fn setting_the_updated_field_itself_keeps_the_given_value() {
 
 #[test]
 fn a_workspace_without_an_updated_field_gets_a_bare_rewrite() {
+    // `init` alone names `updated` through the built-in preset; a preset that
+    // declares nothing replaces it, and this workspace keeps no such field.
     let dir = sandbox("no-field");
-    ok(&dir, &["init", "--yes"]);
+    let bare = sandbox("no-field-preset");
+    std::fs::write(bare.join("prov.yaml"), "spec: 1\n").unwrap();
+    ok(&dir, &["init", "--yes", "--preset", bare.to_str().unwrap()]);
     ok(&dir, &["new", "Rust", "--in", "index.md"]);
     let (_, err) = ok(&dir, &["set", "rust.md", "summary", "notes"]);
     assert!(err.trim().is_empty(), "nothing to narrate: {err:?}");

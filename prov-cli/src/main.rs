@@ -85,6 +85,7 @@ fn main() -> ExitCode {
             no_record_deletions,
             updated_field,
             created_field,
+            preset,
             workspace_id,
             adopt,
             attach,
@@ -105,6 +106,7 @@ fn main() -> ExitCode {
             no_record_deletions,
             updated_field,
             created_field,
+            preset.as_deref(),
             workspace_id,
             adopt,
             attach,
@@ -117,6 +119,7 @@ fn main() -> ExitCode {
         Command::Unset { file, key } => resolve_target(&file).and_then(|f| cmd_unset(&f, &key)),
         Command::Views { name, json } => cmd_views(name.as_deref(), json),
         Command::Exports { name } => cmd_exports(name.as_deref()),
+        Command::Presets { dir, write } => cmd_presets(dir.as_deref(), write),
         Command::Tree {
             root,
             follow,
@@ -1449,6 +1452,119 @@ fn cmd_exports(name: Option<&str>) -> CmdResult {
         }
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// `prov presets [DIR] [--write]` — what a preset would write here, and, with
+/// `--write`, writing it.
+///
+/// The plan is printed either way, one line per entry and store, so that the
+/// question "what would this do to my config?" is answered before anything
+/// moves — the same shape `exports <name>` gives an export. A collision is a
+/// refusal with the plan still printed, because the plan is the diagnosis.
+fn cmd_presets(dir: Option<&Path>, write: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let preset = match dir {
+        Some(dir) => prov::preset::Preset::load(dir)?,
+        None => prov::preset::Preset::builtin(),
+    };
+    let mut ws = workspace(&ctx)?;
+    let plan = block_on(ws.plan_preset(&ctx.root_doc, &preset))?;
+    print_plan(&plan);
+
+    if !plan.is_clean() {
+        eprintln!(
+            "{} collision(s): the workspace already declares these differently, and \
+             prov cannot choose — nothing written",
+            plan.collisions().count()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    if !plan.writes_anything() {
+        eprintln!("nothing to write — the workspace already carries this preset");
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !write {
+        eprintln!("nothing written; pass --write to apply");
+        return Ok(ExitCode::SUCCESS);
+    }
+    block_on(ws.apply_preset(&ctx.root_doc, &preset))?;
+    let entries = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, prov::preset::Step::Set { .. }))
+        .count();
+    let files = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, prov::preset::Step::Write { .. }))
+        .count();
+    eprintln!(
+        "wrote {entries} config entr{} into {} and {files} file(s)",
+        if entries == 1 { "y" } else { "ies" },
+        plan.surface.display()
+    );
+    // The page is a function of the config, and the config just grew.
+    refresh_about(&ctx.root_dir)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One line per step: `+` for what would be written, `=` for what is already
+/// so, `!` for a collision. Config entries first, under the document they go
+/// into; then the stores.
+fn print_plan(plan: &prov::preset::Plan) {
+    use prov::preset::Step;
+    let config: Vec<&Step> = plan
+        .steps
+        .iter()
+        .filter(|s| {
+            matches!(
+                s,
+                Step::Set { .. } | Step::Same { .. } | Step::Differs { .. }
+            )
+        })
+        .collect();
+    if !config.is_empty() {
+        println!(
+            "{}{}",
+            plan.surface.display(),
+            if plan.in_root_block {
+                " (the `prov:` block)"
+            } else {
+                ""
+            }
+        );
+        for step in config {
+            match step {
+                Step::Set { key, value } => println!("  + {key}{}", scalar_suffix(value)),
+                Step::Same { key } => println!("  = {key}  (already so)"),
+                Step::Differs { key, .. } => println!("  ! {key}  (declared differently)"),
+                _ => {}
+            }
+        }
+    }
+    for step in &plan.steps {
+        match step {
+            Step::Write { path } => println!("+ {}", path.display()),
+            Step::Present { path } => println!("= {}  (already there)", path.display()),
+            Step::Occupied { path } => println!("! {}  (exists, differs)", path.display()),
+            _ => {}
+        }
+    }
+}
+
+/// ` = value` for a scalar, nothing for a block — a `fields.status` entry is
+/// named, not printed, since its shape is in the preset for anyone to read.
+fn scalar_suffix(value: &Value) -> String {
+    match value {
+        Value::Mapping(_) | Value::Sequence(_) => String::new(),
+        Value::String(s) => format!(" = {s}"),
+        other => format!(
+            " = {}",
+            meta::serialize_value(other, Format::Yaml)
+                .unwrap_or_default()
+                .trim_end()
+        ),
+    }
 }
 
 fn cmd_tree(root: Option<&Path>, follow: Option<usize>, unverified: bool) -> CmdResult {

@@ -136,6 +136,7 @@ The prompts, in the order they're asked:
 | **Path format**               | `--link-style` | `markdown-root`               | `markdown-root`, `markdown-relative`, `plain-relative`, `plain-canonical` (only when references are by path) |
 | **Where IDs are stored**      | `--id-storage` | `frontmatter`                 | `registry`, `frontmatter` — only when identity is on          |
 | **Content checksums**         | `--fixity`     | `on`                          | `on`, `off` — what they cover follows each document's shape   |
+| *(not prompted)*              | `--preset`     | the built-in preset           | a directory laid out like the workspace root — see [Presets](/docs/config-vocab.md#presets--a-common-setup-written-out-rather-than-named); replaces the built-in, which names `created` and `updated` |
 
 The root-shaping choices come first; the rest are **workspace preferences**, all
 written into a config document (`prov.yaml`, linked from the root) so the
@@ -475,8 +476,8 @@ references:
   target: path
   label: false
 id_storage: both
-updated: ''
-created: ''
+updated: updated
+created: created
 identity: lazy
 fixity: on
 record_deletions: true
@@ -550,8 +551,9 @@ can check, and this archive does not deal in those — see
 else. What says an inline body changed is whatever backs up or version-controls
 the folder.
 
-Name an `updated` field, and attach a file — bytes nothing can diff, which is
-exactly where a checksum earns its keep:
+The built-in preset already names an `updated` field (naming it again is a
+no-op). Attach a file — bytes nothing can diff, which is exactly where a
+checksum earns its keep:
 
 <!-- exec -->
 ```console
@@ -742,6 +744,7 @@ rules as records for a program making it.
 | `backlinks FILE`                | list inbound links                                       |
 | `config [KEY [VALUE]]`          | read/write workspace settings                            |
 | `ignore [--why\|--json]`        | what a tool copying this folder should leave alone, as gitignore lines |
+| `presets [DIR] [--write]`       | what a preset would write here (the built-in, with no DIR), and, with `--write`, writing it |
 
 Run `prov <command> --help` for the full options of any command.
 

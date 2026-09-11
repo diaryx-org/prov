@@ -187,8 +187,12 @@ fn a_malformed_set_refuses_before_anything_is_written() {
 
 #[test]
 fn a_workspace_declaring_nothing_writes_nothing_extra() {
+    // `init` alone applies the built-in preset, which names `created`; a
+    // preset that declares nothing replaces it, and then nothing is stamped.
     let dir = sandbox("plain");
-    ok(&dir, &["init", "--yes"]);
+    let bare = sandbox("plain-preset");
+    std::fs::write(bare.join("prov.yaml"), "spec: 1\n").unwrap();
+    ok(&dir, &["init", "--yes", "--preset", bare.to_str().unwrap()]);
     ok(&dir, &["new", "Plain", "--in", "index.md"]);
     let text = read(&dir, "plain.md");
     let lines = frontmatter(&text);
@@ -209,8 +213,10 @@ fn the_about_page_says_what_a_document_starts_with() {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    // Both fields, because `init`'s built-in preset names `updated` too.
     assert!(
-        page.contains("A field named `created` is written when a document is made"),
+        page.contains("`created` is written when a document is made")
+            && page.contains("`updated` is maintained automatically"),
         "{page}"
     );
     assert!(
