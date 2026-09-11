@@ -3,10 +3,19 @@ title: presets
 author: adammharris
 created: 2026-09-10
 updated: 2026-09-11
-status: draft
+status: implemented
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Presets — a common setup, written out rather than named
+
+## Status
+
+**Implemented**, on `main` and not yet released: Phase 0 in `b3a3c71`,
+`c6f6347`, `762ee9f`, `91fc90b`; Phase 1 in `cff11fe`; the title anchor in
+`8b0e6a0`; Phase 2 in `0164956`; Phase 4, the scoped declaration §7 argued
+against and Phase 2 argued for, in `d9532e1`; Phase 3 in devtools `e505a07`.
+The body is left as argued, and §6, §7 and §9 record where the outcome
+differed from it.
 
 ## Summary
 
