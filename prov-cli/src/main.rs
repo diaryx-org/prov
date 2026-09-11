@@ -34,6 +34,7 @@ use prov::{
     SynthNode, Target, Trigger, Value, Workspace, WorkspaceConfig, block_on, edit, link, meta,
 };
 
+mod actor;
 mod backup;
 mod cli;
 mod json;
@@ -140,6 +141,9 @@ fn main() -> ExitCode {
             let only = only.map(|o| resolve_target(&o)).transpose()?;
             cmd_check(r.as_deref(), fix, only.as_deref(), json, follow, unverified)
         }),
+        Command::Confirm { target, by, show } => {
+            resolve_target(&target).and_then(|t| cmd_confirm(&t, by, show))
+        }
         Command::Stamp {
             target,
             all,
@@ -984,6 +988,65 @@ fn cmd_edit(file: &Path) -> CmdResult {
         ),
         _ => eprintln!("edited {}", rel.display()),
     }
+    println!("{}", rel.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `confirm` — append one entry to a document's `confirmed` list, or show the
+/// list with `--show`.
+///
+/// The actor is a device-local fact (`actor::resolve`), the instant is this
+/// process's clock, and the library does the rest — including refusing a
+/// document whose checksum has drifted, since a confirmation cannot vouch its
+/// way past a fixity mismatch. Machinery stores and the generated `about` page
+/// are refused here, before the library is asked: a store is re-laid-out by
+/// prov, and the page is rewritten whole, so a confirmation on either would be
+/// a claim about a file prov itself rewrites.
+fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdResult {
+    let ctx = find_root()?;
+    let rel = ws_rel(&ctx, file)?;
+    let mut ws = workspace(&ctx)?;
+
+    if show {
+        let standing = block_on(ws.confirmations(&rel))?;
+        for entry in &standing.live {
+            println!("{}\t{}\tstands", entry.by, entry.at);
+        }
+        for entry in &standing.stale {
+            println!("{}\t{}\tstale", entry.by, entry.at);
+        }
+        eprintln!("{}: {}", rel.display(), standing.tier());
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let machinery = machinery(&ctx, &ws)?;
+    if machinery.iter().any(|m| m == &rel) {
+        return Err(format!(
+            "{}: a machinery store is re-laid-out by prov, so it carries no confirmation",
+            rel.display()
+        )
+        .into());
+    }
+    if block_on(ws.about_path(&ctx.root_doc))?.as_deref() == Some(rel.as_path()) {
+        return Err(format!(
+            "{}: the generated page is rewritten whole by `prov about`, so it carries no confirmation",
+            rel.display()
+        )
+        .into());
+    }
+
+    let actor = actor::resolve(by)?;
+    let now = now_rfc3339();
+    let entry = block_on(ws.confirm(&rel, &actor, &now))?;
+    persist(&ctx, &mut ws)?;
+    let standing = block_on(ws.confirmations(&rel))?;
+    eprintln!(
+        "confirmed {} — {} at {} ({})",
+        rel.display(),
+        entry.by,
+        entry.at,
+        standing.tier()
+    );
     println!("{}", rel.display());
     Ok(ExitCode::SUCCESS)
 }

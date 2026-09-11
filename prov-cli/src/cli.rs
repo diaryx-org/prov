@@ -575,6 +575,38 @@ pub(crate) enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Record that someone read a document and found it correct: append a
+    /// dated, attributed entry to its `confirmed` list. The keeper's own ledger
+    /// — a claim in the document, as trustworthy as its `author` field, and
+    /// never proof.
+    ///
+    /// The entry is measured against the workspace's `updated` stamp from then
+    /// on: once the document changes after it, `check` reports the
+    /// confirmation as stale, and the document falls back to whatever its
+    /// remaining confirmations support. Confirming never stamps `updated`
+    /// itself. A document that records a `content_hash` has the entry bound to
+    /// that digest too, and one whose checksum has already drifted is refused
+    /// until `stamp` restates it.
+    ///
+    /// A bare actor is a person (`--by amh`); a tool prefixes itself
+    /// (`agent:claude-opus-5`, `process:nightly`). prov never writes one on its
+    /// own initiative — a green `check` attests bytes and structure, and says
+    /// nothing about whether the content is right.
+    Confirm {
+        /// The document to confirm: a path, a title route, or an id.
+        #[arg(value_name = "TARGET")]
+        target: String,
+        /// Who is confirming. Defaults to `PROV_ACTOR`, then the device-local
+        /// `actor` file beside the peer map; with none of those the command
+        /// refuses rather than writing an unattributed entry.
+        #[arg(long, value_name = "ACTOR")]
+        by: Option<String>,
+        /// Print the document's confirmations — which still stand, which the
+        /// document has changed out from under, and the tier they add up to —
+        /// and write nothing.
+        #[arg(long, conflicts_with = "by")]
+        show: bool,
+    },
     /// Create a document as a child of a parent, linking both directions. The
     /// positional is the new document's **title** — prov derives a readable
     /// filename from it (a slug plus the workspace's content extension) in the

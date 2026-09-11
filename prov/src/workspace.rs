@@ -118,6 +118,10 @@ pub struct Settings {
     /// [`root_document`](Workspace::root_document). A bare file name in the root
     /// directory. `None` means the root is chosen by the candidate scan.
     pub root: Option<PathBuf>,
+    /// The frontmatter field prov stamps when a document's content changes —
+    /// see [`Workspace::updated_field`]. Empty means the workspace keeps no
+    /// such field.
+    pub updated: String,
 }
 
 impl Default for Settings {
@@ -135,6 +139,7 @@ impl Default for Settings {
             workspace_id: String::new(),
             out_of_scope: Vec::new(),
             root: None,
+            updated: String::new(),
         }
     }
 }
@@ -169,6 +174,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             workspace_id: config.workspace_id.clone(),
             out_of_scope: config.out_of_scope.iter().map(PathBuf::from).collect(),
             root: config.root.as_deref().map(PathBuf::from),
+            updated: config.updated.clone(),
             ..Self::default()
         }
     }
@@ -418,6 +424,19 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// document keep working after being copied here from somewhere else.
     pub fn workspace_id(&self) -> &str {
         &self.settings.workspace_id
+    }
+
+    /// The frontmatter field this workspace's own edits stamp with the instant
+    /// of a content change (`updated: modified` in config), or `None` when it
+    /// keeps no such field.
+    ///
+    /// The library never *writes* it on its own initiative — the caller decides
+    /// an edit happened and supplies the instant
+    /// ([`record_content_update`](Self::record_content_update)) — but it does
+    /// *read* it: a confirmation ([`confirm`](Self::confirm)) is stale once this
+    /// field says the document changed after it, and `check` reports that.
+    pub fn updated_field(&self) -> Option<&str> {
+        (!self.settings.updated.is_empty()).then_some(self.settings.updated.as_str())
     }
 
     /// The directories this workspace declares are not its content — another
@@ -1818,6 +1837,7 @@ mod tests {
             workspace_id: "notes".into(),
             out_of_scope: vec![PathBuf::from("history")],
             root: Some(PathBuf::from("home.md")),
+            updated: "updated".into(),
         };
         let ws = Workspace::builder(DummyFs)
             .root("vault")

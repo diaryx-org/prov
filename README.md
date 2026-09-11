@@ -12,6 +12,7 @@ contents:
 - '[Reference Styles](/docs/reference-styles.md)'
 - '[History Format](/docs/history-format.md)'
 - '[Manifests](/docs/manifests.md)'
+- '[Provenance](/docs/provenance.md)'
 - '[Releasing](/docs/releasing.md)'
 - '[Changelog](/docs/CHANGELOG.md)'
 - '[Proposals](/docs/proposals/proposals.md)'

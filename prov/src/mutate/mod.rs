@@ -66,6 +66,7 @@
 //! every other one reaching across for it.
 
 mod adopt;
+mod confirm;
 mod convert;
 mod create;
 pub(crate) mod delete;

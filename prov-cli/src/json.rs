@@ -409,6 +409,11 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("path", p(path)));
             fields.push(("missing", J::Bool(*missing)));
         }
+        Finding::ConfirmationStale { doc, by, at } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("by", s(by)));
+            fields.push(("at", s(at)));
+        }
         Finding::FieldScopeUnresolved {
             doc,
             field,

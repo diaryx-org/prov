@@ -464,6 +464,28 @@ pub enum Finding {
         expected: String,
         missing: bool,
     },
+    /// A document's newest confirmation was made against a version that no
+    /// longer exists — its `at` is older than the document's `updated` stamp,
+    /// or the `content_hash` it named as `of` is no longer the one on record —
+    /// and nothing has confirmed the document since. Someone confirmed this,
+    /// and then it changed (see [`provenance`]).
+    ///
+    /// Not an error: an edit after a review is the ordinary course of events.
+    /// It is a *demotion* — the document is unconfirmed again — and the finding
+    /// is how a reader learns that the assurance in the frontmatter describes
+    /// a document that is not there any more. Raised only while no entry
+    /// stands: a document confirmed again after the edit keeps its older
+    /// entries as history without being reported for them. Diagnosis-only —
+    /// the two remedies are to confirm again or to accept being unconfirmed,
+    /// and which is a judgment prov does not make. Entries are never rewritten
+    /// or dropped.
+    ///
+    /// [`provenance`]: crate::provenance
+    ConfirmationStale {
+        doc: PathBuf,
+        by: String,
+        at: String,
+    },
     /// A scoped field declaration (`fields.<field>` with an `under:`) whose
     /// anchor names no document, so the declaration governs nothing: no
     /// document is held to its vocabulary and none opens with its default.
@@ -611,6 +633,7 @@ impl Finding {
             // The workspace, not the example: the finding is about a population.
             Finding::LegacyBodyHash { root, .. } => root,
             Finding::AboutStale { path, .. } => path,
+            Finding::ConfirmationStale { doc, .. } => doc,
             Finding::FieldScopeUnresolved { doc, .. } => doc,
             Finding::ManifestDrift { node, .. } => node,
             // The one corrupted file, not the node covering ten thousand.
@@ -651,6 +674,7 @@ impl Finding {
             Finding::LegacyDeletionsPointer { .. } => "legacy_deletions_pointer",
             Finding::LegacyBodyHash { .. } => "legacy_body_hash",
             Finding::AboutStale { .. } => "about_stale",
+            Finding::ConfirmationStale { .. } => "confirmation_stale",
             Finding::FieldScopeUnresolved { .. } => "field_scope_unresolved",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
@@ -936,6 +960,12 @@ impl fmt::Display for Finding {
                     path.display()
                 )
             }
+            Finding::ConfirmationStale { doc, by, at } => write!(
+                f,
+                "{}: confirmation stale — {by} confirmed it at {at} and it has changed since \
+                 (`prov confirm` to confirm it again)",
+                doc.display()
+            ),
             Finding::FieldScopeUnresolved {
                 doc,
                 field,
@@ -1114,6 +1144,57 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .await?,
         );
         findings.extend(self.stale_label_findings(&census).await?);
+        findings.extend(
+            self.confirmation_findings(start, &census, &content_bodies)
+                .await?,
+        );
+        Ok(findings)
+    }
+
+    /// Report every reachable document whose newest confirmation the document
+    /// has moved out from under, with nothing confirmed since —
+    /// [`Finding::ConfirmationStale`], one per document.
+    ///
+    /// Reads each document's `confirmed` list against its own `updated` stamp
+    /// (under the field this workspace configures — none configured, nothing
+    /// compared) and its `content_hash`; see
+    /// [`Confirmations::read`](crate::provenance::Confirmations::read) for the
+    /// rule. Nothing here consults any other finding, and no other finding
+    /// consults this list: a confirmation is a claim about meaning, a finding
+    /// is a claim about state, and neither is evidence for the other.
+    async fn confirmation_findings(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<Vec<Finding>> {
+        let reachable = self
+            .reachable_documents(start, census, content_bodies)
+            .await?;
+        let mut findings = Vec::new();
+        for path in reachable {
+            // A reached payload file will not parse as a document — nothing to
+            // read, and not this pass's business.
+            let Ok((_, doc)) = self.load(&path).await else {
+                continue;
+            };
+            let standing = crate::provenance::Confirmations::read(&doc.meta, self.updated_field());
+            // A live entry is one made after the last change, so the document
+            // has been confirmed since and its older entries are history. Only
+            // a document nothing stands for is reported, naming the newest
+            // assurance that no longer holds.
+            if !standing.live.is_empty() {
+                continue;
+            }
+            let Some(newest) = standing.stale.iter().max_by(|a, b| a.at.cmp(&b.at)) else {
+                continue;
+            };
+            findings.push(Finding::ConfirmationStale {
+                doc: path,
+                by: newest.by.clone(),
+                at: newest.at.clone(),
+            });
+        }
         Ok(findings)
     }
 
