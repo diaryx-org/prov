@@ -95,11 +95,14 @@ point anywhere; follow them for meaning, never to discover what is here.
 ## Fields with fixed vocabularies
 
 One field does not hold free text. Its permitted values are listed in
-files of their own.
+files of their own. Where the table names a place, the rule holds for the
+files under that index and no others; a file elsewhere may hold anything
+in the field, or nothing.
 
-| field | rule | values listed in |
-| --- | --- | --- |
-| `status` | **closed** — every value must appear in the list | `/vocab/statuses.yaml` |
+| field | where | rule | values listed in |
+| --- | --- | --- | --- |
+| `status` | under `Tasks` | **closed** — every value must appear in the list | `/vocab/task-statuses.yaml` |
+| `status` | under `Proposals` | **closed** — every value must appear in the list | `/vocab/proposal-statuses.yaml` |
 
 A closed field is worth taking seriously: a value not on the list is an
 error rather than a new category.
@@ -135,7 +138,8 @@ through a key that names what it is, and none of them points back.
 | key in `README.md` | what it points at |
 | --- | --- |
 | `config` | this directory's settings — the file this page was generated from (`prov.yaml`) |
-| `fields.status.vocabulary` | the permitted values of `status` (`/vocab/statuses.yaml`) |
+| `fields.status.vocabulary` | the permitted values of `status` under `Tasks` (`/vocab/task-statuses.yaml`) |
+| `fields.status.vocabulary` | the permitted values of `status` under `Proposals` (`/vocab/proposal-statuses.yaml`) |
 
 Files reached that way are machinery: they are not documents in the tree,
 they carry no `part_of`, and they are not counted when something asks what
@@ -170,8 +174,9 @@ as its payload. Everything in the tree is plain text, always.
   the document changes. Any other date you find in a file was written by a
   person.
 - **Starting values.** A document made here opens with `status` set to
-  `open`. That is where it starts, not a rule it has to keep: a file that
-  says something else was changed on purpose.
+  `open` (under `Tasks`) and `status` set to `draft` (under `Proposals`).
+  That is where it starts, not a rule it has to keep: a file that says
+  something else was changed on purpose.
 
 ## What is safe to change
 

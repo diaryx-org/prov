@@ -408,7 +408,7 @@ fn machinery(
     let mut stores: Vec<PathBuf> = ctx.node.iter().cloned().collect();
     stores.extend(ctx.registry.iter().cloned());
     stores.extend(block_on(ws.deletions_path(&ctx.root_doc))?);
-    for spec in ctx.config.fields.values() {
+    for (_, spec) in ctx.config.field_declarations() {
         if spec.reify {
             continue;
         }
@@ -2819,7 +2819,7 @@ fn cmd_new(
     let mut ctx = find_root()?;
     // Parsed before anything is written, so a malformed `--set` refuses the
     // command rather than leaving a document created without it.
-    let opening = opening_fields(&ctx, set)?;
+    let sets = parse_sets(set)?;
     // Authoring a reference that registers (the default style, or any relation's
     // override — e.g. `part_of: id` in a split) mints IDs, as does an eager
     // policy; ensure a registry to persist them exists *before* the workspace is
@@ -2897,6 +2897,7 @@ fn cmd_new(
     }
     // (`ws` is the one built above — reusing it keeps any IDs a route just minted
     // in the same in-memory index this create registers into.)
+    let opening = opening_fields(&ctx, &ws, &parent_rel, sets)?;
     let created = block_on(ws.create_with_fields(&path, &parent_rel, title, &opening))?;
     persist(&ctx, &mut ws)?;
     // A separated child is a pair — the metadata node the parent links, plus its
@@ -2921,26 +2922,10 @@ fn cmd_new(
     Ok(ExitCode::SUCCESS)
 }
 
-/// The fields a document made by `new` opens with, beyond the ones prov
-/// authors itself, in the order they are written: the workspace's `created`
-/// stamp — the same clock and format as `updated`, and the library is as
-/// clockless here as it is there — then each `fields.<name>.default` the
-/// workspace declares, then every `--set`, which overrides a default of the
-/// same name. A `--set` without an `=` is a refusal, not an empty value.
-///
-/// Only the document `new` names gets these. The index nodes a route with
-/// `-p` synthesizes on the way are made by the library's route walk, and a
-/// `status: open` meant for a task is not meant for the month index above it.
-fn opening_fields(ctx: &Ctx, set: &[String]) -> Result<Mapping, AnyError> {
-    let mut fields = Mapping::new();
-    if !ctx.config.created.is_empty() {
-        fields.insert(ctx.config.created.clone(), Value::String(now_rfc3339()));
-    }
-    for (name, spec) in &ctx.config.fields {
-        if let Some(default) = &spec.default {
-            fields.insert(name.clone(), default.clone());
-        }
-    }
+/// The `--set KEY=VALUE` pairs, typed like `set`'s value. A pair without an
+/// `=` is a refusal, not an empty value.
+fn parse_sets(set: &[String]) -> Result<Vec<(String, Value)>, AnyError> {
+    let mut out = Vec::with_capacity(set.len());
     for pair in set {
         let Some((key, value)) = pair.split_once('=') else {
             return Err(format!("--set {pair}: expected KEY=VALUE").into());
@@ -2949,7 +2934,38 @@ fn opening_fields(ctx: &Ctx, set: &[String]) -> Result<Mapping, AnyError> {
         if key.is_empty() {
             return Err(format!("--set {pair}: expected KEY=VALUE").into());
         }
-        fields.insert(key.to_string(), edit::infer_scalar(value).into());
+        out.push((key.to_string(), edit::infer_scalar(value).into()));
+    }
+    Ok(out)
+}
+
+/// The fields a document made by `new` under `parent` opens with, beyond the
+/// ones prov authors itself, in the order they are written: the workspace's
+/// `created` stamp — the same clock and format as `updated`, and the library
+/// is as clockless here as it is there — then each `fields.<name>.default`
+/// whose declaration governs a child of `parent` (a `status: open` declared
+/// under `Tasks` reaches a task and not the readme beside the index), then
+/// every `--set`, which overrides a default of the same name.
+///
+/// Only the document `new` names gets these. The index nodes a route with
+/// `-p` synthesizes on the way are made by the library's route walk, and a
+/// `status: open` meant for a task is not meant for the month index above it.
+fn opening_fields(
+    ctx: &Ctx,
+    ws: &Workspace<StdFs, Minter, FileIndex>,
+    parent: &Path,
+    sets: Vec<(String, Value)>,
+) -> Result<Mapping, AnyError> {
+    let mut fields = Mapping::new();
+    if !ctx.config.created.is_empty() {
+        fields.insert(ctx.config.created.clone(), Value::String(now_rfc3339()));
+    }
+    let scopes = block_on(ws.field_scopes_of(&ctx.root_doc, &ctx.config))?;
+    for (name, value) in scopes.defaults_for_child(&ctx.config, parent) {
+        fields.insert(name, value);
+    }
+    for (key, value) in sets {
+        fields.insert(key, value);
     }
     Ok(fields)
 }

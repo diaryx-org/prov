@@ -132,6 +132,15 @@ prov:
       default: friends        # what a new document opens with — see "Field types" below
     created:
       type: date              # a type alone is a complete declaration
+    status:                 # several declarations, each scoped — see "Field types" below
+      - under: '[[Tasks]]'      # governs the files under this index, and no others
+        values: closed
+        vocabulary: '[Task statuses](/vocab/task-statuses.yaml)'
+        default: open
+      - under: '[[Proposals]]'
+        values: closed
+        vocabulary: '[Proposal statuses](/vocab/proposal-statuses.yaml)'
+        default: draft
   views:                      # declared lenses — see "Views" below
     daily:
       label: Daily
@@ -465,6 +474,26 @@ document. The value is carried as written — `default: 0` is an int, `default:
 `check`'s question, asked of the document that ends up holding it. It lives in
 the workspace rather than in a caller's flags so that a stencil can state it
 and `about.md` can say it.
+
+### Scoping a declaration
+
+A declaration governs the whole workspace unless it says `under:` — a link to
+an index, resolved exactly as a view's `under:` is (by path, by `id:`, or by
+title), and then it governs the files in that index's spanning subtree and no
+others. A field may be declared several times, as a list, each entry scoped:
+`status` is one closed set of terms under `Tasks` and another under
+`Proposals`, opening as `open` in the one and `draft` in the other, and a
+file under neither index has no `status` declaration at all — the `Tasks`
+index does not open as an open task, because an index is not in its own
+scope, for the reason a view's anchor is not one of its records.
+
+Every reader of `fields` asks *where* before *what*: `check` holds a value to
+the vocabulary of the declaration that governs its document, `new` writes the
+starting value of the one that will govern the child, a term repair widens
+the right list, and `about.md` says where each rule holds. Where scopes nest,
+the deeper wins; an unscoped declaration in the same list is the fallback. A
+scope whose anchor names nothing governs nothing, and `check` reports it as
+it reports a view anchored on nothing.
 
 `reify:` says which *shape* the pointer's target takes, and only the default
 (`false`) is a whole-file store: a flat vocabulary is machinery holding a

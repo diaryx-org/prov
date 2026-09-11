@@ -178,6 +178,17 @@ than one to apply: respell the value, or widen the vocabulary to admit it. A
 *retired* term is never offered the second — writing a bare `term:` over it would
 un-retire it and destroy the `id` and `means` it carries.
 
+A declaration governs the whole workspace unless it names an index with
+`under:` — a link resolved as a view's anchor is (by path, `id:`, or title) —
+and then it governs that index's spanning subtree and nothing else. A field
+may be declared several times, as a list, each entry scoped: `status` is one
+closed set of terms under `Tasks` and another under `Proposals`, and a document
+under neither has no `status` declaration. The index is not in its own scope.
+Every reader asks *where* before *what*; where scopes nest the deeper wins, and
+an unscoped entry in the same list is the fallback. A scope whose anchor
+resolves to nothing governs nothing, and `check` reports it
+(`FieldScopeUnresolved`). See the config vocabulary, "Scoping a declaration".
+
 ### The vocabulary file
 
 A flat vocabulary is a **whole-file config document** (§5) — a self-describing

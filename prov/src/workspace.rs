@@ -41,9 +41,11 @@ use prov_graph::title::TitleIndex;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
+mod fields;
 mod ignore;
 pub(crate) mod inbound;
 
+pub use fields::{FieldScopes, Unresolved};
 pub use ignore::{Ignore, IgnoreList, Reason};
 
 /// A byte-parking store's directory — the parent of the index document that
@@ -2025,6 +2027,7 @@ mod reified_vocabulary_tests {
             vocabulary: Some("vocab/index.md".into()),
             reify: true,
             default: None,
+            under: None,
         }
     }
 
@@ -2192,6 +2195,7 @@ mod reified_vocabulary_tests {
             vocabulary: None,
             reify: true,
             default: None,
+            under: None,
         };
         assert!(
             block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &none))

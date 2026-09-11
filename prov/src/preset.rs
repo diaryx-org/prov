@@ -516,7 +516,7 @@ mod tests {
         let config = block_on(w.effective_config(Path::new("index.md"))).unwrap();
         assert_eq!(config.updated, "updated");
         assert_eq!(
-            config.fields["status"].default,
+            config.fields["status"][0].default,
             Some(Value::String("open".into()))
         );
     }

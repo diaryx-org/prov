@@ -1212,7 +1212,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ) -> Result<Option<(PathBuf, crate::vocabulary::Vocabulary, bool)>> {
         let root = self.root_doc_from(doc).await?;
         let config = self.effective_config(&root).await?;
-        let Some(spec) = config.fields.get(field) else {
+        // The declaration that governs *this* document — a scoped field has
+        // one vocabulary per scope, and the repair must widen the right one.
+        let scopes = self.field_scopes_of(&root, &config).await?;
+        let Some(spec) = scopes.spec_for(&config, field, doc) else {
             return Ok(None);
         };
         let Some(pointer) = spec.vocabulary.as_deref() else {

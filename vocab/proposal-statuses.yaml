@@ -1,0 +1,10 @@
+title: Proposal statuses
+vocabulary:
+  field: status
+  values: closed
+terms:
+  draft:       { means: "still being argued" }
+  accepted:    { means: "argued and agreed, not yet built" }
+  implemented: { means: "built; the Status section names the release" }
+  deferred:    { means: "agreed in principle, not scheduled" }
+  rejected:    { means: "argued and lost; the reasoning is kept" }

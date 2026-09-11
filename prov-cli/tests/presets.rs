@@ -114,24 +114,40 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
     // The plan first, writing nothing.
     let (out, err) = ok(&dir, &["presets", &preset]);
     assert!(
-        out.contains("+ fields.status") && out.contains("+ vocab/statuses.yaml"),
+        out.contains("+ fields.status") && out.contains("+ vocab/task-statuses.yaml"),
         "{out}"
     );
     assert!(err.contains("pass --write"), "{err}");
-    assert!(!dir.join("vocab/statuses.yaml").exists());
+    assert!(!dir.join("vocab/task-statuses.yaml").exists());
 
     let (_, err) = ok(&dir, &["presets", &preset, "--write"]);
-    assert!(err.contains("wrote 6 config entries"), "{err}");
-    assert!(dir.join("vocab/statuses.yaml").exists());
+    assert!(
+        err.contains("wrote 6 config entries") && err.contains("2 file(s)"),
+        "{err}"
+    );
+    assert!(
+        dir.join("vocab/task-statuses.yaml").exists()
+            && dir.join("vocab/proposal-statuses.yaml").exists()
+    );
     let page = read(&dir, "about.md");
     assert!(
         page.contains("Open tasks"),
         "the page was regenerated: {page}"
     );
+    // Before the indexes exist, the scoped declarations govern nothing, and
+    // `check` says so rather than letting the rule silently not apply.
+    let (ok_, out, err) = run(&dir, &["check"]);
+    let report = out + &err;
+    assert!(
+        !ok_ && report.contains("`fields.status` is declared under `[[Tasks]]`")
+            && report.contains("`fields.status` is declared under `[[Proposals]]`"),
+        "{report}"
+    );
 
-    // The workspace the preset is for: an index the views hang under — at a
-    // path of the workspace's choosing, since the preset names it by title —
-    // a task that opens as `status: open`, and a term the vocabulary refuses.
+    // The workspace the preset is for: the indexes the views hang under — at
+    // paths of the workspace's choosing, since the preset names them by
+    // title — a task that opens as `status: open`, a proposal that opens as
+    // `status: draft`, and a term the task vocabulary refuses.
     ok(
         &dir,
         &[
@@ -141,18 +157,38 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
             "index.md",
             "--as",
             "docs/tasks/tasks.md",
-            "--set",
-            "status=null",
         ],
     );
     ok(
         &dir,
+        &[
+            "new",
+            "Proposals",
+            "--in",
+            "index.md",
+            "--as",
+            "docs/proposals/proposals.md",
+        ],
+    );
+    // The indexes are under neither scope, so neither opens with a status.
+    assert!(!read(&dir, "docs/tasks/tasks.md").contains("status:"));
+    assert!(!read(&dir, "docs/proposals/proposals.md").contains("status:"));
+    ok(
+        &dir,
         &["new", "Fix the build", "--in", "docs/tasks/tasks.md"],
+    );
+    ok(
+        &dir,
+        &["new", "An idea", "--in", "docs/proposals/proposals.md"],
     );
     let task = read(&dir, "docs/tasks/fix-the-build.md");
     assert!(
         task.contains("status: open\n") && task.contains("created: 20"),
         "{task}"
+    );
+    assert!(
+        read(&dir, "docs/proposals/an-idea.md").contains("status: draft\n"),
+        "a proposal opens as a draft"
     );
     let (out, err) = ok(&dir, &["check"]);
     assert!(err.contains("no findings"), "{out}{err}");
@@ -162,6 +198,14 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
         "{out}"
     );
 
+    ok(
+        &dir,
+        &["set", "docs/tasks/fix-the-build.md", "status", "draft"],
+    );
+    // A proposal's term is not a task's: `draft` on a task is refused, as is a
+    // word in neither list.
+    let (ok_, out, err) = run(&dir, &["check"]);
+    assert!(!ok_ && (out + &err).contains("not a known term"));
     ok(
         &dir,
         &["set", "docs/tasks/fix-the-build.md", "status", "wontfix"],
@@ -202,7 +246,10 @@ fn a_collision_is_reported_and_nothing_is_written() {
         "the rest of the plan is still shown: {out}"
     );
     assert!(err.contains("1 collision"), "{err}");
-    assert!(!dir.join("vocab/statuses.yaml").exists(), "nothing written");
+    assert!(
+        !dir.join("vocab/task-statuses.yaml").exists(),
+        "nothing written"
+    );
     assert!(
         !read(&dir, "prov.yaml").contains("open-tasks"),
         "not even the clean entries"
@@ -226,7 +273,7 @@ fn a_directory_that_is_not_a_preset_is_refused() {
 }
 
 /// This repository is the preset's first consumer: its own `prov.yaml` and
-/// `vocab/statuses.yaml` are what applying `presets/tasks/` wrote, and the
+/// `vocab/` stores are what applying `presets/tasks/` wrote, and the
 /// built-in preset was applied beside it. Applying either again finds nothing
 /// to add — which is the test that the stencil and the config cannot drift.
 #[test]

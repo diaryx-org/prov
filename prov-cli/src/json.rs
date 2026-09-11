@@ -409,6 +409,17 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("path", p(path)));
             fields.push(("missing", J::Bool(*missing)));
         }
+        Finding::FieldScopeUnresolved {
+            doc,
+            field,
+            under,
+            why,
+        } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("field", s(field)));
+            fields.push(("under", s(under)));
+            fields.push(("why", s(why)));
+        }
         Finding::ManifestConflict { doc } => {
             fields.push(("doc", p(doc)));
         }

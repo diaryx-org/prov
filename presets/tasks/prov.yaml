@@ -2,16 +2,26 @@
 # can read. Apply it with `prov presets ./presets/tasks --write` (or `prov init
 # --preset ./presets/tasks`), then make the indexes the views hang under —
 # `prov new Tasks --in <root>`, `prov new Proposals --in <root>`, at any path,
-# since the views name them by title — and `prov new "<title>" --in tasks.md`
-# opens a task, which starts as `status: open`.
+# since everything here names them by title — and `prov new "<title>" --in
+# tasks.md` opens a task as `status: open`, `--in proposals.md` a proposal as
+# `status: draft`.
+#
+# `status` is declared twice, each under its index: a task's terms and a
+# proposal's are different closed sets, and a document under neither index has
+# no `status` at all — the Tasks index does not open as an open task.
 #
 # Only the axes the preset declares. The built-in preset supplies `created`
 # and `updated`; apply that too if the workspace was not made with it.
 fields:
   status:
-    values: closed
-    vocabulary: '[Statuses](/vocab/statuses.yaml)'
-    default: open
+    - under: '[[Tasks]]'
+      values: closed
+      vocabulary: '[Task statuses](/vocab/task-statuses.yaml)'
+      default: open
+    - under: '[[Proposals]]'
+      values: closed
+      vocabulary: '[Proposal statuses](/vocab/proposal-statuses.yaml)'
+      default: draft
   created: { type: datetime }
   updated: { type: datetime }
 views:

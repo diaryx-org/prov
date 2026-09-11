@@ -107,6 +107,7 @@ fn a_reified_vocabulary_is_loadable_and_its_terms_are_reachable_as_nodes() {
         vocabulary: Some("vocab/index.md".into()),
         reify: true,
         default: None,
+        under: None,
     };
     let vocab: Vocabulary =
         block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &spec))

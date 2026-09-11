@@ -673,29 +673,35 @@ fn relations_section(
 /// Controlled-vocabulary fields — omitted entirely when the workspace declares
 /// none, which is the common case.
 fn fields_section(config: &WorkspaceConfig) -> Option<String> {
-    let controlled: Vec<_> = config
-        .fields
-        .iter()
+    let controlled: Vec<(&str, &crate::config::FieldSpec)> = config
+        .field_declarations()
         .filter(|(_, spec)| spec.vocabulary.is_some())
         .collect();
     if controlled.is_empty() {
         return None;
     }
+    // Counted by field, not by declaration: `status` under two indexes is
+    // one field with two lists, and the sentence is about fields.
+    let names: std::collections::BTreeSet<&str> = controlled.iter().map(|(n, _)| *n).collect();
+    let scoped = controlled.iter().any(|(_, spec)| spec.under.is_some());
 
     let mut s = String::from("## Fields with fixed vocabularies\n\n");
     s.push_str(&para(&format!(
         "{} {} not hold free text. {} permitted values are listed in files of \
-         their own.",
-        capitalize(number_word(controlled.len())),
-        if controlled.len() == 1 {
+         their own.{}",
+        capitalize(number_word(names.len())),
+        if names.len() == 1 {
             "field does"
         } else {
             "fields do"
         },
-        if controlled.len() == 1 {
-            "Its"
+        if names.len() == 1 { "Its" } else { "Their" },
+        if scoped {
+            " Where the table names a place, the rule holds for the files under \
+             that index and no others; a file elsewhere may hold anything in the \
+             field, or nothing."
         } else {
-            "Their"
+            ""
         },
     )));
     s.push('\n');
@@ -716,10 +722,19 @@ fn fields_section(config: &WorkspaceConfig) -> Option<String> {
                 .as_deref()
                 .map(link_target_text)
                 .unwrap_or_default();
-            vec![code(name), rule, code(&target)]
+            let mut row = vec![code(name), rule, code(&target)];
+            if scoped {
+                row.insert(1, scope_text(spec));
+            }
+            row
         })
         .collect();
-    s.push_str(&table(&["field", "rule", "values listed in"], &rows));
+    let headers: &[&str] = if scoped {
+        &["field", "where", "rule", "values listed in"]
+    } else {
+        &["field", "rule", "values listed in"]
+    };
+    s.push_str(&table(headers, &rows));
 
     if controlled
         .iter()
@@ -891,7 +906,7 @@ fn machinery_section(
             ),
         ));
     }
-    for (name, spec) in &config.fields {
+    for (name, spec) in config.field_declarations() {
         // A reified vocabulary is not machinery: its list is an index node in
         // the tree and its terms are documents, so the spine does reach it —
         // this section's opening sentence would be false of it.
@@ -899,10 +914,16 @@ fn machinery_section(
             continue;
         }
         if let Some(vocab) = &spec.vocabulary {
+            // A scoped declaration says where it holds, since a reader who
+            // finds two lists for one field needs to know which is whose.
+            let place = match &spec.under {
+                Some(_) => format!(" {}", scope_text(spec)),
+                None => String::new(),
+            };
             pointers.push((
                 format!("fields.{name}.vocabulary"),
                 format!(
-                    "the permitted values of {} ({})",
+                    "the permitted values of {}{place} ({})",
                     code(name),
                     code(&link_target_text(vocab))
                 ),
@@ -1081,12 +1102,15 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
     // finds the same `status: open` on every recent file would otherwise take
     // it for something each author chose to write.
     let starting: Vec<String> = config
-        .fields
-        .iter()
+        .field_declarations()
         .filter_map(|(name, spec)| {
             spec.default.as_ref().map(|default| {
+                let place = match &spec.under {
+                    Some(_) => format!(" ({})", scope_text(spec)),
+                    None => String::new(),
+                };
                 format!(
-                    "{} set to {}",
+                    "{} set to {}{place}",
                     code(name),
                     code(&starting_value_text(default))
                 )
@@ -1104,6 +1128,16 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
 
     s.push_str(&bullet_list(&bullets));
     s
+}
+
+/// Where a declaration holds, for a reader: "everywhere", or "under `Tasks`"
+/// — the index named by its link's target, since the label is the author's
+/// and the target is what a reader can go and find.
+fn scope_text(spec: &crate::config::FieldSpec) -> String {
+    match &spec.under {
+        Some(under) => format!("under {}", code(&link_target_text(under))),
+        None => "everywhere".to_string(),
+    }
 }
 
 /// A field's starting value as the text a reader would see in the file — a
@@ -1898,13 +1932,14 @@ mod tests {
             relation_defs: bespoke_defs,
             fields: BTreeMap::from([(
                 "audience".into(),
-                FieldSpec {
+                vec![FieldSpec {
                     ty: None,
                     values: OpenClosed::Closed,
                     vocabulary: Some("[Audiences](/vocab/audiences.yaml)".into()),
                     reify: true,
                     default: None,
-                },
+                    under: None,
+                }],
             )]),
             reference_target: Addressing::Id,
             id_storage: IdStorage::FrontmatterOnly,
@@ -2091,23 +2126,25 @@ mod tests {
         config.fields = BTreeMap::from([
             (
                 "tags".into(),
-                FieldSpec {
+                vec![FieldSpec {
                     ty: None,
                     values: OpenClosed::Open,
                     vocabulary: Some("[Tags](/vocab/tags.yaml)".into()),
                     reify: false,
                     default: None,
-                },
+                    under: None,
+                }],
             ),
             (
                 "audience".into(),
-                FieldSpec {
+                vec![FieldSpec {
                     ty: None,
                     values: OpenClosed::Closed,
                     vocabulary: Some("[Audiences](/vocab/audiences.md)".into()),
                     reify: true,
                     default: None,
-                },
+                    under: None,
+                }],
             ),
         ]);
         let page = render(&config, &ctx);

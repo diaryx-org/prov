@@ -1,0 +1,9 @@
+title: Task statuses
+vocabulary:
+  field: status
+  values: closed
+terms:
+  open:        { means: "committed to, not started" }
+  in-progress: { means: "someone is on it" }
+  done:        { means: "resolved; the closing edit names the commit or release" }
+  dropped:     { means: "will not be done; the file stays, findable by grep" }

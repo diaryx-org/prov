@@ -193,6 +193,15 @@ pub struct FieldSpec {
     /// caller's flags so that a stencil can state it and `about.md` can say
     /// it.
     pub default: Option<Value>,
+    /// The subtree this declaration governs, as a link to its index — by
+    /// path, by `id:`, or by title (`[[Tasks]]`), resolved exactly as a view's
+    /// `under:` is. `None` governs the whole workspace. A field may carry
+    /// several declarations, each scoped, so that `status` means one closed
+    /// set of terms under `Tasks` and another under `Proposals`; where scopes
+    /// nest, the deepest wins, and an unscoped declaration is the fallback.
+    /// The index itself is not in its own scope, for the reason a view's
+    /// anchor is not one of its records.
+    pub under: Option<String>,
 }
 
 /// The config spellings of [`FieldType`], in the order a diagnostic offers them.
@@ -368,10 +377,16 @@ pub struct WorkspaceConfig {
     /// human gloss). Empty means the workspace uses its built-in vocabulary
     /// (diaryx) unchanged. Consumed by [`relation_set`](Self::relation_set).
     pub relation_defs: BTreeMap<String, RelationDef>,
-    /// Controlled-vocabulary field declarations, keyed by frontmatter field name
-    /// (`tags`, `audience`). Empty means no field is controlled — every such
-    /// field is ordinary carried content (DESIGN §2, tier 3).
-    pub fields: BTreeMap<String, FieldSpec>,
+    /// Field declarations, keyed by frontmatter field name (`tags`,
+    /// `audience`), each a list because a field may be declared once for the
+    /// whole workspace or several times, each under an index
+    /// ([`FieldSpec::under`]). Written as a bare mapping when there is one
+    /// unscoped declaration, and as a sequence otherwise. Empty means no
+    /// field is described — every such field is ordinary carried content
+    /// (DESIGN §2, tier 3). Which declaration governs a given document is a
+    /// question about the spanning tree, answered by `prov`'s `Workspace`;
+    /// [`field`](Self::field) answers the workspace-wide half.
+    pub fields: BTreeMap<String, Vec<FieldSpec>>,
     /// The views the workspace declares, in declaration order — the second way
     /// through the same documents the spine already holds ("the entries under
     /// `Daily`, by month"). Empty means the workspace declares none, which is
@@ -685,6 +700,26 @@ impl WorkspaceConfig {
     ///
     /// An explicit `spanning` always wins; per-relation reference styles are
     /// overlaid last.
+    /// The declaration of `name` that governs the whole workspace — the one
+    /// without an [`under`](FieldSpec::under) — if there is one. What a
+    /// reader with no document in hand can know about a field; which
+    /// declaration governs a *particular* document is `Workspace`'s question.
+    pub fn field(&self, name: &str) -> Option<&FieldSpec> {
+        self.fields
+            .get(name)?
+            .iter()
+            .find(|spec| spec.under.is_none())
+    }
+
+    /// Every declaration of every field, flattened, with the field's name —
+    /// for a reader that wants each store or each starting value once,
+    /// whatever it is scoped to.
+    pub fn field_declarations(&self) -> impl Iterator<Item = (&str, &FieldSpec)> {
+        self.fields
+            .iter()
+            .flat_map(|(name, specs)| specs.iter().map(move |spec| (name.as_str(), spec)))
+    }
+
     pub fn relation_set(&self) -> RelationSet {
         let preset = RelationSet::diaryx();
         let mut set = preset.clone();
@@ -899,43 +934,60 @@ impl WorkspaceConfig {
                 }
             }
         }
-        // Field declarations:
-        // `fields: { <field>: { type, values, vocabulary, reify, default } }`.
+        // Field declarations: `fields: { <field>: <decl> | [<decl>, …] }`,
+        // each `<decl>` a mapping of `{ type, values, vocabulary, reify,
+        // default, under }`. A bare mapping is one declaration for the whole
+        // workspace; a sequence is several, each scoped by `under`.
         if let Some(fields) = meta.get("fields").and_then(Value::as_mapping) {
-            for (name, spec) in fields {
-                let vocabulary = spec
-                    .get("vocabulary")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let ty = spec
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .and_then(field_type_from_config_str);
-                let default = spec.get("default").cloned();
-                // An entry that declares neither a type, nor a vocabulary, nor
-                // a starting value says nothing about the field that prov or a
-                // frontend could act on; recording it would only claim the
-                // field is described when it isn't. (`diagnose` reports the
-                // malformed spelling that most often causes this.)
-                if ty.is_none() && vocabulary.is_none() && default.is_none() {
-                    continue;
-                }
-                let values = spec
-                    .get("values")
-                    .and_then(Value::as_str)
-                    .and_then(OpenClosed::from_config_str)
-                    .unwrap_or_default();
-                let reify = spec.get("reify").and_then(Value::as_bool).unwrap_or(false);
-                self.fields.insert(
-                    name.clone(),
-                    FieldSpec {
+            for (name, value) in fields {
+                let entries: Vec<&Value> = match value {
+                    Value::Sequence(items) => items.iter().collect(),
+                    other => vec![other],
+                };
+                let mut declarations = Vec::new();
+                for spec in entries {
+                    let vocabulary = spec
+                        .get("vocabulary")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let ty = spec
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .and_then(field_type_from_config_str);
+                    let default = spec.get("default").cloned();
+                    // An entry that declares neither a type, nor a vocabulary,
+                    // nor a starting value says nothing about the field that
+                    // prov or a frontend could act on; recording it would only
+                    // claim the field is described when it isn't — a scope
+                    // alone governs nothing. (`diagnose` reports the malformed
+                    // spelling that most often causes this.)
+                    if ty.is_none() && vocabulary.is_none() && default.is_none() {
+                        continue;
+                    }
+                    let values = spec
+                        .get("values")
+                        .and_then(Value::as_str)
+                        .and_then(OpenClosed::from_config_str)
+                        .unwrap_or_default();
+                    let reify = spec.get("reify").and_then(Value::as_bool).unwrap_or(false);
+                    let under = spec
+                        .get("under")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    declarations.push(FieldSpec {
                         ty,
                         values,
                         vocabulary,
                         reify,
                         default,
-                    },
-                );
+                        under,
+                    });
+                }
+                if !declarations.is_empty() {
+                    self.fields.insert(name.clone(), declarations);
+                }
             }
         }
         // View declarations: `views: { <name>: { group, by, under, nest, … } }`.
@@ -1145,27 +1197,42 @@ impl WorkspaceConfig {
 
         if !self.fields.is_empty() {
             let mut fields = Mapping::new();
-            for (name, spec) in &self.fields {
-                let mut entry = Mapping::new();
-                if let Some(ty) = spec.ty.and_then(field_type_as_config_str) {
-                    entry.insert("type".into(), Value::String(ty.into()));
-                }
-                // `values` describes a vocabulary, so it is only meaningful — and
-                // only written — alongside one.
-                if let Some(vocabulary) = &spec.vocabulary {
-                    entry.insert(
-                        "values".into(),
-                        Value::String(spec.values.as_config_str().into()),
-                    );
-                    entry.insert("vocabulary".into(), Value::String(vocabulary.clone()));
-                }
-                if spec.reify {
-                    entry.insert("reify".into(), Value::Bool(true));
-                }
-                if let Some(default) = &spec.default {
-                    entry.insert("default".into(), default.clone());
-                }
-                fields.insert(name.clone(), Value::Mapping(entry));
+            for (name, declarations) in &self.fields {
+                let entries: Vec<Value> = declarations
+                    .iter()
+                    .map(|spec| {
+                        let mut entry = Mapping::new();
+                        if let Some(under) = &spec.under {
+                            entry.insert("under".into(), Value::String(under.clone()));
+                        }
+                        if let Some(ty) = spec.ty.and_then(field_type_as_config_str) {
+                            entry.insert("type".into(), Value::String(ty.into()));
+                        }
+                        // `values` describes a vocabulary, so it is only
+                        // meaningful — and only written — alongside one.
+                        if let Some(vocabulary) = &spec.vocabulary {
+                            entry.insert(
+                                "values".into(),
+                                Value::String(spec.values.as_config_str().into()),
+                            );
+                            entry.insert("vocabulary".into(), Value::String(vocabulary.clone()));
+                        }
+                        if spec.reify {
+                            entry.insert("reify".into(), Value::Bool(true));
+                        }
+                        if let Some(default) = &spec.default {
+                            entry.insert("default".into(), default.clone());
+                        }
+                        Value::Mapping(entry)
+                    })
+                    .collect();
+                // One unscoped declaration is the common case and keeps the
+                // bare spelling; anything else is the list it is.
+                let value = match entries.as_slice() {
+                    [one] if declarations[0].under.is_none() => one.clone(),
+                    _ => Value::Sequence(entries),
+                };
+                fields.insert(name.clone(), value);
             }
             map.insert("fields".into(), Value::Mapping(fields));
         }
@@ -1336,7 +1403,7 @@ const REFERENCE_KEYS: &[&str] = &["notation", "path_style", "target", "label"];
 /// (`means` is free-form and never near-miss-matched, like `updated`).
 const RELATION_DEF_KEYS: &[&str] = &["cardinality", "inverse", "means"];
 /// Keys inside each `fields.<name>` entry.
-const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "reify", "default"];
+const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "reify", "default", "under"];
 
 /// If `meta` declares a `spec` newer than [`SPEC_VERSION`] — the version this
 /// build understands — the declared version. The signal that prov may be
@@ -1733,16 +1800,31 @@ fn diagnose_relation_entry(issues: &mut Vec<ConfigIssue>, name: &str, value: &Va
 }
 
 /// Diagnose the `fields:` block — a mapping of frontmatter field name to a field
-/// declaration (`type` / `values` / `vocabulary` / `reify`).
+/// declaration (`type` / `values` / `vocabulary` / `reify` / `default` /
+/// `under`), or to a sequence of them, each scoped by `under`.
 fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
     let Some(map) = value.as_mapping() else {
         return block_shape_issue(issues, "fields", value);
     };
     for (name, spec) in map {
         let prefix = format!("fields.{name}");
+        match spec {
+            Value::Sequence(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    diagnose_field_declaration(issues, &format!("{prefix}.{i}"), item);
+                }
+            }
+            other => diagnose_field_declaration(issues, &prefix, other),
+        }
+    }
+}
+
+/// One field declaration, at `prefix` (`fields.status`, or `fields.status.1`
+/// inside a scoped list).
+fn diagnose_field_declaration(issues: &mut Vec<ConfigIssue>, prefix: &str, spec: &Value) {
+    {
         let Some(entry) = spec.as_mapping() else {
-            block_shape_issue(issues, &prefix, spec);
-            continue;
+            return block_shape_issue(issues, prefix, spec);
         };
         for (key, v) in entry {
             let dotted = format!("{prefix}.{key}");
@@ -1778,6 +1860,22 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
                 // term of a closed vocabulary is `check`'s question, asked of
                 // the document that ends up carrying it.
                 "default" => {}
+                // A link, resolved against the tree at read time; whether it
+                // names an index is not a question one config surface can
+                // answer.
+                "under" => {
+                    if v.as_str().is_none() {
+                        issues.push(ConfigIssue {
+                            key: dotted,
+                            kind: ConfigIssueKind::InvalidValue {
+                                value: value_summary(v),
+                                expected: vec![
+                                    "a link to the index this declaration governs".into(),
+                                ],
+                            },
+                        });
+                    }
+                }
                 other => {
                     if let Some(sug) = nearest(other, FIELD_KEYS) {
                         issues.push(unknown(dotted, format!("{prefix}.{sug}")));
@@ -1884,18 +1982,23 @@ fn diagnose_nest_is_fileable(
         return;
     };
     // Any key in the chain being multi-valued is enough: the chain picks
-    // whichever is filled in, so a document could reach the `seq` one.
+    // whichever is filled in, so a document could reach the `seq` one. And
+    // any *declaration* of the key being multi-valued is enough, for the same
+    // reason — a scoped one governs some of the documents the view files.
+    let declares_seq = |decl: &Value| {
+        decl.get("type")
+            .and_then(Value::as_str)
+            .and_then(field_type_from_config_str)
+            == Some(FieldType::Seq)
+    };
     let multi: Vec<&String> = view
         .group
         .keys
         .iter()
-        .filter(|key| {
-            fields
-                .get(*key)
-                .and_then(|f| f.get("type"))
-                .and_then(Value::as_str)
-                .and_then(field_type_from_config_str)
-                == Some(FieldType::Seq)
+        .filter(|key| match fields.get(*key) {
+            Some(Value::Sequence(decls)) => decls.iter().any(declares_seq),
+            Some(decl) => declares_seq(decl),
+            None => false,
         })
         .collect();
     if let Some(field) = multi.first() {
@@ -2467,7 +2570,7 @@ mod tests {
             fields: BTreeMap::from([
                 (
                     "audience".to_string(),
-                    FieldSpec {
+                    vec![FieldSpec {
                         ty: Some(FieldType::Str),
                         values: OpenClosed::Closed,
                         vocabulary: Some("[Audiences](/vocab/audiences.yaml)".to_string()),
@@ -2475,19 +2578,21 @@ mod tests {
                         // A starting value, carried as the value it is rather
                         // than as text, so a `default: 3` round-trips as an int.
                         default: Some(Value::String("friends".to_string())),
-                    },
+                        under: None,
+                    }],
                 ),
                 // A type with no vocabulary — the other half of a field
                 // declaration, and the shape that has no `values` to write.
                 (
                     "created".to_string(),
-                    FieldSpec {
+                    vec![FieldSpec {
                         ty: Some(FieldType::Extended(ExtKind::LocalDate)),
                         values: OpenClosed::default(),
                         vocabulary: None,
                         reify: false,
                         default: None,
-                    },
+                        under: None,
+                    }],
                 ),
             ]),
             views: vec![
@@ -3056,7 +3161,11 @@ mod tests {
         top.insert("fields".into(), Value::Mapping(fields));
 
         let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
-        let spec = config.fields.get("created").expect("a recorded field");
+        let spec = config
+            .fields
+            .get("created")
+            .and_then(|d| d.first())
+            .expect("a recorded field");
         assert_eq!(spec.ty, Some(FieldType::Extended(ExtKind::LocalDate)));
         assert_eq!(spec.vocabulary, None);
     }
@@ -3077,12 +3186,19 @@ mod tests {
         top.insert("fields".into(), Value::Mapping(fields));
 
         let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
-        let status = config.fields.get("status").expect("a recorded field");
+        let status = config
+            .fields
+            .get("status")
+            .and_then(|d| d.first())
+            .expect("a recorded field");
         assert_eq!(status.default, Some(Value::String("open".into())));
         assert_eq!(status.ty, None);
         assert_eq!(status.vocabulary, None);
         assert_eq!(
-            config.fields.get("count").and_then(|s| s.default.clone()),
+            config
+                .fields
+                .get("count")
+                .and_then(|d| d[0].default.clone()),
             Some(Value::Int(0))
         );
         // And `default` is a known key, so a near-miss is reported as one.

@@ -377,12 +377,15 @@ being a property of the workspace and become a property of a region of it, and
 every reader of `fields` — `check`, `about`, a metadata editor's picker — has to
 learn to ask *where* before asking *what*.
 
-This proposal defers it. The one collision in hand has a cheap fix — proposals
-carry `outcome:` rather than `status:`, a one-word change to the org rule and to
-`dx tasks` — and a scoping axis should wait for a second concrete case that the
-rename does not cover. The `tasks` preset is written so that it does not need
-the axis: one vocabulary, nine terms, and the views tell tasks from proposals by
-`under:`, which already scopes.
+This proposal deferred it, and the deferral did not survive Phase 2: the
+second case arrived at once, in the form of `fields.status.default: open`
+landing on every document `new` made — the `Tasks` index included — because a
+default, like a vocabulary, was a property of the workspace and not of a
+region of it. **Built** (§9, Phase 4): a `fields.<name>` entry is a
+declaration or a list of them, each with an `under:` resolved exactly as a
+view's is, and every reader asks *where* first. The `tasks` preset declares
+`status` twice — four terms and `open` under `Tasks`, five and `draft` under
+`Proposals` — and a document under neither has no `status` at all.
 
 ## 8. Where the diaryx preset lives
 
@@ -432,9 +435,13 @@ later without the mechanism changing.
 - **Phase 3 — `dx tasks` reads a view.** Per repository, `prov views work
   --json` replaces the per-file `prov meta` loop and the `KINDS` table, in
   repositories that are prov workspaces. Devtools work, after the above ships.
-- **Unscheduled** — `sort:` on views, and the subtree-scoped field declaration
-  of §7, each waiting on a second case. The diaryx directory moving here, §8,
-  when that is decided.
+- **Phase 4 — the subtree-scoped declaration.** ✅ §7's axis, once the fixture
+  showed the second case: `fields.<name>` takes a list of declarations, each
+  `under:` an index, resolved as a view's anchor is; `check`, `new`, the term
+  repair and `about.md` ask where before what; the `tasks` preset declares
+  `status` per index and this repository re-applied it.
+- **Unscheduled** — `sort:` on views, waiting on a second case. The diaryx
+  directory moving here, §8, when that is decided.
 
 ## Open questions
 

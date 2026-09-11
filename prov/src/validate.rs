@@ -464,6 +464,18 @@ pub enum Finding {
         expected: String,
         missing: bool,
     },
+    /// A scoped field declaration (`fields.<field>` with an `under:`) whose
+    /// anchor names no document, so the declaration governs nothing: no
+    /// document is held to its vocabulary and none opens with its default.
+    /// Filed against the config surface that declares it. Diagnosis-only —
+    /// the repair is to make the index, or to fix the link, and prov cannot
+    /// tell which was meant.
+    FieldScopeUnresolved {
+        doc: PathBuf,
+        field: String,
+        under: String,
+        why: String,
+    },
     /// A node declares both `content` and `manifest` — a sidecar for one payload
     /// and for a whole directory at once. The two are mutually exclusive: a node
     /// stands for one set of bytes or for a set of files, and every pass that
@@ -599,6 +611,7 @@ impl Finding {
             // The workspace, not the example: the finding is about a population.
             Finding::LegacyBodyHash { root, .. } => root,
             Finding::AboutStale { path, .. } => path,
+            Finding::FieldScopeUnresolved { doc, .. } => doc,
             Finding::ManifestDrift { node, .. } => node,
             // The one corrupted file, not the node covering ten thousand.
             Finding::ManifestMismatch { path, .. } => path,
@@ -638,6 +651,7 @@ impl Finding {
             Finding::LegacyDeletionsPointer { .. } => "legacy_deletions_pointer",
             Finding::LegacyBodyHash { .. } => "legacy_body_hash",
             Finding::AboutStale { .. } => "about_stale",
+            Finding::FieldScopeUnresolved { .. } => "field_scope_unresolved",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
             Finding::ManifestDrift { .. } => "manifest_drift",
@@ -922,6 +936,16 @@ impl fmt::Display for Finding {
                     path.display()
                 )
             }
+            Finding::FieldScopeUnresolved {
+                doc,
+                field,
+                under,
+                why,
+            } => write!(
+                f,
+                "{}: `fields.{field}` is declared under `{under}`, but {why} — the declaration governs nothing until that index exists",
+                doc.display()
+            ),
             Finding::ManifestConflict { doc } => write!(
                 f,
                 "{}: declares both content and manifest — a node covers one payload or a directory, not both",
@@ -1168,7 +1192,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             stores.push((label, p));
         }
         let config = self.effective_config(start).await?;
-        for spec in config.fields.values() {
+        for (_, spec) in config.field_declarations() {
             // A type-only field declares no vocabulary, so it has no store. A
             // *reified* one declares content rather than machinery — an index node
             // whose children are term documents — so the whole-file rule does not
@@ -1245,24 +1269,51 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if config.fields.is_empty() {
             return Ok(Vec::new());
         }
-        // Load each field's vocabulary once. A store that fails to load (missing,
-        // markdown) simply drops out — its own finding comes from `store_findings`.
+        // Load each declaration's vocabulary once, keyed by the field and the
+        // declaration's position, since a scoped field has one per scope. A
+        // store that fails to load (missing, markdown) simply drops out — its
+        // own finding comes from `store_findings`.
         let mut vocabs: Vec<(
             String,
+            usize,
             crate::config::OpenClosed,
             crate::vocabulary::Vocabulary,
         )> = Vec::new();
-        for (field, spec) in &config.fields {
-            // Membership is only checkable for a field that names a vocabulary; a
-            // type-only field has nothing to be a member of. `load_field_vocabulary`
-            // is where flat and reified are told apart — both yield the same term
-            // set, so everything below reads one shape.
-            if let Ok(Some(vocab)) = self.load_field_vocabulary(start, field, spec).await {
-                vocabs.push((field.clone(), spec.values, vocab));
+        for (field, declarations) in &config.fields {
+            for (index, spec) in declarations.iter().enumerate() {
+                // Membership is only checkable for a declaration that names a
+                // vocabulary; a type-only one has nothing to be a member of.
+                // `load_field_vocabulary` is where flat and reified are told
+                // apart — both yield the same term set, so everything below
+                // reads one shape.
+                if let Ok(Some(vocab)) = self.load_field_vocabulary(start, field, spec).await {
+                    vocabs.push((field.clone(), index, spec.values, vocab));
+                }
             }
         }
         if vocabs.is_empty() {
             return Ok(Vec::new());
+        }
+        // Which declaration governs which document is a question about the
+        // tree, asked once here and answered per document below. A scope
+        // whose anchor resolved to nothing is a finding of its own: a
+        // declaration nobody is held to is a rule that silently stopped
+        // applying.
+        let scopes = self.field_scopes_of(start, &config).await?;
+        let mut findings = Vec::new();
+        if !scopes.unresolved().is_empty() {
+            let surface = self
+                .config_path(start)
+                .await?
+                .unwrap_or_else(|| link::normalize(start));
+            for unresolved in scopes.unresolved() {
+                findings.push(Finding::FieldScopeUnresolved {
+                    doc: surface.clone(),
+                    field: unresolved.field.clone(),
+                    under: unresolved.under.clone(),
+                    why: unresolved.why.clone(),
+                });
+            }
         }
 
         // The reachable document set (mirrors `fixity_findings`), minus any
@@ -1273,15 +1324,20 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .reachable_documents(start, census, content_bodies)
             .await?;
 
-        let mut findings = Vec::new();
         for path in reachable {
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
-            for (field, values, vocab) in &vocabs {
+            for (field, index, values, vocab) in &vocabs {
                 let Some(field_value) = doc.meta.get(field) else {
                     continue;
                 };
+                // A vocabulary judges only the documents its declaration
+                // governs: a task's `status` is not held to the proposals'
+                // terms, and a document in neither scope is held to nothing.
+                if scopes.index_for(&config, field, &path) != Some(*index) {
+                    continue;
+                }
                 for term in field_value.link_strings() {
                     if vocab.accepts(&term) {
                         continue;

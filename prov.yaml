@@ -16,14 +16,19 @@ references:
   label: false
 created: created
 fields:
-  status:
-    values: closed
-    vocabulary: '[Statuses](/vocab/statuses.yaml)'
-    default: open
   created:
     type: datetime
   updated:
     type: datetime
+  status:
+  - under: '[[Tasks]]'
+    values: closed
+    vocabulary: '[Task statuses](/vocab/task-statuses.yaml)'
+    default: open
+  - under: '[[Proposals]]'
+    values: closed
+    vocabulary: '[Proposal statuses](/vocab/proposal-statuses.yaml)'
+    default: draft
 views:
   open-tasks:
     label: Open tasks
