@@ -63,9 +63,27 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if month <= 2 { y + 1 } else { y }, month, day)
 }
 
+/// Seconds-since-Unix-epoch as ZIP's native (time, date) pair, each a packed
+/// bitfield (PKWARE APPNOTE.TXT §4.4.6). Clamped at the 1980-01-01 floor DOS
+/// timestamps cannot represent below. Here rather than beside the ZIP writer
+/// because it is the same calendar arithmetic as [`rfc3339`], read out into a
+/// different field layout.
+pub(crate) fn dos_datetime(secs: u64) -> (u16, u16) {
+    const DOS_FLOOR_SECS: u64 = 315_532_800; // 1980-01-01T00:00:00Z
+    let secs = secs.max(DOS_FLOOR_SECS);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let (year, month, day) = civil_from_days(days);
+    let dos_year = (year - 1980).clamp(0, i64::from(u16::MAX >> 9)) as u16;
+    let dos_date = (dos_year << 9) | ((month as u16) << 5) | (day as u16);
+    let dos_time = ((hour as u16) << 11) | ((min as u16) << 5) | ((sec as u16) / 2);
+    (dos_time, dos_date)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{now_rfc3339, rfc3339};
+    use super::{dos_datetime, now_rfc3339, rfc3339};
 
     #[test]
     fn rfc3339_matches_known_instants() {
@@ -105,5 +123,24 @@ mod tests {
         assert_eq!(now.len(), "2026-07-16T14:30:00.123456Z".len(), "{now}");
         assert!(now.ends_with('Z') && now.as_bytes()[19] == b'.', "{now}");
         assert!(now_rfc3339() >= now, "the clock must not run backwards");
+    }
+
+    #[test]
+    fn dos_datetime_floors_at_1980() {
+        assert_eq!(dos_datetime(0), (0, 0x0021));
+    }
+
+    #[test]
+    fn dos_datetime_matches_a_known_instant() {
+        // 2020-02-29T13:07:36Z (a leap day, to exercise the calendar path).
+        let (time, date) = dos_datetime(1_582_981_656);
+        let year = 1980 + (date >> 9);
+        let month = (date >> 5) & 0x0F;
+        let day = date & 0x1F;
+        assert_eq!((year, month, day), (2020, 2, 29));
+        let hour = time >> 11;
+        let min = (time >> 5) & 0x3F;
+        let sec2 = time & 0x1F; // seconds / 2
+        assert_eq!((hour, min, sec2 * 2), (13, 7, 36));
     }
 }

@@ -80,7 +80,7 @@ pub(crate) fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdRes
 
 /// `stamp` — the bookkeeping of an edit prov did not host.
 ///
-/// [`cmd_edit`] already does this for an edit it launched the editor for, and
+/// [`cmd_edit`](crate::doc::cmd_edit) already does this for an edit it launched the editor for, and
 /// it can be unconditional about the timestamp because it snapshotted the bytes
 /// before handing over. Nothing here saw the edit happen, so the checksum is
 /// the only evidence available, and [`ContentState`] is how that evidence is

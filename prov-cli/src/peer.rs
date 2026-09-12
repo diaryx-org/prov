@@ -8,10 +8,10 @@
 //!
 //! ## Why the map is not in `prov.yaml`
 //!
-//! For the same reason the fixity cache's *location* is not (see [`crate::cache`]):
-//! `prov.yaml` describes the archive, and the archive is device-independent — it
-//! is read on the laptop, the phone, and the server that syncs it. `notes =
-//! ../notes` is true on exactly one machine. Worse than being wrong elsewhere, it
+//! For the same reason no device-local path ever is: `prov.yaml` describes the
+//! archive, and the archive is device-independent — it is read on the laptop,
+//! the phone, and the server that syncs it. `notes = ../notes` is true on
+//! exactly one machine. Worse than being wrong elsewhere, it
 //! would be wrong *silently*, since a peer that resolves to the wrong directory
 //! resolves to real documents.
 //!
@@ -267,7 +267,7 @@ impl PeerResolver for PeerMap {
 
 /// Write `peers` back, replacing the file.
 ///
-/// Unlike [`crate::cache`], a failure here is reported: the user asked for this
+/// A failure here is reported rather than swallowed: the user asked for this
 /// write in so many words (`prov peer add`), so silently not doing it would be
 /// a lie. Goes through a temporary sibling and a rename for the usual reason —
 /// an interrupted write leaves the previous map rather than a truncated one.

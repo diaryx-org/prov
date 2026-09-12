@@ -1240,7 +1240,7 @@ impl From<LinkStyleArg> for LinkStyle {
 /// When a document earns a stable ID — the `identity` config key, one of the
 /// two independent identity axes `init` asks about. `Off` is paths-only; `Lazy`
 /// mints on a durable reference (link-by-id or publish); `Eager` mints every
-/// document at creation. The spellings match the config value ([`registration_from_str`]).
+/// document at creation. The spellings match the config value (`prov_config`'s `registration_from_str`).
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum IdentityArg {
     /// Paths only — no document ever earns a stable ID. `none` is accepted as a

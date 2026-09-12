@@ -192,7 +192,7 @@ pub(crate) fn machinery(
 
 /// The timestamp half of a content change to `rel`: the workspace's `updated`
 /// field and the instant `now`, or `None` when the workspace keeps no such
-/// field or `rel` is [machinery](machinery) rather than content. Shared by
+/// field or `rel` is [`machinery`] rather than content. Shared by
 /// every verb that stamps — `edit`, `set`, `unset`, `stamp` — so they cannot
 /// disagree about which documents a timestamp may land in.
 pub(crate) fn updated_stamp<'a>(

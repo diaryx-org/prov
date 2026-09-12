@@ -55,7 +55,7 @@ pub(crate) fn crc32(bytes: &[u8]) -> u32 {
 }
 
 /// A ZIP entry's timestamp, in the format's native MS-DOS date/time fields —
-/// callers build this with [`crate::backup::dos_datetime`], never a clock read
+/// callers build this with [`crate::clock::dos_datetime`], never a clock read
 /// here (this module has none).
 pub(crate) type DosTime = (u16, u16);
 

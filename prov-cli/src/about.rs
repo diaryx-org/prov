@@ -17,7 +17,7 @@ use prov::{StdFs, Workspace, block_on};
 use crate::session::{Ctx, find_root, find_root_quiet_at, workspace};
 use crate::{AnyError, CmdResult};
 
-/// Build the [`AboutContext`] for this workspace — the root's name and its
+/// Build the [`AboutContext`](prov::AboutContext) for this workspace — the root's name and its
 /// resolved pointer targets, which is everything the generator needs that is not
 /// already in the config.
 pub(crate) fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
