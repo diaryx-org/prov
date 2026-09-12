@@ -40,7 +40,7 @@ struct Stats {
 
 /// `prov backup --to <path> [--zip]`.
 pub(crate) fn cmd_backup(to: &Path, zip: bool) -> CmdResult {
-    let ctx = crate::find_root()?;
+    let ctx = crate::session::find_root()?;
     let root_dir = &ctx.root_dir;
 
     let root_canon = effective_canonical(root_dir)?;
@@ -333,7 +333,7 @@ fn dos_datetime(secs: u64) -> (u16, u16) {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let (year, month, day) = crate::civil_from_days(days);
+    let (year, month, day) = crate::clock::civil_from_days(days);
     let dos_year = (year - 1980).clamp(0, i64::from(u16::MAX >> 9)) as u16;
     let dos_date = (dos_year << 9) | ((month as u16) << 5) | (day as u16);
     let dos_time = ((hour as u16) << 11) | ((min as u16) << 5) | ((sec as u16) / 2);

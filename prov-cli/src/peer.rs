@@ -61,9 +61,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::OnceLock;
 
-use prov::{Id, IdIndex, PeerLocation, PeerLookup, PeerResolver};
+use prov::{Id, IdIndex, PeerLocation, PeerLookup, PeerResolver, link};
+
+use crate::cli::PeerAction;
+use crate::session::find_root_quiet_at;
+use crate::{AnyError, CmdResult};
 
 /// The file's name inside whichever directory holds it.
 const FILE: &str = "peers";
@@ -176,7 +181,7 @@ impl PeerMap {
     ///
     /// The library's crossing does the same three steps and one of them
     /// differently, on purpose: it requires the recorded location to *be* a
-    /// workspace root, where this confirms through [`crate::find_root_quiet_at`],
+    /// workspace root, where this confirms through [`find_root_quiet_at`],
     /// which climbs. So a peer recorded at a directory *inside* a workspace
     /// resolves here and is [`Unopenable`](prov::Refusal::Unopenable) there.
     ///
@@ -201,9 +206,9 @@ impl PeerMap {
         let Some(PeerLocation::Path(root)) = location else {
             return Err(DocumentError::Unfollowable(lookup));
         };
-        let ctx = crate::find_root_quiet_at(root)
+        let ctx = find_root_quiet_at(root)
             .map_err(|e| DocumentError::Unopenable(root.clone(), e.to_string()))?;
-        let peer_ws = crate::workspace(&ctx)
+        let peer_ws = crate::session::workspace(&ctx)
             .map_err(|e| DocumentError::Unopenable(root.clone(), e.to_string()))?;
         let path = peer_ws
             .index()
@@ -245,7 +250,7 @@ impl PeerResolver for PeerMap {
         // A peer that is not a workspace *yet* is a reasonable thing to have
         // written down (`peer add` records one deliberately), so failing to
         // open it is a state, not an error.
-        match crate::find_root_quiet_at(root) {
+        match find_root_quiet_at(root) {
             Ok(ctx) => PeerLookup::confirm(workspace, location, &ctx.config.workspace_id),
             Err(_) => PeerLookup::unreadable(location),
         }
@@ -266,7 +271,7 @@ impl PeerResolver for PeerMap {
 /// write in so many words (`prov peer add`), so silently not doing it would be
 /// a lie. Goes through a temporary sibling and a rename for the usual reason —
 /// an interrupted write leaves the previous map rather than a truncated one.
-pub(crate) fn store(peers: &BTreeMap<String, PathBuf>) -> Result<(), crate::AnyError> {
+pub(crate) fn store(peers: &BTreeMap<String, PathBuf>) -> Result<(), AnyError> {
     let Some(file) = path() else {
         return Err(
             "no peer-map location on this device — pass --peers <FILE> or set PROV_PEERS"
@@ -291,4 +296,193 @@ pub(crate) fn store(peers: &BTreeMap<String, PathBuf>) -> Result<(), crate::AnyE
         return Err(e.into());
     }
     Ok(())
+}
+
+/// `prov peer` — inspect and edit this device's map of other workspaces.
+///
+/// Deliberately does **not** need a workspace root: the map is a property of the
+/// machine, and a user setting one up has often not `cd`'d anywhere in
+/// particular. `peer resolve` is the one action that opens a workspace, and the
+/// one it opens is the *peer*, never the current directory.
+pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
+    match action {
+        PeerAction::List => {
+            let Some(file) = path() else {
+                println!("(no peer map)");
+                eprintln!(
+                    "no peer-map location for this invocation — no config directory could be \
+                     determined.\n\
+                     \n  Set one with --peers <FILE> or PROV_PEERS. Cross-workspace references \
+                     work either way;\n  without a map they are carried but cannot be followed."
+                );
+                return Ok(ExitCode::SUCCESS);
+            };
+            let peers = load();
+            // The entries to stdout and the commentary to stderr, so `prov peer
+            // list` pipes cleanly — the convention the other commands follow.
+            for (name, root) in &peers {
+                println!("{name}\t{}", root.display());
+            }
+            if peers.is_empty() {
+                eprintln!(
+                    "no peers recorded ({})\n\
+                     \n  Add one with `prov peer add <name> <dir>`, where <name> is what that\n  \
+                     workspace calls itself (`prov config workspace_id` there).",
+                    file.display()
+                );
+            } else {
+                eprintln!("{} peer(s) — {}", peers.len(), file.display());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PeerAction::Add { name, dir } => {
+            if !prov::is_valid_workspace_id(&name) {
+                return Err(format!(
+                    "`{name}` is not a valid workspace name — it cannot be empty or contain \
+                     `/`, `:` or whitespace"
+                )
+                .into());
+            }
+            // Absolute, so the map means the same thing from every directory the
+            // CLI is later run in. A peer map full of relative paths would
+            // resolve differently per invocation, which is exactly the failure
+            // mode that keeps it out of `prov.yaml` in the first place.
+            let dir = dir
+                .canonicalize()
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            // Discovering the peer's root is what turns "a directory" into "a
+            // workspace", and it is the first chance to notice that the name
+            // being recorded is not the name that workspace answers to. It is no
+            // longer the *last* chance — `peer resolve` asks again at the moment
+            // it matters, because a line true when it was written can be stale by
+            // the time it is followed — so this is advice, given early, and the
+            // entry is recorded either way.
+            let location = prov::PeerLocation::Path(dir.clone());
+            match find_root_quiet_at(&dir) {
+                Ok(peer_ctx) => {
+                    // The same constructor the resolver uses, so `add` and
+                    // `resolve` cannot come to different conclusions about the
+                    // same directory.
+                    match prov::PeerLookup::confirm(&name, location, &peer_ctx.config.workspace_id)
+                    {
+                        prov::PeerLookup::Confirmed(_) => {}
+                        prov::PeerLookup::Unconfirmed { .. } => eprintln!(
+                            "warning: the workspace at {} does not name itself — set \
+                             `workspace_id` there\n  (`prov -C {} config workspace_id {name}`), \
+                             or references written `id:{name}/<id>` will not be recognized as \
+                             local when read inside it",
+                            dir.display(),
+                            dir.display()
+                        ),
+                        prov::PeerLookup::Mismatched { declares, .. } => eprintln!(
+                            "warning: the workspace at {} calls itself `{declares}`, not \
+                             `{name}` — references to it will be written `id:{declares}/<id>`, \
+                             and `prov peer resolve id:{name}/<id>` will refuse this entry \
+                             rather than follow it",
+                            dir.display()
+                        ),
+                        prov::PeerLookup::Unknown => {
+                            unreachable!("confirm never answers Unknown — it is given a location")
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Recorded anyway: a peer that is not a workspace *yet* is a
+                    // reasonable thing to write down, and refusing would make the
+                    // order of setup steps load-bearing.
+                    eprintln!("warning: {}: {e}", dir.display());
+                }
+            }
+            let mut peers = load();
+            let previous = peers.insert(name.clone(), dir.clone());
+            store(&peers)?;
+            match previous {
+                Some(old) if old != dir => {
+                    eprintln!("{name} → {} (was {})", dir.display(), old.display())
+                }
+                _ => eprintln!("{name} → {}", dir.display()),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PeerAction::Remove { name } => {
+            let mut peers = load();
+            if peers.remove(&name).is_none() {
+                eprintln!("no peer named `{name}`");
+                return Ok(ExitCode::FAILURE);
+            }
+            store(&peers)?;
+            eprintln!("removed `{name}` — references to it are still carried, just not followable");
+            Ok(ExitCode::SUCCESS)
+        }
+        PeerAction::Resolve {
+            reference,
+            unverified,
+        } => cmd_peer_resolve(&reference, unverified),
+    }
+}
+
+/// One line saying where a peer is, or why it is not somewhere prov will go.
+///
+/// Every case names the location it found, including the ones it refuses: a
+/// reader told only "cannot follow" has no way to see that the entry points at
+/// the workspace next door.
+pub(crate) fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> String {
+    match lookup {
+        prov::PeerLookup::Confirmed(location) => {
+            format!("`{location}`, per this device's peer map")
+        }
+        prov::PeerLookup::Unconfirmed { location, why } => {
+            format!("`{location}`, but {why} (`--unverified` to follow it anyway)")
+        }
+        prov::PeerLookup::Mismatched { location, declares } => format!(
+            "the peer map says `{location}`, but that workspace calls itself \
+             `{declares}` — not followed (`prov peer add {workspace} <dir>` to correct it)"
+        ),
+        prov::PeerLookup::Unknown => format!(
+            "no peer named `{workspace}` on this device (`prov peer add {workspace} <dir>`)"
+        ),
+    }
+}
+
+/// `prov peer resolve` — turn `id:<workspace>/<id>` into a file on this device.
+///
+/// The whole cross-workspace design in one command: the library parsed the
+/// reference and stopped at "workspace `notes`, id `ajp7eq`"; everything past
+/// that point is this device's peer map plus the *peer's own* registry. Nothing
+/// here consults the current workspace at all.
+///
+/// The map is checked here rather than trusted here. A line recorded when it was
+/// true and stale by now points at a directory that is some *other* workspace,
+/// and following it would print a path to real documents in the wrong archive —
+/// a wrong answer that looks exactly like a right one. So the peer is asked what
+/// it calls itself, and a disagreement stops the command.
+fn cmd_peer_resolve(reference: &str, unverified: bool) -> CmdResult {
+    // Tolerate a bare `notes/ajp7eq` as well as the written `id:notes/ajp7eq`,
+    // since the former is what a person reads off a screen.
+    let written = if prov::link::strip_id_scheme(reference).is_some() {
+        reference.to_string()
+    } else {
+        format!("{}{reference}", prov::link::ID_SCHEME)
+    };
+    let Some((peer_name, id)) = link::Link::parse(&written).foreign_target() else {
+        return Err(format!(
+            "`{reference}` is not a cross-workspace reference — expected `<workspace>/<id>`"
+        )
+        .into());
+    };
+    match PeerMap::load().resolve_document(&peer_name, &id, unverified) {
+        Ok(path) => {
+            println!("{}", path.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(DocumentError::Unfollowable(lookup)) => Err(describe_peer(&lookup, &peer_name).into()),
+        Err(DocumentError::Unopenable(root, why)) => {
+            Err(format!("{}: {why}", root.display()).into())
+        }
+        Err(DocumentError::Unregistered(root)) => Err(format!(
+            "`{id}` is not registered in the workspace at {}",
+            root.display()
+        )
+        .into()),
+    }
 }

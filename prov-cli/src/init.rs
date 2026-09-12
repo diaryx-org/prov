@@ -4,11 +4,29 @@
 //! It classifies the target directory (greenfield, loose notes, an existing tree,
 //! an already-initialized workspace), runs the guided interview (or takes flag
 //! defaults), writes the root and config documents, and optionally adopts or
-//! attaches what is already on disk. Split out from `main.rs` so the dispatcher
-//! stays legible; everything it needs from the CLI's session layer and the `clap`
-//! grammar it reaches through `use super::*` (a submodule sees its parent's items).
+//! attaches what is already on disk. Its own module because it is the largest
+//! command by a distance and shares almost nothing with the others beyond the
+//! session layer and the `clap` grammar.
 
-use super::*;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use prov::document::MetaCarrier;
+use prov::{
+    Addressing, Adoption, ContentFormat, Document, EmbedStyle, Format, LinkStyle, Mapping,
+    Notation, StdFs, StructurePlan, SynthNode, Value, Workspace, WorkspaceConfig, block_on, edit,
+    link, meta,
+};
+
+use crate::about::about_context;
+use crate::cli::{
+    AdoptArg, CONFIG_STEM, ContentLang, EmbedArg, FixityArg, IdStorageArg, IdentityArg,
+    LinkStyleArg, MetaFormat, ReferenceArg, WrapperArg, config_languages, embed_labels,
+    sidecar_name,
+};
+use crate::session::{Ctx, ensure_registry, persist, workspace};
+use crate::{AnyError, CmdResult};
 
 /// The body-grammar root extensions `init` will not overwrite (every content
 /// grammar's `index.*`), mirroring the set `find_root` treats as root candidates.

@@ -470,7 +470,7 @@ pub fn ignore(rule: &prov::Ignore) -> J {
     J::Obj(vec![
         ("path", s(&rule.path)),
         ("directory", J::Bool(rule.whole_dir)),
-        ("reason", s(crate::reason_word(rule.reason))),
+        ("reason", s(crate::ignore::reason_word(rule.reason))),
         ("line", s(&rule.to_string())),
     ])
 }
