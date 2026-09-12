@@ -19,12 +19,12 @@ use prov::{FileIndex, Minter, NodeKind, StdFs, Workspace, block_on};
 
 use crate::CmdResult;
 use crate::about::about_context;
-use crate::cli::FixModeArg;
+use crate::cli::{CheckArgs, FixModeArg};
 use crate::json;
 use crate::peer;
 use crate::session::{
-    Ctx, ensure_registry, find_root, find_root_quiet, find_root_quiet_at, persist, workspace,
-    ws_rel,
+    Ctx, ensure_registry, find_root, find_root_quiet, find_root_quiet_at, persist, resolve_target,
+    workspace, ws_rel,
 };
 use crate::term::prompt;
 use crate::tree::{descent, workspace_label};
@@ -41,14 +41,20 @@ use crate::tree::{descent, workspace_label};
 ///
 /// Narration to stderr; stdout carries the machine value — one finding per
 /// line, or the whole set as a JSON array under `--json`.
-pub(crate) fn cmd_check(
-    root: Option<&Path>,
-    fix: Option<FixModeArg>,
-    only: Option<&Path>,
-    as_json: bool,
-    follow: Option<usize>,
-    unverified: bool,
-) -> CmdResult {
+pub(crate) fn cmd_check(args: CheckArgs) -> CmdResult {
+    let CheckArgs {
+        root,
+        fix,
+        only,
+        json: as_json,
+        follow,
+        unverified,
+    } = args;
+    // A target may be an `id:` or `@`-route, resolved to a path before the
+    // workspace is opened for checking.
+    let root = root.map(|r| resolve_target(&r)).transpose()?;
+    let only = only.map(|o| resolve_target(&o)).transpose()?;
+    let (root, only) = (root.as_deref(), only.as_deref());
     // `check` reports config issues in full (Finding::ConfigIssue), so skip the
     // one-line find_root warning that would just duplicate them.
     let mut ctx = find_root_quiet()?;

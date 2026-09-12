@@ -17,6 +17,7 @@ use prov::{
 };
 
 use crate::about::refresh_about;
+use crate::cli::{AttachArgs, NewArgs};
 use crate::clock::now_rfc3339;
 use crate::session::{
     Ctx, TargetSpec, ensure_registry, find_root, load, parse_target, persist, resolve_target,
@@ -127,17 +128,19 @@ fn show_route_plan(route: &str, plan: &RoutePlan) {
 /// or an `@`-route through the containment tree (optionally with `-p` to create
 /// the route segments that don't exist yet). The addressing mode is carried by
 /// the value itself (see [`parse_target`]), not by a per-mode flag.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cmd_new(
-    title: &str,
-    in_target: &str,
-    parents: bool,
-    layout: Layout,
-    dry_run: bool,
-    as_path: Option<&Path>,
-    ext: Option<&str>,
-    set: &[String],
-) -> CmdResult {
+pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
+    let NewArgs {
+        title,
+        in_target,
+        parents,
+        layout,
+        dry_run,
+        as_path,
+        ext,
+        set,
+    } = args;
+    let (title, in_target, layout) = (title.as_str(), in_target.as_str(), Layout::from(layout));
+    let (as_path, ext, set) = (as_path.as_deref(), ext.as_deref(), set.as_slice());
     let mut ctx = find_root()?;
     // Parsed before anything is written, so a malformed `--set` refuses the
     // command rather than leaving a document created without it.
@@ -299,18 +302,24 @@ fn opening_fields(
 /// workspace — minting a metadata sidecar and linking it under a parent
 /// (default: the workspace root). Mirrors [`cmd_new`] — an id-registering
 /// reference style or an eager policy mints IDs, so a registry is ensured first.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cmd_attach(
-    payload: Option<&Path>,
-    in_target: Option<&str>,
-    parents: bool,
-    layout: Layout,
-    opaque: bool,
-    all: bool,
-    recursive: bool,
-    manifest: bool,
-    hash: bool,
-) -> CmdResult {
+pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
+    let AttachArgs {
+        payload,
+        in_target,
+        parents,
+        layout,
+        opaque,
+        all,
+        recursive,
+        manifest,
+        no_hash,
+    } = args;
+    let (payload, in_target, layout) = (
+        payload.as_deref(),
+        in_target.as_deref(),
+        Layout::from(layout),
+    );
+    let hash = !no_hash;
     let mut ctx = find_root()?;
     let mints = ctx.config.mints_on_mutation();
     if mints {

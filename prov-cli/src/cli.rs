@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use prov::{
     Addressing, ContentFormat, EmbedStyle, Format, IdStorage, Layout, LinkStyle, Notation,
     Registration, RelationStyleConfig, WorkspaceConfig, Wrapper,
@@ -152,105 +152,7 @@ pub(crate) enum Command {
     /// that the other commands can discover. The starting point — `tree`,
     /// `new`, and `check` all need a root to work from. On a terminal, prompts
     /// for anything not given as a flag; pass `--yes` to take every default.
-    Init {
-        /// Directory to initialize (default: the current directory). Created if
-        /// it does not exist.
-        dir: Option<PathBuf>,
-        /// Title for the root document (default: the directory's name, titleized).
-        #[arg(long)]
-        title: Option<String>,
-        /// Author to record in the root's metadata (default: none).
-        #[arg(long)]
-        author: Option<String>,
-        /// Config language for the root's metadata: yaml/toml/json/fig
-        /// (default: yaml). `fig` is unavailable with `--embed delimited`.
-        #[arg(long, value_enum)]
-        meta: Option<MetaFormat>,
-        /// How that metadata is embedded: delimited, code-block, html-script,
-        /// html-code, or separate. Must suit `--content` (default: the first
-        /// style that content grammar offers).
-        #[arg(long, value_enum)]
-        embed: Option<EmbedArg>,
-        /// Body-prose grammar; sets the root file's extension (default: markdown).
-        #[arg(long, value_enum)]
-        content: Option<ContentLang>,
-        /// The syntactic wrapper prov authors references in: markdown
-        /// (`[Title](target)`) or wikilink (`[[target]]`) (default: markdown).
-        /// The first style axis — pick it, then `--reference` picks the target.
-        #[arg(long, value_enum)]
-        wrapper: Option<WrapperArg>,
-        /// What references address their target by: path, id, alias (by title),
-        /// or split (readable `contents` down / durable `part_of` up). `id` and
-        /// `split` require `--identity` ≠ off; `alias`/`split` are by-title links
-        /// with no markdown form, so the interactive menu offers them only under
-        /// `--wrapper wikilink` (default: path).
-        #[arg(long, value_enum)]
-        reference: Option<ReferenceArg>,
-        /// How *path* references are formatted — only used when a target is
-        /// addressed by path (default: markdown-root).
-        #[arg(long, value_enum)]
-        link_style: Option<LinkStyleArg>,
-        /// When documents earn a stable ID: off (paths only), lazy (on
-        /// link-by-id or publish), or eager (at creation) (default: lazy).
-        #[arg(long, value_enum)]
-        identity: Option<IdentityArg>,
-        /// Where IDs live: frontmatter (stamped into each document's `id` field,
-        /// with the registry kept as a cache), registry (only in the registry
-        /// document), or frontmatter-only (no registry document — self-describing,
-        /// but no tombstones) (default: frontmatter).
-        #[arg(long, value_enum)]
-        id_storage: Option<IdStorageArg>,
-        /// Record content checksums for bit-rot detection: on (the default) or
-        /// off. What a checksum covers is not a setting — every node whose
-        /// content is a file of its own gets one. Verified by `prov check`.
-        #[arg(long, value_enum)]
-        fixity: Option<FixityArg>,
-        /// Delete without recording what was deleted. Recording is on by
-        /// default: the delete destroys the file either way, and the record is
-        /// what lets `prov restore` relink it once you have the file back.
-        #[arg(long)]
-        no_record_deletions: bool,
-        /// Frontmatter field prov's own edits (`edit`, `set`, `unset`, `stamp`)
-        /// stamp with an RFC 3339 UTC timestamp on a content change (e.g.
-        /// `updated`). Omitted → the feature is off.
-        #[arg(long, value_name = "FIELD")]
-        updated_field: Option<String>,
-        /// Frontmatter field `prov new` stamps with an RFC 3339 UTC timestamp
-        /// when a document is made (e.g. `created`). Omitted → the feature is
-        /// off.
-        #[arg(long, value_name = "FIELD")]
-        created_field: Option<String>,
-        /// A preset directory to write into the new workspace instead of the
-        /// built-in one: a `prov.yaml` carrying the axes it declares
-        /// (`fields`, `views`, …) and, beside it, the stores those axes
-        /// point at, laid out as the workspace root will be. Omitted → the
-        /// built-in preset, which turns on `created` and `updated`. A flag
-        /// that names an axis the preset also declares (`--updated-field`)
-        /// wins. `prov presets` shows either without writing.
-        #[arg(long, value_name = "DIR")]
-        preset: Option<PathBuf>,
-        /// What this workspace calls itself, so another workspace can reference
-        /// it (`id:<NAME>/<id>`). Omitted → anonymous, which is fine until
-        /// something else needs to point here. No `/`, `:` or whitespace.
-        #[arg(long, value_name = "NAME")]
-        workspace_id: Option<String>,
-        /// What to do with content documents already in the directory: `flat`
-        /// links each one under the new root; `mirror` folds the folder tree into
-        /// the containment tree (each directory becomes a node, synthesizing a
-        /// folder index where none exists); `none` leaves them unlinked. Omit to
-        /// be asked on a terminal (and to leave them unlinked otherwise).
-        #[arg(long, value_enum)]
-        adopt: Option<AdoptArg>,
-        /// Also give the directory's *non-document* files (images, PDFs, data,
-        /// binaries) each a metadata sidecar, linked under the root. Omit to be
-        /// asked on a terminal; non-interactive leaves them alone (they stay
-        /// invisible to `prov check` until attached).
-        #[arg(long)]
-        attach: bool,
-        /// Accept every default without prompting.
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
+    Init(InitArgs),
     /// Where the *other* workspaces are — this device's map from a workspace
     /// name to a directory.
     ///
@@ -457,80 +359,7 @@ pub(crate) enum Command {
     /// Check workspace integrity from a root: broken links, case mismatches,
     /// duplicate containment, missing inverse links, dangling IDs. Exits 1 on
     /// findings.
-    Check {
-        /// The document to check from (default: the workspace root).
-        #[arg(value_name = "TARGET")]
-        root: Option<String>,
-        /// Repair findings. Bare `--fix` (or `--fix ask`) walks them and offers
-        /// each finding's repairs to choose from; `--fix mechanical` applies only
-        /// the repairs that are pure functions of an authority — no prompts, for
-        /// scripts. Structure edits only: prose is rewritten solely where the
-        /// parser itself reported a link, so code that looks like one is never
-        /// touched, and no fix ever deletes a file.
-        #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "ask")]
-        fix: Option<FixModeArg>,
-        /// Report only the findings lodged against this document — the ones
-        /// whose repair rewrites it, or that name it as the file to go and look
-        /// at. A filter on the *results*, not on the walk: the whole workspace
-        /// is still checked, because the findings that matter most about one
-        /// document (nothing links to it, its parent dropped it, an inbound
-        /// label went stale) are only visible from the graph. Checking *from*
-        /// the document instead is the positional argument, and cannot see
-        /// them.
-        #[arg(long, value_name = "TARGET")]
-        only: Option<String>,
-        /// Print findings to stdout as a JSON array instead of one line each —
-        /// `kind`, `subject`, the human `message`, and the finding's own
-        /// fields. Empty findings print `[]`, so "clean" and "no output" stay
-        /// distinguishable.
-        ///
-        /// Nothing is written to stderr in this mode: the count line is
-        /// narration for a person, and the array already says how many it holds.
-        /// The exit code is unchanged, though — findings still exit non-zero, so
-        /// `check` keeps working as a CI gate. In a shell that aborts a pipeline
-        /// on a non-zero exit (nushell), capture the status instead of piping
-        /// through it: `(prov check --json | complete).stdout | from json`.
-        ///
-        /// Not available with `--fix`, whose stdout means something else (the
-        /// findings a repair introduced).
-        #[arg(long, conflicts_with = "fix")]
-        json: bool,
-        /// Also check every workspace reachable across a confirmed
-        /// cross-workspace reference, and report them **grouped** — a header
-        /// line per workspace, and every finding line prefixed with the
-        /// workspace it belongs to. Never one merged list: a relative path
-        /// means nothing once it has crossed a root.
-        ///
-        /// This runs each reachable workspace's *own* check. It does not verify
-        /// foreign references, which stays refused for the reason it always
-        /// has been — a finding about a workspace this device cannot see is a
-        /// false positive on every device that lacks it.
-        ///
-        /// DEPTH counts crossings rather than tree levels (default 8), and a
-        /// boundary that was not crossed is narrated to stderr rather than
-        /// reported as a finding: it is the reason the report is shorter than
-        /// the federation, not something wrong with either workspace. The exit
-        /// code is non-zero if *any* reachable workspace has findings.
-        ///
-        /// With `--json` the output is an array of `{workspace, declares, root,
-        /// findings}` objects, the origin first — a different shape from the
-        /// flat array this command prints without the flag, because the
-        /// findings of eighteen workspaces are not one list.
-        ///
-        /// Not available with `--fix`: nothing prov does writes across a
-        /// boundary. Nor with `--only`, whose subject is a path in one
-        /// workspace's terms.
-        #[arg(long, value_name = "DEPTH", num_args = 0..=1,
-              default_missing_value = DEFAULT_FOLLOW_DEPTH,
-              conflicts_with_all = ["fix", "only"])]
-        follow: Option<usize>,
-        /// Cross into a peer whose name could not be checked — one that is
-        /// anonymous, or that could not be opened as a workspace. Never accepts
-        /// a peer that calls itself something else; that is not missing
-        /// evidence, it is evidence of the wrong archive.
-        #[arg(long, requires = "follow")]
-        unverified: bool,
-    },
+    Check(CheckArgs),
     /// Record that a document changed **outside prov** — restamp its content
     /// checksum, and stamp the workspace's `updated` field with the current
     /// time. What `prov edit` does automatically for an edit it hosted, for the
@@ -613,102 +442,12 @@ pub(crate) enum Command {
     /// parent's directory, and records the title in the document's metadata,
     /// where structure lives. Override the derived filename with `--as` (an exact
     /// path) or just its extension with `--ext`.
-    New {
-        /// Title of the new document (recorded in its metadata; a readable
-        /// filename is slugged from it unless `--as` overrides).
-        title: String,
-        /// The parent document that gains a spanning link to the new one: a path
-        /// (`daily.md`), a title route (`@Daily/2026/07`), or an id
-        /// (`id:fpk38j`). A route's missing segments are an error unless `-p`.
-        #[arg(long = "in", short = 'i', value_name = "TARGET")]
-        in_target: String,
-        /// `mkdir -p` for containment — idempotent creation. Creates any missing
-        /// route segments (when `--in` is a route), *and* treats an
-        /// already-existing leaf (a same-titled child) as a no-op instead of an
-        /// error. Safe to re-run — a daily-note cron can call the same command
-        /// every day. A path held by a *different*-titled document still errors.
-        #[arg(long = "parents", short = 'p', requires = "in_target")]
-        parents: bool,
-        /// Where `-p` writes the nodes it creates: `nested` (a directory per
-        /// segment, `daily/2026/index.md`) or `flat` (all beside the start,
-        /// `daily.md`, `2026.md`). File placement only — containment is the links
-        /// either way (default: nested).
-        #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
-        layout: LayoutArg,
-        /// Print what `--in` resolves to and what `-p` would create, then stop.
-        #[arg(long, requires = "in_target")]
-        dry_run: bool,
-        /// Use this exact workspace path instead of a title-derived name (the
-        /// title is still taken from the positional). Wins over `--ext`.
-        #[arg(long = "as")]
-        as_path: Option<PathBuf>,
-        /// Override just the derived filename's extension (e.g. `djot`, `yaml`);
-        /// ignored under `--as`. Default: the workspace's content format.
-        #[arg(long)]
-        ext: Option<String>,
-        /// A field the new document opens with, as `KEY=VALUE`; repeatable.
-        /// Typed like `set`'s value (`true`, `12`, `null`, else a string).
-        /// Written after what the workspace itself gives a new document — its
-        /// `created` stamp and each `fields.<name>.default` — and overriding a
-        /// default of the same name. `title`, `id`, `content` and the link
-        /// back to the parent are prov's own and cannot be set here.
-        #[arg(long = "set", value_name = "KEY=VALUE")]
-        set: Vec<String>,
-    },
+    New(NewArgs),
     /// Give an arbitrary file (an image, a PDF, any binary) workspace-linked
     /// metadata: write a sidecar `<file>.yaml` beside it carrying its title,
     /// links, and any ID, and link it as a child of a parent. The file's bytes
     /// are never read or rewritten — only linked, moved, and validated with it.
-    Attach {
-        /// The file to attach. Anything prov can't read as a document; a
-        /// readable document should be created with `new` (it carries its own
-        /// metadata) rather than shadowed by a sidecar — unless you mean it, see
-        /// `--opaque`. Omit with `--all`.
-        payload: Option<PathBuf>,
-        /// The parent that gains a spanning link to the attachment (default: the
-        /// workspace root): a path (`daily.md`), a title route
-        /// (`@Daily/2026/07`), or an id (`id:fpk38j`).
-        #[arg(long = "in", short = 'i', value_name = "TARGET")]
-        in_target: Option<String>,
-        /// Create any route segments that don't exist yet — `mkdir -p` for
-        /// containment. Only meaningful when `--in` is a route.
-        #[arg(long = "parents", short = 'p', requires = "in_target")]
-        parents: bool,
-        /// Where `-p` writes the nodes it creates. File placement only.
-        #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
-        layout: LayoutArg,
-        /// Attach a file prov *can* read as a document, shadowing it: prov links,
-        /// moves and checksums it but never reads it — its title stays out of
-        /// alias resolution and any `id` it shows stays out of the registry. For a
-        /// specimen: an example document, a fixture, a captured export, whose
-        /// metadata block is an exhibit rather than a claim about this workspace.
-        /// `adopt` would instead write a link into that block, editing it.
-        #[arg(long, conflicts_with = "all")]
-        opaque: bool,
-        /// Attach every loose file under the workspace — each opaque file that
-        /// has no sidecar yet — instead of a single payload. Bounded to the
-        /// directories the workspace already reaches (an unlinked subtree, a
-        /// nested workspace, is left alone); pass `--recursive` to sweep the whole
-        /// tree. Mutually exclusive with a positional file.
-        #[arg(long)]
-        all: bool,
-        /// With `--all`, descend into every directory, including ones nothing
-        /// links to yet — the full recursive sweep rather than the reachability-
-        /// bounded default.
-        #[arg(long)]
-        recursive: bool,
-        /// Treat the positional as a *directory* and cover it with a manifest:
-        /// one node and one list of every opaque file under it, instead of one
-        /// sidecar per file. For an archive — ten thousand photographs — where a
-        /// sidecar each is not a workspace anyone can read.
-        #[arg(long, conflicts_with_all = ["all", "opaque"])]
-        manifest: bool,
-        /// With `--manifest`, list the files without checksumming them: an
-        /// inventory rather than a fixity baseline. Hashing reads every file,
-        /// now and at each refresh, which is a real cost over an archive.
-        #[arg(long = "no-hash", requires = "manifest")]
-        no_hash: bool,
-    },
+    Attach(AttachArgs),
     /// Show, refresh or deeply verify the manifest covering a directory — the
     /// bulk attachment minted by `attach --manifest`.
     ///
@@ -1037,6 +776,283 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "why")]
         json: bool,
     },
+}
+
+/// The arguments of `prov init` — see [`Command::Init`] for the command.
+#[derive(Args)]
+pub(crate) struct InitArgs {
+    /// Directory to initialize (default: the current directory). Created if
+    /// it does not exist.
+    pub(crate) dir: Option<PathBuf>,
+    /// Title for the root document (default: the directory's name, titleized).
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    /// Author to record in the root's metadata (default: none).
+    #[arg(long)]
+    pub(crate) author: Option<String>,
+    /// Config language for the root's metadata: yaml/toml/json/fig
+    /// (default: yaml). `fig` is unavailable with `--embed delimited`.
+    #[arg(long, value_enum)]
+    pub(crate) meta: Option<MetaFormat>,
+    /// How that metadata is embedded: delimited, code-block, html-script,
+    /// html-code, or separate. Must suit `--content` (default: the first
+    /// style that content grammar offers).
+    #[arg(long, value_enum)]
+    pub(crate) embed: Option<EmbedArg>,
+    /// Body-prose grammar; sets the root file's extension (default: markdown).
+    #[arg(long, value_enum)]
+    pub(crate) content: Option<ContentLang>,
+    /// The syntactic wrapper prov authors references in: markdown
+    /// (`[Title](target)`) or wikilink (`[[target]]`) (default: markdown).
+    /// The first style axis — pick it, then `--reference` picks the target.
+    #[arg(long, value_enum)]
+    pub(crate) wrapper: Option<WrapperArg>,
+    /// What references address their target by: path, id, alias (by title),
+    /// or split (readable `contents` down / durable `part_of` up). `id` and
+    /// `split` require `--identity` ≠ off; `alias`/`split` are by-title links
+    /// with no markdown form, so the interactive menu offers them only under
+    /// `--wrapper wikilink` (default: path).
+    #[arg(long, value_enum)]
+    pub(crate) reference: Option<ReferenceArg>,
+    /// How *path* references are formatted — only used when a target is
+    /// addressed by path (default: markdown-root).
+    #[arg(long, value_enum)]
+    pub(crate) link_style: Option<LinkStyleArg>,
+    /// When documents earn a stable ID: off (paths only), lazy (on
+    /// link-by-id or publish), or eager (at creation) (default: lazy).
+    #[arg(long, value_enum)]
+    pub(crate) identity: Option<IdentityArg>,
+    /// Where IDs live: frontmatter (stamped into each document's `id` field,
+    /// with the registry kept as a cache), registry (only in the registry
+    /// document), or frontmatter-only (no registry document — self-describing,
+    /// but no tombstones) (default: frontmatter).
+    #[arg(long, value_enum)]
+    pub(crate) id_storage: Option<IdStorageArg>,
+    /// Record content checksums for bit-rot detection: on (the default) or
+    /// off. What a checksum covers is not a setting — every node whose
+    /// content is a file of its own gets one. Verified by `prov check`.
+    #[arg(long, value_enum)]
+    pub(crate) fixity: Option<FixityArg>,
+    /// Delete without recording what was deleted. Recording is on by
+    /// default: the delete destroys the file either way, and the record is
+    /// what lets `prov restore` relink it once you have the file back.
+    #[arg(long)]
+    pub(crate) no_record_deletions: bool,
+    /// Frontmatter field prov's own edits (`edit`, `set`, `unset`, `stamp`)
+    /// stamp with an RFC 3339 UTC timestamp on a content change (e.g.
+    /// `updated`). Omitted → the feature is off.
+    #[arg(long, value_name = "FIELD")]
+    pub(crate) updated_field: Option<String>,
+    /// Frontmatter field `prov new` stamps with an RFC 3339 UTC timestamp
+    /// when a document is made (e.g. `created`). Omitted → the feature is
+    /// off.
+    #[arg(long, value_name = "FIELD")]
+    pub(crate) created_field: Option<String>,
+    /// A preset directory to write into the new workspace instead of the
+    /// built-in one: a `prov.yaml` carrying the axes it declares
+    /// (`fields`, `views`, …) and, beside it, the stores those axes
+    /// point at, laid out as the workspace root will be. Omitted → the
+    /// built-in preset, which turns on `created` and `updated`. A flag
+    /// that names an axis the preset also declares (`--updated-field`)
+    /// wins. `prov presets` shows either without writing.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) preset: Option<PathBuf>,
+    /// What this workspace calls itself, so another workspace can reference
+    /// it (`id:<NAME>/<id>`). Omitted → anonymous, which is fine until
+    /// something else needs to point here. No `/`, `:` or whitespace.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) workspace_id: Option<String>,
+    /// What to do with content documents already in the directory: `flat`
+    /// links each one under the new root; `mirror` folds the folder tree into
+    /// the containment tree (each directory becomes a node, synthesizing a
+    /// folder index where none exists); `none` leaves them unlinked. Omit to
+    /// be asked on a terminal (and to leave them unlinked otherwise).
+    #[arg(long, value_enum)]
+    pub(crate) adopt: Option<AdoptArg>,
+    /// Also give the directory's *non-document* files (images, PDFs, data,
+    /// binaries) each a metadata sidecar, linked under the root. Omit to be
+    /// asked on a terminal; non-interactive leaves them alone (they stay
+    /// invisible to `prov check` until attached).
+    #[arg(long)]
+    pub(crate) attach: bool,
+    /// Accept every default without prompting.
+    #[arg(long, short = 'y')]
+    pub(crate) yes: bool,
+}
+
+/// The arguments of `prov check` — see [`Command::Check`] for the command.
+#[derive(Args)]
+pub(crate) struct CheckArgs {
+    /// The document to check from (default: the workspace root).
+    #[arg(value_name = "TARGET")]
+    pub(crate) root: Option<String>,
+    /// Repair findings. Bare `--fix` (or `--fix ask`) walks them and offers
+    /// each finding's repairs to choose from; `--fix mechanical` applies only
+    /// the repairs that are pure functions of an authority — no prompts, for
+    /// scripts. Structure edits only: prose is rewritten solely where the
+    /// parser itself reported a link, so code that looks like one is never
+    /// touched, and no fix ever deletes a file.
+    #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "ask")]
+    pub(crate) fix: Option<FixModeArg>,
+    /// Report only the findings lodged against this document — the ones
+    /// whose repair rewrites it, or that name it as the file to go and look
+    /// at. A filter on the *results*, not on the walk: the whole workspace
+    /// is still checked, because the findings that matter most about one
+    /// document (nothing links to it, its parent dropped it, an inbound
+    /// label went stale) are only visible from the graph. Checking *from*
+    /// the document instead is the positional argument, and cannot see
+    /// them.
+    #[arg(long, value_name = "TARGET")]
+    pub(crate) only: Option<String>,
+    /// Print findings to stdout as a JSON array instead of one line each —
+    /// `kind`, `subject`, the human `message`, and the finding's own
+    /// fields. Empty findings print `[]`, so "clean" and "no output" stay
+    /// distinguishable.
+    ///
+    /// Nothing is written to stderr in this mode: the count line is
+    /// narration for a person, and the array already says how many it holds.
+    /// The exit code is unchanged, though — findings still exit non-zero, so
+    /// `check` keeps working as a CI gate. In a shell that aborts a pipeline
+    /// on a non-zero exit (nushell), capture the status instead of piping
+    /// through it: `(prov check --json | complete).stdout | from json`.
+    ///
+    /// Not available with `--fix`, whose stdout means something else (the
+    /// findings a repair introduced).
+    #[arg(long, conflicts_with = "fix")]
+    pub(crate) json: bool,
+    /// Also check every workspace reachable across a confirmed
+    /// cross-workspace reference, and report them **grouped** — a header
+    /// line per workspace, and every finding line prefixed with the
+    /// workspace it belongs to. Never one merged list: a relative path
+    /// means nothing once it has crossed a root.
+    ///
+    /// This runs each reachable workspace's *own* check. It does not verify
+    /// foreign references, which stays refused for the reason it always
+    /// has been — a finding about a workspace this device cannot see is a
+    /// false positive on every device that lacks it.
+    ///
+    /// DEPTH counts crossings rather than tree levels (default 8), and a
+    /// boundary that was not crossed is narrated to stderr rather than
+    /// reported as a finding: it is the reason the report is shorter than
+    /// the federation, not something wrong with either workspace. The exit
+    /// code is non-zero if *any* reachable workspace has findings.
+    ///
+    /// With `--json` the output is an array of `{workspace, declares, root,
+    /// findings}` objects, the origin first — a different shape from the
+    /// flat array this command prints without the flag, because the
+    /// findings of eighteen workspaces are not one list.
+    ///
+    /// Not available with `--fix`: nothing prov does writes across a
+    /// boundary. Nor with `--only`, whose subject is a path in one
+    /// workspace's terms.
+    #[arg(long, value_name = "DEPTH", num_args = 0..=1,
+          default_missing_value = DEFAULT_FOLLOW_DEPTH,
+          conflicts_with_all = ["fix", "only"])]
+    pub(crate) follow: Option<usize>,
+    /// Cross into a peer whose name could not be checked — one that is
+    /// anonymous, or that could not be opened as a workspace. Never accepts
+    /// a peer that calls itself something else; that is not missing
+    /// evidence, it is evidence of the wrong archive.
+    #[arg(long, requires = "follow")]
+    pub(crate) unverified: bool,
+}
+
+/// The arguments of `prov new` — see [`Command::New`] for the command.
+#[derive(Args)]
+pub(crate) struct NewArgs {
+    /// Title of the new document (recorded in its metadata; a readable
+    /// filename is slugged from it unless `--as` overrides).
+    pub(crate) title: String,
+    /// The parent document that gains a spanning link to the new one: a path
+    /// (`daily.md`), a title route (`@Daily/2026/07`), or an id
+    /// (`id:fpk38j`). A route's missing segments are an error unless `-p`.
+    #[arg(long = "in", short = 'i', value_name = "TARGET")]
+    pub(crate) in_target: String,
+    /// `mkdir -p` for containment — idempotent creation. Creates any missing
+    /// route segments (when `--in` is a route), *and* treats an
+    /// already-existing leaf (a same-titled child) as a no-op instead of an
+    /// error. Safe to re-run — a daily-note cron can call the same command
+    /// every day. A path held by a *different*-titled document still errors.
+    #[arg(long = "parents", short = 'p', requires = "in_target")]
+    pub(crate) parents: bool,
+    /// Where `-p` writes the nodes it creates: `nested` (a directory per
+    /// segment, `daily/2026/index.md`) or `flat` (all beside the start,
+    /// `daily.md`, `2026.md`). File placement only — containment is the links
+    /// either way (default: nested).
+    #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
+    pub(crate) layout: LayoutArg,
+    /// Print what `--in` resolves to and what `-p` would create, then stop.
+    #[arg(long, requires = "in_target")]
+    pub(crate) dry_run: bool,
+    /// Use this exact workspace path instead of a title-derived name (the
+    /// title is still taken from the positional). Wins over `--ext`.
+    #[arg(long = "as")]
+    pub(crate) as_path: Option<PathBuf>,
+    /// Override just the derived filename's extension (e.g. `djot`, `yaml`);
+    /// ignored under `--as`. Default: the workspace's content format.
+    #[arg(long)]
+    pub(crate) ext: Option<String>,
+    /// A field the new document opens with, as `KEY=VALUE`; repeatable.
+    /// Typed like `set`'s value (`true`, `12`, `null`, else a string).
+    /// Written after what the workspace itself gives a new document — its
+    /// `created` stamp and each `fields.<name>.default` — and overriding a
+    /// default of the same name. `title`, `id`, `content` and the link
+    /// back to the parent are prov's own and cannot be set here.
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    pub(crate) set: Vec<String>,
+}
+
+/// The arguments of `prov attach` — see [`Command::Attach`] for the command.
+#[derive(Args)]
+pub(crate) struct AttachArgs {
+    /// The file to attach. Anything prov can't read as a document; a
+    /// readable document should be created with `new` (it carries its own
+    /// metadata) rather than shadowed by a sidecar — unless you mean it, see
+    /// `--opaque`. Omit with `--all`.
+    pub(crate) payload: Option<PathBuf>,
+    /// The parent that gains a spanning link to the attachment (default: the
+    /// workspace root): a path (`daily.md`), a title route
+    /// (`@Daily/2026/07`), or an id (`id:fpk38j`).
+    #[arg(long = "in", short = 'i', value_name = "TARGET")]
+    pub(crate) in_target: Option<String>,
+    /// Create any route segments that don't exist yet — `mkdir -p` for
+    /// containment. Only meaningful when `--in` is a route.
+    #[arg(long = "parents", short = 'p', requires = "in_target")]
+    pub(crate) parents: bool,
+    /// Where `-p` writes the nodes it creates. File placement only.
+    #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
+    pub(crate) layout: LayoutArg,
+    /// Attach a file prov *can* read as a document, shadowing it: prov links,
+    /// moves and checksums it but never reads it — its title stays out of
+    /// alias resolution and any `id` it shows stays out of the registry. For a
+    /// specimen: an example document, a fixture, a captured export, whose
+    /// metadata block is an exhibit rather than a claim about this workspace.
+    /// `adopt` would instead write a link into that block, editing it.
+    #[arg(long, conflicts_with = "all")]
+    pub(crate) opaque: bool,
+    /// Attach every loose file under the workspace — each opaque file that
+    /// has no sidecar yet — instead of a single payload. Bounded to the
+    /// directories the workspace already reaches (an unlinked subtree, a
+    /// nested workspace, is left alone); pass `--recursive` to sweep the whole
+    /// tree. Mutually exclusive with a positional file.
+    #[arg(long)]
+    pub(crate) all: bool,
+    /// With `--all`, descend into every directory, including ones nothing
+    /// links to yet — the full recursive sweep rather than the reachability-
+    /// bounded default.
+    #[arg(long)]
+    pub(crate) recursive: bool,
+    /// Treat the positional as a *directory* and cover it with a manifest:
+    /// one node and one list of every opaque file under it, instead of one
+    /// sidecar per file. For an archive — ten thousand photographs — where a
+    /// sidecar each is not a workspace anyone can read.
+    #[arg(long, conflicts_with_all = ["all", "opaque"])]
+    pub(crate) manifest: bool,
+    /// With `--manifest`, list the files without checksumming them: an
+    /// inventory rather than a fixity baseline. Hashing reads every file,
+    /// now and at each refresh, which is a real cost over an archive.
+    #[arg(long = "no-hash", requires = "manifest")]
+    pub(crate) no_hash: bool,
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

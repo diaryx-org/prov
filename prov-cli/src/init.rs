@@ -21,7 +21,7 @@ use prov::{
 
 use crate::about::about_context;
 use crate::cli::{
-    AdoptArg, CONFIG_STEM, ContentLang, EmbedArg, FixityArg, IdStorageArg, IdentityArg,
+    AdoptArg, CONFIG_STEM, ContentLang, FixityArg, IdStorageArg, IdentityArg, InitArgs,
     LinkStyleArg, MetaFormat, ReferenceArg, WrapperArg, config_languages, embed_labels,
     sidecar_name,
 };
@@ -483,31 +483,32 @@ fn intake_walk(
 /// metadata as a sibling whole-file node beside a plain body file; every other
 /// style writes a single combined document whose block the carrier-aware editor
 /// synthesizes, so the file is a normal document from the start.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cmd_init(
-    dir: Option<&Path>,
-    title: Option<String>,
-    author: Option<String>,
-    meta: Option<MetaFormat>,
-    embed: Option<EmbedArg>,
-    content: Option<ContentLang>,
-    wrapper: Option<WrapperArg>,
-    reference: Option<ReferenceArg>,
-    link_style: Option<LinkStyleArg>,
-    identity: Option<IdentityArg>,
-    id_storage: Option<IdStorageArg>,
-    fixity: Option<FixityArg>,
-    no_record_deletions: bool,
-    updated_field: Option<String>,
-    created_field: Option<String>,
-    preset: Option<&Path>,
-    workspace_id: Option<String>,
-    adopt: Option<AdoptArg>,
-    attach: bool,
-    yes: bool,
-) -> CmdResult {
+pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
+    let InitArgs {
+        dir,
+        title,
+        author,
+        meta,
+        embed,
+        content,
+        wrapper,
+        reference,
+        link_style,
+        identity,
+        id_storage,
+        fixity,
+        no_record_deletions,
+        updated_field,
+        created_field,
+        preset,
+        workspace_id,
+        adopt,
+        attach,
+        yes,
+    } = args;
+    let preset = preset.as_deref();
     let dir = match dir {
-        Some(d) => d.to_path_buf(),
+        Some(d) => d,
         None => std::env::current_dir()?,
     };
     std::fs::create_dir_all(&dir)?;

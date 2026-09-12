@@ -98,49 +98,7 @@ fn main() -> ExitCode {
         Command::Render { file } => {
             session::resolve_target(&file).and_then(|f| doc::cmd_render(&f))
         }
-        Command::Init {
-            dir,
-            title,
-            author,
-            meta,
-            embed,
-            content,
-            wrapper,
-            reference,
-            link_style,
-            identity,
-            id_storage,
-            fixity,
-            no_record_deletions,
-            updated_field,
-            created_field,
-            preset,
-            workspace_id,
-            adopt,
-            attach,
-            yes,
-        } => init::cmd_init(
-            dir.as_deref(),
-            title,
-            author,
-            meta,
-            embed,
-            content,
-            wrapper,
-            reference,
-            link_style,
-            identity,
-            id_storage,
-            fixity,
-            no_record_deletions,
-            updated_field,
-            created_field,
-            preset.as_deref(),
-            workspace_id,
-            adopt,
-            attach,
-            yes,
-        ),
+        Command::Init(args) => init::cmd_init(args),
         Command::Edit { file } => session::resolve_target(&file).and_then(|f| doc::cmd_edit(&f)),
         Command::Set { file, key, value } => {
             session::resolve_target(&file).and_then(|f| doc::cmd_set(&f, &key, &value))
@@ -160,20 +118,7 @@ fn main() -> ExitCode {
             .transpose()
             .and_then(|r| tree::cmd_tree(r.as_deref(), follow, unverified)),
         Command::Explore { file, unverified } => explore::cmd_explore(file.as_deref(), unverified),
-        Command::Check {
-            root,
-            fix,
-            only,
-            json,
-            follow,
-            unverified,
-        } => root
-            .map(|r| session::resolve_target(&r))
-            .transpose()
-            .and_then(|r| {
-                let only = only.map(|o| session::resolve_target(&o)).transpose()?;
-                check::cmd_check(r.as_deref(), fix, only.as_deref(), json, follow, unverified)
-            }),
+        Command::Check(args) => check::cmd_check(args),
         Command::Confirm { target, by, show } => {
             session::resolve_target(&target).and_then(|t| stamp::cmd_confirm(&t, by, show))
         }
@@ -186,46 +131,8 @@ fn main() -> ExitCode {
             .map(|t| session::resolve_target(&t))
             .transpose()
             .and_then(|t| stamp::cmd_stamp(t.as_deref(), all, no_timestamp, dry_run)),
-        Command::New {
-            title,
-            in_target,
-            parents,
-            layout,
-            dry_run,
-            as_path,
-            ext,
-            set,
-        } => structure::cmd_new(
-            &title,
-            &in_target,
-            parents,
-            layout.into(),
-            dry_run,
-            as_path.as_deref(),
-            ext.as_deref(),
-            &set,
-        ),
-        Command::Attach {
-            payload,
-            in_target,
-            parents,
-            layout,
-            opaque,
-            all,
-            recursive,
-            manifest,
-            no_hash,
-        } => structure::cmd_attach(
-            payload.as_deref(),
-            in_target.as_deref(),
-            parents,
-            layout.into(),
-            opaque,
-            all,
-            recursive,
-            manifest,
-            !no_hash,
-        ),
+        Command::New(args) => structure::cmd_new(args),
+        Command::Attach(args) => structure::cmd_attach(args),
         Command::Manifest {
             target,
             update,
