@@ -16,7 +16,7 @@ use prov::{Format, Value, block_on, meta};
 use crate::CmdResult;
 use crate::about::refresh_about;
 use crate::json;
-use crate::session::{find_root, workspace};
+use crate::session::{Session, find_root, workspace};
 
 /// `prov views [NAME]` — list the declared views, or execute one.
 ///
@@ -256,13 +256,12 @@ pub(crate) fn cmd_exports(name: Option<&str>) -> CmdResult {
 /// moves — the same shape `exports <name>` gives an export. A collision is a
 /// refusal with the plan still printed, because the plan is the diagnosis.
 pub(crate) fn cmd_presets(dir: Option<&Path>, write: bool) -> CmdResult {
-    let ctx = find_root()?;
     let preset = match dir {
         Some(dir) => prov::preset::Preset::load(dir)?,
         None => prov::preset::Preset::builtin(),
     };
-    let mut ws = workspace(&ctx)?;
-    let plan = block_on(ws.plan_preset(&ctx.root_doc, &preset))?;
+    let mut session = Session::open()?;
+    let plan = block_on(session.ws.plan_preset(&session.ctx.root_doc, &preset))?;
     print_plan(&plan);
 
     if !plan.is_clean() {
@@ -281,7 +280,7 @@ pub(crate) fn cmd_presets(dir: Option<&Path>, write: bool) -> CmdResult {
         eprintln!("nothing written; pass --write to apply");
         return Ok(ExitCode::SUCCESS);
     }
-    block_on(ws.apply_preset(&ctx.root_doc, &preset))?;
+    block_on(session.ws.apply_preset(&session.ctx.root_doc, &preset))?;
     let entries = plan
         .steps
         .iter()
@@ -298,7 +297,7 @@ pub(crate) fn cmd_presets(dir: Option<&Path>, write: bool) -> CmdResult {
         plan.surface.display()
     );
     // The page is a function of the config, and the config just grew.
-    refresh_about(&ctx.root_dir)?;
+    refresh_about(&session.ctx.root_dir)?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -1056,7 +1056,3 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[patch.unused]]
-name = "fig"
-version = "4.0.0"

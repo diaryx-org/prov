@@ -43,6 +43,72 @@ pub(crate) struct Ctx {
     pub(crate) config: WorkspaceConfig,
 }
 
+impl From<prov::Discovered> for Ctx {
+    fn from(d: prov::Discovered) -> Self {
+        Ctx {
+            root_dir: d.root_dir,
+            root_doc: d.root_doc,
+            registry: d.registry,
+            node: d.node.node,
+            config: d.config,
+        }
+    }
+}
+
+/// An open workspace: the discovered [`Ctx`] and the library engine built over
+/// it, which is what every workspace command holds from its first line to its
+/// last.
+///
+/// The two constructors are the two ways a command begins. [`Session::open`]
+/// is a read, or a mutation that cannot mint an ID. [`Session::open_for_mutation`]
+/// is a mutation that may — because the reference style registers, or the
+/// identity policy is eager — and so makes sure a registry exists *before* the
+/// workspace is built over it, since a route's synthesized nodes are `create`d
+/// and mint on the same terms as the leaf. That precondition used to be a
+/// comment at each call site; here it is one line, and a verb that opens the
+/// wrong way is the only way to get it wrong.
+///
+/// [`Session::commit`] is the end: the identity changes a mutation made, landed
+/// according to the workspace's storage mode.
+pub(crate) struct Session {
+    pub(crate) ctx: Ctx,
+    pub(crate) ws: Workspace<StdFs, Minter, FileIndex>,
+}
+
+impl Session {
+    /// The workspace around the current directory, for reading or for a
+    /// mutation that mints nothing.
+    pub(crate) fn open() -> Result<Self, AnyError> {
+        Self::over(find_root()?)
+    }
+
+    /// The workspace around the current directory, for a mutation that may
+    /// mint — a registry is bootstrapped first when the config says it does.
+    pub(crate) fn open_for_mutation() -> Result<Self, AnyError> {
+        Self::mutating(find_root()?)
+    }
+
+    /// [`Session::open`] over a context the caller already discovered.
+    pub(crate) fn over(ctx: Ctx) -> Result<Self, AnyError> {
+        let ws = workspace(&ctx)?;
+        Ok(Self { ctx, ws })
+    }
+
+    /// [`Session::open_for_mutation`] over a context the caller already
+    /// discovered.
+    pub(crate) fn mutating(mut ctx: Ctx) -> Result<Self, AnyError> {
+        if ctx.config.mints_on_mutation() {
+            ensure_registry(&mut ctx)?;
+        }
+        Self::over(ctx)
+    }
+
+    /// Land the identity changes a mutation made — see [`persist`].
+    pub(crate) fn commit(&mut self) -> Result<(), AnyError> {
+        persist(&self.ctx, &mut self.ws)
+    }
+}
+
 /// Resolve the workspace root and, on success, warn (once, to stderr) about any
 /// config a command would otherwise run past silently — settings prov would
 /// ignore, or a config `spec` newer than this build. Suppressed by
@@ -116,13 +182,7 @@ pub(crate) fn find_root_quiet() -> Result<Ctx, AnyError> {
 /// on disk, where the caller already knows the root.
 pub(crate) fn find_root_quiet_at(dir: &Path) -> Result<Ctx, AnyError> {
     match block_on(prov::discover(&StdFs, dir))? {
-        prov::Discovery::Found(d) => Ok(Ctx {
-            root_dir: d.root_dir,
-            root_doc: d.root_doc,
-            registry: d.registry,
-            node: d.node.node,
-            config: d.config,
-        }),
+        prov::Discovery::Found(d) => Ok(Ctx::from(d)),
         prov::Discovery::Ambiguous { dir, candidates } => Err(format!(
             "ambiguous workspace root in {}: {} (rename one, add part_of, or declare the workspace with a prov.yaml beside its root)",
             dir.display(),
@@ -148,13 +208,7 @@ with metadata and no part_of\n\
 /// `edit` report, and a single-field edit is not the place to refuse over it.
 pub(crate) fn workspace_around(dir: &Path) -> Option<Ctx> {
     match block_on(prov::discover(&StdFs, dir)) {
-        Ok(prov::Discovery::Found(d)) => Some(Ctx {
-            root_dir: d.root_dir,
-            root_doc: d.root_doc,
-            registry: d.registry,
-            node: d.node.node,
-            config: d.config,
-        }),
+        Ok(prov::Discovery::Found(d)) => Some(Ctx::from(d)),
         _ => None,
     }
 }
@@ -340,10 +394,7 @@ fn save_index(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result
 /// (frontmatter / frontmatter-only), and write the registry snapshot (registry /
 /// frontmatter). Frontmatter-only keeps no registry, so the in-memory index —
 /// rebuilt next run by scanning — is simply marked clean.
-pub(crate) fn persist(
-    ctx: &Ctx,
-    ws: &mut Workspace<StdFs, Minter, FileIndex>,
-) -> Result<(), AnyError> {
+fn persist(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<(), AnyError> {
     if ctx.config.id_storage.stamps_frontmatter() {
         stamp_ids(ctx, ws)?;
     }
@@ -444,8 +495,7 @@ pub(crate) fn resolve_target(s: &str) -> Result<PathBuf, AnyError> {
     match parse_target(s) {
         TargetSpec::Path(p) => Ok(PathBuf::from(p)),
         TargetSpec::Id(id) => {
-            let ctx = find_root()?;
-            let ws = workspace(&ctx)?;
+            let Session { ctx, ws } = Session::open()?;
             let id = Id(id.to_string());
             match ws.index().resolve(&id) {
                 Some(path) => Ok(ctx.root_dir.join(path)),
@@ -456,8 +506,7 @@ pub(crate) fn resolve_target(s: &str) -> Result<PathBuf, AnyError> {
             }
         }
         TargetSpec::Route(route) => {
-            let ctx = find_root()?;
-            let ws = workspace(&ctx)?;
+            let Session { ctx, ws } = Session::open()?;
             let terminal = resolve_route(&ctx, &ws, route)?;
             Ok(ctx.root_dir.join(terminal))
         }

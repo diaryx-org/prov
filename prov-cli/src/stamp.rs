@@ -17,7 +17,7 @@ use prov::{ContentState, block_on};
 use crate::CmdResult;
 use crate::actor;
 use crate::clock::now_rfc3339;
-use crate::session::{Ctx, find_root, machinery, persist, updated_stamp, workspace, ws_rel};
+use crate::session::{Ctx, Session, machinery, updated_stamp, ws_rel};
 
 /// `confirm` — append one entry to a document's `confirmed` list, or show the
 /// list with `--show`.
@@ -30,12 +30,11 @@ use crate::session::{Ctx, find_root, machinery, persist, updated_stamp, workspac
 /// prov, and the page is rewritten whole, so a confirmation on either would be
 /// a claim about a file prov itself rewrites.
 pub(crate) fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdResult {
-    let ctx = find_root()?;
-    let rel = ws_rel(&ctx, file)?;
-    let mut ws = workspace(&ctx)?;
+    let mut session = Session::open()?;
+    let rel = ws_rel(&session.ctx, file)?;
 
     if show {
-        let standing = block_on(ws.confirmations(&rel))?;
+        let standing = block_on(session.ws.confirmations(&rel))?;
         for entry in &standing.live {
             println!("{}\t{}\tstands", entry.by, entry.at);
         }
@@ -46,7 +45,7 @@ pub(crate) fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdRes
         return Ok(ExitCode::SUCCESS);
     }
 
-    let machinery = machinery(&ctx, &ws)?;
+    let machinery = machinery(&session.ctx, &session.ws)?;
     if machinery.iter().any(|m| m == &rel) {
         return Err(format!(
             "{}: a machinery store is re-laid-out by prov, so it carries no confirmation",
@@ -54,7 +53,7 @@ pub(crate) fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdRes
         )
         .into());
     }
-    if block_on(ws.about_path(&ctx.root_doc))?.as_deref() == Some(rel.as_path()) {
+    if block_on(session.ws.about_path(&session.ctx.root_doc))?.as_deref() == Some(rel.as_path()) {
         return Err(format!(
             "{}: the generated page is rewritten whole by `prov about`, so it carries no confirmation",
             rel.display()
@@ -64,9 +63,9 @@ pub(crate) fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdRes
 
     let actor = actor::resolve(by)?;
     let now = now_rfc3339();
-    let entry = block_on(ws.confirm(&rel, &actor, &now))?;
-    persist(&ctx, &mut ws)?;
-    let standing = block_on(ws.confirmations(&rel))?;
+    let entry = block_on(session.ws.confirm(&rel, &actor, &now))?;
+    session.commit()?;
+    let standing = block_on(session.ws.confirmations(&rel))?;
     eprintln!(
         "confirmed {} — {} at {} ({})",
         rel.display(),
@@ -106,8 +105,7 @@ pub(crate) fn cmd_stamp(
     no_timestamp: bool,
     dry_run: bool,
 ) -> CmdResult {
-    let ctx = find_root()?;
-    let mut ws = workspace(&ctx)?;
+    let mut session = Session::open()?;
 
     // What to consider, and whether a name was put to each one.
     //
@@ -118,8 +116,8 @@ pub(crate) fn cmd_stamp(
     // here and still will not parse as a document — it is covered through its
     // sidecar, and skipped below where it is found.
     let targets: Vec<PathBuf> = match (target, all) {
-        (Some(path), _) => vec![ws_rel(&ctx, path)?],
-        (None, true) => block_on(ws.reachable_documents_from(&ctx.root_doc))?
+        (Some(path), _) => vec![ws_rel(&session.ctx, path)?],
+        (None, true) => block_on(session.ws.reachable_documents_from(&session.ctx.root_doc))?
             .into_iter()
             .collect(),
         (None, false) => {
@@ -134,13 +132,13 @@ pub(crate) fn cmd_stamp(
     // Which documents may carry one is decided per path below, so that naming
     // the workspace node stamps its checksum (it has none) and never its
     // config.
-    let machinery = machinery(&ctx, &ws)?;
+    let machinery = machinery(&session.ctx, &session.ws)?;
 
     let mut stamped = 0usize;
     let mut seeded = 0usize;
     let mut skipped = 0usize;
     for path in targets {
-        let state = match block_on(ws.content_state(&path)) {
+        let state = match block_on(session.ws.content_state(&path)) {
             Ok(state) => state,
             // Under `--all` this is a reached file that is not a document (an
             // attachment's payload, a manifest's covered bytes) — not an error,
@@ -166,7 +164,7 @@ pub(crate) fn cmd_stamp(
             ContentState::Intact | ContentState::Unverifiable => (false, false),
         };
         let timestamp = (claims_edit && !no_timestamp)
-            .then(|| updated_stamp(&ctx, &machinery, &path, &now))
+            .then(|| updated_stamp(&session.ctx, &machinery, &path, &now))
             .flatten();
         if !write {
             if named {
@@ -193,7 +191,7 @@ pub(crate) fn cmd_stamp(
             eprintln!(
                 "{}: would stamp {}",
                 path.display(),
-                stamp_summary(&ctx, timestamp, true)
+                stamp_summary(&session.ctx, timestamp, true)
             );
             println!("{}", path.display());
             if state == ContentState::Unrecorded {
@@ -203,7 +201,7 @@ pub(crate) fn cmd_stamp(
             }
             continue;
         }
-        if block_on(ws.record_content_update(&path, timestamp))? {
+        if block_on(session.ws.record_content_update(&path, timestamp))? {
             // Whether a checksum actually landed is not knowable up front for an
             // `Unrecorded` document: `record_content_update` writes one only if
             // the workspace covers this document at all — fixity on, and the
@@ -214,12 +212,12 @@ pub(crate) fn cmd_stamp(
             // for a document that was actually written.
             let hashed = match state {
                 ContentState::Drifted => true,
-                _ => block_on(ws.content_state(&path))? == ContentState::Intact,
+                _ => block_on(session.ws.content_state(&path))? == ContentState::Intact,
             };
             eprintln!(
                 "{}: stamped {}",
                 path.display(),
-                stamp_summary(&ctx, timestamp, hashed)
+                stamp_summary(&session.ctx, timestamp, hashed)
             );
             println!("{}", path.display());
             if state == ContentState::Unrecorded {

@@ -14,7 +14,7 @@ use prov::{Id, IdIndex, Trigger, Value, block_on, link};
 use crate::CmdResult;
 use crate::about::refresh_about;
 use crate::config::write_config_setting;
-use crate::session::{ensure_registry, entropy_seed, find_root, persist, workspace, ws_rel};
+use crate::session::{Session, ensure_registry, entropy_seed, find_root, ws_rel};
 
 pub(crate) fn cmd_id(file: &Path) -> CmdResult {
     let mut ctx = find_root()?;
@@ -23,10 +23,16 @@ pub(crate) fn cmd_id(file: &Path) -> CmdResult {
              (run `prov config identity lazy` to enable stable IDs)"
             .into());
     }
+    // Registering is the one verb that needs a registry whatever the policy
+    // says about minting on mutation, so it is ensured outright.
     ensure_registry(&mut ctx)?;
-    let mut ws = workspace(&ctx)?;
-    let id = block_on(ws.register(&ws_rel(&ctx, file)?, Trigger::Link))?;
-    persist(&ctx, &mut ws)?;
+    let mut session = Session::over(ctx)?;
+    let id = block_on(
+        session
+            .ws
+            .register(&ws_rel(&session.ctx, file)?, Trigger::Link),
+    )?;
+    session.commit()?;
     println!("{}", link::id_target(&id));
     Ok(ExitCode::SUCCESS)
 }
@@ -101,9 +107,9 @@ pub(crate) fn cmd_id_workspace(requested: Option<&str>) -> CmdResult {
 }
 
 pub(crate) fn cmd_backlinks(file: &Path) -> CmdResult {
-    let ctx = find_root()?;
-    let target = ws_rel(&ctx, file)?;
-    let links = block_on(workspace(&ctx)?.backlinks_to(&ctx.root_doc, &target))?;
+    let session = Session::open()?;
+    let target = ws_rel(&session.ctx, file)?;
+    let links = block_on(session.ws.backlinks_to(&session.ctx.root_doc, &target))?;
     for backlink in &links {
         let kind = if backlink.by_id { "id" } else { "path" };
         println!("{}\t{}\t{kind}", backlink.source.display(), backlink.site);
@@ -115,15 +121,14 @@ pub(crate) fn cmd_backlinks(file: &Path) -> CmdResult {
 }
 
 pub(crate) fn cmd_resolve(id: &str) -> CmdResult {
-    let ctx = find_root()?;
-    let ws = workspace(&ctx)?;
+    let session = Session::open()?;
     let id = Id(id.strip_prefix(link::ID_SCHEME).unwrap_or(id).to_string());
-    match ws.index().resolve(&id) {
+    match session.ws.index().resolve(&id) {
         Some(path) => {
             println!("{}", path.display());
             Ok(ExitCode::SUCCESS)
         }
-        None if ws.index().is_tombstoned(&id) => {
+        None if session.ws.index().is_tombstoned(&id) => {
             eprintln!("prov: {id} is tombstoned — its document was deleted");
             Ok(ExitCode::FAILURE)
         }

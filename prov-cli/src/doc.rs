@@ -15,9 +15,7 @@ use prov::{Format, RelationSet, Value, block_on, edit, meta};
 
 use crate::cli::MetaFormat;
 use crate::clock::now_rfc3339;
-use crate::session::{
-    find_root, load, machinery, persist, updated_stamp, workspace, workspace_around, ws_rel,
-};
+use crate::session::{Session, load, machinery, updated_stamp, workspace_around, ws_rel};
 use crate::term::edit_file;
 use crate::{AnyError, CmdResult};
 
@@ -209,16 +207,17 @@ fn write_field_edit(file: &Path, key: &str, text: &str) -> Result<(), AnyError> 
         std::fs::write(file, text)?;
         return Ok(());
     };
-    let mut ws = workspace(&ctx)?;
+    let mut session = Session::over(ctx)?;
     let now = now_rfc3339();
-    let machinery = machinery(&ctx, &ws)?;
-    let own_field = key.split('.').next() == Some(ctx.config.updated.as_str());
+    let machinery = machinery(&session.ctx, &session.ws)?;
+    let own_field = key.split('.').next() == Some(session.ctx.config.updated.as_str());
     let stamp = (!own_field)
-        .then(|| updated_stamp(&ctx, &machinery, &rel, &now))
+        .then(|| updated_stamp(&session.ctx, &machinery, &rel, &now))
         .flatten();
-    block_on(ws.save_document(&rel, text, stamp))?;
-    persist(&ctx, &mut ws)?;
-    if let Some((field, _)) = stamp {
+    block_on(session.ws.save_document(&rel, text, stamp))?;
+    let stamped = stamp.map(|(field, _)| field.to_string());
+    session.commit()?;
+    if let Some(field) = stamped {
         eprintln!("{} — stamped `{field}`", rel.display());
     }
     Ok(())
@@ -231,8 +230,8 @@ pub(crate) fn cmd_edit(file: &Path) -> CmdResult {
     edit_file(file)?;
     let changed = std::fs::read(file).ok() != before;
 
-    let ctx = find_root()?;
-    let rel = ws_rel(&ctx, file)?;
+    let mut session = Session::open()?;
+    let rel = ws_rel(&session.ctx, file)?;
     if !changed {
         eprintln!("edited {} (no changes)", rel.display());
         println!("{}", rel.display());
@@ -244,25 +243,17 @@ pub(crate) fn cmd_edit(file: &Path) -> CmdResult {
     // configured) with the current time — RFC 3339 UTC, the machine-standard
     // value the library reads back (DESIGN §2). Both self-gate, so this is a
     // no-op when neither is enabled.
-    let mut ws = workspace(&ctx)?;
     let now = now_rfc3339();
-    let machinery = machinery(&ctx, &ws)?;
-    let updated = updated_stamp(&ctx, &machinery, &rel, &now);
-    let wrote = block_on(ws.record_content_update(&rel, updated))?;
-    persist(&ctx, &mut ws)?;
+    let machinery = machinery(&session.ctx, &session.ws)?;
+    let updated = updated_stamp(&session.ctx, &machinery, &rel, &now);
+    let wrote = block_on(session.ws.record_content_update(&rel, updated))?;
+    let stamped = updated.map(|(field, _)| field.to_string());
+    session.commit()?;
 
-    match (wrote, updated.is_some()) {
-        (true, true) => eprintln!(
-            "edited {} — stamped `{}` + checksum",
-            rel.display(),
-            ctx.config.updated
-        ),
-        (true, false) => eprintln!("edited {} — content checksum updated", rel.display()),
-        (false, true) => eprintln!(
-            "edited {} — stamped `{}`",
-            rel.display(),
-            ctx.config.updated
-        ),
+    match (wrote, stamped) {
+        (true, Some(field)) => eprintln!("edited {} — stamped `{field}` + checksum", rel.display()),
+        (true, None) => eprintln!("edited {} — content checksum updated", rel.display()),
+        (false, Some(field)) => eprintln!("edited {} — stamped `{field}`", rel.display()),
         _ => eprintln!("edited {}", rel.display()),
     }
     println!("{}", rel.display());

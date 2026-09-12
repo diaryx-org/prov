@@ -67,7 +67,7 @@ use std::sync::OnceLock;
 use prov::{Id, IdIndex, PeerLocation, PeerLookup, PeerResolver, link};
 
 use crate::cli::PeerAction;
-use crate::session::find_root_quiet_at;
+use crate::session::{Session, find_root_quiet_at};
 use crate::{AnyError, CmdResult};
 
 /// The file's name inside whichever directory holds it.
@@ -206,11 +206,11 @@ impl PeerMap {
         let Some(PeerLocation::Path(root)) = location else {
             return Err(DocumentError::Unfollowable(lookup));
         };
-        let ctx = find_root_quiet_at(root)
+        let peer = find_root_quiet_at(root)
+            .and_then(Session::over)
             .map_err(|e| DocumentError::Unopenable(root.clone(), e.to_string()))?;
-        let peer_ws = crate::session::workspace(&ctx)
-            .map_err(|e| DocumentError::Unopenable(root.clone(), e.to_string()))?;
-        let path = peer_ws
+        let path = peer
+            .ws
             .index()
             .resolve(id)
             .ok_or_else(|| DocumentError::Unregistered(root.clone()))?;

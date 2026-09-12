@@ -23,8 +23,7 @@ use crate::cli::{CheckArgs, FixModeArg};
 use crate::json;
 use crate::peer;
 use crate::session::{
-    Ctx, ensure_registry, find_root, find_root_quiet, find_root_quiet_at, persist, resolve_target,
-    workspace, ws_rel,
+    Session, ensure_registry, find_root_quiet, find_root_quiet_at, resolve_target, ws_rel,
 };
 use crate::term::prompt;
 use crate::tree::{descent, workspace_label};
@@ -57,7 +56,7 @@ pub(crate) fn cmd_check(args: CheckArgs) -> CmdResult {
     let (root, only) = (root.as_deref(), only.as_deref());
     // `check` reports config issues in full (Finding::ConfigIssue), so skip the
     // one-line find_root warning that would just duplicate them.
-    let mut ctx = find_root_quiet()?;
+    let ctx = find_root_quiet()?;
     // Heal first, validate second: if a mutation was interrupted by a crash, a
     // write-ahead journal is on disk. Roll it forward before reading the
     // workspace, so `check` reports on a consistent tree — and so the recovery
@@ -87,15 +86,19 @@ path that is not in the workspace would report clean",
         )
         .into());
     }
-    let mut ws = workspace(&ctx)?;
-    let mut findings = block_on(ws.check(&root))?;
+    let mut session = Session::over(ctx)?;
+    let mut findings = block_on(session.ws.check(&root))?;
     // The generated page is checked alongside the graph, so "run `check` before
     // handing this workspace to someone" guarantees one more thing: that the
     // page describing it is not lying. Only when checking the workspace root —
     // a scoped `check <subtree>` is asking about that subtree.
-    if root == ctx.root_doc {
-        let about_ctx = about_context(&ctx)?;
-        if let Some(finding) = block_on(ws.check_about(&ctx.root_doc, &ctx.config, &about_ctx))? {
+    if root == session.ctx.root_doc {
+        let about_ctx = about_context(&session.ctx)?;
+        if let Some(finding) = block_on(session.ws.check_about(
+            &session.ctx.root_doc,
+            &session.ctx.config,
+            &about_ctx,
+        ))? {
             findings.push(finding);
         }
     }
@@ -104,13 +107,13 @@ path that is not in the workspace would report clean",
     }
     let findings = findings;
     if let Some(mode) = fix {
-        return cmd_check_fix(&mut ctx, &mut ws, &root, &findings, mode, only.as_deref());
+        return cmd_check_fix(&mut session, &root, &findings, mode, only.as_deref());
     }
     // Clap has already refused `--follow` beside `--fix` and `--only`, so what
     // crosses the boundary is exactly the command above: the origin's own check,
     // run again in each workspace this one reaches.
     if let Some(depth) = follow {
-        return check_across(&ctx, &ws, &root, findings, as_json, depth, unverified);
+        return check_across(&session, &root, findings, as_json, depth, unverified);
     }
     if as_json {
         print!(
@@ -169,8 +172,7 @@ path that is not in the workspace would report clean",
 /// workspace's to roll forward, and rolling it forward from here would be
 /// writing across a boundary.
 fn check_across(
-    ctx: &Ctx,
-    ws: &Workspace<StdFs, Minter, FileIndex>,
+    session: &Session,
     root: &Path,
     origin: Vec<prov::Finding>,
     as_json: bool,
@@ -178,7 +180,12 @@ fn check_across(
     unverified: bool,
 ) -> CmdResult {
     let peers = peer::PeerMap::load();
-    let federation = block_on(prov::descend(ws, root, &peers, &descent(depth, unverified)))?;
+    let federation = block_on(prov::descend(
+        &session.ws,
+        root,
+        &peers,
+        &descent(depth, unverified),
+    ))?;
 
     // One report per workspace reached, the origin first — whose findings are
     // already in hand, since they are the ones this command has always printed.
@@ -186,7 +193,7 @@ fn check_across(
         name: federation.workspaces[0].name.clone(),
         declares: federation.workspaces[0].declares.clone(),
         label: workspace_label(&federation.workspaces[0]).to_string(),
-        root_dir: ctx.root_dir.clone(),
+        root_dir: session.ctx.root_dir.clone(),
         findings: origin,
     }];
     for reached in federation.workspaces.iter().skip(1) {
@@ -197,9 +204,10 @@ fn check_across(
         // identity policy and all.
         let peer_ctx = find_root_quiet_at(&reached.root_dir)
             .map_err(|e| format!("`{label}` at {}: {e}", reached.root_dir.display()))?;
-        let peer_ws = workspace(&peer_ctx)?;
+        let peer = Session::over(peer_ctx)?;
+        let (peer_ctx, peer_ws) = (&peer.ctx, &peer.ws);
         let mut findings = block_on(peer_ws.check(&peer_ctx.root_doc))?;
-        let about_ctx = about_context(&peer_ctx)?;
+        let about_ctx = about_context(peer_ctx)?;
         if let Some(finding) =
             block_on(peer_ws.check_about(&peer_ctx.root_doc, &peer_ctx.config, &about_ctx))?
         {
@@ -304,14 +312,13 @@ fn collect_refusals(node: &prov::crossing::Node, out: &mut Vec<String>) {
 /// Narration to stderr; stdout carries the machine value, which is the manifest
 /// document's path (bare/`--update`) or one line per failing file (`--verify`).
 pub(crate) fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResult {
-    let ctx = find_root()?;
-    let mut ws = workspace(&ctx)?;
-    let target_rel = ws_rel(&ctx, target)?;
-    let node = resolve_manifest_node(&ws, &target_rel)?;
+    let mut session = Session::open()?;
+    let target_rel = ws_rel(&session.ctx, target)?;
+    let node = resolve_manifest_node(&session.ws, &target_rel)?;
 
     if update {
-        let changed = block_on(ws.update_manifest(&node))?;
-        persist(&ctx, &mut ws)?;
+        let changed = block_on(session.ws.update_manifest(&node))?;
+        session.commit()?;
         if changed.is_clean() {
             eprintln!("{}: already up to date", changed.manifest.display());
         } else {
@@ -328,7 +335,7 @@ pub(crate) fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResu
     }
 
     if verify {
-        let findings = block_on(ws.verify_manifest(&node))?;
+        let findings = block_on(session.ws.verify_manifest(&node))?;
         for finding in &findings {
             println!("{finding}");
         }
@@ -341,7 +348,7 @@ pub(crate) fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResu
         };
     }
 
-    let status = block_on(ws.manifest_status(&node))?
+    let status = block_on(session.ws.manifest_status(&node))?
         .ok_or_else(|| format!("{} declares no manifest", node.display()))?;
     eprintln!(
         "{}: {} file(s) under {}{}",
@@ -425,8 +432,7 @@ fn resolve_manifest_node(
 /// for the machine value, which for this command is the findings a repair
 /// *introduced*.
 fn cmd_check_fix(
-    ctx: &mut Ctx,
-    ws: &mut Workspace<StdFs, Minter, FileIndex>,
+    session: &mut Session,
     root: &Path,
     findings: &[prov::Finding],
     mode: FixModeArg,
@@ -439,7 +445,7 @@ fn cmd_check_fix(
     // "all of this kind" would silently pick between candidates it never saw.
     let mut repeat: BTreeSet<prov::RemedyKind> = BTreeSet::new();
     for finding in findings {
-        let remedies = block_on(ws.remedies(finding))?;
+        let remedies = block_on(session.ws.remedies(finding))?;
         if remedies.is_empty() {
             eprintln!("•  {finding}");
             needs_attention += 1;
@@ -457,7 +463,7 @@ fn cmd_check_fix(
                 Some(remedy) => {
                     eprintln!("⚑  {finding}");
                     eprintln!("   → {}", remedy.effect);
-                    block_on(ws.apply_fix(&remedy.fix))?;
+                    block_on(session.ws.apply_fix(&remedy.fix))?;
                     applied += 1;
                 }
                 None => {
@@ -479,7 +485,7 @@ fn cmd_check_fix(
         if let Some(remedy) = repeated {
             eprintln!("⚑  {finding}");
             eprintln!("   → {}", remedy.effect);
-            block_on(ws.apply_fix(&remedy.fix))?;
+            block_on(session.ws.apply_fix(&remedy.fix))?;
             applied += 1;
             continue;
         }
@@ -536,7 +542,7 @@ fn cmd_check_fix(
         };
         match chosen {
             Some(remedy) => {
-                block_on(ws.apply_fix(&remedy.fix))?;
+                block_on(session.ws.apply_fix(&remedy.fix))?;
                 applied += 1;
             }
             None => needs_attention += 1,
@@ -547,9 +553,9 @@ fn cmd_check_fix(
     // on the index actually having changed, so a purely path-based fix (a
     // path-style inverse, adopting an orphan by path) does not bootstrap an empty
     // registry document as a side effect.
-    if applied > 0 && ws.index().is_dirty() {
-        ensure_registry(ctx)?;
-        persist(ctx, ws)?;
+    if applied > 0 && session.ws.index().is_dirty() {
+        ensure_registry(&mut session.ctx)?;
+        session.commit()?;
     }
     if applied == 0 {
         // Nothing ran, so a second walk would return what the first one did.
@@ -563,7 +569,7 @@ fn cmd_check_fix(
     // any of them ran. Only a second walk can say what actually changed, and only
     // the three buckets can separate what these fixes repaired from what they
     // broke from what was already wrong.
-    let mut after = block_on(ws.check(root))?;
+    let mut after = block_on(session.ws.check(root))?;
     // Scope the second walk the way the first one was scoped, or the diff would
     // compare a filtered before against an unfiltered after and read every
     // untouched finding elsewhere in the workspace as newly introduced.

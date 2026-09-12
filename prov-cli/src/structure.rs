@@ -19,10 +19,7 @@ use prov::{
 use crate::about::refresh_about;
 use crate::cli::{AttachArgs, NewArgs};
 use crate::clock::now_rfc3339;
-use crate::session::{
-    Ctx, TargetSpec, ensure_registry, find_root, load, parse_target, persist, resolve_target,
-    workspace, ws_rel,
-};
+use crate::session::{Ctx, Session, TargetSpec, load, parse_target, resolve_target, ws_rel};
 use crate::{AnyError, CmdResult};
 
 /// Resolve a `--in DOC` / `--under ROUTE` placement to the parent document it
@@ -36,11 +33,11 @@ use crate::{AnyError, CmdResult};
 /// (each command deciding on its own what a missing segment means).
 ///
 /// Synthesized nodes are `create`d, so they mint IDs on the same terms as any
-/// other document — a caller that mints must `ensure_registry` *before* this runs,
-/// not merely before its own write.
+/// other document — a caller that mints must open the session with
+/// [`Session::open_for_mutation`], so the registry exists *before* this runs
+/// and not merely before its own write.
 fn resolve_placement(
-    ctx: &Ctx,
-    ws: &mut Workspace<StdFs, Minter, FileIndex>,
+    session: &mut Session,
     target: &str,
     parents: bool,
     layout: Layout,
@@ -53,12 +50,16 @@ fn resolve_placement(
         // the parent.
         TargetSpec::Path(_) | TargetSpec::Id(_) => {
             let resolved = resolve_target(target)?;
-            return Ok(Some(ws_rel(ctx, &resolved)?));
+            return Ok(Some(ws_rel(&session.ctx, &resolved)?));
         }
         TargetSpec::Route(route) => route,
     };
     let segments = Workspace::<StdFs>::route_segments(route);
-    let plan = block_on(ws.plan_route(&ctx.root_doc, &segments, layout))?;
+    let plan = block_on(
+        session
+            .ws
+            .plan_route(&session.ctx.root_doc, &segments, layout),
+    )?;
     if dry_run {
         show_route_plan(route, &plan);
         if plan.is_complete() {
@@ -87,14 +88,14 @@ fn resolve_placement(
         .into());
     }
     let created = plan.synthesize.len();
-    let terminal = block_on(ws.apply_route(&plan))?;
+    let terminal = block_on(session.ws.apply_route(&plan))?;
     // Synthesized route parents are incidental to the command's result (the leaf),
     // so their creation is narration → stderr; the caller's stdout is the terminal.
     for synth in &plan.synthesize {
         eprintln!("created {} ({:?})", synth.path.display(), synth.title);
     }
     if created > 0 {
-        persist(ctx, ws)?;
+        session.commit()?;
     }
     Ok(Some(terminal))
 }
@@ -141,27 +142,24 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     } = args;
     let (title, in_target, layout) = (title.as_str(), in_target.as_str(), Layout::from(layout));
     let (as_path, ext, set) = (as_path.as_deref(), ext.as_deref(), set.as_slice());
-    let mut ctx = find_root()?;
     // Parsed before anything is written, so a malformed `--set` refuses the
     // command rather than leaving a document created without it.
     let sets = parse_sets(set)?;
-    // Authoring a reference that registers (the default style, or any relation's
-    // override — e.g. `part_of: id` in a split) mints IDs, as does an eager
-    // policy; ensure a registry to persist them exists *before* the workspace is
-    // built over it. A route's synthesized nodes are `create`d too, so they mint
-    // on the same terms — the registry has to exist before the route is applied,
-    // not just before the leaf.
-    let mints = ctx.config.mints_on_mutation();
-    if mints && !dry_run {
-        ensure_registry(&mut ctx)?;
-    }
+    // Authoring a reference that registers mints IDs, as does an eager policy,
+    // and a route's synthesized nodes mint on the same terms as the leaf — so
+    // the mutating open, which bootstraps the registry first. A dry run writes
+    // nothing and must not bootstrap one either.
+    let mut session = if dry_run {
+        Session::open()?
+    } else {
+        Session::open_for_mutation()?
+    };
 
     // Resolve the parent. A path `--in` is already a path; a `@`-route walks the
     // tree from the root, and (with `-p`) creates what it doesn't find. Either way
     // the rest of this function is unchanged — a route is just another way to
     // *name* a parent, never a different kind of creation.
-    let mut ws = workspace(&ctx)?;
-    let Some(parent_rel) = resolve_placement(&ctx, &mut ws, in_target, parents, layout, dry_run)?
+    let Some(parent_rel) = resolve_placement(&mut session, in_target, parents, layout, dry_run)?
     else {
         return Ok(ExitCode::SUCCESS);
     };
@@ -171,11 +169,11 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     // where the extension is `--ext` or the workspace's content format. The title
     // itself is always recorded in metadata (structure lives there, not the name).
     let path = match as_path {
-        Some(p) => ws_rel(&ctx, p)?,
+        Some(p) => ws_rel(&session.ctx, p)?,
         None => {
             let extension = ext
                 .map(str::to_owned)
-                .unwrap_or_else(|| ctx.config.content_format.extension().to_string());
+                .unwrap_or_else(|| session.ctx.config.content_format.extension().to_string());
             let name = format!("{}.{extension}", link::slug(title));
             parent_rel.parent().unwrap_or(Path::new("")).join(name)
         }
@@ -185,8 +183,8 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     // route-parent `-p` above, so a daily-note cron can re-run the same command.
     // A path held by a *different*-titled document is a real collision and still
     // errors. Without `-p`, an existing leaf errors as before (via `create`).
-    if parents && ws.fs_path(&path).exists() {
-        let (_, existing) = load(&ws.fs_path(&path))?;
+    if parents && session.ws.fs_path(&path).exists() {
+        let (_, existing) = load(&session.ws.fs_path(&path))?;
         if existing.meta.get("title").and_then(Value::as_str) != Some(title) {
             return Err(format!(
                 "{} already exists with a different title — refusing to reuse it \
@@ -206,8 +204,8 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
         // Ensure the containment link both ways (idempotent; refuses a contested
         // parent), so an existing-but-unlinked file converges too. The contract is
         // the *result*, not the action: an idempotent no-op still yields the path.
-        block_on(ws.adopt(&path, &parent_rel))?;
-        persist(&ctx, &mut ws)?;
+        block_on(session.ws.adopt(&path, &parent_rel))?;
+        session.commit()?;
         eprintln!("exists: {} (in {})", path.display(), parent_rel.display());
         println!("{}", path.display());
         return Ok(ExitCode::SUCCESS);
@@ -220,11 +218,15 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    // (`ws` is the one built above — reusing it keeps any IDs a route just minted
-    // in the same in-memory index this create registers into.)
-    let opening = opening_fields(&ctx, &ws, &parent_rel, sets)?;
-    let created = block_on(ws.create_with_fields(&path, &parent_rel, title, &opening))?;
-    persist(&ctx, &mut ws)?;
+    // (The session is the one opened above — reusing it keeps any IDs a route
+    // just minted in the same in-memory index this create registers into.)
+    let opening = opening_fields(&session.ctx, &session.ws, &parent_rel, sets)?;
+    let created = block_on(
+        session
+            .ws
+            .create_with_fields(&path, &parent_rel, title, &opening),
+    )?;
+    session.commit()?;
     // A separated child is a pair — the metadata node the parent links, plus its
     // prose body file. Name both in the narration so it is clear two files were
     // written; stdout carries only the node (the linkable document).
@@ -320,21 +322,16 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         Layout::from(layout),
     );
     let hash = !no_hash;
-    let mut ctx = find_root()?;
-    let mints = ctx.config.mints_on_mutation();
-    if mints {
-        ensure_registry(&mut ctx)?;
-    }
     if recursive && !all {
         return Err("--recursive only applies with --all".into());
     }
-    let mut ws = workspace(&ctx)?;
+    let mut session = Session::open_for_mutation()?;
     // Default the parent to the workspace root — the common "attach this to my
     // workspace" case names no parent at all. Otherwise it is resolved exactly as
     // every other command resolves one, so an `@`-route `--in` works here too.
     let parent_rel = match in_target {
-        None => ctx.root_doc.clone(),
-        Some(t) => match resolve_placement(&ctx, &mut ws, t, parents, layout, false)? {
+        None => session.ctx.root_doc.clone(),
+        Some(t) => match resolve_placement(&mut session, t, parents, layout, false)? {
             Some(p) => p,
             None => return Ok(ExitCode::SUCCESS),
         },
@@ -347,9 +344,9 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         // Bounded to reached directories by default; `--recursive` sweeps the
         // whole tree (a pure asset dump you know is all attachments).
         let loose = if recursive {
-            block_on(ws.loose_attachments())?
+            block_on(session.ws.loose_attachments())?
         } else {
-            block_on(ws.loose_attachments_in(&ctx.root_doc))?
+            block_on(session.ws.loose_attachments_in(&session.ctx.root_doc))?
         };
         if loose.is_empty() {
             eprintln!("no loose files to attach");
@@ -357,7 +354,7 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         }
         let mut attached = 0usize;
         for p in &loose {
-            match block_on(ws.attach(p, &parent_rel)) {
+            match block_on(session.ws.attach(p, &parent_rel)) {
                 Ok(node) => {
                     eprintln!("attached {} (sidecar {})", p.display(), node.display());
                     println!("{}", node.display());
@@ -366,7 +363,7 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
                 Err(e) => eprintln!("prov: could not attach {}: {e}", p.display()),
             }
         }
-        persist(&ctx, &mut ws)?;
+        session.commit()?;
         eprintln!("attached {attached} file(s) under {}", parent_rel.display());
         return Ok(ExitCode::SUCCESS);
     }
@@ -374,14 +371,19 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
     let Some(payload) = payload else {
         return Err("specify a file to attach, or pass --all".into());
     };
-    let payload_rel = ws_rel(&ctx, payload)?;
+    let payload_rel = ws_rel(&session.ctx, payload)?;
 
     // The bulk form: the positional is a directory, and it gains one node and
     // one list rather than a sidecar per file.
     if manifest {
-        let node = block_on(ws.attach_manifest_titled(&payload_rel, &parent_rel, None, hash))?;
-        persist(&ctx, &mut ws)?;
-        let (manifest_doc, listed) = block_on(ws.manifest_of(&node))?
+        let node = block_on(session.ws.attach_manifest_titled(
+            &payload_rel,
+            &parent_rel,
+            None,
+            hash,
+        ))?;
+        session.commit()?;
+        let (manifest_doc, listed) = block_on(session.ws.manifest_of(&node))?
             .map(|(doc, m)| (doc, m.files.len()))
             .unwrap_or_default();
         eprintln!(
@@ -396,11 +398,11 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
     }
 
     let node = if opaque {
-        block_on(ws.attach_opaque(&payload_rel, &parent_rel))?
+        block_on(session.ws.attach_opaque(&payload_rel, &parent_rel))?
     } else {
-        block_on(ws.attach(&payload_rel, &parent_rel))?
+        block_on(session.ws.attach(&payload_rel, &parent_rel))?
     };
-    persist(&ctx, &mut ws)?;
+    session.commit()?;
     eprintln!(
         "attached {} (sidecar {} in {})",
         payload.display(),
@@ -419,19 +421,20 @@ pub(crate) fn cmd_mv(
     layout: Layout,
 ) -> CmdResult {
     let from_resolved = resolve_target(from)?;
-    let mut ctx = find_root()?;
     // `rename` mints nothing, but `--under -p` synthesizes nodes with `create`,
     // which does — so a registry has to exist before the route runs, exactly as in
     // `new`/`reparent`. Plain `mv` skips this and stays as cheap as it was.
-    if in_target.is_some() {
-        let mints = ctx.config.mints_on_mutation();
-        if mints {
-            ensure_registry(&mut ctx)?;
-        }
-    }
-    let mut ws = workspace(&ctx)?;
-    let to_rel = ws_rel(&ctx, to)?;
-    block_on(ws.rename(&ws_rel(&ctx, &from_resolved)?, &to_rel))?;
+    let mut session = if in_target.is_some() {
+        Session::open_for_mutation()?
+    } else {
+        Session::open()?
+    };
+    let to_rel = ws_rel(&session.ctx, to)?;
+    block_on(
+        session
+            .ws
+            .rename(&ws_rel(&session.ctx, &from_resolved)?, &to_rel),
+    )?;
     eprintln!("moved {} -> {}", from_resolved.display(), to.display());
 
     // The move first, then the reparent — in that order because `rename` has
@@ -439,15 +442,15 @@ pub(crate) fn cmd_mv(
     // found at the document's *new* path. Doing it the other way would reparent a
     // path that is about to stop existing.
     if let Some(target) = in_target {
-        let Some(parent_rel) = resolve_placement(&ctx, &mut ws, target, parents, layout, false)?
+        let Some(parent_rel) = resolve_placement(&mut session, target, parents, layout, false)?
         else {
             return Ok(ExitCode::SUCCESS);
         };
-        if block_on(ws.reparent(&to_rel, &parent_rel))? != prov::Reparented::Unchanged {
+        if block_on(session.ws.reparent(&to_rel, &parent_rel))? != prov::Reparented::Unchanged {
             eprintln!("reparented {} -> in {}", to.display(), parent_rel.display());
         }
     }
-    persist(&ctx, &mut ws)?;
+    session.commit()?;
     // The document's new location is the handle a caller acts on next.
     println!("{}", to_rel.display());
     Ok(ExitCode::SUCCESS)
@@ -460,24 +463,22 @@ pub(crate) fn cmd_reparent(
     layout: Layout,
     dry_run: bool,
 ) -> CmdResult {
-    let mut ctx = find_root()?;
     // A route's synthesized nodes are `create`d and so mint on the same terms as
     // any other document — the registry must exist before the route is applied.
     // (The reparent itself authors links too, which an id-authoring workspace
-    // registers.)
-    let mints = ctx.config.mints_on_mutation();
-    if mints && !dry_run {
-        ensure_registry(&mut ctx)?;
-    }
-
-    let mut ws = workspace(&ctx)?;
-    let Some(parent_rel) = resolve_placement(&ctx, &mut ws, in_target, parents, layout, dry_run)?
+    // registers.) A dry run writes nothing and must not bootstrap one either.
+    let mut session = if dry_run {
+        Session::open()?
+    } else {
+        Session::open_for_mutation()?
+    };
+    let Some(parent_rel) = resolve_placement(&mut session, in_target, parents, layout, dry_run)?
     else {
         return Ok(ExitCode::SUCCESS);
     };
-    let path_rel = ws_rel(&ctx, &resolve_target(path)?)?;
-    let outcome = block_on(ws.reparent(&path_rel, &parent_rel))?;
-    persist(&ctx, &mut ws)?;
+    let path_rel = ws_rel(&session.ctx, &resolve_target(path)?)?;
+    let outcome = block_on(session.ws.reparent(&path_rel, &parent_rel))?;
+    session.commit()?;
     // Say which of the three happened. "reparented" for a run that wrote
     // nothing is how a workspace full of half-linked documents survives a
     // repair pass that reported success on every one of them.
@@ -505,22 +506,21 @@ pub(crate) fn cmd_reparent(
 
 pub(crate) fn cmd_rm(path: &str, force: bool) -> CmdResult {
     let resolved = resolve_target(path)?;
-    let ctx = find_root()?;
-    let mut ws = workspace(&ctx)?;
-    let target = ws_rel(&ctx, &resolved)?;
+    let mut session = Session::open()?;
+    let target = ws_rel(&session.ctx, &resolved)?;
 
     // The `record_deletions` axis reaches the library through `Settings`, so the
     // one verb covers both postures; what the CLI adds is the clock, which the
     // library takes as an argument rather than reading.
-    let recorded = ctx.config.record_deletions;
+    let recorded = session.ctx.config.record_deletions;
     let now = now_rfc3339();
-    let danglers = block_on(ws.delete_with(
+    let danglers = block_on(session.ws.delete_with(
         &target,
         force,
         recorded.then_some(now.as_str()),
         prov::Diagnosis::Report,
     ))?;
-    persist(&ctx, &mut ws)?;
+    session.commit()?;
     if recorded {
         println!(
             "deleted {} (recorded; `prov restore` relinks it once the file is back)",
@@ -532,7 +532,7 @@ pub(crate) fn cmd_rm(path: &str, force: bool) -> CmdResult {
     // The first recorded delete *bootstraps* the log and adds the root's
     // `deletions` pointer — another machinery file the page lists. A no-op on
     // every later delete, since the pointer already exists.
-    refresh_about(&ctx.root_dir)?;
+    refresh_about(&session.ctx.root_dir)?;
     for finding in &danglers {
         eprintln!("warning: now dangling — {finding}");
     }
@@ -540,25 +540,23 @@ pub(crate) fn cmd_rm(path: &str, force: bool) -> CmdResult {
 }
 
 pub(crate) fn cmd_restore(path: &str) -> CmdResult {
-    let ctx = find_root()?;
-    let mut ws = workspace(&ctx)?;
+    let mut session = Session::open()?;
     // The path names a document that was deleted, so it cannot be
     // `resolve_target`-ed — that reads the file, and under the ordinary restore
     // the caller has only just put one back there. Take it as given, relative to
     // the workspace root.
-    let from = ws_rel(&ctx, Path::new(path))?;
-    block_on(ws.restore(&from, &ctx.root_doc))?;
-    persist(&ctx, &mut ws)?;
+    let from = ws_rel(&session.ctx, Path::new(path))?;
+    block_on(session.ws.restore(&from, &session.ctx.root_doc))?;
+    session.commit()?;
     eprintln!("restored {}", from.display());
     println!("{}", from.display());
     Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn cmd_clear_deletions() -> CmdResult {
-    let ctx = find_root()?;
-    let mut ws = workspace(&ctx)?;
-    let forgotten = block_on(ws.clear_deletions(&ctx.root_doc))?;
-    persist(&ctx, &mut ws)?;
+    let mut session = Session::open()?;
+    let forgotten = block_on(session.ws.clear_deletions(&session.ctx.root_doc))?;
+    session.commit()?;
     // A bulk operation yields no object to name — narration only, stdout stays
     // empty.
     eprintln!("forgot {forgotten} deletion record(s)");
@@ -567,17 +565,11 @@ pub(crate) fn cmd_clear_deletions() -> CmdResult {
 
 pub(crate) fn cmd_duplicate(source: &str) -> CmdResult {
     let resolved = resolve_target(source)?;
-    let mut ctx = find_root()?;
     // Attaching the copy authors the parent's spanning entry, which mints an ID
-    // when that style registers (or under an eager policy) — same as `new`, so
-    // bootstrap a registry to persist it before building the workspace.
-    let mints = ctx.config.mints_on_mutation();
-    if mints {
-        ensure_registry(&mut ctx)?;
-    }
-    let mut ws = workspace(&ctx)?;
-    let copy = block_on(ws.duplicate(&ws_rel(&ctx, &resolved)?))?;
-    persist(&ctx, &mut ws)?;
+    // when that style registers (or under an eager policy) — same as `new`.
+    let mut session = Session::open_for_mutation()?;
+    let copy = block_on(session.ws.duplicate(&ws_rel(&session.ctx, &resolved)?))?;
+    session.commit()?;
     eprintln!("duplicated {} -> {}", resolved.display(), copy.display());
     println!("{}", copy.display());
     Ok(ExitCode::SUCCESS)

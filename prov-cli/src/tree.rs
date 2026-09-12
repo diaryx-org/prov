@@ -13,26 +13,25 @@ use prov::{Node, NodeKind, block_on};
 
 use crate::CmdResult;
 use crate::peer;
-use crate::session::{find_root, workspace, ws_rel};
+use crate::session::{Session, ws_rel};
 
 pub(crate) fn cmd_tree(root: Option<&Path>, follow: Option<usize>, unverified: bool) -> CmdResult {
-    let ctx = find_root()?;
+    let session = Session::open()?;
     let root = match root {
-        Some(r) => ws_rel(&ctx, r)?,
-        None => ctx.root_doc.clone(),
+        Some(r) => ws_rel(&session.ctx, r)?,
+        None => session.ctx.root_doc.clone(),
     };
-    let ws = workspace(&ctx)?;
     // Without `--follow` this is the single-workspace walk it always was, byte
     // for byte: `descend` under a resolver would give the same shape, but the
     // unfollowed path should not pay for a peer map it never consults.
     let Some(depth) = follow else {
-        let node = block_on(ws.tree(&root))?;
+        let node = block_on(session.ws.tree(&root))?;
         print_node(&node, "", true, true);
         return Ok(ExitCode::SUCCESS);
     };
     let peers = peer::PeerMap::load();
     let federation = block_on(prov::descend(
-        &ws,
+        &session.ws,
         &root,
         &peers,
         &descent(depth, unverified),

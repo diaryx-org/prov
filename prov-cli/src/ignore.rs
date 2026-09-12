@@ -11,7 +11,7 @@ use prov::block_on;
 
 use crate::CmdResult;
 use crate::json;
-use crate::session::{find_root, workspace};
+use crate::session::Session;
 
 /// List what a tool copying, syncing or recording this folder should leave
 /// alone: the difference between what is on disk and what the graph reaches.
@@ -23,9 +23,8 @@ use crate::session::{find_root, workspace};
 /// The rules go to stdout (they are an ignore file's content, for `>` and
 /// `diff` and friends); the count said *about* them goes to stderr.
 pub(crate) fn cmd_ignore(why: bool, as_json: bool) -> CmdResult {
-    let ctx = find_root()?;
-    let ws = workspace(&ctx)?;
-    let list = block_on(ws.ignore_list(&ctx.root_doc))?;
+    let session = Session::open()?;
+    let list = block_on(session.ws.ignore_list(&session.ctx.root_doc))?;
 
     if as_json {
         print!(

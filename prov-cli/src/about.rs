@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use prov::{StdFs, Workspace, block_on};
 
-use crate::session::{Ctx, find_root, find_root_quiet_at, workspace};
+use crate::session::{Ctx, Session, find_root_quiet_at};
 use crate::{AnyError, CmdResult};
 
 /// Build the [`AboutContext`](prov::AboutContext) for this workspace — the root's name and its
@@ -42,21 +42,25 @@ pub(crate) fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
 /// to be worth honoring — but it says so, because the page it just wrote will
 /// not be maintained.
 pub(crate) fn cmd_about(check: bool, print: bool) -> CmdResult {
-    let ctx = find_root()?;
-    let ws = workspace(&ctx)?;
-    let about_ctx = about_context(&ctx)?;
+    let session = Session::open()?;
+    let about_ctx = about_context(&session.ctx)?;
 
     if print {
         print!(
             "{}",
-            prov::about::generate(&ctx.config, ws.relations(), &about_ctx)?
+            prov::about::generate(&session.ctx.config, session.ws.relations(), &about_ctx)?
         );
         return Ok(ExitCode::SUCCESS);
     }
 
     if check {
-        let Some(diff) = block_on(ws.about_diff(&ctx.root_doc, &ctx.config, &about_ctx))? else {
-            eprintln!("{} is current", diff_path_display(&ctx, None));
+        let Some(diff) = block_on(session.ws.about_diff(
+            &session.ctx.root_doc,
+            &session.ctx.config,
+            &about_ctx,
+        ))?
+        else {
+            eprintln!("{} is current", diff_path_display(&session.ctx, None));
             return Ok(ExitCode::SUCCESS);
         };
         match &diff.actual {
@@ -67,13 +71,17 @@ pub(crate) fn cmd_about(check: bool, print: bool) -> CmdResult {
         return Ok(ExitCode::FAILURE);
     }
 
-    if !prov::about::enabled(&ctx.config) {
+    if !prov::about::enabled(&session.ctx.config) {
         eprintln!(
             "note: `about` is off for this workspace, so nothing will keep this \
              page current — turn it on with `prov config about structure`"
         );
     }
-    let path = block_on(ws.write_about(&ctx.root_doc, &ctx.config, &about_ctx))?;
+    let path = block_on(session.ws.write_about(
+        &session.ctx.root_doc,
+        &session.ctx.config,
+        &about_ctx,
+    ))?;
     eprintln!("wrote {}", path.display());
     println!("{}", path.display());
     Ok(ExitCode::SUCCESS)
@@ -99,15 +107,18 @@ fn diff_path_display(ctx: &Ctx, path: Option<&Path>) -> String {
 /// change that succeeded must not be reported as failed because a derived file
 /// could not be refreshed.
 pub(crate) fn refresh_about(root_dir: &Path) -> Result<(), AnyError> {
-    let ctx = find_root_quiet_at(root_dir)?;
-    let ws = workspace(&ctx)?;
-    if prov::about::enabled(&ctx.config) {
-        let about_ctx = about_context(&ctx)?;
+    let session = Session::over(find_root_quiet_at(root_dir)?)?;
+    if prov::about::enabled(&session.ctx.config) {
+        let about_ctx = about_context(&session.ctx)?;
         // Write only when the page would actually change. Most config writes
         // move an axis the page does not mention, and a derived file that is
         // rewritten with identical bytes is a sync transport's problem for no
         // reader's benefit.
-        match block_on(ws.about_diff(&ctx.root_doc, &ctx.config, &about_ctx)) {
+        match block_on(session.ws.about_diff(
+            &session.ctx.root_doc,
+            &session.ctx.config,
+            &about_ctx,
+        )) {
             Ok(None) => return Ok(()),
             Ok(Some(_)) => {}
             Err(e) => {
@@ -115,7 +126,11 @@ pub(crate) fn refresh_about(root_dir: &Path) -> Result<(), AnyError> {
                 return Ok(());
             }
         }
-        match block_on(ws.write_about(&ctx.root_doc, &ctx.config, &about_ctx)) {
+        match block_on(session.ws.write_about(
+            &session.ctx.root_doc,
+            &session.ctx.config,
+            &about_ctx,
+        )) {
             Ok(path) => eprintln!("regenerated {}", path.display()),
             Err(e) => eprintln!("prov: could not regenerate about.md ({e}); run `prov about`"),
         }
@@ -124,7 +139,7 @@ pub(crate) fn refresh_about(root_dir: &Path) -> Result<(), AnyError> {
     // `structure` → `off`: the page and its pointer go. Safe to delete outright
     // and deliberately *not* routed to the recycle bin — the page is derived, so
     // there is nothing to recover that regenerating would not reproduce.
-    match block_on(ws.remove_about(&ctx.root_doc)) {
+    match block_on(session.ws.remove_about(&session.ctx.root_doc)) {
         Ok(Some(path)) => eprintln!("removed {} (about is off)", path.display()),
         Ok(None) => {}
         Err(e) => eprintln!("prov: could not remove about.md ({e})"),

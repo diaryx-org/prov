@@ -25,7 +25,7 @@ use crate::cli::{
     LinkStyleArg, MetaFormat, ReferenceArg, WrapperArg, config_languages, embed_labels,
     sidecar_name,
 };
-use crate::session::{Ctx, ensure_registry, persist, workspace};
+use crate::session::{Ctx, Session};
 use crate::{AnyError, CmdResult};
 
 /// The body-grammar root extensions `init` will not overwrite (every content
@@ -1039,24 +1039,20 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
     let do_adopt = adopt_mode.is_some() && !loose_docs.is_empty();
     let do_attach = attach_others && !loose_others.is_empty();
     if do_adopt || do_attach {
-        let mut ctx = Ctx {
+        let mut session = Session::mutating(Ctx {
             root_dir: dir.clone(),
             root_doc: PathBuf::from(&root_name),
             registry: None,
             node: Some(config_rel.clone()),
             config: ws_config.clone(),
-        };
-        let mints = ctx.config.mints_on_mutation();
-        if mints {
-            ensure_registry(&mut ctx)?;
-        }
-        let mut ws = workspace(&ctx)?;
+        })?;
         // `mirror` needs a combined-document root; if the interview chose a
         // separated root, fall back to flat rather than abort a written workspace.
         let strategy = match adopt_mode.filter(|_| do_adopt) {
-            Some(AdoptArg::Mirror) => match block_on(ws.plan_mirror(&ctx.root_doc)) {
+            Some(AdoptArg::Mirror) => match block_on(session.ws.plan_mirror(&session.ctx.root_doc))
+            {
                 Ok(plan) => {
-                    let outcome = block_on(ws.apply_plan(&plan))?;
+                    let outcome = block_on(session.ws.apply_plan(&plan))?;
                     for (doc, why) in &outcome.skipped {
                         eprintln!("prov: could not adopt {}: {why}", doc.display());
                     }
@@ -1077,7 +1073,7 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         if let Some(AdoptArg::Flat) = strategy {
             let mut adopted = 0usize;
             for doc in &loose_docs {
-                match block_on(ws.adopt(doc, &ctx.root_doc)) {
+                match block_on(session.ws.adopt(doc, &session.ctx.root_doc)) {
                     Ok(()) => adopted += 1,
                     Err(e) => eprintln!("prov: could not adopt {}: {e}", doc.display()),
                 }
@@ -1090,7 +1086,7 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         if do_attach {
             let mut attached = 0usize;
             for payload in &loose_others {
-                match block_on(ws.attach(payload, &ctx.root_doc)) {
+                match block_on(session.ws.attach(payload, &session.ctx.root_doc)) {
                     Ok(_) => attached += 1,
                     Err(e) => eprintln!("prov: could not attach {}: {e}", payload.display()),
                 }
@@ -1099,7 +1095,7 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
                 "\nattached {attached} non-document file(s) under {root_name}"
             ));
         }
-        persist(&ctx, &mut ws)?;
+        session.commit()?;
     }
 
     // The guided intake walk: descend the tree directory by directory, picking
@@ -1118,30 +1114,25 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
             &mut attachments,
         )?;
         if !plan.is_empty() || !attachments.is_empty() {
-            let mut ctx = Ctx {
+            let mut session = Session::mutating(Ctx {
                 root_dir: dir.clone(),
                 root_doc: PathBuf::from(&root_name),
                 registry: None,
                 node: Some(config_rel.clone()),
                 config: ws_config.clone(),
-            };
-            let mints = ctx.config.mints_on_mutation();
-            if mints {
-                ensure_registry(&mut ctx)?;
-            }
-            let mut ws = workspace(&ctx)?;
-            let outcome = block_on(ws.apply_plan(&plan))?;
+            })?;
+            let outcome = block_on(session.ws.apply_plan(&plan))?;
             for (doc, why) in &outcome.skipped {
                 eprintln!("prov: could not link {}: {why}", doc.display());
             }
             let mut attached = 0usize;
             for (payload, parent) in &attachments {
-                match block_on(ws.attach(payload, parent)) {
+                match block_on(session.ws.attach(payload, parent)) {
                     Ok(_) => attached += 1,
                     Err(e) => eprintln!("prov: could not attach {}: {e}", payload.display()),
                 }
             }
-            persist(&ctx, &mut ws)?;
+            session.commit()?;
             adopt_note = format!(
                 "\nlinked {} document(s), synthesized {} folder index(es), attached {attached} file(s)",
                 outcome.adopted.len(),
@@ -1166,8 +1157,9 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
             node: Some(config_rel.clone()),
             config: ws_config.clone(),
         };
-        match workspace(&ctx).and_then(|ws| {
-            let about_ctx = about_context(&ctx)?;
+        match Session::over(ctx).and_then(|session| {
+            let (ctx, ws) = (&session.ctx, &session.ws);
+            let about_ctx = about_context(ctx)?;
             Ok(block_on(ws.write_about(
                 &ctx.root_doc,
                 &ctx.config,

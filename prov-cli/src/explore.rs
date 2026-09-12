@@ -11,13 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use prov::{
-    Document, FileIndex, Id, IdIndex, Minter, PeerResolver, StdFs, Target, Value, Workspace,
-    block_on, link,
-};
+use prov::{Document, Id, IdIndex, PeerResolver, StdFs, Target, Value, block_on, link};
 
 use crate::peer::{self, describe_peer};
-use crate::session::{Ctx, find_root, find_root_quiet_at, load, workspace, ws_rel};
+use crate::session::{Ctx, Session, find_root, find_root_quiet_at, load, ws_rel};
 use crate::term::{edit_file, page_text};
 use crate::tree::trust;
 use crate::{AnyError, CmdResult};
@@ -57,8 +54,7 @@ enum ExploreAction {
 /// and kept for the session — the title index and the backlink map are the
 /// expensive halves, and re-crossing a boundary should not pay for them twice.
 struct ExploreWs {
-    ctx: Ctx,
-    ws: Workspace<StdFs, Minter, FileIndex>,
+    session: Session,
     /// The document title lookup and the backlink map, both scoped to what this
     /// workspace reaches from its own root document.
     titles: prov::TitleIndex,
@@ -72,7 +68,8 @@ impl ExploreWs {
     /// reachability-scoped indexes a screen reads. `name` is what the reference
     /// that led here called it — for the origin, what it calls itself.
     fn open(ctx: Ctx, name: &str) -> Result<Self, AnyError> {
-        let ws = workspace(&ctx)?;
+        let session = Session::over(ctx)?;
+        let (ctx, ws) = (&session.ctx, &session.ws);
         let root = ctx.root_doc.clone();
         // Both bounded/lazy, so cheap even at the root of a large repo — and
         // computed once per workspace rather than once per screen.
@@ -84,8 +81,7 @@ impl ExploreWs {
             name.to_string()
         };
         Ok(Self {
-            ctx,
-            ws,
+            session,
             titles,
             backlinks,
             label,
@@ -124,7 +120,7 @@ pub(crate) fn cmd_explore(file: Option<&Path>, unverified: bool) -> CmdResult {
     // to the same-named file in the wrong archive.
     let mut history: Vec<(PathBuf, PathBuf)> = Vec::new();
     loop {
-        let full = open[&here].ctx.root_dir.join(&current);
+        let full = open[&here].session.ctx.root_dir.join(&current);
         let (text, doc) = match load(&full) {
             Ok(v) => v,
             Err(e) => {
@@ -209,7 +205,7 @@ pub(crate) fn cmd_explore(file: Option<&Path>, unverified: bool) -> CmdResult {
                 // The peer's own registry answers where the id lives. A miss is
                 // not a broken link: registration is a publish-time contract, and
                 // the document may simply not be published yet.
-                match open[&key].ws.index().resolve(&id) {
+                match open[&key].session.ws.index().resolve(&id) {
                     Some(path) => {
                         history.push((here.clone(), current.clone()));
                         here = key;
@@ -260,7 +256,7 @@ fn explore_screen(
     // document is answered against the same map, and a map edited between
     // screens is picked up on the next one.
     let peers = peer::PeerMap::load();
-    for relation in state.ws.relations().relations() {
+    for relation in state.session.ws.relations().relations() {
         let Some(value) = doc.meta.get(&relation.name) else {
             continue;
         };
@@ -268,11 +264,12 @@ fn explore_screen(
             let parsed = link::Link::parse(&raw);
             let (label, hint, action) =
                 match state
+                    .session
                     .ws
                     .resolve_link_with(current, &parsed, Some(&state.titles))
                 {
                     Target::Path(p) => {
-                        let t = doc_title(&state.ctx, &p);
+                        let t = doc_title(&state.session.ctx, &p);
                         forward_targets.insert(p.clone());
                         (
                             format!("{}: {t}  ({})", relation.name, p.display()),
