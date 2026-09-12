@@ -17,7 +17,7 @@
 //! its anchor — an index is what records hang *under*, not one of them — and
 //! it is what keeps a `Tasks` index from opening as `status: open`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use prov_graph::error::Result;
@@ -25,7 +25,7 @@ use prov_graph::fs::ReadStorage;
 use prov_graph::graph::{NodeKind, Target, TreeOptions};
 use prov_graph::index::IdIndex;
 use prov_graph::link::{self, Link};
-use prov_graph::meta::Mapping;
+use prov_graph::meta::{Mapping, Value};
 use prov_graph::title::{self, TitleIndex};
 
 use crate::config::{FieldSpec, WorkspaceConfig};
@@ -234,6 +234,160 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     }
 }
 
+/// One document on the way up from a parent to the root, with the names a
+/// title anchor could match it by — its `title`, and its file stem, the two
+/// spellings the title index registers a document under.
+struct Rung {
+    path: PathBuf,
+    names: Vec<String>,
+}
+
+impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
+    /// The declaration of each field that will govern a document about to be
+    /// made as a spanning child of `parent` — the answer
+    /// [`FieldScopes::spec_for_child`] gives, reached by climbing rather than
+    /// scanning.
+    ///
+    /// [`field_scopes`](Self::field_scopes) places every anchor and collects
+    /// every subtree, which is the right shape for `check` — it holds every
+    /// document and asks about each — and the wrong one for `new`, which holds
+    /// one parent and asks once: a title anchor costs a scan of the whole
+    /// workspace to place, and the subtree walks cost the rest of it. But the
+    /// child is in exactly the scopes whose anchor is `parent` or one of its
+    /// ancestors, and those are the documents on the way up the spanning
+    /// inverse from `parent` — a read per level of depth, whatever the
+    /// workspace's size. The deepest anchor on the way up is the smallest
+    /// containing scope, so it governs, as `governing` decides; a field with
+    /// no anchor on the way up falls back to its unscoped declaration, if it
+    /// has one. A workspace whose declarations are all unscoped climbs nothing.
+    ///
+    /// The one answer that differs: a title anchor that several documents
+    /// carry. The scan sees the ambiguity and lets the declaration govern
+    /// nothing; the climb sees only the ancestor carrying the name, and lets it
+    /// govern. `check` reports the ambiguity either way.
+    pub async fn field_specs_for_child<'c>(
+        &self,
+        root_doc: &Path,
+        config: &'c WorkspaceConfig,
+        parent: &Path,
+    ) -> Result<BTreeMap<String, &'c FieldSpec>> {
+        let scoped = config
+            .fields
+            .values()
+            .flatten()
+            .any(|spec| spec.under.is_some());
+        let lineage = if scoped {
+            self.lineage(parent).await?
+        } else {
+            Vec::new()
+        };
+        let root_doc = link::normalize(root_doc);
+        let mut out = BTreeMap::new();
+        for (field, declarations) in &config.fields {
+            // The nearest anchor wins: walk the rungs from the parent up, and the
+            // first declaration anchored at one is the deepest scope the child
+            // is in.
+            let scoped = lineage.iter().find_map(|rung| {
+                declarations
+                    .iter()
+                    .find(|spec| self.anchored_at(&root_doc, spec, rung))
+            });
+            let governing = scoped.or_else(|| declarations.iter().find(|d| d.under.is_none()));
+            if let Some(spec) = governing {
+                out.insert(field.clone(), spec);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The starting values a document made under `parent` opens with — each
+    /// field's governing declaration's `default`, in field order.
+    /// [`FieldScopes::defaults_for_child`] by way of
+    /// [`field_specs_for_child`](Self::field_specs_for_child).
+    pub async fn defaults_for_child(
+        &self,
+        root_doc: &Path,
+        config: &WorkspaceConfig,
+        parent: &Path,
+    ) -> Result<Mapping> {
+        let mut out = Mapping::new();
+        for (field, spec) in self.field_specs_for_child(root_doc, config, parent).await? {
+            if let Some(default) = &spec.default {
+                out.insert(field, default.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether `spec`'s anchor names the document at `rung`: by path or `id:`
+    /// through the ordinary link resolution, by title against the names the
+    /// rung carries. An unscoped declaration is anchored nowhere.
+    fn anchored_at(&self, root_doc: &Path, spec: &FieldSpec, rung: &Rung) -> bool {
+        let Some(under) = &spec.under else {
+            return false;
+        };
+        let link = Link::parse(under);
+        if link.is_external() || link.is_same_document() {
+            return false;
+        }
+        let addressed = link.addressed_target();
+        if link.id_ref().is_none() && title::is_alias_shaped(addressed) {
+            return rung.names.iter().any(|name| name == addressed);
+        }
+        self.resolve_link_with(root_doc, &link, None) == Target::Path(rung.path.clone())
+    }
+
+    /// `from` and its ancestors up the spanning inverse, nearest first — the
+    /// documents whose scope a child of `from` would be in. Stops at the
+    /// document nothing contains, at a cycle, or at an ancestor that cannot be
+    /// read; a first target that is not a document in this workspace ends the
+    /// climb the same way. The spanning relation is where the config puts it;
+    /// a workspace without one has no containment to climb.
+    async fn lineage(&self, from: &Path) -> Result<Vec<Rung>> {
+        let relations = self.relations();
+        let inverse = relations
+            .spanning_relation()
+            .and_then(|spanning| relations.relations().iter().find(|r| r.name == spanning))
+            .and_then(|r| r.inverse.clone());
+        let mut rungs = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut current = link::normalize(from);
+        while seen.insert(current.clone()) {
+            let Ok((_, doc)) = self.load(&current).await else {
+                break;
+            };
+            let mut names = Vec::new();
+            if let Some(stem) = current.file_stem().and_then(|s| s.to_str()) {
+                names.push(stem.to_string());
+            }
+            if let Some(title) = doc.meta.get("title").and_then(Value::as_str) {
+                names.push(title.to_string());
+            }
+            let up = inverse.as_deref().and_then(|inverse| {
+                let raw = doc
+                    .meta
+                    .get(inverse)
+                    .map(Value::link_strings)?
+                    .into_iter()
+                    .next()?;
+                match self.resolve_link(&current, &Link::parse(&raw)) {
+                    Target::Path(p) => Some(p),
+                    _ => None,
+                }
+            });
+            rungs.push(Rung {
+                path: current.clone(),
+                names,
+            });
+            match up {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        Ok(rungs)
+    }
+}
+
 /// Every readable document in a subtree, the anchor excluded by the caller.
 fn collect(node: &prov_graph::graph::Node, out: &mut BTreeSet<PathBuf>) {
     if matches!(node.kind, NodeKind::Doc) {
@@ -250,7 +404,6 @@ mod tests {
     use crate::config::OpenClosed;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
-    use prov_graph::meta::Value;
     use prov_testkit::write;
 
     /// A docs workspace with a tasks corner and a proposals corner, and a
@@ -357,6 +510,75 @@ mod tests {
             Some(&Value::String("draft".into()))
         );
         assert_eq!(opening("index.md").get("status"), None);
+    }
+
+    /// The climb answers what a child opens with exactly as the scan does —
+    /// under an index, anywhere below it, and nowhere — and reads only the
+    /// way up: a workspace whose `Tasks` index is unreadable to the scan
+    /// (a sibling subtree that cannot be walked) does not stop a child of
+    /// `Proposals` from opening as a draft.
+    #[test]
+    fn a_child_opens_the_same_by_climbing_as_by_scanning() {
+        let dir = workspace("climb");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let config = block_on(ws.effective_config(Path::new("index.md"))).unwrap();
+        let scopes = block_on(ws.field_scopes_of(Path::new("index.md"), &config)).unwrap();
+        for parent in [
+            "docs/tasks/tasks.md",
+            "docs/tasks/sub/index.md",
+            "docs/tasks/fix.md",
+            "docs/proposals/proposals.md",
+            "docs/proposals/idea.md",
+            "readme.md",
+            "index.md",
+        ] {
+            let scanned = scopes.defaults_for_child(&config, Path::new(parent));
+            let climbed =
+                block_on(ws.defaults_for_child(Path::new("index.md"), &config, Path::new(parent)))
+                    .unwrap();
+            assert_eq!(climbed, scanned, "under {parent}");
+        }
+
+        // A subtree the scan cannot place — `Tasks` renamed away from what the
+        // root's `contents` names — leaves the climb from `Proposals` untouched.
+        std::fs::rename(dir.join("docs/tasks"), dir.join("docs/was-tasks")).unwrap();
+        let climbed = block_on(ws.defaults_for_child(
+            Path::new("index.md"),
+            &config,
+            Path::new("docs/proposals/proposals.md"),
+        ))
+        .unwrap();
+        assert_eq!(climbed.get("status"), Some(&Value::String("draft".into())));
+    }
+
+    /// Nested scopes: the nearest anchor on the way up governs, an anchor by
+    /// path or by file stem is matched as the scan matches it, and a field
+    /// with no anchor on the way up falls back to its unscoped declaration.
+    #[test]
+    fn the_climb_takes_the_nearest_anchor_by_title_stem_or_path() {
+        let dir = workspace("climb-nested");
+        write(
+            &dir,
+            "prov.yaml",
+            "title: prov config\nfields:\n  status:\n    - under: '[[Tasks]]'\n      default: open\n    - under: '[[Sub]]'\n      default: urgent\n    - under: '[[Nowhere]]'\n      default: never\n    - default: none\n  by_stem:\n    - under: '[[tasks]]'\n      default: stem\n  by_path:\n    - under: /docs/proposals/proposals.md\n      default: path\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let config = block_on(ws.effective_config(Path::new("index.md"))).unwrap();
+        let opening = |parent: &str| {
+            block_on(ws.defaults_for_child(Path::new("index.md"), &config, Path::new(parent)))
+                .unwrap()
+        };
+        let s = |v: &str| Some(Value::String(v.into()));
+        let deep = opening("docs/tasks/sub/index.md");
+        assert_eq!(deep.get("status").cloned(), s("urgent"));
+        assert_eq!(deep.get("by_stem").cloned(), s("stem"));
+        assert_eq!(deep.get("by_path"), None);
+        let fix = opening("docs/tasks/tasks.md");
+        assert_eq!(fix.get("status").cloned(), s("open"));
+        let idea = opening("docs/proposals/proposals.md");
+        assert_eq!(idea.get("status").cloned(), s("none"));
+        assert_eq!(idea.get("by_path").cloned(), s("path"));
+        assert_eq!(opening("readme.md").get("status").cloned(), s("none"));
     }
 
     #[test]

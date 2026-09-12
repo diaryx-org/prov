@@ -359,7 +359,7 @@ fn find_root_quiet_at(dir: &Path) -> Result<Ctx, AnyError> {
             config: d.config,
         }),
         prov::Discovery::Ambiguous { dir, candidates } => Err(format!(
-            "ambiguous workspace root in {}: {} (rename one, or add part_of)",
+            "ambiguous workspace root in {}: {} (rename one, add part_of, or declare the workspace with a prov.yaml beside its root)",
             dir.display(),
             candidates.join(", ")
         )
@@ -3013,6 +3013,10 @@ fn parse_sets(set: &[String]) -> Result<Vec<(String, Value)>, AnyError> {
 /// Only the document `new` names gets these. The index nodes a route with
 /// `-p` synthesizes on the way are made by the library's route walk, and a
 /// `status: open` meant for a task is not meant for the month index above it.
+///
+/// Which declaration governs is found by climbing from `parent` to the root,
+/// not by resolving every scope over the whole tree: `new` adds one document
+/// under one parent, and should read as much of the workspace as that takes.
 fn opening_fields(
     ctx: &Ctx,
     ws: &Workspace<StdFs, Minter, FileIndex>,
@@ -3023,8 +3027,7 @@ fn opening_fields(
     if !ctx.config.created.is_empty() {
         fields.insert(ctx.config.created.clone(), Value::String(now_rfc3339()));
     }
-    let scopes = block_on(ws.field_scopes_of(&ctx.root_doc, &ctx.config))?;
-    for (name, value) in scopes.defaults_for_child(&ctx.config, parent) {
+    for (name, value) in block_on(ws.defaults_for_child(&ctx.root_doc, &ctx.config, parent))? {
         fields.insert(name, value);
     }
     for (key, value) in sets {
