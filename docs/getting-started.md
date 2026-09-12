@@ -760,7 +760,10 @@ prov is young. Things a beginner will hit:
   `check --fix` do respect the style.)
 - **The root must be unambiguous.** If a directory has two documents with
   metadata and no `part_of`, prov can't tell which is the root and reports
-  an ambiguity. Keep a single root per workspace (name it `index.md`).
+  an ambiguity. Keep a single root per workspace (name it `index.md`), or
+  declare the workspace with a `prov.yaml` beside its root — a directory
+  below a declared workspace is never taken for a root of its own on the
+  strength of two parentless documents.
 - **One vocabulary for now.** The CLI uses the built-in diaryx relation set
   (`contents`/`part_of`/`links`/…). Custom vocabularies exist in the library but
   aren't yet exposed as a CLI flag.

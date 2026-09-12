@@ -58,7 +58,8 @@ pub enum Discovery {
     /// A single unambiguous root was found.
     Found(Discovered),
     /// A directory held two or more root candidates and no `index`/`readme` to
-    /// break the tie — prov will not guess which is the root. Carries the
+    /// break the tie, and no ancestor holds a workspace node that would make
+    /// the tie moot — prov will not guess which is the root. Carries the
     /// directory and the candidate filenames so a caller can name them.
     Ambiguous {
         /// The directory that held the competing candidates.
@@ -88,11 +89,23 @@ fn stem_is(name: &Path, want: &str) -> bool {
 /// winner is the root; a walk that reaches the filesystem top with none is
 /// [`Discovery::NotFound`].
 ///
+/// An ambiguity is final only when nothing above it is declared. Two
+/// parentless documents in a subdirectory are a guess that failed — usually
+/// two children that forgot their `part_of` — and a **workspace node** in an
+/// ancestor directory is a workspace stated outright, which outranks a
+/// failed guess below it: the walk keeps climbing past the tie, and roots at
+/// the first ancestor that holds a node and a root. A node-less ancestor is
+/// only another guess, and does not settle a tie beneath it; when the climb
+/// ends with none the nearest ambiguity is the answer, as before.
+///
 /// `FS: Clone` because the effective config is read through a throwaway probe
 /// [`Workspace`] rooted at the found directory (its `registry_path`/`config_path`
 /// resolve the pointer relations) — the same machinery every command uses, so
 /// discovery and operation agree on where the registry and config live.
 pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Discovery> {
+    // The nearest tie the climb passed through — reported if nothing declared
+    // settles it from above.
+    let mut ambiguous: Option<Discovery> = None;
     for dir in from.ancestors() {
         let Ok(entries) = fs.read_dir(dir).await else {
             continue;
@@ -117,9 +130,16 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         // variants have failed, the same is true of a valid `readme`. Large,
         // flat workspaces therefore open one conventional root document rather
         // than every prose file in the directory on every cold start.
+        // A root found by convention settles a tie below it only when this
+        // directory also holds a node; a bare conventional root is a guess of
+        // the same kind as the tie, and the tie was nearer.
+        let settles_below = ambiguous.is_none() || located.node.is_some();
         for preferred in ["index", "readme"] {
             for path in shaped.iter().filter(|path| stem_is(path, preferred)) {
                 if root_candidate_name(fs, path).await.is_some() {
+                    if !settles_below {
+                        return Ok(ambiguous.expect("a tie was recorded"));
+                    }
                     let root_doc = path.file_name().expect("candidate has a filename");
                     let discovered =
                         build(fs, dir.to_path_buf(), PathBuf::from(root_doc), located).await?;
@@ -139,20 +159,26 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
         }
         match choose_root(&candidates) {
             Some(root_doc) => {
+                if !settles_below {
+                    return Ok(ambiguous.expect("a tie was recorded"));
+                }
                 let discovered =
                     build(fs, dir.to_path_buf(), PathBuf::from(root_doc), located).await?;
                 return Ok(Discovery::Found(discovered));
             }
             None if candidates.len() > 1 => {
-                return Ok(Discovery::Ambiguous {
-                    dir: dir.to_path_buf(),
-                    candidates,
-                });
+                if ambiguous.is_none() {
+                    ambiguous = Some(Discovery::Ambiguous {
+                        dir: dir.to_path_buf(),
+                        candidates,
+                    });
+                }
+                continue;
             }
             None => continue,
         }
     }
-    Ok(Discovery::NotFound)
+    Ok(ambiguous.unwrap_or(Discovery::NotFound))
 }
 
 /// The filename when `path` is a readable root candidate, otherwise nothing.
@@ -412,6 +438,43 @@ mod tests {
         match block_on(discover(&StdFs, &root)).unwrap() {
             Discovery::Ambiguous { candidates, .. } => assert_eq!(candidates.len(), 2),
             other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_node_above_a_tie_settles_it_and_a_bare_root_above_does_not() {
+        // Two parentless documents in `docs/` — children that forgot their
+        // `part_of`, the shape `check` reports — under a root that is only a
+        // guess: the tie is the nearer guess and stands.
+        let root = tmp("tie-below-root");
+        std::fs::write(root.join("README.md"), "---\ntitle: Home\n---\n").unwrap();
+        std::fs::create_dir_all(root.join("docs/deeper")).unwrap();
+        std::fs::write(root.join("docs/one.md"), "---\ntitle: One\n---\n").unwrap();
+        std::fs::write(root.join("docs/two.md"), "---\ntitle: Two\n---\n").unwrap();
+        match block_on(discover(&StdFs, &root.join("docs/deeper"))).unwrap() {
+            Discovery::Ambiguous { dir, .. } => assert_eq!(dir, root.join("docs")),
+            other => panic!("expected the tie to stand, got {other:?}"),
+        }
+
+        // The same tree with the workspace declared — a node beside the root,
+        // naming nothing — roots at the declaration; the tie was a failed guess
+        // inside a workspace that is not guessed at.
+        std::fs::create_dir_all(root.join(".config")).unwrap();
+        std::fs::write(root.join(".config/prov.yaml"), "title: prov config\n").unwrap();
+        match block_on(discover(&StdFs, &root.join("docs/deeper"))).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.root_dir, root);
+                assert_eq!(d.root_doc, Path::new("README.md"));
+                assert_eq!(d.node.node, Some(PathBuf::from(".config/prov.yaml")));
+            }
+            other => panic!("expected the node's workspace, got {other:?}"),
+        }
+
+        // Asked *in* the tied directory the answer is the same: the tie is not
+        // where the walk starts, it is what the walk passes through.
+        match block_on(discover(&StdFs, &root.join("docs"))).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_dir, root),
+            other => panic!("expected the node's workspace, got {other:?}"),
         }
     }
 
