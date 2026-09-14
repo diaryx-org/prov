@@ -260,7 +260,9 @@ dependencies = [
 
 [[package]]
 name = "fig-schema"
-version = "0.2.1"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a35f21dad45b4318ee9850ddc6d89ff9043971c8e4ec934e11988885a02b3a6"
 dependencies = [
  "fig",
 ]
