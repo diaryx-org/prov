@@ -28,6 +28,12 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.13.0 — 2026-09-14
+
 ### Breaking
 
 - **deps** — move to fig 4 ([`944d22e`](https://github.com/diaryx-org/prov/commit/944d22ee44685719d36d88fbc350d2290db4d103))
@@ -58,7 +64,6 @@ are parsed before the workspace is opened.
 - prov now requires `fig = "4"` and a fig-schema built on
 it. A consumer still pinned to fig 3.x resolves two copies of fig, and its
 
-<!-- git-cliff:end -->
 
 ## v0.12.0 — 2026-09-11
 
