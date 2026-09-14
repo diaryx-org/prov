@@ -28,7 +28,35 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Breaking
+
+- **deps** — move to fig 4 ([`944d22e`](https://github.com/diaryx-org/prov/commit/944d22ee44685719d36d88fbc350d2290db4d103))
+
+### Fixed
+
+- **discovery** — a workspace node above an ambiguous directory settles it ([`e9bff1c`](https://github.com/diaryx-org/prov/commit/e9bff1c4af276d442317e22196c3ead3cbdc3fb8))
+
+### Changed
+
+- **new** — find a child's governing field declarations by climbing, not scanning ([`4ebb4d3`](https://github.com/diaryx-org/prov/commit/4ebb4d3aa35a2caa9acc80efaaec34ae2c210891))
+- **cli** — split main.rs into one module per concern ([`9ef69f3`](https://github.com/diaryx-org/prov/commit/9ef69f3fc7006410a86cdc6e236b534921bd35e2))
+- **cli** — dos_datetime joins the clock; doc links point where the code went ([`6fe6721`](https://github.com/diaryx-org/prov/commit/6fe6721f10286f9a5a934b46f88ac464a0b5037f))
+- **cli** — the four widest commands take an Args struct ([`4722078`](https://github.com/diaryx-org/prov/commit/4722078671956935925c3928b8d471d4c092a293))
+- **cli** — a Session is how a command opens the workspace ([`4607876`](https://github.com/diaryx-org/prov/commit/46078767f57bc9a8495b9bfee826adcdfddcdbbc))
+
+### Behavioural changes
+
+- `prov new --in` reads only the parent's ancestor chain to decide a new document's opening fields; a scoped declaration whose title anchor is ambiguous now applies its default under the ancestor carrying that title, where the scan-based resolution applied none.
+
+- a directory holding two or more unnamed root candidates below a directory holding a workspace node (`prov.yaml`, `config/prov.*`, `.config/prov.*`) now discovers that ancestor as the workspace, where it was `Discovery::Ambiguous` / "ambiguous workspace root".
+
+- `prov new --set <malformed>` outside a workspace now
+reports the malformed --set rather than the missing root, since the
+pairs
+are parsed before the workspace is opened.
+
+- prov now requires `fig = "4"` and a fig-schema built on
+it. A consumer still pinned to fig 3.x resolves two copies of fig, and its
 
 <!-- git-cliff:end -->
 
