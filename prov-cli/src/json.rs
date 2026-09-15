@@ -1,5 +1,5 @@
-//! JSON output for `check --json`, `ignore --json` and `views --json` — a value
-//! tree and a printer, hand-rolled.
+//! JSON output for `check --json`, `ignore --json`, `views --json` and
+//! `docs --json` — a value tree and a printer, hand-rolled.
 //!
 //! No serialization crate, for the reason the `similar` dependency note in
 //! `Cargo.toml` gives and `now_rfc3339` follows: this is a *presentation*
@@ -557,6 +557,22 @@ fn view_row(row: &Row) -> J {
     J::Obj(vec![
         ("path", p(&row.path)),
         ("title", opt(row.title().map(str::to_owned))),
+        ("meta", meta(&row.meta)),
+    ])
+}
+
+/// One document of the `docs --json` census: a view row with the document's
+/// id as a column.
+///
+/// The id is resolved by the caller, which has the index; this function only
+/// decides where it goes on the wire. `null` for a document without one, for
+/// the reason `title` is: a fixed set of keys, however the document is
+/// stored.
+pub fn doc_row(row: &Row, id: Option<String>) -> J {
+    J::Obj(vec![
+        ("path", p(&row.path)),
+        ("title", opt(row.title().map(str::to_owned))),
+        ("id", opt(id)),
         ("meta", meta(&row.meta)),
     ])
 }

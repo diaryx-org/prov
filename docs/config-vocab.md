@@ -352,6 +352,18 @@ document's whole metadata block, so a consumer that replaces its own per-file
 loop with a view still has what the loop was reading; `prov views --json` lists
 the declarations the same way.
 
+What every view narrows is the **census**: every document the spine reaches
+from the root, the root included, each once, in path order. `prov docs` prints
+it a line each, and `prov docs --json` prints it as the same rows a view
+returns, with one addition — the document's `id` lifted out as a column of its
+own, read from the document's `id` field where it carries one and from the
+registry otherwise, so the column reads the same under every `id_storage`. It
+declares nothing, so there is nothing to misspell: a consumer that wants to
+build its own table over the workspace — a query engine, a shell pipeline —
+starts here rather than by declaring a view that says "everything". Reached,
+not present: a file in a directory nothing links into is not a row, for the
+same reason `check` does not report it (`prov_views::documents`).
+
 ### Exports
 
 Everything above reads open by default — a view with no `under:` covers the

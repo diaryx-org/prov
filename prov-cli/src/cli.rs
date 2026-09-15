@@ -277,6 +277,30 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List every document the workspace reaches — the root included — one
+    /// per line, in path order.
+    ///
+    /// The census a view narrows: what `views` would select with no `under:`
+    /// and no `where:`, without declaring a view to ask. Reached, not present —
+    /// a file in a directory nothing links into is not listed, for the same
+    /// reason `check` does not report it. `--json` gives the same rows as
+    /// records, which is the surface for a query engine or a shell pipeline
+    /// that wants to build its own table over the workspace.
+    Docs {
+        /// Print to stdout as JSON instead of a line each: one array, one
+        /// object per document, each carrying its path, its title, its id, and
+        /// its **whole metadata block** — the same row a view returns, plus
+        /// the id as a column of its own. The id is the document's however the
+        /// workspace stores it (its own `id` field, or the registry), so a
+        /// consumer joining on it need not know which. `null` where a
+        /// document has none.
+        ///
+        /// A workspace that reaches nothing prints `[]`, so "no documents" and
+        /// "printed nothing" stay distinguishable. Nothing is written to
+        /// stderr in this mode.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the exports this workspace declares, or preview one.
     ///
     /// An export is a named, closed-by-default set of documents that may leave

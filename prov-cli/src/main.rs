@@ -107,6 +107,7 @@ fn main() -> ExitCode {
             session::resolve_target(&file).and_then(|f| doc::cmd_unset(&f, &key))
         }
         Command::Views { name, json } => views::cmd_views(name.as_deref(), json),
+        Command::Docs { json } => views::cmd_docs(json),
         Command::Exports { name } => views::cmd_exports(name.as_deref()),
         Command::Presets { dir, write } => views::cmd_presets(dir.as_deref(), write),
         Command::Tree {

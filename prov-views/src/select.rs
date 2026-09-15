@@ -112,6 +112,36 @@ pub async fn select<FS: ReadStorage, Ix: IdIndex>(
     select_with(graph, spec, root_doc, None).await
 }
 
+/// Every document the workspace reaches from `root_doc` — the root included —
+/// each once, with its metadata, in path order.
+///
+/// This is the census a view *narrows*: the same walk [`select`] makes for a
+/// view with no `under:` and no `where:`, offered without a [`ViewSpec`]
+/// because the question needs none. A consumer building its own index over a
+/// workspace — a query engine, a search table, a shell pipeline — wants the
+/// whole reached set with the metadata attached, and asking it to declare a
+/// view that says "everything" first would be ceremony for a lens with no
+/// glass in it.
+///
+/// Reached, not present: a file in a directory nothing links into is not a
+/// row, for the same reason `check` does not report it. The spine decides what
+/// the workspace contains; this lists it.
+pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
+    graph: &Graph<FS, Ix>,
+    root_doc: impl AsRef<Path>,
+) -> Result<Vec<Row>> {
+    let _scope = graph.read_scope();
+    let tree = graph
+        .tree_with(
+            root_doc.as_ref(),
+            TreeOptions {
+                ignore_missing: true,
+            },
+        )
+        .await?;
+    rows_of(graph, &tree, false).await
+}
+
 /// [`select`], with a title index for a nominal anchor (`under: '[[Daily]]'`).
 ///
 /// Without one, a title anchor is resolved through an index this function
@@ -166,8 +196,30 @@ pub async fn select_with<FS: ReadStorage, Ix: IdIndex>(
         });
     }
 
+    let mut rows = rows_of(graph, &tree, spec.under.is_some()).await?;
+    if let Some(condition) = &spec.filter {
+        rows.retain(|row| condition.matches(&row.meta));
+    }
+
+    Ok(Selection {
+        view: spec.name.clone(),
+        rows,
+    })
+}
+
+/// The readable documents of a walked spanning tree, each once, in path order,
+/// with their metadata read.
+///
+/// Shared by [`select_with`] and [`documents`] so that a view and the census it
+/// narrows cannot disagree about which files are documents. `skip_root` is
+/// [`collect`]'s: dropped for a scoped view, kept otherwise.
+async fn rows_of<FS: ReadStorage, Ix: IdIndex>(
+    graph: &Graph<FS, Ix>,
+    tree: &prov_graph::graph::Node,
+    skip_root: bool,
+) -> Result<Vec<Row>> {
     let mut scope: Vec<PathBuf> = Vec::new();
-    collect(&tree, spec.under.is_some(), &mut scope);
+    collect(tree, skip_root, &mut scope);
     // A spanning tree reaches each document once, so this only matters for a
     // workspace that has already broken the single-parent invariant — where a
     // view listing a document twice would be a second, confusing symptom of a
@@ -178,19 +230,12 @@ pub async fn select_with<FS: ReadStorage, Ix: IdIndex>(
     let mut rows = Vec::with_capacity(scope.len());
     for path in scope {
         let doc = graph.document(&path).await?;
-        let row = Row {
+        rows.push(Row {
             path,
             meta: doc.meta,
-        };
-        if spec.filter.as_ref().is_none_or(|c| c.matches(&row.meta)) {
-            rows.push(row);
-        }
+        });
     }
-
-    Ok(Selection {
-        view: spec.name.clone(),
-        rows,
-    })
+    Ok(rows)
 }
 
 /// Whether `link` addresses a document by name rather than by path or id — the

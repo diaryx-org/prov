@@ -1,17 +1,18 @@
 //! `views`, `exports`, `presets` — the declared shapes of a workspace, listed
-//! and run.
+//! and run — and `docs`, the census every one of them narrows.
 //!
-//! Each of these is a thing the workspace *says about itself* in its config:
-//! a view is a selection and grouping, an export is a view behind a gate, a
-//! preset is a bundle of config the workspace may adopt. The no-argument form
-//! of each lists what is declared, because the first question about any of
-//! them is whether the workspace agrees it exists — and a block that went
-//! unread over a misspelled key is invisible everywhere else by design.
+//! Each of the first three is a thing the workspace *says about itself* in its
+//! config: a view is a selection and grouping, an export is a view behind a
+//! gate, a preset is a bundle of config the workspace may adopt. The
+//! no-argument form of each lists what is declared, because the first question
+//! about any of them is whether the workspace agrees it exists — and a block
+//! that went unread over a misspelled key is invisible everywhere else by
+//! design. `docs` declares nothing and lists what they all select from.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use prov::{Format, Value, block_on, meta};
+use prov::{Format, IdIndex, Value, block_on, meta};
 
 use crate::CmdResult;
 use crate::about::refresh_about;
@@ -133,6 +134,49 @@ fn print_view_row(row: &prov::views::Row) {
         Some(title) => println!("  {} — {title}", row.path.display()),
         None => println!("  {}", row.path.display()),
     }
+}
+
+/// `prov docs` — every document the workspace reaches, one per line.
+///
+/// The text form is lines and nothing else — no header, no count — so it
+/// composes with `wc -l` and `grep` the way `links` does. The count a view
+/// prints exists to keep documents and rows apart, and here they are the same
+/// number.
+///
+/// `--json` is the row shape `views --json` uses, with the id lifted out of
+/// the metadata into a column of its own: the document's own `id` field where
+/// it carries one, the registry's answer otherwise, so the column reads the
+/// same under every `id_storage` and a consumer joining on it need not know
+/// which the workspace chose. Same precedence as a reified vocabulary term's.
+pub(crate) fn cmd_docs(as_json: bool) -> CmdResult {
+    let session = Session::open()?;
+    let rows = block_on(prov::views::documents(
+        session.ws.graph(),
+        &session.ctx.root_doc,
+    ))?;
+    if as_json {
+        let records = rows
+            .iter()
+            .map(|row| {
+                let id = row
+                    .meta
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| session.ws.index().id_for_path(&row.path).map(|id| id.0));
+                json::doc_row(row, id)
+            })
+            .collect();
+        print!("{}", json::J::Arr(records).render());
+        return Ok(ExitCode::SUCCESS);
+    }
+    for row in &rows {
+        match row.title() {
+            Some(title) => println!("{} — {title}", row.path.display()),
+            None => println!("{}", row.path.display()),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `prov exports [NAME]` — list the declared exports, or preview one's plan.

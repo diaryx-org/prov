@@ -257,6 +257,10 @@ More single-document readers:
 | `prov body FILE`       | everything *outside* the metadata block            |
 | `prov backlinks FILE`  | who links *to* this document, across the workspace |
 
+And the whole workspace at once: `prov docs` lists every document `tree`
+reaches, one per line in path order, and `prov docs --json` gives each with
+its metadata block and its id — the rows to point a query tool at.
+
 <!-- exec -->
 ```sh
 $ prov backlinks index.md
