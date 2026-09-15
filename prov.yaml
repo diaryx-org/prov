@@ -46,3 +46,5 @@ views:
     label: All work
     group: status
     where: { has: status }
+workspace_id: prov
+root: README.md

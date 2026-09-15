@@ -1,6 +1,6 @@
 ---
 title: How this workspace is organized
-generated_by: prov 0.11.1
+generated_by: prov 0.12.0
 ---
 
 # How this workspace is organized
@@ -138,6 +138,7 @@ through a key that names what it is, and none of them points back.
 | key in `README.md` | what it points at |
 | --- | --- |
 | `config` | this directory's settings — the file this page was generated from (`prov.yaml`) |
+| `registry` | the list of permanent ids (`registry.yaml`) |
 | `fields.status.vocabulary` | the permitted values of `status` under `Tasks` (`/vocab/task-statuses.yaml`) |
 | `fields.status.vocabulary` | the permitted values of `status` under `Proposals` (`/vocab/proposal-statuses.yaml`) |
 

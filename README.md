@@ -1,4 +1,5 @@
 ---
+part_of: id:org/kv2bv2m
 title: prov
 author: adammharris
 created: 2026-07-06
@@ -20,6 +21,8 @@ contents:
 - '[Author''s notes](/authors-notes.md)'
 config: prov.yaml
 about: about.md
+registry: registry.yaml
+id: 1ch2991
 ---
 
 # prov (Plaintext Records, Organized and Verifiable)
