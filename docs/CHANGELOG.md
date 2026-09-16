@@ -34,6 +34,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - **peers** — `prov::PeerFile` reads the device peer map from the library ([`5e050f0`](https://github.com/diaryx-org/prov/commit/5e050f0f860436d98a79e66ca9bcc91e45409b71))
 - **validate** — a finding carries its severity, and a relation site its item index ([`cd3b606`](https://github.com/diaryx-org/prov/commit/cd3b606d5dfaa4371aaa4ab71c005a1cdf34971e))
 - **relation** — the base vocabulary says replaces and derived_from ([`8f0d134`](https://github.com/diaryx-org/prov/commit/8f0d134121a5f3428349f2bbf24fe5ba1da529df))
+- **provenance** — a generated mapping records the act as how ([`7367e60`](https://github.com/diaryx-org/prov/commit/7367e608a4cb98043987ca7d917fcab3ada0a710))
 
 ### Behavioural changes
 
