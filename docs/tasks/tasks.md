@@ -9,6 +9,7 @@ contents:
 - '[A retitle censuses the whole workspace to find its inbound links](/docs/tasks/retitle-censuses-the-whole-workspace.md)'
 - '[A move rewrites a document''s body links but not its body images](/docs/tasks/rename-leaves-body-images-behind.md)'
 - '[A finding carries no severity, and a relation site no item index](/docs/tasks/findings-carry-no-severity-or-item-index.md)'
+- '[A `generated` pair says who and when, and not what was done](/docs/tasks/generated-records-no-activity.md)'
 ---
 
 # Tasks
