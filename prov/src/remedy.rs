@@ -598,7 +598,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ) -> Result<Vec<Remedy>> {
         let mut out = Vec::new();
         match site {
-            LinkSite::Relation(relation) => {
+            LinkSite::Relation {
+                field: relation, ..
+            } => {
                 for candidate in candidates {
                     let to = link::path_text(self.link_style(), doc, candidate);
                     out.push(Remedy::new(

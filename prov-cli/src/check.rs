@@ -48,6 +48,7 @@ pub(crate) fn cmd_check(args: CheckArgs) -> CmdResult {
         json: as_json,
         follow,
         unverified,
+        ignore_warnings,
     } = args;
     // A target may be an `id:` or `@`-route, resolved to a path before the
     // workspace is opened for checking.
@@ -107,13 +108,28 @@ path that is not in the workspace would report clean",
     }
     let findings = findings;
     if let Some(mode) = fix {
-        return cmd_check_fix(&mut session, &root, &findings, mode, only.as_deref());
+        return cmd_check_fix(
+            &mut session,
+            &root,
+            &findings,
+            mode,
+            only.as_deref(),
+            ignore_warnings,
+        );
     }
     // Clap has already refused `--follow` beside `--fix` and `--only`, so what
     // crosses the boundary is exactly the command above: the origin's own check,
     // run again in each workspace this one reaches.
     if let Some(depth) = follow {
-        return check_across(&session, &root, findings, as_json, depth, unverified);
+        return check_across(
+            &session,
+            &root,
+            findings,
+            as_json,
+            depth,
+            unverified,
+            ignore_warnings,
+        );
     }
     if as_json {
         print!(
@@ -137,7 +153,7 @@ path that is not in the workspace would report clean",
         if findings.is_empty() {
             eprintln!("ok: no findings{scope}");
         } else {
-            eprintln!("{} finding(s){scope}", findings.len());
+            eprintln!("{}{scope}", count_line(&findings));
         }
     }
     // Unchanged by `--json`: findings mean a non-zero exit, which is what lets
@@ -146,10 +162,36 @@ path that is not in the workspace would report clean",
     // status rather than letting it abort the pipe:
     //
     //     (prov check --json | complete).stdout | from json
-    if findings.is_empty() {
-        Ok(ExitCode::SUCCESS)
+    Ok(verdict(&findings, ignore_warnings))
+}
+
+/// The exit code a set of findings earns: any finding fails, or — under
+/// `--ignore-warnings` — any error does. A warning-only run under the flag is
+/// a pass that still printed its warnings; the flag narrows the verdict, never
+/// the report.
+fn verdict(findings: &[prov::Finding], ignore_warnings: bool) -> ExitCode {
+    let failing = findings
+        .iter()
+        .filter(|f| !ignore_warnings || f.severity() == prov::Severity::Error)
+        .count();
+    if failing == 0 {
+        ExitCode::SUCCESS
     } else {
-        Ok(ExitCode::FAILURE)
+        ExitCode::FAILURE
+    }
+}
+
+/// The count for the summary line — `3 finding(s)`, and how many of them are
+/// warnings when any are, so a reader can see at a glance whether
+/// `--ignore-warnings` would have passed.
+fn count_line(findings: &[prov::Finding]) -> String {
+    let warnings = findings
+        .iter()
+        .filter(|f| f.severity() == prov::Severity::Warning)
+        .count();
+    match warnings {
+        0 => format!("{} finding(s)", findings.len()),
+        w => format!("{} finding(s), {w} warning(s)", findings.len()),
     }
 }
 
@@ -178,6 +220,7 @@ fn check_across(
     as_json: bool,
     depth: usize,
     unverified: bool,
+    ignore_warnings: bool,
 ) -> CmdResult {
     let peers = peer::PeerMap::load();
     let federation = block_on(prov::descend(
@@ -222,7 +265,10 @@ fn check_across(
         });
     }
 
-    let total: usize = reports.iter().map(|r| r.findings.len()).sum();
+    let all: Vec<prov::Finding> = reports
+        .iter()
+        .flat_map(|r| r.findings.iter().cloned())
+        .collect();
     if as_json {
         print!(
             "{}",
@@ -258,17 +304,13 @@ fn check_across(
             eprintln!("not followed: {refusal}");
         }
         let across = format!(" across {} workspace(s)", reports.len());
-        if total == 0 {
+        if all.is_empty() {
             eprintln!("ok: no findings{across}");
         } else {
-            eprintln!("{total} finding(s){across}");
+            eprintln!("{}{across}", count_line(&all));
         }
     }
-    if total == 0 {
-        Ok(ExitCode::SUCCESS)
-    } else {
-        Ok(ExitCode::FAILURE)
-    }
+    Ok(verdict(&all, ignore_warnings))
 }
 
 /// One workspace's findings, and enough about the workspace to say whose they
@@ -437,6 +479,7 @@ fn cmd_check_fix(
     findings: &[prov::Finding],
     mode: FixModeArg,
     only: Option<&Path>,
+    ignore_warnings: bool,
 ) -> CmdResult {
     let mut applied = 0usize;
     let mut needs_attention = 0usize;
@@ -587,12 +630,14 @@ fn cmd_check_fix(
         diff.introduced.len(),
         diff.pre_existing.len()
     );
-    if diff.is_clean() {
-        return Ok(ExitCode::SUCCESS);
-    }
     // A repair that broke something is the one outcome a script must not miss.
     // Outstanding findings on their own are not this run's verdict, and keep the
-    // exit code they have always had.
-    eprintln!("a fix introduced the finding(s) above — run `prov check` and review");
-    Ok(ExitCode::FAILURE)
+    // exit code they have always had; `--ignore-warnings` narrows this verdict
+    // the way it narrows `check`'s, to what the fixes introduced that is an
+    // error.
+    let verdict = verdict(&diff.introduced, ignore_warnings);
+    if verdict == ExitCode::FAILURE {
+        eprintln!("a fix introduced the finding(s) above — run `prov check` and review");
+    }
+    Ok(verdict)
 }

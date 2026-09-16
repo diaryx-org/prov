@@ -1,4 +1,4 @@
-//! `prov stamp`, and `check`'s `--only` / `--json` flags.
+//! `prov stamp`, and `check`'s `--only` / `--json` / `--ignore-warnings` flags.
 //!
 //! The three exist for one situation: a document that changed **outside prov**.
 //! `check --fix` cannot settle it — its re-stamp is a judgment (so `--fix
@@ -363,4 +363,85 @@ fn stamp_all_leaves_a_shadowed_payload_untouched() {
         "a shadowed payload is not this workspace's to stamp"
     );
     ok(&dir, &["check"]);
+}
+
+/// A markdown workspace with an open `tags` vocabulary and one note whose tag
+/// is a near miss of a term — the warning `check` raises without anything
+/// being broken.
+fn workspace_with_a_near_miss(tag: &str) -> std::path::PathBuf {
+    let dir = sandbox(tag);
+    ok(&dir, &["init", "--yes"]);
+    std::fs::write(
+        dir.join("index.md"),
+        "---\ntitle: Root\nconfig: prov.yaml\nabout: about.md\ncontents:\n- /near.md\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("near.md"),
+        "---\ntitle: Near\npart_of: /index.md\ntags: todi\n---\n",
+    )
+    .unwrap();
+    let config = read(&dir, "prov.yaml");
+    std::fs::write(
+        dir.join("prov.yaml"),
+        format!("{config}fields:\n  tags:\n    values: open\n    vocabulary: vocab/tags.yaml\n"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("vocab")).unwrap();
+    std::fs::write(
+        dir.join("vocab/tags.yaml"),
+        "vocabulary:\n  field: tags\n  values: open\nterms:\n  todo: {}\n  idea: {}\n",
+    )
+    .unwrap();
+    // The config changed by hand, so the generated page is stale; regenerate
+    // it, or every check below carries an error that is not the point.
+    ok(&dir, &["about"]);
+    dir
+}
+
+#[test]
+fn ignore_warnings_passes_a_warning_and_still_reports_it() {
+    let dir = workspace_with_a_near_miss("ignore-warnings");
+
+    // Without the flag a warning is a finding like any other: reported,
+    // counted as one, and failing the verdict.
+    let (success, out, err) = run(&dir, &["check"]);
+    assert!(!success, "a warning fails `check`: {out}{err}");
+    assert!(out.contains("did you mean `todo`"), "{out:?}");
+    assert!(err.contains("1 finding(s), 1 warning(s)"), "{err:?}");
+
+    // With it, the report is the same and the verdict is not.
+    let (success, out, err) = run(&dir, &["check", "--ignore-warnings"]);
+    assert!(
+        success,
+        "a warning alone passes under --ignore-warnings: {err}"
+    );
+    assert!(
+        out.contains("did you mean `todo`"),
+        "still reported: {out:?}"
+    );
+    assert!(err.contains("1 finding(s), 1 warning(s)"), "{err:?}");
+
+    // `--json` says which is which, so a script can draw the same line.
+    let (_, out, _) = run(&dir, &["check", "--json"]);
+    assert!(out.contains("\"kind\": \"term_near_miss\""), "{out:?}");
+    assert!(out.contains("\"severity\": \"warning\""), "{out:?}");
+
+    // An error beside the warning fails the verdict, flag or no flag.
+    std::fs::write(
+        dir.join("index.md"),
+        "---\ntitle: Root\nconfig: prov.yaml\nabout: about.md\ncontents:\n- /near.md\n- /gone.md\n---\n",
+    )
+    .unwrap();
+    let (success, out, err) = run(&dir, &["check", "--ignore-warnings"]);
+    assert!(!success, "an error still fails: {out}{err}");
+    assert!(out.contains("broken contents[1] link: /gone.md"), "{out:?}");
+    assert!(err.contains("2 finding(s), 1 warning(s)"), "{err:?}");
+    let (_, out, _) = run(&dir, &["check", "--json"]);
+    assert!(out.contains("\"severity\": \"error\""), "{out:?}");
+    assert!(out.contains("\"site\": \"contents\""), "{out:?}");
+    assert!(
+        out.contains("\"index\": 1"),
+        "the item, not just the key: {out:?}"
+    );
 }

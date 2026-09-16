@@ -744,7 +744,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .filter(|e| {
                 e.source != path
                     && !(Some(e.source.as_path()) == parent
-                        && matches!(&e.site, LinkSite::Relation(r) if *r == spanning))
+                        && e.site.relation() == Some(spanning.as_str()))
             })
             .map(|e| match e.resolution {
                 Resolution::Id { id, .. } => Finding::DanglingId {
@@ -771,7 +771,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             danglers.push(Finding::BrokenLink {
                 doc: owner.to_path_buf(),
-                site: LinkSite::Relation("content".to_string()),
+                site: LinkSite::field("content"),
                 target,
             });
         }

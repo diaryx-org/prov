@@ -638,10 +638,29 @@ Note whose finding that is: the missing back-link is reported by the *parent*,
 but it is filed against the child, because the child is the file a repair
 rewrites.
 
+**Errors and warnings.** Every finding has a **severity**. An *error* is a
+claim the workspace makes that is not so — a link that resolves to nothing, a
+child its parent does not list, a checksum the bytes disagree with. A *warning*
+is drift from a claim it still keeps: a link that resolves only
+case-insensitively, a label that fell behind a retitle, a tag spelled unlike its
+neighbours in an open vocabulary. The count line says how many of each
+(`3 finding(s), 1 warning(s)`), and `--ignore-warnings` makes the exit code
+count only the errors — the warnings are still printed; only the verdict
+narrows. That is the flag for a CI gate that should fail on a broken link and
+not on advice.
+
+A finding about one item of a list says which: `broken contents[3] link:
+gone.md` is the fourth entry, counted from zero as the list is written, so a
+`contents` that names the same missing target twice is two findings a reader
+can tell apart.
+
 **For a script.** `--json` prints the same findings as a JSON array — each with
-a `kind` to branch on, the `subject` it is filed against, the human `message`,
-and that finding's own fields. A clean run prints `[]` rather than nothing, so
-"no findings" and "no output" stay distinguishable:
+a `kind` to branch on, its `severity` (`error` or `warning`), the `subject` it
+is filed against, the human `message`, and that finding's own fields. A link
+finding's `site` is the relation's name (or `body`), and `index` the item's
+position in it — an integer for a list, `null` for a scalar field or a body
+link. A clean run prints `[]` rather than nothing, so "no findings" and "no
+output" stay distinguishable:
 
 <!-- exec -->
 ```console
@@ -651,9 +670,10 @@ $ prov check --json
 
 Stderr stays empty in this mode — the count line is for a person, and the array
 already says how many it holds. The **exit code** does not change, though:
-findings still exit non-zero, which is what lets `check` stand as a CI gate. If
-your shell treats a non-zero exit as a failed pipeline (nushell does), capture
-the status rather than piping through it:
+findings still exit non-zero (errors only, under `--ignore-warnings`), which is
+what lets `check` stand as a CI gate. If your shell treats a non-zero exit as a
+failed pipeline (nushell does), capture the status rather than piping through
+it:
 
 ```nu
 # nushell: `prov check --json | from json` yields nothing when there are

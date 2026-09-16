@@ -382,7 +382,7 @@ pub(crate) enum Command {
     },
     /// Check workspace integrity from a root: broken links, case mismatches,
     /// duplicate containment, missing inverse links, dangling IDs. Exits 1 on
-    /// findings.
+    /// findings — or, with `--ignore-warnings`, on errors.
     Check(CheckArgs),
     /// Record that a document changed **outside prov** — restamp its content
     /// checksum, and stamp the workspace's `updated` field with the current
@@ -979,6 +979,14 @@ pub(crate) struct CheckArgs {
     /// evidence, it is evidence of the wrong archive.
     #[arg(long, requires = "follow")]
     pub(crate) unverified: bool,
+    /// Exit non-zero only on an **error** — a claim the workspace makes
+    /// that is not so — and not on a warning, which is drift from a claim
+    /// it still keeps: a link that resolves only case-insensitively, a
+    /// stale label on an id link, a near-miss spelling in an open
+    /// vocabulary. Warnings are still reported; only the verdict changes.
+    /// For a CI gate that should fail on a broken link and not on advice.
+    #[arg(long)]
+    pub(crate) ignore_warnings: bool,
 }
 
 /// The arguments of `prov new` — see [`Command::New`] for the command.

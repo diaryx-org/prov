@@ -26,16 +26,46 @@ use super::Target;
 /// exact site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkSite {
-    /// A frontmatter relation field, by name (e.g. `contents`, `links`).
-    Relation(String),
+    /// A frontmatter relation field, by name (e.g. `contents`, `links`) and,
+    /// where the field is a list, by the item's position in it.
+    ///
+    /// The index is what lets a consumer point at *the* item rather than the
+    /// key: a `contents` list that names the same missing target twice is two
+    /// findings, and without it nothing in either says which row is which.
+    /// `None` for a scalar field (`part_of`, `content`) — see
+    /// [`Edge::index`](crate::relation::Edge::index) for how a list is counted.
+    Relation { field: String, index: Option<usize> },
     /// A `[[…]]` wikilink in the body, at this byte span.
     Body(Range<usize>),
+}
+
+impl LinkSite {
+    /// A relation site for a scalar field — the form every field that is not
+    /// a list takes (`content`, `manifest`, `root`).
+    pub fn field(name: impl Into<String>) -> Self {
+        LinkSite::Relation {
+            field: name.into(),
+            index: None,
+        }
+    }
+
+    /// The relation field this site is in, if it is a frontmatter site.
+    pub fn relation(&self) -> Option<&str> {
+        match self {
+            LinkSite::Relation { field, .. } => Some(field),
+            LinkSite::Body(_) => None,
+        }
+    }
 }
 
 impl fmt::Display for LinkSite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LinkSite::Relation(name) => f.write_str(name),
+            LinkSite::Relation {
+                field,
+                index: Some(i),
+            } => write!(f, "{field}[{i}]"),
+            LinkSite::Relation { field, index: None } => f.write_str(field),
             LinkSite::Body(_) => f.write_str("body"),
         }
     }
@@ -535,7 +565,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
                 census.push(CensusEntry {
                     source: path.clone(),
-                    site: LinkSite::Relation(edge.relation),
+                    site: LinkSite::Relation {
+                        field: edge.relation,
+                        index: edge.index,
+                    },
                     label: link.label,
                     target_text: link.target,
                     resolution,
@@ -569,7 +602,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // file. Validated here (not a graph edge, so kept out of the census).
             if let Some(content) = doc.content_attr() {
                 let target = link::resolve(&path, content);
-                let site = LinkSite::Relation("content".to_string());
+                let site = LinkSite::field("content");
                 match self.exact_name(&target).await {
                     NameMatch::Exact => content_bodies.push(target),
                     NameMatch::CaseOnly(actual) => {
@@ -609,7 +642,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     structural.push(StructuralFact::ManifestConflict { doc: path.clone() });
                 }
                 let target = link::resolve(&path, manifest);
-                let site = LinkSite::Relation(crate::manifest::MANIFEST_KEY.to_string());
+                let site = LinkSite::field(crate::manifest::MANIFEST_KEY);
                 match self.exact_name(&target).await {
                     NameMatch::Exact => content_bodies.push(target),
                     NameMatch::CaseOnly(actual) => {
@@ -885,10 +918,8 @@ mod tests {
 
         // The frontmatter `contents` edge, resolving to the existing file.
         assert!(
-            census.iter().any(
-                |e| matches!(&e.site, LinkSite::Relation(r) if r == "contents")
-                    && matches!(&e.resolution, Resolution::Path(p) if p == &PathBuf::from("a.md"))
-            ),
+            census.iter().any(|e| e.site.relation() == Some("contents")
+                && matches!(&e.resolution, Resolution::Path(p) if p == &PathBuf::from("a.md"))),
             "{census:?}"
         );
         // The body wikilink to the same file — sited in the body, resolving.
@@ -986,13 +1017,14 @@ mod tests {
         let to_a = block_on(ws.backlinks_to("index.md", "a.md")).unwrap();
         assert_eq!(to_a.len(), 3, "{to_a:?}");
         assert!(
-            to_a.iter().any(|bl| bl.source == Path::new("index.md")
-                && matches!(&bl.site, LinkSite::Relation(r) if r == "contents")),
+            to_a.iter()
+                .any(|bl| bl.source == Path::new("index.md")
+                    && bl.site.relation() == Some("contents")),
             "{to_a:?}"
         );
         assert!(
-            to_a.iter().any(|bl| bl.source == Path::new("b.md")
-                && matches!(&bl.site, LinkSite::Relation(r) if r == "links")),
+            to_a.iter()
+                .any(|bl| bl.source == Path::new("b.md") && bl.site.relation() == Some("links")),
             "{to_a:?}"
         );
         assert!(

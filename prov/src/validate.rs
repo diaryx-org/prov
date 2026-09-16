@@ -161,6 +161,51 @@ impl From<StructuralFact> for Finding {
     }
 }
 
+/// How much a finding claims — whether the workspace has broken a promise, or
+/// has drifted from one it still keeps. [`Finding::severity`] is the judgement,
+/// made once here so that every consumer inherits it rather than keeping a
+/// list of kinds that happens to agree with the CLI's.
+///
+/// The line is drawn by what the workspace *says* about itself. A document
+/// that lists a child, links a target, records a checksum or declares a setting
+/// has made a claim, and a finding that the claim is not so is an
+/// [`Error`](Severity::Error). A finding where every claim still holds — the
+/// link resolves, just not on a case-sensitive disk; the id resolves, and its
+/// label is stale; the value is legal in an open vocabulary and spelled unlike
+/// its neighbours — is a [`Warning`](Severity::Warning): advice, or drift, and
+/// nothing a reader will be misled by.
+///
+/// Severity says nothing about whether a repair exists or how safe it is. That
+/// is the repair's own [`Warrant`](crate::remedy::Warrant): a warning may offer
+/// only a judgment call (`TermNearMiss`), and an error may offer a derived one
+/// (`MissingInverse`), so the two axes are kept apart on purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Something has drifted or is being advised against, and no claim the
+    /// workspace makes is false.
+    Warning,
+    /// A claim the workspace makes is not so: a link resolves to nothing, a
+    /// document is unreachable or unreadable, a checksum disagrees with the
+    /// bytes, a setting is not in effect.
+    Error,
+}
+
+impl Severity {
+    /// The stable lowercase name — `error`, `warning` — for a report.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+    }
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One integrity finding. `doc` is always the document that *declares* the
 /// problem (workspace-relative); `site` is where in it the offending link sits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -641,6 +686,61 @@ impl Finding {
         }
     }
 
+    /// Whether this finding reports a broken claim or a drift from a kept one —
+    /// see [`Severity`] for the line. Total: every variant answers, so a kind
+    /// added here is classified here, and not by default in a consumer's list.
+    pub fn severity(&self) -> Severity {
+        match self {
+            // Resolves, but only because this disk ignores case; the same
+            // workspace on a case-sensitive one has a broken link, and nothing
+            // is wrong here yet.
+            Finding::CaseMismatch { .. }
+            // The id is the reference and it resolves; the label is decoration
+            // that has fallen behind.
+            | Finding::StaleLabel { .. }
+            // Nothing is ignored that this build knows how to read; the
+            // resolution is to upgrade prov, not to edit the workspace.
+            | Finding::ConfigSpecAhead { .. }
+            // An open vocabulary admits the value; the nudge is toward a
+            // spelling already in use.
+            | Finding::TermNearMiss { .. }
+            // The old spelling still resolves and every verb reads through it.
+            | Finding::LegacyDeletionsPointer { .. }
+            // The hashes are still verified; what has gone is their upkeep, and
+            // what to do about it is a decision, not a repair.
+            | Finding::LegacyBodyHash { .. }
+            // An edit after a review is the ordinary course of events; the
+            // document is unconfirmed again, and says so.
+            | Finding::ConfirmationStale { .. } => Severity::Warning,
+            Finding::BrokenLink { .. }
+            | Finding::DuplicateContainment { .. }
+            | Finding::MissingInverse { .. }
+            | Finding::Unreadable { .. }
+            | Finding::MalformedId { .. }
+            | Finding::DanglingId { .. }
+            | Finding::AmbiguousAlias { .. }
+            | Finding::IdMismatch { .. }
+            | Finding::UnregisteredId { .. }
+            | Finding::UnstampedId { .. }
+            | Finding::Orphan { .. }
+            | Finding::MissingContainment { .. }
+            | Finding::FixityMismatch { .. }
+            | Finding::ConfigIssue { .. }
+            | Finding::ShadowedWorkspaceNode { .. }
+            | Finding::ConfigHomesDisagree { .. }
+            | Finding::NamedRootMissing { .. }
+            | Finding::NamedRootContained { .. }
+            | Finding::MalformedStore { .. }
+            | Finding::UnknownTerm { .. }
+            | Finding::AboutStale { .. }
+            | Finding::FieldScopeUnresolved { .. }
+            | Finding::ManifestConflict { .. }
+            | Finding::ManifestMalformed { .. }
+            | Finding::ManifestDrift { .. }
+            | Finding::ManifestMismatch { .. } => Severity::Error,
+        }
+    }
+
     /// A stable snake_case name for this finding's kind — the discriminant on
     /// its own, for a consumer that branches on the kind rather than reading the
     /// prose. Matches the variant name, so the two never have to be reconciled
@@ -1111,8 +1211,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // [`Finding::AboutStale`], which says the same thing and names the
             // repair; and a generic broken-link fix would invite the wrong one.
             if matches!(entry.resolution, Resolution::Broken)
-                && matches!(&entry.site, LinkSite::Relation(name)
-                    if Some(name.as_str()) == self.relations().about_relation())
+                && entry.site.relation().is_some()
+                && entry.site.relation() == self.relations().about_relation()
             {
                 continue;
             }
@@ -1759,7 +1859,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             {
                 findings.push(Finding::BrokenLink {
                     doc: manifest_doc,
-                    site: LinkSite::Relation(prov_graph::manifest::ROOT_KEY.to_string()),
+                    site: LinkSite::field(prov_graph::manifest::ROOT_KEY),
                     target: manifest.root.clone(),
                 });
                 continue;
@@ -2739,6 +2839,94 @@ mod tests {
             )),
             "{findings:?}"
         );
+    }
+
+    /// The item index is what tells two findings apart when a list names the
+    /// same missing target twice: the target text is the same, the relation
+    /// is the same, and without the position nothing in either says which
+    /// row is which. A scalar field has no position and says so.
+    #[test]
+    fn a_relation_site_carries_the_item_index_that_the_target_alone_cannot_recover() {
+        let dir = tempdir("site-index");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- a.md\n- gone.md\n- b.md\n- gone.md\n---\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        write(&dir, "b.md", "---\npart_of: nowhere.md\n---\n");
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let mut broken: Vec<(String, Option<usize>)> = findings
+            .iter()
+            .filter_map(|f| match f {
+                Finding::BrokenLink {
+                    target,
+                    site: LinkSite::Relation { field, index },
+                    ..
+                } if target == "gone.md" => Some((field.clone(), *index)),
+                _ => None,
+            })
+            .collect();
+        broken.sort();
+        assert_eq!(
+            broken,
+            vec![("contents".into(), Some(1)), ("contents".into(), Some(3))],
+            "{findings:?}"
+        );
+        // `b.md`'s parent is a scalar: the site names the field and no item.
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::BrokenLink {
+                    doc,
+                    site: LinkSite::Relation { field, index: None },
+                    target,
+                } if doc == &PathBuf::from("b.md") && field == "part_of" && target == "nowhere.md"
+            )),
+            "{findings:?}"
+        );
+        // And the human line says where, so a reader with twelve entries does
+        // not count them.
+        let lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "index.md: broken contents[3] link: gone.md"),
+            "{lines:?}"
+        );
+    }
+
+    /// Severity is the library's judgement, not a consumer's list: a broken
+    /// claim is an error, drift from a kept one is a warning, and the same
+    /// walk raises both.
+    #[test]
+    fn a_broken_link_is_an_error_and_a_case_mismatch_a_warning() {
+        let dir = tempdir("severity");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- gone.md\n- '[D](docs/design.md)'\n---\n",
+        );
+        write(&dir, "docs/DESIGN.md", "---\npart_of: ../index.md\n---\n");
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let of = |kind: &str| {
+            findings
+                .iter()
+                .find(|f| f.kind() == kind)
+                .unwrap_or_else(|| panic!("no {kind} in {findings:?}"))
+                .severity()
+        };
+        assert_eq!(of("broken_link"), Severity::Error);
+        assert_eq!(of("case_mismatch"), Severity::Warning);
+        assert!(
+            Severity::Warning < Severity::Error,
+            "orderable, warning first"
+        );
+        assert_eq!(Severity::Error.to_string(), "error");
     }
 
     #[test]

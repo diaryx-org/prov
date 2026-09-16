@@ -74,7 +74,7 @@ use std::time::SystemTime;
 use prov_graph::document::Document;
 use prov_graph::error::Result;
 use prov_graph::fs::ReadStorage;
-use prov_graph::graph::{CensusEntry, LinkSite, Target};
+use prov_graph::graph::{CensusEntry, Target};
 use prov_graph::index::IdIndex;
 use prov_graph::link::{self, Link};
 use prov_graph::memo::lock;
@@ -319,8 +319,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
         visited.insert(link::normalize(root));
         for entry in census {
-            if let LinkSite::Relation(relation) = &entry.site
-                && Some(relation.as_str()) == spanning
+            if entry.site.relation().is_some()
+                && entry.site.relation() == spanning
                 && let Some(target) = entry.resolution.resolved_path()
             {
                 visited.insert(target.clone());

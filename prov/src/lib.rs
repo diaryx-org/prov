@@ -248,6 +248,6 @@ pub use prov_views::ViewSpec;
 pub use provenance::{Actor, Confirmation, Confirmations, Generated, Tier};
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
-pub use validate::{CheckDiff, Finding};
+pub use validate::{CheckDiff, Finding, Severity};
 pub use vocabulary::{Term, Vocabulary};
 pub use workspace::{Ignore, IgnoreList, Reason, Settings, Workspace, WorkspaceBuilder};

@@ -113,6 +113,22 @@ pub fn link_strings(value: &fig::Value) -> Vec<String> {
     }
 }
 
+/// [`link_strings`] with each link's position in the sequence it was read
+/// from: `None` for a bare string, `Some(i)` for the `i`th item of a sequence,
+/// counting items that are not strings — they yield no link, but they hold a
+/// place, and the position reported is the one in the list as written.
+pub fn indexed_link_strings(value: &fig::Value) -> Vec<(Option<usize>, String)> {
+    match value {
+        fig::Value::Str(s) => vec![(None, s.clone())],
+        fig::Value::Seq(seq) => seq
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.as_str().map(|s| (Some(i), s.to_owned())))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Parse a metadata document in `format` into a [`Value`], serde-free.
 ///
 /// An empty document is [`Value::Null`].

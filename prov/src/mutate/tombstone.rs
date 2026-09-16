@@ -931,7 +931,7 @@ mod tests {
         assert!(!dir.join("b.md").exists());
         assert!(
             danglers.iter().any(|f| matches!(f,
-                Finding::BrokenLink { doc, site: LinkSite::Relation(r), target }
+                Finding::BrokenLink { doc, site: LinkSite::Relation { field: r, .. }, target }
                     if doc == &PathBuf::from("b.yaml") && r == "content" && target == "b.md")),
             "{danglers:?}"
         );

@@ -70,12 +70,18 @@ impl Relation {
     }
 }
 
-/// A resolved link found in a document's metadata: which relation declared it
-/// and the raw (unresolved) target string.
+/// A resolved link found in a document's metadata: which relation declared it,
+/// where in that relation's value it sits, and the raw (unresolved) target
+/// string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
     /// The relation (frontmatter key) that declared this link.
     pub relation: String,
+    /// The item's position in the relation's list, counting every item as
+    /// written — a non-string item that yields no edge still takes its place —
+    /// so the number is the one an editor reading the same list would use.
+    /// `None` when the relation is a bare scalar.
+    pub index: Option<usize>,
     /// The raw target string exactly as written in the metadata.
     pub target: String,
 }
@@ -346,9 +352,10 @@ impl RelationSet {
             let Some(value) = meta.get(relation.name.as_str()) else {
                 continue;
             };
-            for target in crate::meta::link_strings(value) {
+            for (index, target) in crate::meta::indexed_link_strings(value) {
                 edges.push(Edge {
                     relation: relation.name.clone(),
+                    index,
                     target,
                 });
             }
@@ -385,12 +392,35 @@ mod tests {
         assert_eq!(edges.len(), 3);
         assert!(edges.contains(&Edge {
             relation: "contents".into(),
+            index: Some(0),
             target: "a.md".into()
         }));
         assert!(edges.contains(&Edge {
+            relation: "contents".into(),
+            index: Some(1),
+            target: "b.md".into()
+        }));
+        assert!(edges.contains(&Edge {
             relation: "part_of".into(),
+            index: None,
             target: "../root.md".into()
         }));
+    }
+
+    #[test]
+    fn an_edge_keeps_the_position_of_the_item_as_written() {
+        // The middle item is a mapping, not a link: it yields no edge, and the
+        // item after it is still the third — the index an editor sees.
+        let d = doc("---\ncontents:\n- a.md\n- {not: a link}\n- b.md\n---\nbody\n");
+        let set = RelationSet::diaryx();
+        let edges = set.edges(&fig::Value::from(&d.meta));
+        assert_eq!(
+            edges
+                .iter()
+                .map(|e| (e.index, e.target.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(Some(0), "a.md"), (Some(2), "b.md")]
+        );
     }
 
     #[test]

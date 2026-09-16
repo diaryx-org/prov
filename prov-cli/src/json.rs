@@ -16,9 +16,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use prov::Finding;
 use prov::meta::Value;
 use prov::views::{Grain, Row, RowSet, Selection, ViewSpec};
+use prov::{Finding, LinkSite};
 
 /// A JSON value. Objects keep insertion order so the output is diffable.
 ///
@@ -187,23 +187,45 @@ pub fn workspace_report(workspace: &str, declares: &str, root: &Path, findings: 
     ])
 }
 
+/// A link site as two keys: `site`, the relation field's name or `body`, and
+/// `index`, the item's position when the field is a list — an integer, or
+/// `null` for a scalar field and for a body site. Two keys rather than the
+/// `contents[2]` the human line prints, so a consumer reads a number rather
+/// than parsing one out of a name.
+fn site(site: &LinkSite, fields: &mut Vec<(&'static str, J)>) {
+    let (name, index) = match site {
+        LinkSite::Relation { field, index } => (field.clone(), *index),
+        LinkSite::Body(_) => ("body".to_string(), None),
+    };
+    fields.push(("site", J::Str(name)));
+    fields.push((
+        "index",
+        match index {
+            Some(i) => J::Int(i as i64),
+            None => J::Null,
+        },
+    ));
+}
+
 /// One finding as a JSON object.
 ///
-/// Every object carries the same three keys first — `kind` to branch on,
-/// `subject` (see [`Finding::subject`]) to group by, and `message`, the exact
-/// line the human-readable output prints — followed by that variant's own
-/// fields. A consumer that only understands the first three understands every
-/// finding, including ones added after it was written.
+/// Every object carries the same four keys first — `kind` to branch on,
+/// `severity` (see [`Finding::severity`]) to sort by, `subject` (see
+/// [`Finding::subject`]) to group by, and `message`, the exact line the
+/// human-readable output prints — followed by that variant's own fields. A
+/// consumer that only understands the first four understands every finding,
+/// including ones added after it was written.
 pub fn finding(f: &Finding) -> J {
     let mut fields: Vec<(&'static str, J)> = vec![
         ("kind", s(f.kind())),
+        ("severity", s(f.severity().as_str())),
         ("subject", p(f.subject())),
         ("message", J::Str(f.to_string())),
     ];
     match f {
         Finding::BrokenLink { doc, site, target } | Finding::MalformedId { doc, site, target } => {
             fields.push(("doc", p(doc)));
-            fields.push(("site", J::Str(site.to_string())));
+            self::site(site, &mut fields);
             fields.push(("target", s(target)));
         }
         Finding::CaseMismatch {
@@ -213,7 +235,7 @@ pub fn finding(f: &Finding) -> J {
             actual,
         } => {
             fields.push(("doc", p(doc)));
-            fields.push(("site", J::Str(site.to_string())));
+            self::site(site, &mut fields);
             fields.push(("target", s(target)));
             fields.push(("actual", s(actual)));
         }
@@ -241,7 +263,7 @@ pub fn finding(f: &Finding) -> J {
             tombstoned,
         } => {
             fields.push(("doc", p(doc)));
-            fields.push(("site", J::Str(site.to_string())));
+            self::site(site, &mut fields);
             fields.push(("id", J::Str(id.to_string())));
             fields.push(("tombstoned", J::Bool(*tombstoned)));
         }
@@ -252,7 +274,7 @@ pub fn finding(f: &Finding) -> J {
             candidates,
         } => {
             fields.push(("doc", p(doc)));
-            fields.push(("site", J::Str(site.to_string())));
+            self::site(site, &mut fields);
             fields.push(("name", s(name)));
             fields.push(("candidates", paths(candidates)));
         }
@@ -264,7 +286,7 @@ pub fn finding(f: &Finding) -> J {
             actual,
         } => {
             fields.push(("doc", p(doc)));
-            fields.push(("site", J::Str(site.to_string())));
+            self::site(site, &mut fields);
             fields.push(("target", s(target)));
             fields.push(("expected", s(expected)));
             fields.push(("actual", s(actual)));

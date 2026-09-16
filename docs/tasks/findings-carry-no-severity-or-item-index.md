@@ -4,11 +4,35 @@ description: An editor drawing prov's findings beside the rows they concern has 
 author: adammharris
 created: 2026-09-16
 updated: 2026-09-16
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A finding carries no severity, and a relation site no item index
+
+**Status.** Done, 2026-09-16, in `feat(validate): a finding carries its
+severity, and a relation site its item index`. `Finding::severity()` is total
+over the variants and returns `Error` or `Warning`; the line is the one written
+on `Severity` — an error is a claim the workspace makes that is not so, a
+warning is drift from a claim it still keeps — and the seven warnings are the
+list provui had been keeping (`case_mismatch`, `stale_label`,
+`term_near_miss`, `confirmation_stale`, `config_spec_ahead`,
+`legacy_body_hash`, `legacy_deletions_pointer`). `LinkSite::Relation` is now
+`{ field, index: Option<usize> }`, the index counted over the list as written
+(a non-string item holds its place), `None` for a scalar; the human line reads
+`contents[3]` and `--json` carries `site` and `index` as two keys.
+
+Two things the done-when below asked for were not done as written. The CLI's
+exit code did *not* already make the distinction — `check` failed on any
+finding, and `getting-started.md` promised it would — so rather than change
+the gate it has a flag: `check --ignore-warnings` narrows the verdict to
+errors and prints the warnings regardless, and the count line says how many
+of each. And `--fix mechanical` stays expressed in terms of the repair's
+`Warrant`, not the finding's severity: a warning may offer only a judgment
+(`TermNearMiss`) and an error a derived repair (`MissingInverse`), so the two
+are different axes and `Severity`'s docs say so. provui drops its
+`WARNING_KINDS` and its target-matching once it moves to the release that
+carries this.
 
 **Where this starts.** provui draws `check`'s findings in the editor — a body
 site as a highlight in the prose, a metadata site as a marker on the row
