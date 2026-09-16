@@ -19,6 +19,8 @@ contents:
 - '[Proposals](/docs/proposals/proposals.md)'
 - '[Tasks](/docs/tasks/tasks.md)'
 - '[Author''s notes](/authors-notes.md)'
+- '[prov on diaryx.org](/www/index.md)'
+- '[Audiences](/vocab/audiences.md)'
 config: prov.yaml
 about: about.md
 registry: registry.yaml

@@ -16,6 +16,10 @@ references:
   label: false
 created: created
 fields:
+  audience:
+    values: closed
+    vocabulary: '[Audiences](/vocab/audiences.md)'
+    reify: true
   created:
     type: datetime
   updated:
@@ -48,3 +52,9 @@ views:
     where: { has: status }
 workspace_id: prov
 root: README.md
+exports:
+  www:
+    label: prov on diaryx.org
+    gate:
+      field: audience
+      value: public

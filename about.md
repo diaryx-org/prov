@@ -1,6 +1,6 @@
 ---
 title: How this workspace is organized
-generated_by: prov 0.12.0
+generated_by: prov 0.13.0
 ---
 
 # How this workspace is organized
@@ -94,18 +94,23 @@ point anywhere; follow them for meaning, never to discover what is here.
 
 ## Fields with fixed vocabularies
 
-One field does not hold free text. Its permitted values are listed in
+Two fields do not hold free text. Their permitted values are listed in
 files of their own. Where the table names a place, the rule holds for the
 files under that index and no others; a file elsewhere may hold anything
 in the field, or nothing.
 
 | field | where | rule | values listed in |
 | --- | --- | --- | --- |
+| `audience` | everywhere | **closed** — every value must appear in the list | `/vocab/audiences.md` |
 | `status` | under `Tasks` | **closed** — every value must appear in the list | `/vocab/task-statuses.yaml` |
 | `status` | under `Proposals` | **closed** — every value must appear in the list | `/vocab/proposal-statuses.yaml` |
 
 A closed field is worth taking seriously: a value not on the list is an
 error rather than a new category.
+
+Where the list is itself a document in this directory, each permitted
+value is a page of its own: follow the list's entries to read what a value
+means and to see what refers to it.
 
 ## Other ways through the files
 
