@@ -28,7 +28,23 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **cli** — `prov docs` — the census every view narrows, as lines or `--json` ([`99f4d46`](https://github.com/diaryx-org/prov/commit/99f4d46d0176f85d3274366f6cabd51fc864d2e5))
+- **peers** — `prov::PeerFile` reads the device peer map from the library ([`5e050f0`](https://github.com/diaryx-org/prov/commit/5e050f0f860436d98a79e66ca9bcc91e45409b71))
+- **validate** — a finding carries its severity, and a relation site its item index ([`cd3b606`](https://github.com/diaryx-org/prov/commit/cd3b606d5dfaa4371aaa4ab71c005a1cdf34971e))
+
+### Behavioural changes
+
+- `LinkSite::Relation(String)` is now a struct variant
+  `LinkSite::Relation { field, index }`, and `prov_graph::relation::Edge` has
+  a new `index` field; code that matched or constructed either needs editing.
+  A broken-link message for a list item now reads `broken contents[3] link: …`
+  where it read `broken contents link: …`.
+
+- `prov check --json` objects gain a `severity` key, and
+  link findings gain an `index` key beside `site`; the count line on stderr
+  reads `3 finding(s), 1 warning(s)` when any finding is a warning.
 
 <!-- git-cliff:end -->
 
