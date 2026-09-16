@@ -68,6 +68,7 @@ pub mod intake;
 pub mod manifest;
 pub mod mutate;
 pub mod node;
+pub mod peers;
 pub mod preset;
 pub mod provenance;
 pub mod remedy;
@@ -196,6 +197,7 @@ pub use crossing::{
     Boundary, Crossing, Descent, Federation, Peer, Reached, Refusal, Trust, descend, open_peer,
 };
 pub use discovery::{Discovered, Discovery, discover};
+pub use peers::PeerFile;
 /// Declarative views over the workspace — the `views:` config axis, the
 /// traversal that selects the documents one covers, and the pure grouping over
 /// what it selected.

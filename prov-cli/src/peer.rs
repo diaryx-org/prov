@@ -31,9 +31,10 @@
 //! ```
 //!
 //! Split on the first whitespace run, because a workspace name can never contain
-//! whitespace ([`prov::is_valid_workspace_id`]) and a path very well may. Parsed
-//! by hand, without a config crate, matching the rest of the CLI's local-state
-//! handling.
+//! whitespace ([`prov::is_valid_workspace_id`]) and a path very well may. The
+//! parser is the library's, [`prov::PeerFile`], so a host other than this
+//! binary — a site builder following a mount, say — reads the map exactly as
+//! `prov` does. What stays here is *which* file ([`path`]) and the writing.
 //!
 //! ## What losing it costs
 //!
@@ -116,32 +117,14 @@ pub(crate) fn path() -> Option<&'static Path> {
 
 /// Every peer this device knows, name → workspace root.
 ///
-/// An unreadable file, a missing file and an empty one are the same answer —
-/// no peers — and none of them is a problem. A malformed line is skipped rather
-/// than failing the load: one bad line should not cost the other peers.
+/// The parsing is the library's ([`prov::PeerFile`]), so this binary and any
+/// other host following the same map read it the same way; what is this
+/// binary's is only *which* file, per [`path`].
 pub(crate) fn load() -> BTreeMap<String, PathBuf> {
-    let mut peers = BTreeMap::new();
-    let Some(file) = path() else { return peers };
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return peers;
-    };
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // A name can never contain whitespace, a path often does — so the split
-        // is at the first run of it, and everything after is the path.
-        let Some((name, root)) = line.split_once(char::is_whitespace) else {
-            continue;
-        };
-        let root = root.trim();
-        if !prov::is_valid_workspace_id(name) || root.is_empty() {
-            continue;
-        }
-        peers.insert(name.to_string(), PathBuf::from(root));
+    match path() {
+        Some(file) => prov::PeerFile::load(file).peers().clone(),
+        None => BTreeMap::new(),
     }
-    peers
 }
 
 /// This device's peer file, as the port the library declares.
@@ -156,13 +139,18 @@ pub(crate) fn load() -> BTreeMap<String, PathBuf> {
 /// reads the file once rather than a dozen times — and, more to the point, so
 /// every one of those references is answered against the same map.
 pub(crate) struct PeerMap {
-    peers: BTreeMap<String, PathBuf>,
+    file: prov::PeerFile,
 }
 
 impl PeerMap {
     /// Read this device's map.
     pub(crate) fn load() -> Self {
-        Self { peers: load() }
+        Self {
+            file: match path() {
+                Some(file) => prov::PeerFile::load(file),
+                None => prov::PeerFile::default(),
+            },
+        }
     }
 
     /// Resolve a whole `id:<workspace>/<id>` reference to the file it names.
@@ -234,26 +222,10 @@ pub(crate) enum DocumentError {
 }
 
 impl PeerResolver for PeerMap {
-    /// The peer file, checked against the archive it points at.
-    ///
-    /// A name that could never be a `workspace_id` is not looked up at all: no
-    /// workspace can declare it, so an entry matching it was hand-written wrong
-    /// and confirming it would be impossible by construction.
+    /// The peer file, checked against the archive it points at — the
+    /// library's [`prov::PeerFile`] answer, unchanged.
     fn locate(&self, workspace: &str) -> PeerLookup {
-        if !prov::is_valid_workspace_id(workspace) {
-            return PeerLookup::Unknown;
-        }
-        let Some(root) = self.peers.get(workspace) else {
-            return PeerLookup::Unknown;
-        };
-        let location = PeerLocation::Path(root.clone());
-        // A peer that is not a workspace *yet* is a reasonable thing to have
-        // written down (`peer add` records one deliberately), so failing to
-        // open it is a state, not an error.
-        match find_root_quiet_at(root) {
-            Ok(ctx) => PeerLookup::confirm(workspace, location, &ctx.config.workspace_id),
-            Err(_) => PeerLookup::unreadable(location),
-        }
+        self.file.locate(workspace)
     }
 
     fn locate_document(&self, workspace: &str, id: &Id) -> Option<PeerLocation> {

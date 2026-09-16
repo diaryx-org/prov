@@ -195,6 +195,12 @@ registry. diaryx resolves the same reference through its published ARK
 permalinks instead. Neither map is prov's business, and nothing depends on
 either: a foreign reference is carried whether or not it resolves.
 
+The *reading* of that file is shipped once, though: `prov::PeerFile` parses it
+and answers as a `PeerResolver`, so a host that wants to follow the same map the
+CLI does — a site builder mounting a peer, say — loads it rather than parsing it
+again. The location stays a device fact and the writing stays the CLI's; the
+library only reads what `prov peer add` wrote.
+
 **Following one, when asked.** Given a map, prov ships the second step once
 instead of each host writing it: `prov tree --follow[=DEPTH]` hangs the peer's
 own subtree where the leaf was, `prov check --follow[=DEPTH]` runs each
@@ -465,5 +471,10 @@ re-relativize, restyle and `check --fix` all preserve locators.
   with the workspace it is in and where), `check --follow[=DEPTH]` (a report per
   workspace; under `--json` an array of `{workspace, declares, root, findings}`
   objects), `--unverified` on both, and `explore`'s crossing step.
+- ✅ **The peer file, readable by any host** (§ "What prov does, and where it
+  stops"): `prov::PeerFile` (`peers.rs`) — the CLI's device-local map parsed and
+  confirmed in the library, `default_path` following the CLI's precedence, and a
+  `PeerResolver` over it. prov-cli's `PeerMap` delegates to it and keeps the
+  writing.
 - ⏳ **Staged:** `StaleLabel` finding + label refresh in `validate.rs`.
   Body-prose reference restyle during the `mutate` port.
