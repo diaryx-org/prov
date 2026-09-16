@@ -2,9 +2,13 @@
 title: Snapshots v2 — a pre-sync safety net
 author: adammharris
 created: 2026-07-31
-updated: 2026-09-02
+updated: 2026-09-16
 status: rejected
 part_of: '[Proposals](/docs/proposals/proposals.md)'
+replaces:
+- '[Snapshots — a pre-sync safety net](/docs/proposals/history/proposal-snapshots-v1.md)'
+replaced_by:
+- '[History — a versioned safety net for the workspace](/docs/proposals/history/proposal-history-v3.md)'
 ---
 # Snapshots v2 — a pre-sync safety net
 

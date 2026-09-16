@@ -2,9 +2,11 @@
 title: provenance v2 — who confirmed this, and against what
 author: adammharris
 created: 2026-09-11
-updated: 2026-09-11
+updated: 2026-09-16
 status: implemented
 part_of: '[Proposals](/docs/proposals/proposals.md)'
+replaces:
+- '[provenance and attestation](/docs/proposals/provenance/proposal-provenance-v1.md)'
 ---
 # Provenance v2 — who wrote this, who confirmed it, and against what
 

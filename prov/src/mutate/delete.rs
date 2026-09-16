@@ -462,6 +462,45 @@ mod tests {
     }
 
     #[test]
+    fn delete_of_a_replaced_document_leaves_the_successors_claim_broken() {
+        // `replaces` is a keeper's claim, not a spanning edge: v2 says it
+        // supersedes v1, and v1 says so back. Deleting v1 removes the parent's
+        // entry — that is containment, which the delete owns — and leaves v2's
+        // `replaces` pointing at nothing, reported by the delete and again by
+        // `check`, exactly as a broken `links` would be. Nothing rewrites it:
+        // a claim of succession has no new target to send it to.
+        let dir = tempdir("delete-replaced");
+        write(&dir, "index.md", "---\ncontents:\n- v1.md\n- v2.md\n---\n");
+        write(
+            &dir,
+            "v1.md",
+            "---\npart_of: index.md\nreplaced_by:\n- v2.md\n---\n",
+        );
+        write(
+            &dir,
+            "v2.md",
+            "---\npart_of: index.md\nreplaces:\n- v1.md\n---\n",
+        );
+
+        let mut w = ws(&dir);
+        let danglers = block_on(w.delete(Path::new("v1.md"), false)).unwrap();
+        let is_broken_claim = |f: &Finding| {
+            matches!(f,
+                Finding::BrokenLink { doc, site: LinkSite::Relation { field, .. }, target }
+                    if doc == &PathBuf::from("v2.md") && field == "replaces" && target == "v1.md")
+        };
+        assert_eq!(danglers.len(), 1, "{danglers:?}");
+        assert!(is_broken_claim(&danglers[0]), "{danglers:?}");
+        assert!(
+            read(&dir, "v2.md").contains("- v1.md"),
+            "the claim is left as written"
+        );
+
+        let findings = block_on(w.check("index.md")).unwrap();
+        assert!(findings.iter().any(is_broken_claim), "{findings:?}");
+    }
+
+    #[test]
     fn delete_refuses_a_separated_body_and_names_its_node() {
         // The pair, handled in both directions. Deleting the *node* takes its
         // body with it (proven elsewhere in this file); naming the *body* is

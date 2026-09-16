@@ -2336,7 +2336,7 @@ mod tests {
         assert_eq!(default_set.registry_relation(), Some("registry"));
 
         // The scenario extension is *for*: one new pair, nothing else said. The
-        // four content relations and the spine must survive it — under the old
+        // eight content relations and the spine must survive it — under the old
         // replace semantics this collapsed the vocabulary to `front_page`/
         // `fronts` and left the workspace with no tree.
         let config = WorkspaceConfig {
@@ -2347,7 +2347,16 @@ mod tests {
             ..WorkspaceConfig::default()
         };
         let set = config.relation_set();
-        for preset in ["contents", "part_of", "links", "link_of"] {
+        for preset in [
+            "contents",
+            "part_of",
+            "links",
+            "link_of",
+            "replaces",
+            "replaced_by",
+            "derived_from",
+            "derivations",
+        ] {
             assert!(built(&set, preset).is_some(), "{preset} was dropped");
         }
         assert!(built(&set, "front_page").is_some());
@@ -2451,12 +2460,21 @@ mod tests {
     #[test]
     fn wholesale_replacement_is_declaring_a_vocabulary_and_turning_the_preset_off() {
         // The old all-or-nothing shape, still expressible — but now spelled out,
-        // so nobody arrives at it by declaring one relation and losing four.
+        // so nobody arrives at it by declaring one relation and losing eight.
         let mut defs = BTreeMap::from([
             ("part".to_string(), rel(Cardinality::Many, "whole")),
             ("whole".to_string(), rel(Cardinality::One, "part")),
         ]);
-        for preset in ["contents", "part_of", "links", "link_of"] {
+        for preset in [
+            "contents",
+            "part_of",
+            "links",
+            "link_of",
+            "replaces",
+            "replaced_by",
+            "derived_from",
+            "derivations",
+        ] {
             defs.insert(
                 preset.to_string(),
                 RelationDef {

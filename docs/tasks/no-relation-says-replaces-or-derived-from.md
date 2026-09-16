@@ -4,11 +4,24 @@ description: The default vocabulary has containment and cross-reference and noth
 author: adammharris
 created: 2026-09-16
 updated: 2026-09-16
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # No relation lets a document say it replaces, or was derived from, another
+
+**Status: done (2026-09-16).** Resolved by `feat(relation): the base vocabulary
+says replaces and derived_from`. Both pairs joined the base vocabulary rather
+than a preset — `replaces`/`replaced_by` and `derived_from`/`derivations`,
+glossed in `RelationSet::diaryx_means` and mapped to Dublin Core and PROV-O in
+[Spec](/docs/spec.md) §2 — and the snapshots and provenance proposal chains
+carry them beside the sentence. Two corrections to what is argued below. There
+is no `MissingBacklink`: `check` verifies the inverse of the spanning pair
+only, so a `replaced_by` that does not answer its `replaces` is as silent as a
+`link_of` that does not answer its `links`, which is what "like any overlay
+relation" turns out to mean. And the unit `edit` does not maintain an overlay
+inverse either; `mv` retargets both halves and `rm` reports the half it
+leaves dangling, and that is the whole of what an overlay pair gets today.
 
 **Where this starts.** The default vocabulary is two pairs — `contents` /
 `part_of` for containment and `links` / `link_of` for cross-reference

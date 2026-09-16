@@ -2,9 +2,11 @@
 title: provenance and attestation
 author: adammharris
 created: 2026-08-14
-updated: 2026-09-11
+updated: 2026-09-16
 status: rejected
 part_of: '[Proposals](/docs/proposals/proposals.md)'
+replaced_by:
+- '[provenance v2 — who confirmed this, and against what](/docs/proposals/provenance/proposal-provenance-v2.md)'
 ---
 # Provenance — who wrote this, who checked it, and against what
 

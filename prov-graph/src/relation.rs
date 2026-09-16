@@ -222,7 +222,8 @@ impl RelationSet {
     }
 
     /// The diaryx vocabulary: `contents`/`part_of` containment (spanning),
-    /// `links`/`link_of` arbitrary cross-references, `registry` (the root's
+    /// `links`/`link_of` arbitrary cross-references, `replaces`/`replaced_by`
+    /// succession, `derived_from`/`derivations` origin, `registry` (the root's
     /// pointer to its ID registry document), `config` (the root's pointer to its
     /// workspace-config document), `deletions` (the root's pointer to its
     /// deletion log), `history` (the root's pointer to its history store), and
@@ -237,6 +238,10 @@ impl RelationSet {
             .with(Relation::one("part_of").inverse("contents"))
             .with(Relation::many("links").inverse("link_of"))
             .with(Relation::many("link_of").inverse("links"))
+            .with(Relation::many("replaces").inverse("replaced_by"))
+            .with(Relation::many("replaced_by").inverse("replaces"))
+            .with(Relation::many("derived_from").inverse("derivations"))
+            .with(Relation::many("derivations").inverse("derived_from"))
             .with(Relation::one("registry"))
             .with(Relation::one("config"))
             .with(Relation::one("deletions"))
@@ -258,16 +263,29 @@ impl RelationSet {
     ///
     /// The preset is the base every workspace's vocabulary overlays, so an
     /// undeclared `contents` is prov's `contents` and its meaning is known here
-    /// rather than being a blank a reader has to guess at. Only the four content
-    /// relations are glossed: the five pointers are machinery a consumer
-    /// describes in its own words (see `prov`'s about page), not vocabulary a
-    /// reader follows.
+    /// rather than being a blank a reader has to guess at. Only the eight
+    /// content relations are glossed: the five pointers are machinery a
+    /// consumer describes in its own words (see `prov`'s about page), not
+    /// vocabulary a reader follows.
+    ///
+    /// Succession and derivation are the keeper's claims, on the footing of
+    /// `author` and `generated`: a rewrite from scratch that supersedes has no
+    /// byte lineage, and an edit that keeps most of the text may be a different
+    /// document, so neither is a version-control tool's to fill in. The pairs
+    /// are the words Dublin Core and PROV-O already have — `replaces` is
+    /// `dcterms:replaces` / `prov:wasRevisionOf`, `derived_from` is
+    /// `dcterms:source` / `prov:wasDerivedFrom` — so an exporter maps them
+    /// without a workspace glossing them first.
     pub fn diaryx_means(name: &str) -> Option<&'static str> {
         match name {
             "contents" => Some("documents contained by this one"),
             "part_of" => Some("the document that contains this one"),
             "links" => Some("arbitrary cross-references to other documents"),
             "link_of" => Some("documents that cross-reference this one"),
+            "replaces" => Some("documents this one supersedes"),
+            "replaced_by" => Some("documents that supersede this one"),
+            "derived_from" => Some("documents this one was made from"),
+            "derivations" => Some("documents made from this one"),
             _ => None,
         }
     }
@@ -471,7 +489,7 @@ mod tests {
         assert_eq!(set.registry_relation(), Some("registry"));
         // Removing a name the set does not have is a no-op, not a panic.
         let untouched = RelationSet::diaryx().without("nonexistent");
-        assert_eq!(untouched.relations().len(), 10);
+        assert_eq!(untouched.relations().len(), 14);
     }
 
     #[test]
@@ -486,10 +504,43 @@ mod tests {
         assert_eq!(RelationSet::diaryx_means("sections"), None);
         // Every glossed name is in fact a relation the preset declares.
         let set = RelationSet::diaryx();
-        for name in ["contents", "part_of", "links", "link_of"] {
+        for name in [
+            "contents",
+            "part_of",
+            "links",
+            "link_of",
+            "replaces",
+            "replaced_by",
+            "derived_from",
+            "derivations",
+        ] {
             assert!(RelationSet::diaryx_means(name).is_some(), "{name}");
             assert!(set.relations().iter().any(|r| r.name == name), "{name}");
         }
+    }
+
+    #[test]
+    fn succession_and_derivation_are_many_to_many_overlay_pairs() {
+        // A document may replace several and be derived from several, and
+        // neither pair is the spine — so both halves are `many`, each names
+        // the other as inverse, and `contents` is still the only spanning
+        // relation.
+        let set = RelationSet::diaryx();
+        for (name, inverse) in [
+            ("replaces", "replaced_by"),
+            ("replaced_by", "replaces"),
+            ("derived_from", "derivations"),
+            ("derivations", "derived_from"),
+        ] {
+            let rel = set
+                .relations()
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("{name} is in the base vocabulary"));
+            assert_eq!(rel.cardinality, Cardinality::Many, "{name}");
+            assert_eq!(rel.inverse.as_deref(), Some(inverse), "{name}");
+        }
+        assert_eq!(set.spanning_relation(), Some("contents"));
     }
 
     #[test]

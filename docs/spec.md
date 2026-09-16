@@ -68,7 +68,8 @@ prov workspace:
    stable) but should treat unknown policy keys as opaque.
 4. **Read `relations` + `spanning`** — resolved across both homes as in rule 3.
    These declare the graph vocabulary (§2). The default vocabulary —
-   `contents`/`part_of` containment, spanning `contents` — is always the base,
+   `contents`/`part_of` containment, spanning `contents`, and the three overlay
+   pairs of §2 — is always the base,
    and each declared entry overlays it: a new name is added, a name the default
    has is redefined, and an entry that is the scalar `off` says the name is not a
    relation here. Absent ⇒ the default vocabulary unchanged.
@@ -103,9 +104,26 @@ prov:
     link_of: off               # not a relation here — an ordinary carried field
 ```
 
+**The default vocabulary is four pairs.** `contents`/`part_of` is containment
+and the spine. The other three are overlays, every one `many` in both
+directions: `links`/`link_of` is arbitrary cross-reference; `replaces`/
+`replaced_by` is succession — this document supersedes that one; and
+`derived_from`/`derivations` is origin — this document was made from that one.
+Succession and derivation are claims the keeper makes, on the footing of
+`author` and `generated`, never a fact a reader fills in from a version-control
+record: a rewrite from scratch that supersedes has no byte lineage, and an edit
+that keeps most of the text may be a different document. They are the words
+Dublin Core and PROV-O already have — `replaces` is `dcterms:replaces` and
+`prov:wasRevisionOf`, `derived_from` is `dcterms:source` and
+`prov:wasDerivedFrom` — so an exporter maps them without the workspace
+glossing them first. A reader checks each the way it checks `links`: the target
+resolves or it is broken, and what the claim *means* is not the reader's to
+judge.
+
 **Declarations overlay the default vocabulary; they do not replace it.** The
 default is always the base, so `see_also` above *adds* a relation and leaves
-`contents`/`part_of`/`links`/`link_of` where they were, `contents` *redefines*
+`contents`/`part_of`/`links`/`link_of` and the other two pairs where they were,
+`contents` *redefines*
 one — per field, so what the entry leaves unsaid the default's own definition
 answers, and glossing `contents` with a `means:` alone does not strip its
 inverse or reset its cardinality — and `link_of: off` retracts a name, after

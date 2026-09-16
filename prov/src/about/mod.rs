@@ -1801,11 +1801,20 @@ mod tests {
         }
     }
 
-    /// `<name>: off` for each of the four preset content relations — what a
+    /// `<name>: off` for each of the eight preset content relations — what a
     /// workspace with a vocabulary of its own writes beside its declarations,
     /// since the preset is the base rather than a fallback (`relation_set`).
     fn without_the_preset(defs: &mut BTreeMap<String, RelationDef>) {
-        for preset in ["contents", "part_of", "links", "link_of"] {
+        for preset in [
+            "contents",
+            "part_of",
+            "links",
+            "link_of",
+            "replaces",
+            "replaced_by",
+            "derived_from",
+            "derivations",
+        ] {
             defs.insert(
                 preset.into(),
                 RelationDef {
@@ -2051,11 +2060,26 @@ mod tests {
         };
         let page = render(&config, &ctx);
         let rows = rows_under(&page, "| relation | means | how many | its opposite |");
-        assert_eq!(rows.len(), 4, "{rows:?}");
+        // The four declared plus the base's succession and derivation pairs,
+        // which the declaration overlays rather than replaces.
+        assert_eq!(rows.len(), 8, "{rows:?}");
         assert!(rows[0].starts_with("| `contents`"), "{rows:?}");
         assert!(rows[1].starts_with("| `part_of`"), "{rows:?}");
-        assert!(rows[2].starts_with("| `link_of`"), "{rows:?}");
-        assert!(rows[3].starts_with("| `links`"), "{rows:?}");
+        // Every other pair sits together, whichever order the pairs come in.
+        let name = |row: &str| {
+            row.trim_start_matches("| `")
+                .split('`')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        for pair in rows[2..].chunks(2) {
+            let (a, b) = (name(pair[0]), name(pair[1]));
+            assert!(pair[0].ends_with(&format!("| `{b}` |")), "{rows:?}");
+            assert!(pair[1].ends_with(&format!("| `{a}` |")), "{rows:?}");
+        }
+        assert!(rows[6].starts_with("| `link_of`"), "{rows:?}");
+        assert!(rows[7].starts_with("| `links`"), "{rows:?}");
     }
 
     #[test]
@@ -2071,6 +2095,10 @@ mod tests {
             "the document that contains this one",
             "arbitrary cross-references to other documents",
             "documents that cross-reference this one",
+            "documents this one supersedes",
+            "documents that supersede this one",
+            "documents this one was made from",
+            "documents made from this one",
         ] {
             assert!(rows.contains(gloss), "{rows}");
         }

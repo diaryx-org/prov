@@ -190,9 +190,10 @@ relation-definition (`cardinality`/`inverse`/`means`), `fields`, `views` and
 
 ### Relation definitions overlay the built-in vocabulary
 
-The diaryx vocabulary (`contents`/`part_of`, `links`/`link_of`, spanning
-`contents`) is always the **base**, and each `relations` entry overlays it
-(`WorkspaceConfig::relation_set`):
+The diaryx vocabulary (`contents`/`part_of`, `links`/`link_of`,
+`replaces`/`replaced_by`, `derived_from`/`derivations`, spanning `contents` —
+[Spec](/docs/spec.md) §2) is always the **base**, and each `relations` entry
+overlays it (`WorkspaceConfig::relation_set`):
 
 | entry | means |
 | ----- | ----- |
