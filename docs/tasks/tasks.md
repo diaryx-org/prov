@@ -10,6 +10,7 @@ contents:
 - '[A move rewrites a document''s body links but not its body images](/docs/tasks/rename-leaves-body-images-behind.md)'
 - '[A finding carries no severity, and a relation site no item index](/docs/tasks/findings-carry-no-severity-or-item-index.md)'
 - '[A `generated` pair says who and when, and not what was done](/docs/tasks/generated-records-no-activity.md)'
+- '[No relation lets a document say it replaces, or was derived from, another](/docs/tasks/no-relation-says-replaces-or-derived-from.md)'
 ---
 
 # Tasks
