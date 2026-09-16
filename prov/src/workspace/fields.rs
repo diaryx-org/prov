@@ -102,14 +102,15 @@ impl FieldScopes {
     }
 
     /// The starting values a document made under `parent` opens with — each
-    /// field's governing declaration's `default`, in field order.
+    /// field's governing declaration's `default`, in field order. A dotted
+    /// field's default is written where the path says, inside its mapping.
     pub fn defaults_for_child(&self, config: &WorkspaceConfig, parent: &Path) -> Mapping {
         let mut out = Mapping::new();
         for field in config.fields.keys() {
             if let Some(spec) = self.spec_for_child(config, field, parent)
                 && let Some(default) = &spec.default
             {
-                out.insert(field.clone(), default.clone());
+                prov_graph::meta::insert_path(&mut out, field, default.clone());
             }
         }
         out
@@ -313,7 +314,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let mut out = Mapping::new();
         for (field, spec) in self.field_specs_for_child(root_doc, config, parent).await? {
             if let Some(default) = &spec.default {
-                out.insert(field, default.clone());
+                prov_graph::meta::insert_path(&mut out, &field, default.clone());
             }
         }
         Ok(out)

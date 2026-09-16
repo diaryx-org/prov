@@ -2006,6 +2006,58 @@ mod tests {
     }
 
     #[test]
+    fn a_term_inside_a_generated_mapping_is_respelled_in_place() {
+        // A dotted declaration's `SetTerm` writes where the path says — the
+        // key inside the mapping — leaving `by` and `at` beside it untouched.
+        let dir = tempdir("remedy-generated-how");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\ncontents:\n- vocab.yaml\n- note.md\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "spec: 1\nfields:\n  generated.how:\n    values: closed\n    vocabulary: /vocab.yaml\n",
+        );
+        write(
+            &dir,
+            "vocab.yaml",
+            "title: Generating acts\npart_of: /index.md\nvocabulary:\n  field: generated.how\n  values: closed\nterms:\n  drafted:\n  transcribed:\n",
+        );
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: /index.md\ngenerated:\n  by: agent:claude-opus-5\n  at: 2026-09-11T09:15:22.481093Z\n  how: transcrbed\n---\n",
+        );
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let unknown = sole(&findings, |f| matches!(f, Finding::UnknownTerm { .. }));
+        let remedies = block_on(ws.remedies(unknown)).unwrap();
+        let respell = remedies
+            .iter()
+            .find(|r| r.kind == RemedyKind::SetTerm)
+            .unwrap_or_else(|| panic!("no respelling offered: {remedies:#?}"));
+        block_on(ws.apply_fix(&respell.fix.clone())).unwrap();
+
+        let text = std::fs::read_to_string(dir.join("note.md")).unwrap();
+        assert!(text.contains("  how: transcribed\n"), "{text}");
+        assert!(text.contains("  by: agent:claude-opus-5\n"), "{text}");
+        assert!(
+            text.contains("  at: 2026-09-11T09:15:22.481093Z\n"),
+            "{text}"
+        );
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::UnknownTerm { .. })),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
     fn a_misspelled_config_key_is_renamed_over_its_value() {
         // The value the author wrote was right all along; only the key was
         // wrong. Renaming keeps the value, and the position, and the comment.

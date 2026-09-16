@@ -2,9 +2,17 @@
 //!
 //! Two frontmatter families, read here and written by exactly one verb each:
 //!
-//! - **`generated: {by, at}`** — how the document came to exist. Written once,
-//!   by whatever created it, and never maintained; the pair is a fact about an
-//!   event. prov reads it only to say what kind of actor wrote the document.
+//! - **`generated: {by, at, how?}`** — how the document came to exist. Written
+//!   once, by whatever created it, and never maintained; the mapping is a fact
+//!   about an event. prov reads it only to say what kind of actor wrote the
+//!   document. `how` is the act — `drafted`, `transcribed`, `imported` — that
+//!   tells a note the actor composed from one it merely carried across, which
+//!   is the distinction that decides how much of the content is the actor's.
+//!   prov carries it and ships no terms for it; a workspace closes its
+//!   vocabulary with a `fields: generated.how:` declaration, as it closes
+//!   `status`. In PROV-O's terms `by` is `prov:wasAttributedTo`, `at` is
+//!   `prov:generatedAtTime`, and `how` names the activity a `prov:wasGeneratedBy`
+//!   would point at, so an exporter maps all three without a gloss.
 //! - **`confirmed: [{by, at, of?}]`** — an append-only list of dated,
 //!   attributed statements that someone read the document and found it
 //!   correct. [`Workspace::confirm`](crate::Workspace::confirm) appends one;
@@ -115,23 +123,30 @@ impl std::fmt::Display for Actor {
     }
 }
 
-/// How a document came to exist — the `generated` pair.
+/// How a document came to exist — the `generated` mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Generated {
     /// Who or what created it.
     pub by: String,
     /// When, RFC 3339 UTC.
     pub at: String,
+    /// What the actor was doing when the document came to be — `drafted`,
+    /// `transcribed`, `imported`. A term of the workspace's own choosing
+    /// (tier 3, like the identifier after an actor's prefix), absent on every
+    /// document written before the key existed and on any that never says.
+    pub how: Option<String>,
 }
 
 impl Generated {
-    /// The `generated` pair a document records, if it records a well-formed
-    /// one — a mapping with string `by` and `at`.
+    /// The `generated` mapping a document records, if it records a well-formed
+    /// one — a mapping with string `by` and `at`. `how` is read when it is a
+    /// string and is never required.
     pub fn read(meta: &Value) -> Option<Generated> {
         let map = meta.get(GENERATED)?.as_mapping()?;
         Some(Generated {
             by: map.get("by")?.as_str()?.to_string(),
             at: map.get("at")?.as_str()?.to_string(),
+            how: map.get("how").and_then(Value::as_str).map(str::to_string),
         })
     }
 
@@ -372,6 +387,17 @@ mod tests {
         let m = meta("generated:\n  by: process:prov\n  at: 2026-09-11T09:00:00.000000Z\n");
         let g = Generated::read(&m).unwrap();
         assert_eq!(g.actor(), Actor::Process("prov".into()));
+        assert_eq!(g.how, None);
         assert!(Generated::read(&meta("generated: prov\n")).is_none());
+        // The act is a third key, optional, and read only as a string.
+        let m = meta(
+            "generated:\n  by: agent:claude-opus-5\n  at: 2026-09-11T09:00:00.000000Z\n  how: transcribed\n",
+        );
+        assert_eq!(
+            Generated::read(&m).unwrap().how.as_deref(),
+            Some("transcribed")
+        );
+        let m = meta("generated:\n  by: amh\n  at: 2026-09-11T09:00:00.000000Z\n  how: [a, b]\n");
+        assert_eq!(Generated::read(&m).unwrap().how, None);
     }
 }

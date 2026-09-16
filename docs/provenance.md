@@ -16,15 +16,64 @@ part_of: '[prov](/README.md)'
 generated:
   by: agent:claude-opus-5
   at: 2026-09-11T09:15:22.481093Z
+  how: transcribed
 confirmed:
 - by: amh
   at: 2026-09-11T09:20:00.000000Z
 ```
 
 **`generated`** records how the document came to exist. It is written once, by
-whatever created the document, and never maintained afterward — the pair is a
-fact about an event. prov reads it only to say what kind of actor wrote the
-document, and never writes it into a document of yours.
+whatever created the document, and never maintained afterward — the mapping
+is a fact about an event. prov reads it only to say what kind of actor wrote
+the document, and never writes it into a document of yours.
+
+`by` is the actor and `at` the instant. **`how`** is the act — what the actor
+was doing when the document came to be. "A model drafted this from a prompt",
+"a model transcribed this from a scan", "a program imported this from another
+tool's export", and "a person wrote this" are four different answers to *how
+did this come to exist*, and `by` alone collapses them to the actor. The
+distinction is the one that decides how much of the *content* is the actor's
+— and so how much a confirmation is vouching for: a transcription is checked
+against its scan, a draft against nothing but itself. The key is optional
+(every document written before it existed lacks one) and, like the identifier
+after an actor's prefix, is carried and never reasoned about. prov ships no
+terms for it. A workspace that wants a fixed set declares the key under
+`fields:`, by dotted path, exactly as `status` is closed under `Tasks`:
+
+```yaml
+fields:
+  generated.how:
+    values: closed
+    vocabulary: '[Generating acts](/vocab/acts.yaml)'
+```
+
+```yaml
+# vocab/acts.yaml
+title: Generating acts
+vocabulary:
+  field: generated.how
+  values: closed
+terms:
+  drafted:     { means: "composed by the actor, from a prompt or from nothing" }
+  transcribed: { means: "carried across from a scan or a recording; the words are the source's" }
+  imported:    { means: "carried across from another tool's export, unchanged" }
+  converted:   { means: "the same document in another format" }
+```
+
+and from then on an unknown act is an `unknown_term` finding on the document,
+naming `generated.how`, with the same two repairs any closed field offers.
+
+In PROV-O's terms — *entity, agent, activity* — `by` is `prov:wasAttributedTo`,
+`at` is `prov:generatedAtTime`, and `how` names the activity that a
+`prov:wasGeneratedBy` would point at, so an exporter maps all three without
+the workspace glossing them first, as it maps `replaces` and `derived_from`
+(spec §2). The word is `how` rather than PROV-O's `activity` for the reason
+`by` and `at` are not `wasAttributedTo` and `generatedAtTime`: it reads in the
+line beside them, a stranger with `cat` needs no ontology to guess it, and it
+is the word a confirmation could take unchanged if an entry ever recorded its
+own act — *read*, *proofread*, *checked against the source*. That is not
+done here: a confirmation stays a dated, attributed statement, and the key is
+chosen so an entry could take it later without renaming.
 
 **`confirmed`** is an append-only list of dated, attributed statements that
 someone read the document and found it correct. `prov confirm <doc>` appends
@@ -157,4 +206,7 @@ manifest node, a reified vocabulary term. Not machinery: a registry, a
 deletion log, or a flat vocabulary is a whole-file store prov re-lays-out, and
 a confirmation on one would be a claim about a file prov itself rewrites.
 `about.md` is likewise refused — it is rewritten whole from configuration, and
-its `generated_by` byline is its `generated` in prov's own spelling.
+its `generated_by` byline is its `generated` in prov's own spelling. The byline
+carries no `how`: the act is known from the file's kind — regenerated from
+configuration, by prov, every time — and a line every workspace carries is not
+reshaped to say what its footer already does.

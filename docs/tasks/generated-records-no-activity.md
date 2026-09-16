@@ -4,11 +4,25 @@ description: "`generated` records the actor and the instant a document came to e
 author: adammharris
 created: 2026-09-16
 updated: 2026-09-16
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A `generated` pair says who and when, and not what was done
+
+**Status: done (2026-09-16).** Resolved by `feat(provenance): a generated
+mapping records the act as how`. The key is `how` — it reads in the line
+beside `by` and `at`, a stranger needs no ontology to guess it, and a
+confirmation could take it unchanged — glossed as the activity a
+`prov:wasGeneratedBy` points at in [Provenance](/docs/provenance.md) §1. prov
+ships no terms and the `tasks` preset adds none. A workspace closes it with a
+`fields: generated.how:` declaration: a declaration may now name a dotted
+path into a mapping, which `check`, the `SetTerm` repair, and a `default:`
+all follow — the one mechanism this needed that the task did not name, and
+the reason the finding says `generated.how` rather than `generated`.
+`about.md`'s byline is unchanged; §7 says why. A view grouped by
+`generated.how` would want the same dotted addressing in `views`, and is not
+done here.
 
 **Where this starts.** [Provenance](/docs/provenance.md) §1 gives a document
 one pair about its origin:

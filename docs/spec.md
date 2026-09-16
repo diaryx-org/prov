@@ -196,6 +196,12 @@ than one to apply: respell the value, or widen the vocabulary to admit it. A
 *retired* term is never offered the second — writing a bare `term:` over it would
 un-retire it and destroy the `id` and `means` it carries.
 
+A declaration names a top-level key, or a **dotted path** into a mapping —
+`generated.how` is the act recorded inside a `generated` mapping (see
+[Provenance](provenance.md) §1) — and governs whatever is at that path; a
+document with nothing there is held to nothing. A dot is always a separator,
+as it is for `prov get`. The finding names the path as written.
+
 A declaration governs the whole workspace unless it names an index with
 `under:` — a link resolved as a view's anchor is (by path, `id:`, or title) —
 and then it governs that index's spanning subtree and nothing else. A field

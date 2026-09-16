@@ -1510,7 +1510,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             };
             for (field, index, values, vocab) in &vocabs {
-                let Some(field_value) = doc.meta.get(field) else {
+                // A declaration names a top-level key or a dotted path into a
+                // mapping (`generated.how`), and governs whatever is there.
+                let Some(field_value) = doc.meta.get_path(field) else {
                     continue;
                 };
                 // A vocabulary judges only the documents its declaration
@@ -2634,6 +2636,57 @@ mod tests {
             !findings
                 .iter()
                 .any(|f| matches!(f, Finding::UnknownTerm { value, .. } if value == "public")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_closed_vocabulary_reaches_the_act_inside_a_generated_mapping() {
+        // The `how` of a `generated` mapping is a key one level down, and a
+        // `fields` declaration reaches it by dotted path. Every document
+        // written before the key existed lacks it, so a mapping without one
+        // is held to nothing.
+        let dir = tempdir("vocab-generated-how");
+        write(
+            &dir,
+            "index.md",
+            "---\n\
+             contents:\n- drafted.md\n- copied.md\n- silent.md\n\
+             prov:\n  fields:\n    generated.how:\n      values: closed\n      vocabulary: vocab/acts.yaml\n\
+             ---\n",
+        );
+        write(
+            &dir,
+            "drafted.md",
+            "---\npart_of: index.md\ngenerated:\n  by: agent:claude-opus-5\n  at: 2026-09-11T09:15:22.481093Z\n  how: drafted\n---\n",
+        );
+        write(
+            &dir,
+            "copied.md",
+            "---\npart_of: index.md\ngenerated:\n  by: agent:claude-opus-5\n  at: 2026-09-11T09:15:22.481093Z\n  how: copied\n---\n",
+        );
+        write(
+            &dir,
+            "silent.md",
+            "---\npart_of: index.md\ngenerated:\n  by: amh\n  at: 2026-09-11T09:15:22.481093Z\n---\n",
+        );
+        write(
+            &dir,
+            "vocab/acts.yaml",
+            "title: Generating acts\nvocabulary:\n  field: generated.how\n  values: closed\nterms:\n  drafted: {}\n  transcribed: {}\n  imported: {}\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let unknown: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::UnknownTerm { .. }))
+            .collect();
+        assert!(
+            matches!(
+                unknown.as_slice(),
+                [Finding::UnknownTerm { doc, field, value, retired: false }]
+                    if doc == Path::new("copied.md") && field == "generated.how" && value == "copied"
+            ),
             "{findings:?}"
         );
     }

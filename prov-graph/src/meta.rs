@@ -82,6 +82,17 @@ impl Value {
         self.as_mapping().and_then(|m| m.get(key))
     }
 
+    /// Look up a dotted field path — `title`, or `generated.how` for a key
+    /// inside a mapping — each segment a mapping key. This is how a `fields`
+    /// declaration names what it governs, so a controlled vocabulary can
+    /// reach a key one level down (the act in a `generated` mapping) as it
+    /// reaches a top-level one; a dot is always a separator, as it is for
+    /// `prov get`. `None` when any segment is missing or the value on the way
+    /// is not a mapping.
+    pub fn get_path(&self, path: &str) -> Option<&Value> {
+        path.split('.').try_fold(self, |value, key| value.get(key))
+    }
+
     /// Interpret this value as a list of link strings: a bare string yields one
     /// element, a sequence yields its string-shaped elements, anything else
     /// yields nothing. This is how a relation field (single or multi) is read.
@@ -94,6 +105,31 @@ impl Value {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+}
+
+/// Insert `value` at the dotted field `path` in `map`, creating the mappings
+/// on the way — the write that pairs with [`Value::get_path`]. A segment that
+/// exists and is not a mapping is replaced by one, since the path says what
+/// the caller means to write.
+pub fn insert_path(map: &mut Mapping, path: &str, value: Value) {
+    let mut segments = path.split('.').peekable();
+    let mut map = map;
+    while let Some(key) = segments.next() {
+        if segments.peek().is_none() {
+            map.insert(key.to_string(), value);
+            return;
+        }
+        let entry = map
+            .entry(key.to_string())
+            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if !matches!(entry, Value::Mapping(_)) {
+            *entry = Value::Mapping(Mapping::new());
+        }
+        let Value::Mapping(inner) = entry else {
+            unreachable!()
+        };
+        map = inner;
     }
 }
 
@@ -265,6 +301,22 @@ mod tests {
             m.get("tags").map(Value::link_strings),
             Some(vec!["a".to_string(), "b".to_string()])
         );
+    }
+
+    #[test]
+    fn get_path_reaches_into_a_mapping_and_insert_path_writes_there() {
+        let mut m = Mapping::new();
+        insert_path(&mut m, "generated.how", Value::String("drafted".into()));
+        insert_path(&mut m, "title", Value::String("x".into()));
+        let v = Value::Mapping(m);
+        assert_eq!(v.get_path("title").and_then(Value::as_str), Some("x"));
+        assert_eq!(
+            v.get_path("generated.how").and_then(Value::as_str),
+            Some("drafted")
+        );
+        assert!(v.get_path("generated.by").is_none());
+        assert!(v.get_path("title.how").is_none());
+        assert!(v.get_path("missing").is_none());
     }
 
     #[test]

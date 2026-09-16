@@ -488,6 +488,13 @@ document. The value is carried as written — `default: 0` is an int, `default:
 the workspace rather than in a caller's flags so that a stencil can state it
 and `about.md` can say it.
 
+`<name>` is a top-level key, or a dotted path into a mapping — `generated.how`
+declares the act a `generated` mapping records beside its `by` and `at` (see
+[Provenance](provenance.md) §1). A dot is always a separator, as it is for
+`prov get`, and every reader of the declaration follows it: `check` judges the
+value at that path, a `SetTerm` repair respells it there, and a `default:` is
+written there — inside the mapping, creating it if the document has none.
+
 ### Scoping a declaration
 
 A declaration governs the whole workspace unless it says `under:` — a link to

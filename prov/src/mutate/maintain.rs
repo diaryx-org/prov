@@ -433,7 +433,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 /// does.
 pub(crate) fn written_entry_index(doc: &Document, field: &str, written: &str) -> Option<usize> {
     let matches = |raw: &str| Link::parse(raw).target == written;
-    match doc.meta.get(field)? {
+    match doc.meta.get_path(field)? {
         Value::Sequence(items) => items
             .iter()
             .position(|item| item.as_str().is_some_and(matches)),
@@ -441,14 +441,26 @@ pub(crate) fn written_entry_index(doc: &Document, field: &str, written: &str) ->
     }
 }
 
-/// The fig address of that entry — key alone for a scalar field, key + index for
-/// a sequence. The shape distinction [`MetaEditor`] needs, in one place so the
-/// removal and the retarget cannot disagree about it.
+/// The fig address of a field — one key per dotted segment, so `generated.how`
+/// addresses the key inside the mapping, as [`Value::get_path`] reads it.
+fn field_address(field: &str) -> Vec<Segment<'_>> {
+    field.split('.').map(Segment::Key).collect()
+}
+
+/// The fig address of that entry — the field alone for a scalar, field + index
+/// for a sequence. The shape distinction [`MetaEditor`] needs, in one place so
+/// the removal and the retarget cannot disagree about it.
 fn entry_address<'a>(doc: &Document, field: &'a str, index: usize) -> Vec<Segment<'a>> {
-    match doc.meta.get(field).and_then(Value::as_sequence) {
-        Some(_) => vec![Segment::Key(field), Segment::Index(index)],
-        None => vec![Segment::Key(field)],
+    let mut address = field_address(field);
+    if doc
+        .meta
+        .get_path(field)
+        .and_then(Value::as_sequence)
+        .is_some()
+    {
+        address.push(Segment::Index(index));
     }
+    address
 }
 
 /// Drop the entry of `field` in `doc` written as `written`, comment- and
@@ -470,10 +482,10 @@ pub(crate) fn remove_written_entry(
     };
     let address = entry_address(doc, field, index);
     let mut editor = MetaEditor::open(text, carrier)?;
-    if address.len() == 1 {
-        editor.delete(&address)?;
+    if matches!(address.last(), Some(Segment::Index(_))) {
+        editor.remove_item(&field_address(field), index)?;
     } else {
-        editor.remove_item(&[Segment::Key(field)], index)?;
+        editor.delete(&address)?;
     }
     Ok(Some(editor.render()?))
 }
@@ -517,7 +529,7 @@ pub(crate) fn retarget_written_entry(
     new_target: &str,
 ) -> Result<Option<String>> {
     let index = written_entry_index(doc, field, written);
-    let raw = match (index, doc.meta.get(field)) {
+    let raw = match (index, doc.meta.get_path(field)) {
         (Some(i), Some(Value::Sequence(items))) => items.get(i).and_then(Value::as_str),
         (Some(_), Some(other)) => other.as_str(),
         _ => None,
