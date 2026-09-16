@@ -33,6 +33,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - **cli** — `prov docs` — the census every view narrows, as lines or `--json` ([`99f4d46`](https://github.com/diaryx-org/prov/commit/99f4d46d0176f85d3274366f6cabd51fc864d2e5))
 - **peers** — `prov::PeerFile` reads the device peer map from the library ([`5e050f0`](https://github.com/diaryx-org/prov/commit/5e050f0f860436d98a79e66ca9bcc91e45409b71))
 - **validate** — a finding carries its severity, and a relation site its item index ([`cd3b606`](https://github.com/diaryx-org/prov/commit/cd3b606d5dfaa4371aaa4ab71c005a1cdf34971e))
+- **relation** — the base vocabulary says replaces and derived_from ([`8f0d134`](https://github.com/diaryx-org/prov/commit/8f0d134121a5f3428349f2bbf24fe5ba1da529df))
 
 ### Behavioural changes
 
@@ -45,6 +46,14 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - `prov check --json` objects gain a `severity` key, and
   link findings gain an `index` key beside `site`; the count line on stderr
   reads `3 finding(s), 1 warning(s)` when any finding is a warning.
+
+- `replaces`, `replaced_by`, `derived_from` and
+`derivations` are relations in the base vocabulary. A workspace that used
+any of those keys as an ordinary carried field now has its values read as
+links — resolved by `check`, reported when broken, retargeted by `mv` —
+unless it declares the name `off` under `relations:`. `about.md` for an
+undeclared vocabulary now tables eight relations rather than four, and
+`prov check` reports the page stale until `prov about` rewrites it.
 
 <!-- git-cliff:end -->
 
