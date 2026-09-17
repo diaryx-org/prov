@@ -28,6 +28,12 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.14.0 — 2026-09-16
+
 ### Added
 
 - **cli** — `prov docs` — the census every view narrows, as lines or `--json` ([`99f4d46`](https://github.com/diaryx-org/prov/commit/99f4d46d0176f85d3274366f6cabd51fc864d2e5))
@@ -74,7 +80,6 @@ only in case as a case mismatch, where before both passed in silence.
 now include entries for body images (`LinkSite::Body`), and `reachable_files`
 / the ignore list count an embedded picture as reached.
 
-<!-- git-cliff:end -->
 
 ## v0.13.0 — 2026-09-14
 
