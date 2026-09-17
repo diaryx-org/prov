@@ -11,6 +11,7 @@ contents:
 - '[A finding carries no severity, and a relation site no item index](/docs/tasks/findings-carry-no-severity-or-item-index.md)'
 - '[A `generated` pair says who and when, and not what was done](/docs/tasks/generated-records-no-activity.md)'
 - '[No relation lets a document say it replaces, or was derived from, another](/docs/tasks/no-relation-says-replaces-or-derived-from.md)'
+- '[A directory moves one document at a time, and a payload''s references do not move at all](/docs/tasks/a-directory-moves-one-document-at-a-time.md)'
 ---
 
 # Tasks
