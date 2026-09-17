@@ -35,6 +35,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - **validate** — a finding carries its severity, and a relation site its item index ([`cd3b606`](https://github.com/diaryx-org/prov/commit/cd3b606d5dfaa4371aaa4ab71c005a1cdf34971e))
 - **relation** — the base vocabulary says replaces and derived_from ([`8f0d134`](https://github.com/diaryx-org/prov/commit/8f0d134121a5f3428349f2bbf24fe5ba1da529df))
 - **provenance** — a generated mapping records the act as how ([`7367e60`](https://github.com/diaryx-org/prov/commit/7367e608a4cb98043987ca7d917fcab3ada0a710))
+- **mutate** — a directory moves as one change set, and a payload's references move with it ([`df89a04`](https://github.com/diaryx-org/prov/commit/df89a045ec36e94e765e4ba11b2d55f3c7f5a8bb))
 
 ### Behavioural changes
 
@@ -55,6 +56,14 @@ links — resolved by `check`, reported when broken, retargeted by `mv` —
 unless it declares the name `off` under `relations:`. `about.md` for an
 undeclared vocabulary now tables eight relations rather than four, and
 `prov check` reports the page stale until `prov about` rewrites it.
+
+- `Workspace::rename` (and `prov mv`) given a directory
+now moves the whole directory as one change set, where before it failed
+trying to load the directory as a document.
+
+- moving an attachment's sidecar (`rename`, `mv`) now
+rewrites every body `![…](…)` and `[…](…)` in other documents that resolved
+to the payload's old path, where before they were left as written.
 
 <!-- git-cliff:end -->
 
