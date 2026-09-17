@@ -29,7 +29,7 @@ use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
-use super::maintain::splice_body;
+use super::maintain::{Movers, Moves, splice_body};
 
 /// One prose file's move under a content-format conversion: what to transcode,
 /// where it lands, and (for a separated pair) the node whose `content` pointer
@@ -200,7 +200,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// workspace is valid and `check`-clean. With `recursive`, the whole spanning
     /// subtree converts as one change set — and as *one* set, not one per
     /// document, which is what lets a mover that links to another mover come out
-    /// right (see [`collect_inbound_rewrites_multi`](Workspace::collect_inbound_rewrites_multi)).
+    /// right (see [`collect_inbound_rewrites`](Workspace::collect_inbound_rewrites)).
     ///
     /// A **separated** document converts its body file rather than its node: the
     /// prose is what has a grammar, so `notes.md` becomes `notes.dj` and the
@@ -295,9 +295,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 return Err(conflict.into());
             }
         }
-        let (_spanning, inverse) = self.spanning_pair()?;
-        let root = self.spanning_root(&file, &inverse).await?;
-        let mut rewrites = self.collect_inbound_rewrites_multi(&root, &moves).await?;
+        // A converted document keeps its directory, so no pass of its own
+        // touches its links — its references to fellow movers are retargeted
+        // here with everyone else's.
+        let mut rewrites = self
+            .collect_inbound_rewrites(&file, &Moves::Files(moves.clone()), Movers::Rewrite)
+            .await?;
 
         // 3. Transcode each mover, over the inbound-rewritten text where there is
         //    one — a mover that links to a fellow mover is both a source and a

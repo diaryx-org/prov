@@ -4,11 +4,28 @@ description: Workspace::rename moves one document and maintains every reference 
 author: adammharris
 created: 2026-09-16
 updated: 2026-09-16
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A directory moves one document at a time, and a payload's references do not move at all
+
+**Status.** Done, in `feat(mutate): a directory moves as one change set, and
+a payload's references move with it` (2026-09-16). `Workspace::move_tree(from_dir,
+to_dir)` is the verb, and `rename` handed a directory is that verb; `prov mv`
+gets it without a flag. The two halves landed as argued here: a `Moves` value
+(`maintain.rs`) says where every path an op relocates lands — a list for a
+rename, a rule for a directory — and both the inbound collector and the
+re-relativizing passes ask it, so a mover's link to a fellow mover is spelled
+for where the fellow lands; and the inbound index (`workspace/inbound.rs`)
+now counts images, so a page that reaches a payload by `![…](…)` alone is a
+source the move rewrites. The census still leaves images out, so `check`
+reports nothing new about a missing picture — that remains the other half of
+the decision, and can follow. The set is N file renames in one journal rather
+than one directory rename, because the registry, the read memo and pending id
+stamps all follow a file; the emptied directory is removed after the set
+lands. Pinned by `move_tree::tests` and
+`rename::tests::moving_a_sidecar_carries_every_reference_to_its_payload`.
 
 **Repro.** A workspace with
 

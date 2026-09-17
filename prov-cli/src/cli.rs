@@ -499,7 +499,13 @@ pub(crate) enum Command {
     },
     /// Move/rename a document, maintaining every affected link: every inbound
     /// reference across the workspace (parent entry, children's inverses,
-    /// overlay links, body wikilinks) and the document's own relative links.
+    /// overlay links, body links and images) and the document's own relative
+    /// links. An attachment's payload travels with its sidecar, and every body
+    /// reference to the payload follows it.
+    ///
+    /// Given a directory, moves the whole directory as one change: every
+    /// document under it is a mover, and a file prov does not read moves as
+    /// bytes.
     ///
     /// Moves the *file* and preserves the document's place in the tree. To change
     /// its place in the tree instead, see `reparent` — or pass `--in`

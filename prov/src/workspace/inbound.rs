@@ -83,6 +83,7 @@ use prov_store::index::IndexStore;
 
 use super::Workspace;
 use crate::change::{ChangeSet, FileOp};
+use crate::mutate::maintain::Moves;
 
 /// Which inbound links an ask is after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,20 +159,26 @@ pub(crate) struct InboundIndex {
 }
 
 impl InboundIndex {
-    /// The documents whose links reach `target` in `form`, `target` itself
-    /// excluded — a document's reference to itself is never maintained.
-    fn sources(&self, target: &Path, form: Form) -> BTreeSet<PathBuf> {
-        self.docs
-            .iter()
-            .filter(|(source, _)| source.as_path() != target)
-            .filter(|(_, doc)| {
-                doc.edges
-                    .targets
-                    .get(target)
-                    .is_some_and(|f| f.matches(form))
-            })
-            .map(|(source, _)| source.clone())
-            .collect()
+    /// For every document with a link in `form` to a path `moves` relocates:
+    /// the source, and the moved paths it reaches. A document's reference to
+    /// itself is left out — a move never maintains those.
+    fn sources_of(&self, moves: &Moves, form: Form) -> BTreeMap<PathBuf, BTreeSet<PathBuf>> {
+        let mut out: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+        for (source, doc) in &self.docs {
+            let reached: BTreeSet<PathBuf> = doc
+                .edges
+                .targets
+                .iter()
+                .filter(|(target, forms)| {
+                    target != &source && forms.matches(form) && moves.landed(target).is_some()
+                })
+                .map(|(target, _)| target.clone())
+                .collect();
+            if !reached.is_empty() {
+                out.insert(source.clone(), reached);
+            }
+        }
+        out
     }
 }
 
@@ -193,9 +200,13 @@ pub(crate) enum InboundPlan {
 impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// The links one document declares, resolved the way the verbs'
     /// per-document rewrites resolve them: path and id targets through
-    /// [`resolve_link`](Self::resolve_link), aliases left unresolved, images
-    /// skipped — the same population the census scans, filtered by the same
-    /// resolver the rewrites filter on.
+    /// [`resolve_link`](Self::resolve_link), aliases left unresolved — the
+    /// population the census scans, filtered by the same resolver the rewrites
+    /// filter on, **plus images**. The census leaves an image out because it
+    /// names a payload rather than a document, so it is no edge of the graph;
+    /// but a payload moves — beside its sidecar, or inside a directory — and
+    /// the page embedding it is then exactly a source the move must rewrite.
+    /// This is the inverse the rewrites consult, so it counts what they carry.
     fn edges_of(&self, path: &Path, doc: &Document) -> DocEdges {
         let spanning = self.relations().spanning_relation();
         let meta = fig::Value::from(&doc.meta);
@@ -211,9 +222,6 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             edges.targets.entry(target).or_default().add(&link);
         }
         for body in link::scan_body_links(path, &doc.body) {
-            if body.image {
-                continue;
-            }
             if let Target::Path(target) = self.resolve_link(path, &body.link) {
                 edges.targets.entry(target).or_default().add(&body.link);
             }
@@ -252,52 +260,77 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Every reachable document with a link to `target` in `form`, `target`
-    /// itself excluded — the sources a retitle relabels and a rename retargets.
+    /// itself excluded — the sources a retitle relabels.
     ///
-    /// Answered from the index when it holds `target` and a stat sweep finds
-    /// it fresh; otherwise from a census of the spanning tree `target` sits
-    /// in, whose inverse is then kept for the next ask. Either way the answer
-    /// is the census's.
+    /// [`inbound_sources_of`](Self::inbound_sources_of) for one target, which
+    /// is also the anchor: a retitle's subject is a document in the tree.
     pub(crate) async fn inbound_sources(
         &self,
         target: &Path,
         form: Form,
     ) -> Result<BTreeSet<PathBuf>> {
         let target = link::normalize(target);
-        if let Some(sources) = self.inbound_from_index(&target, form).await? {
+        let by_source = self
+            .inbound_sources_of(&target, &Moves::one(&target, &target), form)
+            .await?;
+        Ok(by_source.into_keys().collect())
+    }
+
+    /// Every reachable document with a link in `form` to a path `moves`
+    /// relocates, with the moved paths it reaches — the sources a move
+    /// retargets, each source's own path excluded from what it reaches.
+    ///
+    /// `anchor` is a document in the spanning tree the answer must cover.
+    /// Answered from the index when it knows `anchor` and a stat sweep finds
+    /// it fresh; otherwise from a census of the tree `anchor` sits in, whose
+    /// inverse is then kept for the next ask. Either way the answer is the
+    /// census's. The anchor is asked for rather than derived from the moves
+    /// because a moved path need not be a document at all — a payload is
+    /// reached by an image and lives in no tree — and because a directory
+    /// move names no single document.
+    pub(crate) async fn inbound_sources_of(
+        &self,
+        anchor: &Path,
+        moves: &Moves,
+        form: Form,
+    ) -> Result<BTreeMap<PathBuf, BTreeSet<PathBuf>>> {
+        let anchor = link::normalize(anchor);
+        if let Some(sources) = self.inbound_from_index(&anchor, moves, form).await? {
             return Ok(sources);
         }
         let _scope = self.read_scope();
         let (_spanning, inverse) = self.spanning_pair()?;
-        let root = self.spanning_root(&target, &inverse).await?;
+        let root = self.spanning_root(&anchor, &inverse).await?;
         let census = self.census(&root).await?;
         let (index, stamped) = self.index_census(&root, &census).await?;
-        let sources = index.sources(&target, form);
+        let sources = index.sources_of(moves, form);
         // A backend with no modification times leaves nothing to validate
         // against, so nothing is kept: the next ask is a census again.
         *lock(&self.inbound) = stamped.then_some(index);
         Ok(sources)
     }
 
-    /// The index's answer for `target`, if it has one it can still vouch for.
+    /// The index's answer for `moves`, if it covers `anchor`'s tree and can
+    /// still vouch for itself.
     async fn inbound_from_index(
         &self,
-        target: &Path,
+        anchor: &Path,
+        moves: &Moves,
         form: Form,
-    ) -> Result<Option<BTreeSet<PathBuf>>> {
+    ) -> Result<Option<BTreeMap<PathBuf, BTreeSet<PathBuf>>>> {
         // Cloned out rather than held: the sweep awaits, and no lock is ever
         // held across an await.
         let Some(index) = lock(&self.inbound).clone() else {
             return Ok(None);
         };
-        if !index.docs.contains_key(target) {
+        if !index.docs.contains_key(anchor) {
             return Ok(None);
         }
         if !self.still_fresh(&index).await? {
             *lock(&self.inbound) = None;
             return Ok(None);
         }
-        Ok(Some(index.sources(target, form)))
+        Ok(Some(index.sources_of(moves, form)))
     }
 
     /// The inverse of a census just taken from `root`, stamped. Reads nothing

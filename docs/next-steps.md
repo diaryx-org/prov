@@ -319,7 +319,10 @@ format-agnosticism, made an action). Decided this session:
      for such a document, each computed from disk and so each missing the other's
      rewrite, and the last one staged wins. Hence
      `collect_inbound_rewrites_multi`: one census for the whole set, one
-     accumulated text per source. Force-gated on `html` at either end (via
+     accumulated text per source (since the only collector, as
+     `collect_inbound_rewrites` over a `Moves` — a lone `rename`, a sidecar with
+     its payload, and `move_tree`'s whole directory all fold the same way).
+     Force-gated on `html` at either end (via
      `ContentFormat::is_lossy_to`) rather than on the whole axis — md↔djot proved
      high-fidelity (emphasis, headings and raw HTML re-spelled; footnotes, tables,
      fences and `[[wikilinks]]` intact), with reference-style links inlined and

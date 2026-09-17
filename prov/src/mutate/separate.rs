@@ -21,7 +21,7 @@ use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
-use super::maintain::content_target;
+use super::maintain::{Movers, Moves, content_target};
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Split the combined document at `path` into two linked plain-text files: a
@@ -101,7 +101,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         cs.expect(&path, own_text);
         cs.expect_absent(&meta_path);
         // Inbound links now point at the metadata file (the structural node).
-        let inbound = self.collect_inbound_rewrites(&path, &meta_path).await?;
+        let inbound = self
+            .collect_inbound_rewrites(&path, &Moves::one(&path, &meta_path), Movers::Skip)
+            .await?;
 
         cs.write(&meta_path, meta_text);
         cs.write(&path, body_text);
@@ -191,7 +193,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         cs.expect(&path, node_text);
         cs.expect(&content, body_read);
         // Inbound links point back at the (now combined) content file.
-        let inbound = self.collect_inbound_rewrites(&path, &content).await?;
+        let inbound = self
+            .collect_inbound_rewrites(&path, &Moves::one(&path, &content), Movers::Skip)
+            .await?;
 
         cs.write(&content, combined);
         cs.remove(&path);

@@ -6,6 +6,7 @@
 //! node, and the registry follows the id — all as one change set, so a failure
 //! anywhere leaves the workspace exactly as it was found.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use fig::Segment;
@@ -22,7 +23,7 @@ use prov_store::index::IndexStore;
 
 use prov_graph::manifest::manifest_sibling;
 
-use super::maintain::{body_sibling, content_target, manifest_target, splice_body};
+use super::maintain::{Movers, Moves, body_sibling, content_target, manifest_target, splice_body};
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Move/rename the document at `from` to `to`, maintaining every affected
@@ -37,11 +38,24 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// (the point of an ID link), and in a path-only (Diaryx-style) workspace
     /// they never appear.
     ///
+    /// A separated node's body — prose, or an attachment's opaque payload —
+    /// travels beside it, and **a reference to the payload is a reference to
+    /// its sidecar for the purpose of the move**: every `![…](…photo.jpg)` and
+    /// `[…](…photo.jpg)` that resolves to where the payload was is respelled
+    /// for where it lands, in the same change set. A payload is not a node
+    /// and an image is not an edge, so the census does not report one; but a
+    /// page that embeds a picture has said where the bytes are, and moving
+    /// them out from under it is the move's to make good.
+    ///
     /// Inbound references are found by a [`census`](Workspace::census) over the
     /// spanning tree, whose root is discovered by walking `part_of` up from
     /// `from` — so the caller supplies no root. References living only in
     /// documents *unreachable* from that root are not seen (a malformed tree,
     /// which `check` reports separately).
+    ///
+    /// A `from` that is a **directory** is [`move_tree`](Self::move_tree): the
+    /// whole directory moves as one change set, every document under it a
+    /// mover.
     pub async fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
         // `collect_inbound_rewrites` censuses the whole reachable graph and then
         // loads each source it found in order to rewrite it — two reads of every
@@ -53,6 +67,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         if !self.exists(&from).await? {
             return Err(Error::NotFound(from.to_path_buf()));
+        }
+        if self.stat(&from).await?.is_dir() {
+            return self.move_tree(&from, &to).await;
         }
         if self.exists(&to).await? {
             return Err(Error::AlreadyExists(to.to_path_buf()));
@@ -86,16 +103,27 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         cs.expect(&from, from_text.clone());
         cs.expect_absent(&to);
 
-        // 1. Inbound references: every document that links *to* `from` by a
-        //    path, retargeted to `to` (parent's spanning entry, children's
-        //    inverses, overlay `links`, body wikilinks). Id-form links resolve
-        //    through the registry and are never rewritten.
-        let inbound_writes = self.collect_inbound_rewrites(&from, &to).await?;
-
         // A separated document's prose lives in a sibling body file; move it
         // alongside (and keep the `content` pointer correct) so the pair travels
-        // together.
+        // together. Planned first because it is part of what moves: the
+        // inbound half below retargets references to the body — an embedded
+        // payload — as it does references to the node.
         let body_move = self.plan_body_move(&from_doc, &from, &to).await?;
+        let mut moves = BTreeMap::from([(from.clone(), to.clone())]);
+        if let Some(mv) = &body_move {
+            moves.insert(mv.from.clone(), mv.to.clone());
+        }
+        let moves = Moves::Files(moves);
+
+        // 1. Inbound references: every document that links *to* `from` — or to
+        //    the payload beside it — by a path, retargeted to where each lands
+        //    (parent's spanning entry, children's inverses, overlay `links`,
+        //    body links and images). Id-form links resolve through the registry
+        //    and are never rewritten. The mover itself is handed nothing: its
+        //    own pass below respells every link it holds.
+        let inbound_writes = self
+            .collect_inbound_rewrites(&from, &moves, Movers::Skip)
+            .await?;
 
         // The body's destination needs the same refusal as the node's. A rename
         // overwrites, and an overwrite is the one thing staging cannot make good:
@@ -147,6 +175,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 self.relations().relations(),
                 &from,
                 &to,
+                &moves,
                 |field| self.reference_style_for(field).path_style,
             )?;
             rerelativize_body_links(
@@ -154,6 +183,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 &from_doc.body,
                 &from,
                 &to,
+                &moves,
                 self.link_style(),
             )
         } else {
@@ -244,7 +274,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         } else {
             let (raw, _) = self.load(&body_from).await?;
             let rewritten = if from.parent() != to.parent() {
-                rerelativize_body_links(&raw, &raw, &body_from, &body_to, self.link_style())
+                // The pair is what moves: a body naming its own node, or the
+                // node its body, is respelled for where each lands.
+                let moves = Moves::Files(BTreeMap::from([
+                    (from.to_path_buf(), to.to_path_buf()),
+                    (body_from.clone(), body_to.clone()),
+                ]));
+                rerelativize_body_links(&raw, &raw, &body_from, &body_to, &moves, self.link_style())
             } else {
                 raw.clone()
             };
@@ -351,13 +387,16 @@ struct BodyMove {
 
 /// Recompute every relative link `doc` declares so it still resolves after the
 /// document moves from `from` to `to`. External and `colophon:<id>` targets
-/// are untouched — neither depends on where the document lives.
-fn rerelativize(
+/// are untouched — neither depends on where the document lives. A target that
+/// `moves` relocates too — a fellow mover in a directory move, the body beside
+/// a node — is spelled for where *it* lands.
+pub(super) fn rerelativize(
     text: &str,
     doc: &Document,
     relations: &[prov_graph::relation::Relation],
     from: &Path,
     to: &Path,
+    moves: &Moves,
     style_for: impl Fn(&str) -> LinkStyle,
 ) -> Result<String> {
     let Some(carrier) = doc.carrier else {
@@ -374,7 +413,7 @@ fn rerelativize(
             if !target.is_path_target() {
                 return None;
             }
-            let resolved = link::resolve(from, &target.target);
+            let resolved = moves.landed_or_same(&link::resolve(from, &target.target));
             let new_target = link::path_text(style, to, &resolved);
             let rendered = target.with_path(new_target).render();
             (rendered != raw).then_some(rendered)
@@ -405,20 +444,22 @@ fn rerelativize(
 }
 
 /// Re-relativize the path-form body links in a moved document's body —
-/// `[[wikilinks]]` and markdown/djot `[t](a)` links alike — so they still
-/// resolve from `to`'s directory, then splice the rewritten body back into
-/// `text` (the already-frontmatter-rewritten document). `body` is the moved
-/// document's verbatim prose, which MetaEditor preserved byte-for-byte, so it is
-/// still a contiguous run of `text`. Id-form (`id:<id>`) and external
+/// `[[wikilinks]]`, markdown/djot `[t](a)` links and `![a](t)` images alike —
+/// so they still resolve from `to`'s directory, then splice the rewritten body
+/// back into `text` (the already-frontmatter-rewritten document). `body` is the
+/// moved document's verbatim prose, which MetaEditor preserved byte-for-byte,
+/// so it is still a contiguous run of `text`. Id-form (`id:<id>`) and external
 /// (`scheme://…`) targets are left alone — neither depends on where the document
-/// lives. Each link keeps its own wrapper on rewrite ([`Link::render`]), so a
-/// wikilink stays `[[…]]` and a markdown link stays `[label](…)`. Returns `text`
+/// lives; a target `moves` relocates too is spelled for where it lands. Each
+/// link keeps its own wrapper on rewrite ([`Link::render`]), so a wikilink
+/// stays `[[…]]` and a markdown link stays `[label](…)`. Returns `text`
 /// unchanged when the body has no rewritable link.
-fn rerelativize_body_links(
+pub(super) fn rerelativize_body_links(
     text: &str,
     body: &str,
     from: &Path,
     to: &Path,
+    moves: &Moves,
     style: LinkStyle,
 ) -> String {
     if body.is_empty() {
@@ -434,7 +475,7 @@ fn rerelativize_body_links(
         if !bl.is_path_target() {
             continue;
         }
-        let resolved = link::resolve(from, &bl.link.target);
+        let resolved = moves.landed_or_same(&link::resolve(from, &bl.link.target));
         let new_target = link::path_text(style, to, &resolved);
         let retargeted = bl.link.with_path(new_target).render();
         if retargeted == body[bl.span.start..bl.span.end] {
@@ -729,6 +770,95 @@ mod tests {
             "{page}"
         );
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn moving_a_sidecar_carries_every_reference_to_its_payload() {
+        // docs/tasks/a-directory-moves-one-document-at-a-time.md, the
+        // one-page half: a sidecar renamed out of its page's `attachments/`
+        // took the payload with it and left the page's `![](…)` naming a file
+        // that had just left — an image is not an edge, so the census never
+        // saw the reference and `check` had nothing to say. A reference to
+        // the payload is now a reference to its sidecar for the purpose of a
+        // move, and the page — which names *both*, the sidecar in `contents`
+        // and the payload in its body — is rewritten once for the pair.
+        let dir = tempdir("sidecar-move-carries-payload-refs");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- page.md\n- gallery.md\n---\n",
+        );
+        write(
+            &dir,
+            "page.md",
+            "---\npart_of: index.md\ncontents:\n- attachments/photo.jpg.yaml\n---\n\
+             ![](attachments/photo.jpg)\n[download](attachments/photo.jpg)\n\
+             [[attachments/photo.jpg.yaml|its record]]\n",
+        );
+        // Reaches the payload by an image and nothing else: the one shape only
+        // a census that counts images can find.
+        write(
+            &dir,
+            "gallery.md",
+            "---\npart_of: index.md\n---\n![the photo](attachments/photo.jpg)\n",
+        );
+        std::fs::create_dir_all(dir.join("attachments")).unwrap();
+        std::fs::write(dir.join("attachments/photo.jpg"), b"jpeg").unwrap();
+        write(
+            &dir,
+            "attachments/photo.jpg.yaml",
+            "title: Photo\npart_of: ../page.md\ncontent: photo.jpg\n",
+        );
+
+        let mut w = ws(&dir);
+        block_on(w.rename(
+            Path::new("attachments/photo.jpg.yaml"),
+            Path::new("media/photo.jpg.yaml"),
+        ))
+        .unwrap();
+
+        assert!(
+            dir.join("media/photo.jpg").is_file(),
+            "the payload travelled"
+        );
+        let page = read(&dir, "page.md");
+        assert!(page.contains("- /media/photo.jpg.yaml"), "{page}");
+        assert!(page.contains("![](/media/photo.jpg)\n"), "{page}");
+        assert!(page.contains("[download](/media/photo.jpg)\n"), "{page}");
+        assert!(
+            page.contains("[[/media/photo.jpg.yaml|its record]]"),
+            "{page}"
+        );
+        let gallery = read(&dir, "gallery.md");
+        assert!(
+            gallery.contains("![the photo](/media/photo.jpg)\n"),
+            "{gallery}"
+        );
+        assert!(
+            read(&dir, "media/photo.jpg.yaml").contains("part_of: /page.md"),
+            "the mover's own link"
+        );
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // A move drops the inbound index; a retitle builds it again and its
+        // relabel keeps it. The second move is then answered from the index
+        // rather than a census, and the index has to know the image too.
+        block_on(w.retitle(Path::new("page.md"), "Page")).unwrap();
+        block_on(w.rename(
+            Path::new("media/photo.jpg.yaml"),
+            Path::new("pictures/photo.jpg.yaml"),
+        ))
+        .unwrap();
+        let page = read(&dir, "page.md");
+        assert!(page.contains("![](/pictures/photo.jpg)\n"), "{page}");
+        assert!(page.contains("- /pictures/photo.jpg.yaml"), "{page}");
+        let gallery = read(&dir, "gallery.md");
+        assert!(
+            gallery.contains("![the photo](/pictures/photo.jpg)\n"),
+            "{gallery}"
+        );
+        assert!(dir.join("pictures/photo.jpg").is_file());
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
 
     #[test]

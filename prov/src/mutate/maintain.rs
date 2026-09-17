@@ -55,6 +55,56 @@ pub(super) struct Rewrite {
     pub(super) text: String,
 }
 
+/// What a move does to paths: where each path the op relocates lands, and
+/// which paths it leaves alone.
+///
+/// One value for every shape a verb moves — a lone document, a separated
+/// node with its body or payload beside it, a converted subtree, a whole
+/// directory — so the inbound collector and the re-relativizing passes ask
+/// one question of it ([`landed`](Self::landed)) and cannot disagree about
+/// what moved. A directory is a rule rather than a list, because a book of
+/// ten thousand photographs is one move and should cost one entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Moves {
+    /// Named files, each to its own destination.
+    Files(BTreeMap<PathBuf, PathBuf>),
+    /// Everything under `from`, keeping its place within it, to under `to`.
+    Tree { from: PathBuf, to: PathBuf },
+}
+
+impl Moves {
+    /// One file, `from` to `to`.
+    pub(crate) fn one(from: &Path, to: &Path) -> Self {
+        Self::Files(BTreeMap::from([(from.to_path_buf(), to.to_path_buf())]))
+    }
+
+    /// Where `path` lands, or `None` when the op leaves it where it is.
+    pub(crate) fn landed(&self, path: &Path) -> Option<PathBuf> {
+        match self {
+            Self::Files(map) => map.get(path).cloned(),
+            Self::Tree { from, to } => path.strip_prefix(from).ok().map(|rest| to.join(rest)),
+        }
+    }
+
+    /// `path` itself when the op leaves it alone, else where it lands — the
+    /// form a pass that is *spelling* a resolved target wants.
+    pub(super) fn landed_or_same(&self, path: &Path) -> PathBuf {
+        self.landed(path).unwrap_or_else(|| path.to_path_buf())
+    }
+}
+
+/// Whether the inbound collector rewrites a source that is itself one of the
+/// movers — see [`collect_inbound_rewrites`](Workspace::collect_inbound_rewrites).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Movers {
+    /// A mover's references to its fellow movers are retargeted here, because
+    /// no other pass will touch its links: it stays in its directory.
+    Rewrite,
+    /// A mover is handed nothing: it changes directory and re-relativizes
+    /// every link it holds itself, fellow movers included.
+    Skip,
+}
+
 /// Walking the spanning relation needs the relation set and the resolver, and
 /// neither of those is an identity concern — so these four sit outside the
 /// `IdentityPolicy` bound the mutation verbs carry. `validate`'s remedy
@@ -189,83 +239,56 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(out)
     }
 
-    /// Every document that links to `from` by a path, rewritten to point at `to`
-    /// — the inbound half of a move. Reused by `rename`, `separate`, and
-    /// `combine`. Id-form links are left untouched (the registry keeps them
-    /// resolving); `from`'s own links are excluded (the mover rewrites those
-    /// itself). Returns `(source_path, rewrite)` pairs.
+    /// Every document that links to a path `moves` relocates, rewritten to
+    /// reach where that path lands — the inbound half of a move, shared by
+    /// `rename`, `move_tree`, `separate`, `combine` and the `convert` sweep.
+    /// Id-form links are left untouched (the registry keeps them resolving).
+    /// Keyed by the source's *current* path.
+    ///
+    /// One census, not one per moved path, and one accumulated text per source,
+    /// not one per (source, move) pair. Both matter, and the second is the
+    /// correctness half: when `a.md` and `b.md` move together and `a.md` links
+    /// to `b.md`, running a single-move collector twice yields two texts for
+    /// `a.md` — each computed from disk, so each missing the other's rewrite —
+    /// and whichever is staged last silently drops the one before it. Folding
+    /// every applicable move through the same text is what keeps a mover that
+    /// references another mover correct. The same shape carries a *pair* that
+    /// moves as one — a page whose `contents` names an attachment's sidecar and
+    /// whose body embeds its payload is rewritten once, for both.
+    ///
+    /// A document's reference to *itself* is never retargeted. Its references
+    /// to its fellow movers are, or not, per `movers`: a sweep that leaves each
+    /// mover's directory alone ([`Movers::Rewrite`]) has no other pass that
+    /// would touch them, while a mover whose directory changes re-relativizes
+    /// *every* link it holds itself ([`Movers::Skip`]), fellow movers included,
+    /// and handing it an inbound rewrite too would be two edits to one text.
     ///
     /// The sources come from the inbound index (`workspace::inbound`) — a
-    /// census the first time a verb asks, a stat sweep and a lookup after
-    /// that — which `retitle` shares, the two being the same question.
+    /// census the first time a verb asks, a stat sweep and a lookup after that
+    /// — which `retitle` shares, the two being the same question. `anchor` is a
+    /// document whose spanning tree the census covers when it has to run.
     pub(super) async fn collect_inbound_rewrites(
         &self,
-        from: &Path,
-        to: &Path,
-    ) -> Result<Vec<(PathBuf, Rewrite)>> {
-        let sources = self.inbound_sources(from, Form::Path).await?;
-        let mut writes = Vec::new();
-        for source in sources {
-            if let Some(updated) = self.rewrite_inbound_doc(&source, from, to).await? {
-                // A memo hit — the rewrite just read the source, and the caller
-                // holds the scope — so pairing the rewrite with the text it was
-                // computed from costs no I/O.
-                let (read, _) = self.load(&source).await?;
-                writes.push((
-                    source,
-                    Rewrite {
-                        read,
-                        text: updated,
-                    },
-                ));
-            }
-        }
-        Ok(writes)
-    }
-
-    /// The inbound half of a *set* of moves landing together —
-    /// [`collect_inbound_rewrites`](Self::collect_inbound_rewrites) generalized
-    /// from one `(from, to)` to many, keyed by the source's *current* path.
-    ///
-    /// One census, not one per move, and one accumulated text per source, not one
-    /// per (source, move) pair. Both matter, and the second is the correctness
-    /// half: when a sweep moves `a.md` and `b.md` together and `a.md` links to
-    /// `b.md`, running the single-move collector twice yields two texts for `a.md`
-    /// — each computed from disk, so each missing the other's rewrite — and
-    /// whichever is staged last silently drops the one before it. Folding every
-    /// applicable move through the same text is what keeps a mover that references
-    /// another mover correct.
-    ///
-    /// A document's reference to *itself* is skipped (a mover's own path is not
-    /// retargeted), but a mover's references to its fellow movers are not: those
-    /// are exactly the ones a sweep exists to maintain. `root` anchors the census,
-    /// so the caller (which already knows the swept subtree) supplies it.
-    pub(super) async fn collect_inbound_rewrites_multi(
-        &self,
-        root: &Path,
-        moves: &BTreeMap<PathBuf, PathBuf>,
+        anchor: &Path,
+        moves: &Moves,
+        movers: Movers,
     ) -> Result<BTreeMap<PathBuf, Rewrite>> {
-        // source → the moved paths it references, in a stable order so a
-        // multi-move document rewrites the same way every run.
-        let mut by_source: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
-        for entry in self.census(root).await? {
-            let (Resolution::Path(p) | Resolution::CaseMismatch { got: p, .. }) = &entry.resolution
-            else {
-                continue;
-            };
-            if moves.contains_key(p) && &entry.source != p {
-                by_source.entry(entry.source.clone()).or_default();
-                by_source.get_mut(&entry.source).unwrap().insert(p.clone());
-            }
-        }
+        let by_source = self.inbound_sources_of(anchor, moves, Form::Path).await?;
         let mut writes = BTreeMap::new();
         for (source, froms) in by_source {
+            if movers == Movers::Skip && moves.landed(&source).is_some() {
+                continue;
+            }
+            // A memo hit where the census just read the source and the caller
+            // holds the scope — so pairing the rewrite with the text it was
+            // computed from costs no I/O.
             let (original, mut doc) = self.load(&source).await?;
             let mut text = original.clone();
             for from in &froms {
-                if let Some(updated) =
-                    self.rewrite_inbound_text(&source, &text, &doc, from, &moves[from])?
-                {
+                let Some(to) = moves.landed(from) else {
+                    continue;
+                };
+                if let Some(updated) = self.rewrite_inbound_text(&source, &text, &doc, from, &to)? {
                     doc = Document::parse(&source, &updated)?;
                     text = updated;
                 }
@@ -357,25 +380,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 
     /// Retarget every path-form reference to `from` in the document at `source`
-    /// so it reaches `to`: body wikilinks first (their spans index the current
+    /// so it reaches `to`: body links first (their spans index the current
     /// body), then each frontmatter relation entry (re-parsing between edits).
     /// Returns the updated text, or `None` when nothing in `source` pointed at
     /// `from`. Id-form links are skipped by [`retarget_entry`] and
     /// [`rewrite_body_inbound`] alike.
-    async fn rewrite_inbound_doc(
-        &self,
-        source: &Path,
-        from: &Path,
-        to: &Path,
-    ) -> Result<Option<String>> {
-        let (original, doc) = self.load(source).await?;
-        self.rewrite_inbound_text(source, &original, &doc, from, to)
-    }
-
-    /// [`rewrite_inbound_doc`](Self::rewrite_inbound_doc) over text already in
-    /// hand rather than text read from disk — the form a caller folding several
-    /// moves through one document needs, since after the first rewrite the text
-    /// that matters is no longer the one the filesystem holds.
+    ///
+    /// Over text already in hand rather than text read from disk — the form a
+    /// caller folding several moves through one document needs, since after
+    /// the first rewrite the text that matters is no longer the one the
+    /// filesystem holds.
+    ///
+    /// [`retarget_entry`]: Self::retarget_entry
     fn rewrite_inbound_text(
         &self,
         source: &Path,

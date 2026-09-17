@@ -29,8 +29,9 @@
 //! and, when the op moved an ID, the registry with them. No error can leave the
 //! workspace half-linked, and behind the write-ahead journal
 //! ([`crate::journal`]) no crash can either: an interrupted op resolves to the
-//! workspace fully before it or fully after it. Ops remain documents-only: no
-//! directory moves.
+//! workspace fully before it or fully after it. Every op is spelled in
+//! files, `move_tree` included: a directory moves as the set of files under
+//! it.
 //!
 //! ## Where the code lives
 //!
@@ -42,7 +43,9 @@
 //!   additively (`adopt`), or in place of the parent it already claims
 //!   (`reparent`).
 //! - `rename` — a document's path changes and every link that touched it
-//!   follows; `retitle` — its title changes and every inbound *label* follows.
+//!   follows; `move_tree` — a directory's does, every document under it a
+//!   mover in one change set; `retitle` — its title changes and every inbound
+//!   *label* follows.
 //! - `delete` — the one verb that destroys a document; `tombstone` — the record
 //!   it leaves in the workspace's deletion log, with `restore` (the graph
 //!   repair that record is for) and `clear_deletions` beside it.
@@ -72,6 +75,7 @@ mod create;
 pub(crate) mod delete;
 mod duplicate;
 pub(crate) mod maintain;
+mod move_tree;
 mod rename;
 mod reparent;
 mod retitle;
