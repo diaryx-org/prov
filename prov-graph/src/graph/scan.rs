@@ -158,7 +158,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             }
             for body_link in link::scan_body_links(&path, &doc.body) {
                 // An image names a payload, and a payload's directory is not
-                // one a document occupies — the same line the census draws.
+                // one a document occupies: the census reports the image, but
+                // a folder of pictures holds no title to index.
                 if body_link.image {
                     continue;
                 }

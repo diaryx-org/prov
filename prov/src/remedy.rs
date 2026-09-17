@@ -478,6 +478,13 @@ impl fmt::Display for Remedy {
     }
 }
 
+/// What [`parsed_body_link`](Workspace::parsed_body_link) found at a span:
+/// the construct's text, and whether it was an image rather than a link.
+struct ParsedBody {
+    text: String,
+    image: bool,
+}
+
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// The **recommended** metadata-only [`Fix`] for `finding`, or `None` when
     /// prov has nothing safe to offer.
@@ -536,22 +543,28 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 
     /// The text at `span` in `doc`'s body, **only when twig itself reported that
-    /// span as a link** — the predicate that decides whether a body-link finding
-    /// gets remedies at all.
+    /// span as a link or an image** — the predicate that decides whether a
+    /// body-link finding gets remedies at all — and which of the two it was.
     ///
     /// DESIGN §8 refuses to edit body prose, and the reason is a real one: a
     /// lexical `[[…]]` scan cannot tell a link from a Python list comprehension.
-    /// [`link::parsed_link_spans`] is the part of that scan which *can* — it is
-    /// twig's own `link` nodes — so a span it reports is a link a parser
-    /// recognized, and the objection does not reach it. A wikilink span is never
-    /// in this set (twig has no wikilink concept, it only masks code), so
-    /// `[[…]]` stays diagnosis-only exactly as before.
-    async fn parsed_body_link(&self, doc: &Path, span: &Range<usize>) -> Option<String> {
+    /// [`link::parsed_link_spans`] and [`link::parsed_image_spans`] are the
+    /// part of that scan which *can* — they are twig's own `link` and `image`
+    /// nodes — so a span they report is one a parser recognized, and the
+    /// objection does not reach it. A wikilink span is never in either set
+    /// (twig has no wikilink concept, it only masks code), so `[[…]]` stays
+    /// diagnosis-only exactly as before.
+    async fn parsed_body_link(&self, doc: &Path, span: &Range<usize>) -> Option<ParsedBody> {
         let (_, parsed) = self.load(doc).await.ok()?;
-        link::parsed_link_spans(doc, &parsed.body)
-            .contains(span)
-            .then(|| parsed.body.get(span.clone()).map(str::to_owned))
-            .flatten()
+        let image = if link::parsed_link_spans(doc, &parsed.body).contains(span) {
+            false
+        } else if link::parsed_image_spans(doc, &parsed.body).contains(span) {
+            true
+        } else {
+            return None;
+        };
+        let text = parsed.body.get(span.clone())?.to_owned();
+        Some(ParsedBody { text, image })
     }
 
     /// How `doc` writes its `relation` entry that reaches `wanted` — the handle
@@ -627,7 +640,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 ));
             }
             LinkSite::Body(span) => {
-                let Some(from) = self.parsed_body_link(doc, span).await else {
+                let Some(ParsedBody { text: from, image }) = self.parsed_body_link(doc, span).await
+                else {
                     return Ok(Vec::new());
                 };
                 for candidate in candidates {
@@ -643,6 +657,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                             to,
                         },
                     ));
+                }
+                // An image has no text to keep: unlinking `![alt](x)` would
+                // leave `!alt` in the prose, and the alt is a description of a
+                // picture, not a sentence the picture interrupted. Retarget it,
+                // or take it out by hand.
+                if image {
+                    return Ok(out);
                 }
                 out.push(Remedy::new(
                     RemedyKind::RemoveLink,
@@ -1829,6 +1850,36 @@ mod tests {
             text.contains("[[also-gone]]"),
             "and the wikilink is untouched: {text}"
         );
+    }
+
+    #[test]
+    fn a_broken_image_can_be_retargeted_but_never_unlinked() {
+        // twig parsed the image, so its span is as safe to rewrite as a
+        // link's — and a case or spelling slip beside the real file is the
+        // ordinary way a picture goes missing. What it cannot be is unlinked:
+        // a link's label is prose that stays, an image's alt is not.
+        let dir = tempdir("remedy-image");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\n---\nA picture: ![the cat](cta.jpg)\n",
+        );
+        std::fs::write(dir.join("cat.jpg"), b"jpeg").unwrap();
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let broken = sole(&findings, |f| matches!(f, Finding::BrokenLink { .. }));
+        let remedies = block_on(ws.remedies(broken)).unwrap();
+        assert_eq!(
+            kinds(&remedies),
+            vec![RemedyKind::Retarget],
+            "{remedies:#?}"
+        );
+
+        block_on(ws.apply_fix(&remedies[0].fix.clone())).unwrap();
+        let text = read(&dir, "index.md");
+        assert!(text.contains("![the cat](/cat.jpg)"), "{text}");
+        assert!(block_on(ws.check("index.md")).unwrap().is_empty());
     }
 
     #[test]

@@ -202,11 +202,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// per-document rewrites resolve them: path and id targets through
     /// [`resolve_link`](Self::resolve_link), aliases left unresolved — the
     /// population the census scans, filtered by the same resolver the rewrites
-    /// filter on, **plus images**. The census leaves an image out because it
-    /// names a payload rather than a document, so it is no edge of the graph;
-    /// but a payload moves — beside its sidecar, or inside a directory — and
-    /// the page embedding it is then exactly a source the move must rewrite.
-    /// This is the inverse the rewrites consult, so it counts what they carry.
+    /// filter on, images included: a payload moves — beside its sidecar, or
+    /// inside a directory — and the page embedding it is then exactly a source
+    /// the move must rewrite. This is the inverse the rewrites consult, so it
+    /// counts what they carry.
     fn edges_of(&self, path: &Path, doc: &Document) -> DocEdges {
         let spanning = self.relations().spanning_relation();
         let meta = fig::Value::from(&doc.meta);

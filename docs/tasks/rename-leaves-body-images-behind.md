@@ -19,7 +19,9 @@ that starts after the `!` — so the three rewrites (`rename`'s own-body pass,
 the inbound pass, and `convert`'s restyle) carry an image exactly as they
 carry a link and cannot drop the `!` — and an empty alt text is kept. The
 census and the spanning scan skip images, so `check` reports nothing new; the
-separate decision below is still not made.
+separate decision below is still not made. *(Made since, in
+[a-directory-moves-one-document-at-a-time](/docs/tasks/a-directory-moves-one-document-at-a-time.md):
+the census reports an image by path, and a missing picture is a broken link.)*
 
 **Repro.** A workspace with `page.md` containing
 

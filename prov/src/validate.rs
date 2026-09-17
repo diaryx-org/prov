@@ -3115,6 +3115,74 @@ mod tests {
     }
 
     #[test]
+    fn check_diagnoses_a_dangling_image_and_says_nothing_about_a_present_one() {
+        // The other half of the decision a-directory-moves-one-document-at-a-time
+        // left open: an image names a payload rather than a document, so it was
+        // no edge and `check` had nothing to say when the picture was gone. Now
+        // it is censused by path — a missing one is a broken body link, a
+        // present one is nothing, an external one is nothing, and the picture
+        // itself joins the reachable set (so an ignore list no longer files an
+        // embedded picture as unreached). Inside a code fence it is still code.
+        let dir = tempdir("image-check");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\n---\n",
+        );
+        write(
+            &dir,
+            "a.md",
+            "---\npart_of: index.md\n---\n\
+             ![here](attachments/here.jpg)\n![gone](attachments/gone.jpg)\n\
+             ![remote](https://ex.com/p.jpg)\n\n```\n![fake](attachments/fake.jpg)\n```\n",
+        );
+        std::fs::create_dir_all(dir.join("attachments")).unwrap();
+        std::fs::write(dir.join("attachments/here.jpg"), b"jpeg").unwrap();
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            matches!(&findings[0],
+                Finding::BrokenLink { doc, site: LinkSite::Body(_), target }
+                    if doc == &PathBuf::from("a.md") && target == "attachments/gone.jpg"),
+            "{findings:?}"
+        );
+        let reachable = block_on(ws.reachable_files("index.md")).unwrap();
+        assert!(
+            reachable.contains(Path::new("attachments/here.jpg")),
+            "{reachable:?}"
+        );
+    }
+
+    #[test]
+    fn an_image_is_a_path_and_never_a_title() {
+        // A bare name in a `[[…]]` is a nominal reference, resolved through the
+        // title index. A bare name in an image is a file that is not there: no
+        // picture is a document, so nothing about a title could make it
+        // resolve, and building the index for one would read the whole
+        // workspace to say so.
+        let dir = tempdir("image-not-alias");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- photo.md\n---\n![](Photo)\n",
+        );
+        write(
+            &dir,
+            "photo.md",
+            "---\ntitle: Photo\npart_of: index.md\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(f,
+                Finding::BrokenLink { site: LinkSite::Body(_), target, .. } if target == "Photo")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
     fn check_resolves_a_unique_alias_and_flags_an_ambiguous_one() {
         let dir = tempdir("alias-check");
         // Body aliases: `[[Alpha]]` is unique (clean), `[[Dup]]` is claimed by

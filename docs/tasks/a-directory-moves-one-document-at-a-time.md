@@ -19,9 +19,11 @@ rename, a rule for a directory — and both the inbound collector and the
 re-relativizing passes ask it, so a mover's link to a fellow mover is spelled
 for where the fellow lands; and the inbound index (`workspace/inbound.rs`)
 now counts images, so a page that reaches a payload by `![…](…)` alone is a
-source the move rewrites. The census still leaves images out, so `check`
-reports nothing new about a missing picture — that remains the other half of
-the decision, and can follow. The set is N file renames in one journal rather
+source the move rewrites. The other half followed in `feat(validate): a
+dangling image is a broken link` (2026-09-16): the census reports an image by
+path — never through the title index — so a missing picture is a
+`BrokenLink` at its body site, a present one joins the reachable set, and a
+repair may retarget one but never unlink it. The set is N file renames in one journal rather
 than one directory rename, because the registry, the read memo and pending id
 stamps all follow a file; the emptied directory is removed after the set
 lands. Pinned by `move_tree::tests` and

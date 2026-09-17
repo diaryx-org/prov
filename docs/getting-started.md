@@ -349,9 +349,10 @@ links left dangling.
 
 ## 8. Check integrity
 
-`check` walks from the root and reports problems: broken links, case mismatches,
-duplicate containment, a child missing its `part_of` inverse, dangling IDs, and
-documents on disk that nothing links to (orphans). It exits non-zero when it
+`check` walks from the root and reports problems: broken links (a body image
+whose picture is gone included), case mismatches, duplicate containment, a child
+missing its `part_of` inverse, dangling IDs, and documents on disk that nothing
+links to (orphans). It exits non-zero when it
 finds anything, so it fits in CI. Right now the workspace is consistent:
 
 <!-- exec -->

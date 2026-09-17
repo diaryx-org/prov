@@ -1228,6 +1228,29 @@ pub fn parsed_link_spans(path: &Path, body: &str) -> Vec<Range<usize>> {
     crate::content::link_spans(body, format).unwrap_or_default()
 }
 
+/// [`parsed_link_spans`] for images: the `[alt](target)` span after the `!`
+/// of each `![alt](target)` twig itself parsed as an image — the spans
+/// [`scan_body_links`] reports with [`BodyLink::image`] set, and so the ones
+/// a census entry or a finding carries for one. The same claim as a link's:
+/// a parser recognized it, so a repair that rewrites the span is rewriting an
+/// image and not prose that resembles one. Empty when the body is not one
+/// twig reads.
+pub fn parsed_image_spans(path: &Path, body: &str) -> Vec<Range<usize>> {
+    let Some(format) = crate::content::ContentFormat::from_extension(path) else {
+        return Vec::new();
+    };
+    crate::content::code_and_link_spans(body, format)
+        .map(|spans| {
+            spans
+                .images
+                .into_iter()
+                .filter(|span| body[span.clone()].starts_with('!'))
+                .map(|span| span.start + 1..span.end)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Sort-then-merge overlapping/adjacent ranges. `code_spans_for`'s sources
 /// don't currently nest or overlap (code-block/verbatim/raw nodes are AST
 /// leaves), but merging first keeps [`scan_outside_spans`] correct even if

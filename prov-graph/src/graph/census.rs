@@ -35,7 +35,10 @@ pub enum LinkSite {
     /// `None` for a scalar field (`part_of`, `content`) — see
     /// [`Edge::index`](crate::relation::Edge::index) for how a list is counted.
     Relation { field: String, index: Option<usize> },
-    /// A `[[…]]` wikilink in the body, at this byte span.
+    /// A link in the body, at this byte span: a `[[…]]` wikilink, a
+    /// markdown/djot `[label](target)`, or the `[alt](target)` of an
+    /// `![alt](target)` image (the span starts after the `!`, as
+    /// [`BodyLink`](crate::link::BodyLink) reports it).
     Body(Range<usize>),
 }
 
@@ -253,8 +256,8 @@ pub struct Walk {
 }
 
 /// The set of workspace-relative paths a walk from `start` reaches: `start`
-/// itself, every path a census link resolves to (any relation, a body wikilink,
-/// or an id through the registry), and every `content` target.
+/// itself, every path a census link resolves to (any relation, a body link or
+/// image, or an id through the registry), and every `content` target.
 ///
 /// A **case-mismatched** link counts its *actual* on-disk file as reached, so a
 /// file is never both case-mismatched and orphaned. Prose bodies (and attachment
@@ -359,8 +362,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     }
 
     /// Take a census of every forward link reachable from `start`: one
-    /// [`CensusEntry`] per frontmatter relation edge *and* per body `[[…]]`
-    /// wikilink, each carrying its [`LinkSite`] and [`Resolution`].
+    /// [`CensusEntry`] per frontmatter relation edge *and* per body link —
+    /// `[[…]]` wikilink, `[t](a)` link, `![a](t)` image — each carrying its
+    /// [`LinkSite`] and [`Resolution`].
     ///
     /// This is the one traversal the backlink map, the integrity findings, and
     /// (via `mutate`) inbound-rename maintenance are all views over. Because it
@@ -407,7 +411,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// structural facts ([`StructuralFact`], which depend on traversal state,
     /// not on a single link's resolution) in one pass. Frontmatter edges may
     /// be spanning and so drive descent, the single-parent check, and the
-    /// inverse check; body wikilinks are always overlay references —
+    /// inverse check; body links and images are always overlay references —
     /// censused, never spanning.
     ///
     /// "One pass" describes what it *reports*, not how many times it opens a
@@ -575,20 +579,24 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 });
             }
 
-            // Body links — `[[wikilinks]]` and markdown/djot `[t](a)` links
-            // alike — overlay references, censused but never spanning. An
-            // image is not: it names a payload, not a document, so whether a
-            // missing one is a finding is a question the census has not been
-            // asked yet. The rewrites still carry it (see `BodyLink::image`).
+            // Body links — `[[wikilinks]]`, markdown/djot `[t](a)` links and
+            // `![a](t)` images alike — overlay references, censused but never
+            // spanning. An image names a payload rather than a document, and a
+            // payload is not a node; but the page has said where its picture
+            // is, and a picture that is not there is exactly what `check` is
+            // for. So an image is censused **by path only**: a bare name in an
+            // image is a file that is missing, never a nominal reference to a
+            // document by title, and it neither builds the title index nor
+            // resolves through it.
             for body_link in link::scan_body_links(&path, &doc.body) {
-                if body_link.image {
-                    continue;
-                }
+                let image = body_link.image;
                 let wl = body_link.link;
-                if titles.is_none() && title::is_alias_shaped(&wl.target) {
+                if !image && titles.is_none() && title::is_alias_shaped(&wl.target) {
                     titles = Some(self.title_index_scoped(start, parked).await?);
                 }
-                let resolution = self.resolve_forward(&path, &wl, titles.as_ref()).await;
+                let resolution = self
+                    .resolve_forward(&path, &wl, titles.as_ref().filter(|_| !image))
+                    .await;
                 census.push(CensusEntry {
                     source: path.clone(),
                     site: LinkSite::Body(body_link.span),
