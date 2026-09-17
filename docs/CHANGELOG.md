@@ -36,6 +36,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - **relation** — the base vocabulary says replaces and derived_from ([`8f0d134`](https://github.com/diaryx-org/prov/commit/8f0d134121a5f3428349f2bbf24fe5ba1da529df))
 - **provenance** — a generated mapping records the act as how ([`7367e60`](https://github.com/diaryx-org/prov/commit/7367e608a4cb98043987ca7d917fcab3ada0a710))
 - **mutate** — a directory moves as one change set, and a payload's references move with it ([`df89a04`](https://github.com/diaryx-org/prov/commit/df89a045ec36e94e765e4ba11b2d55f3c7f5a8bb))
+- **validate** — a dangling image is a broken link ([`856793d`](https://github.com/diaryx-org/prov/commit/856793db86ca199952742c4d08bfa615772cad51))
 
 ### Behavioural changes
 
@@ -64,6 +65,14 @@ trying to load the directory as a document.
 - moving an attachment's sidecar (`rename`, `mv`) now
 rewrites every body `![…](…)` and `[…](…)` in other documents that resolved
 to the payload's old path, where before they were left as written.
+
+- `check` now reports a body `![alt](target)` whose
+target resolves to nothing as a broken link, and one whose target differs
+only in case as a case mismatch, where before both passed in silence.
+
+- `Workspace::census`, `backlinks` and `backlinks_to`
+now include entries for body images (`LinkSite::Body`), and `reachable_files`
+/ the ignore list count an embedded picture as reached.
 
 <!-- git-cliff:end -->
 
