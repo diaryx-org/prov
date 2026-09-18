@@ -30,6 +30,7 @@ use crate::textdist::nearest;
 use prov_exports::{ExportIssueKind, ExportSpec};
 use prov_graph::content::ContentFormat;
 use prov_graph::document::EmbedStyle;
+use prov_graph::field::FieldPath;
 pub use prov_graph::fixity::Fixity;
 use prov_graph::identity::{Registration, Trigger};
 use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
@@ -202,6 +203,14 @@ pub struct FieldSpec {
     /// The index itself is not in its own scope, for the reason a view's
     /// anchor is not one of its records.
     pub under: Option<String>,
+}
+
+impl FieldSpec {
+    /// Whether the field is declared `type: ref` — its values are links into
+    /// the workspace, and prov reads them as such (spec §3).
+    pub fn is_reference(&self) -> bool {
+        matches!(self.ty, Some(FieldType::Ref))
+    }
 }
 
 /// The config spellings of [`FieldType`], in the order a diagnostic offers them.
@@ -718,6 +727,21 @@ impl WorkspaceConfig {
         self.fields
             .iter()
             .flat_map(|(name, specs)| specs.iter().map(move |spec| (name.as_str(), spec)))
+    }
+
+    /// The fields declared `type: ref` — each a link site, read by the census
+    /// as a relation entry is: resolved, checked, rewritten on a move. The
+    /// path is the declaration's own (`sources[].resource`), parsed, so a
+    /// reader reaches every value it names. Whether a key is a link is a fact
+    /// about the vocabulary and holds workspace-wide, as a relation's name
+    /// does, so a `ref` is read from whichever declaration says it and
+    /// `under:` does not narrow it — [`diagnose`] reports the combination.
+    pub fn reference_fields(&self) -> Vec<FieldPath> {
+        self.fields
+            .iter()
+            .filter(|(_, specs)| specs.iter().any(FieldSpec::is_reference))
+            .map(|(name, _)| FieldPath::parse(name))
+            .collect()
     }
 
     pub fn relation_set(&self) -> RelationSet {
@@ -1367,6 +1391,13 @@ pub enum ConfigIssueKind {
     /// [`InvalidValue`](Self::InvalidValue) there is no list of accepted
     /// spellings: the name is the user's to choose and only its shape is fixed.
     MalformedRoot { value: String },
+    /// A field declared `type: ref` also says `under:`. Whether a key holds
+    /// links is a fact about the vocabulary — like a relation's name, it
+    /// holds everywhere — so the scope does not narrow it: the field is read
+    /// as a link site in every document. The scope still governs what the
+    /// declaration's other axes say (a vocabulary, a starting value). `key`
+    /// is the `under` key; `field` is the field.
+    ScopedReference { field: String },
 }
 
 /// Top-level config keys (block names + scalar axes + the `spec` marker).
@@ -1811,17 +1842,22 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
         match spec {
             Value::Sequence(items) => {
                 for (i, item) in items.iter().enumerate() {
-                    diagnose_field_declaration(issues, &format!("{prefix}.{i}"), item);
+                    diagnose_field_declaration(issues, name, &format!("{prefix}.{i}"), item);
                 }
             }
-            other => diagnose_field_declaration(issues, &prefix, other),
+            other => diagnose_field_declaration(issues, name, &prefix, other),
         }
     }
 }
 
-/// One field declaration, at `prefix` (`fields.status`, or `fields.status.1`
-/// inside a scoped list).
-fn diagnose_field_declaration(issues: &mut Vec<ConfigIssue>, prefix: &str, spec: &Value) {
+/// One field declaration of `name`, at `prefix` (`fields.status`, or
+/// `fields.status.1` inside a scoped list).
+fn diagnose_field_declaration(
+    issues: &mut Vec<ConfigIssue>,
+    name: &str,
+    prefix: &str,
+    spec: &Value,
+) {
     {
         let Some(entry) = spec.as_mapping() else {
             return block_shape_issue(issues, prefix, spec);
@@ -1882,6 +1918,18 @@ fn diagnose_field_declaration(issues: &mut Vec<ConfigIssue>, prefix: &str, spec:
                     }
                 }
             }
+        }
+        // A `ref` is read everywhere; a scope on one governs its other axes
+        // and nothing about its being a link. Said once, here, so the author
+        // is not left believing the link-ness stops at the index.
+        if entry.get("type").and_then(Value::as_str) == Some("ref") && entry.get("under").is_some()
+        {
+            issues.push(ConfigIssue {
+                key: format!("{prefix}.under"),
+                kind: ConfigIssueKind::ScopedReference {
+                    field: name.to_string(),
+                },
+            });
         }
     }
 }
@@ -3231,6 +3279,49 @@ mod tests {
             issues.iter().any(|i| i.key == "fields.status.defualt"),
             "{issues:?}"
         );
+    }
+
+    /// `type: ref` is the one type prov reads: the field's path is a link
+    /// site, workspace-wide, from whichever declaration says it. A scoped
+    /// `ref` is reported, and still read.
+    #[test]
+    fn a_ref_field_is_a_reference_and_a_scoped_one_is_reported() {
+        let mut resource = Mapping::new();
+        resource.insert("type".into(), Value::String("ref".into()));
+        let mut who_scoped = Mapping::new();
+        who_scoped.insert("type".into(), Value::String("ref".into()));
+        who_scoped.insert("under".into(), Value::String("[[People]]".into()));
+        let mut created = Mapping::new();
+        created.insert("type".into(), Value::String("date".into()));
+        let mut fields = Mapping::new();
+        fields.insert("sources[].resource".into(), Value::Mapping(resource));
+        fields.insert(
+            "people[].who".into(),
+            Value::Sequence(vec![Value::Mapping(who_scoped)]),
+        );
+        fields.insert("created".into(), Value::Mapping(created));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+        let top = Value::Mapping(top);
+
+        let config = WorkspaceConfig::from_meta(&top);
+        assert_eq!(
+            config.reference_fields(),
+            vec![
+                FieldPath::parse("people[].who"),
+                FieldPath::parse("sources[].resource"),
+            ]
+        );
+        let issues = diagnose(&top);
+        assert!(
+            issues.iter().any(|i| i.key == "fields.people[].who.0.under"
+                && i.kind
+                    == ConfigIssueKind::ScopedReference {
+                        field: "people[].who".into()
+                    }),
+            "{issues:?}"
+        );
+        assert_eq!(issues.len(), 1, "{issues:?}");
     }
 
     /// The inverse guard: an entry that declares neither is not a description of

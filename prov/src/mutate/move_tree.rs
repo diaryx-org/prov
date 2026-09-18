@@ -167,11 +167,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let rewritten = rerelativize(
                 &text,
                 &doc,
-                self.relations().relations(),
+                &self.frontmatter_links(&fig::Value::from(&doc.meta)),
                 path,
                 &to,
                 &moves,
-                |field| self.reference_style_for(field).path_style,
+                |site| self.site_path_style(site),
             )?;
             let rewritten = rerelativize_body_links(
                 &rewritten,

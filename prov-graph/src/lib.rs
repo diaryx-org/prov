@@ -70,6 +70,7 @@ pub mod content;
 pub mod document;
 pub mod error;
 pub mod exec;
+pub mod field;
 pub mod fixity;
 pub mod fs;
 pub mod graph;
@@ -90,6 +91,7 @@ pub use document::{
 };
 pub use error::{Error, Result};
 pub use exec::block_on;
+pub use field::{Address, FieldPath};
 pub use fig::ExtKind;
 pub use fig::Format;
 pub use fixity::Fixity;

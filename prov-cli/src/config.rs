@@ -417,6 +417,11 @@ pub(crate) fn cmd_config(
                             "prov: cannot nest by `{field}` — it is declared `type: seq`, and a document with several values has several homes"
                         );
                     }
+                    prov::ConfigIssueKind::ScopedReference { field } => {
+                        eprintln!(
+                            "prov: `{field}` is declared `type: ref` and scoped — a link field is read everywhere, so the scope narrows its other axes and not that"
+                        );
+                    }
                 }
                 return Ok(ExitCode::FAILURE);
             }

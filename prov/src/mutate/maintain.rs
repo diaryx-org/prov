@@ -20,8 +20,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use fig::Segment;
-
 use crate::identity::IdentityPolicy;
 use crate::validate::Finding;
 use crate::workspace::Workspace;
@@ -30,6 +28,7 @@ use crate::workspace::inbound::Form;
 use super::delete::Diagnosis;
 use prov_graph::document::{Document, whole_file_format};
 use prov_graph::error::{Error, Result};
+use prov_graph::field::{Address, FieldPath, strings_at};
 use prov_graph::graph::{LinkSite, Resolution, Target};
 use prov_graph::link::{self, Link, LinkStyle};
 use prov_graph::meta::Value;
@@ -306,8 +305,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(writes)
     }
 
-    /// Rewrite **every** entry of `field` in `doc` whose target resolves to
-    /// `old` so it reaches `new` instead, preserving each entry's label and the
+    /// Rewrite **every** frontmatter link in `doc` whose target resolves to
+    /// `old` so it reaches `new` instead — each relation entry and each value
+    /// of a path-valued field — preserving each entry's label and the
     /// document's formatting. Returns the updated text, or `None` when nothing
     /// matches.
     ///
@@ -317,73 +317,61 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// the rest pointing at a path the move just emptied. The move would then be
     /// the author of the broken links `check` reports.
     ///
-    /// Non-path entries are skipped rather than aborting the field, so a
-    /// relation mixing an `id:` reference with a path reference to the same
-    /// document still gets its path half rewritten. Id-form targets need no
-    /// rewrite in any case — the registry keeps them resolving.
-    fn retarget_entry(
+    /// Non-path entries are skipped rather than aborting, so a relation mixing
+    /// an `id:` reference with a path reference to the same document still
+    /// gets its path half rewritten. Id-form targets need no rewrite in any
+    /// case — the registry keeps them resolving.
+    fn retarget_frontmatter(
         &self,
         text: &str,
         doc: &Document,
-        field: &str,
         doc_path: &Path,
         old: &Path,
         new: &Path,
     ) -> Result<Option<String>> {
-        let Some(value) = doc.meta.get(field) else {
-            return Ok(None);
-        };
-        let matches = |raw: &str| {
-            let link = Link::parse(raw);
-            link.is_path_target()
-                && self.resolve_link(doc_path, &link) == Target::Path(old.to_path_buf())
-        };
-        // Indices are into the *raw* sequence, not into `link_strings()` (which
-        // filters non-string items and so skews every position taken from it).
-        let hits: Vec<(usize, String)> = match value.as_sequence() {
-            Some(items) => items
-                .iter()
-                .enumerate()
-                .filter_map(|(i, item)| item.as_str().map(|raw| (i, raw.to_string())))
-                .filter(|(_, raw)| matches(raw))
-                .collect(),
-            None => value
-                .as_str()
-                .filter(|raw| matches(raw))
-                .map(|raw| vec![(0, raw.to_string())])
-                .unwrap_or_default(),
-        };
-        if hits.is_empty() {
-            return Ok(None);
-        }
         let Some(carrier) = doc.carrier else {
             return Ok(None); // no metadata block: nothing to rewrite
         };
-        let is_sequence = value.as_sequence().is_some();
-        let style = self.reference_style_for(field).path_style;
+        let meta = fig::Value::from(&doc.meta);
+        let hits: Vec<_> = self
+            .frontmatter_links(&meta)
+            .into_iter()
+            .filter(|site| {
+                let link = Link::parse(&site.raw);
+                link.is_path_target()
+                    && self.resolve_link(doc_path, &link) == Target::Path(old.to_path_buf())
+            })
+            .collect();
+        if hits.is_empty() {
+            return Ok(None);
+        }
         let mut editor = MetaEditor::open(text, carrier)?;
-        for (index, raw) in hits {
-            let updated = Link::parse(&raw).with_path(link::path_text(style, doc_path, new));
-            // A scalar field is addressed by key; a sequence entry by key + index.
-            // Replacing in place never changes the sequence's length, so indices
-            // taken before the first edit stay valid through the last.
-            if is_sequence {
-                editor.replace_value(
-                    &[Segment::Key(field), Segment::Index(index)],
-                    fig::Value::Str(updated.render()),
-                )?;
-            } else {
-                editor.replace_value(&[Segment::Key(field)], fig::Value::Str(updated.render()))?;
-            }
+        for site in hits {
+            // A relation entry is spelled in its relation's style; a
+            // path-valued field's value in the workspace's own.
+            let style = self.site_path_style(&site.site);
+            let updated = Link::parse(&site.raw).with_path(link::path_text(style, doc_path, new));
+            // Replacing in place never changes a sequence's length, so
+            // addresses taken before the first edit stay valid through the last.
+            editor.replace_value(&site.address.segments(), fig::Value::Str(updated.render()))?;
         }
         Ok(Some(editor.render()?))
     }
 
+    /// The path style a frontmatter site is authored in: the relation's own
+    /// where the site is a relation entry, the workspace default otherwise.
+    pub(crate) fn site_path_style(&self, site: &LinkSite) -> LinkStyle {
+        match site.relation() {
+            Some(relation) => self.reference_style_for(relation).path_style,
+            None => self.link_style(),
+        }
+    }
+
     /// Retarget every path-form reference to `from` in the document at `source`
     /// so it reaches `to`: body links first (their spans index the current
-    /// body), then each frontmatter relation entry (re-parsing between edits).
+    /// body), then the frontmatter (re-parsed after the body splice).
     /// Returns the updated text, or `None` when nothing in `source` pointed at
-    /// `from`. Id-form links are skipped by [`retarget_entry`] and
+    /// `from`. Id-form links are skipped by [`retarget_frontmatter`] and
     /// [`rewrite_body_inbound`] alike.
     ///
     /// Over text already in hand rather than text read from disk — the form a
@@ -391,7 +379,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// the first rewrite the text that matters is no longer the one the
     /// filesystem holds.
     ///
-    /// [`retarget_entry`]: Self::retarget_entry
+    /// [`retarget_frontmatter`]: Self::retarget_frontmatter
     fn rewrite_inbound_text(
         &self,
         source: &Path,
@@ -402,24 +390,19 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ) -> Result<Option<String>> {
         let mut text =
             rewrite_body_inbound(original, &doc0.body, source, from, to, self.link_style());
-        let mut doc = if text != original {
+        let doc = if text != original {
             Document::parse(source, &text)?
         } else {
             doc0.clone()
         };
-        for relation in self.relations().relations() {
-            if let Some(updated) =
-                self.retarget_entry(&text, &doc, &relation.name, source, from, to)?
-            {
-                text = updated;
-                doc = Document::parse(source, &text)?;
-            }
+        if let Some(updated) = self.retarget_frontmatter(&text, &doc, source, from, to)? {
+            text = updated;
         }
         Ok((text != original).then_some(text))
     }
 }
 
-/// The **fig index** of the entry in `doc`'s `field` whose target is written
+/// The [`Address`] of the entry in `doc`'s `field` whose target is written
 /// exactly as `written` — the address a repair needs when the target resolves to
 /// nothing, so [`entry_index`](Workspace::entry_index) (which matches on the
 /// *resolved* path) cannot find it. A broken link, a dangling id, a malformed id
@@ -428,55 +411,27 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 /// `written` is the bare target with any `[label](…)` / `[[…|…]]` wrapper
 /// stripped — what [`CensusEntry::target_text`](crate::CensusEntry) and every
 /// link [`Finding`](crate::Finding) carry, so a caller hands the finding's own
-/// field straight through.
+/// field straight through. `field` is a field path — a relation's name, a
+/// declared path such as `sources[].resource`, or the concrete address a
+/// finding names (`sources[2].resource`), each reaching whatever it reaches.
 ///
 /// Two properties worth stating, because both bite:
 ///
-/// - **The index is into the raw sequence**, not into [`Value::link_strings`],
-///   which *filters* non-string items: `[a, 3, b]` yields `["a", "b"]`, so a
-///   position taken from it addresses `3` when passed to
-///   [`MetaEditor::remove_item`]. Enumerating the sequence itself is what keeps a
-///   removal honest. (The three existing `entry_index` + `remove_item` sites
-///   carry that skew; harmless while relation sequences hold only strings, and
-///   left alone here rather than fixed in passing.)
+/// - **The address is into the raw sequence**, not into
+///   [`Value::link_strings`], which *filters* non-string items: `[a, 3, b]`
+///   yields `["a", "b"]`, so a position taken from it addresses `3` when passed
+///   to [`MetaEditor::remove_item`]. [`strings_at`] counts every item, which is
+///   what keeps a removal honest.
 /// - **A written target is not unique** — two entries in one relation may name
 ///   the same target. The first is returned, so a repair fixes one per run and a
 ///   second run finds the next.
 ///
-/// `None` when the field is absent or nothing in it is written that way. A scalar
-/// field that matches reports index 0; the caller tells scalar from sequence by
-/// re-reading the value's shape, as [`retarget_entry`](Workspace::retarget_entry)
-/// does.
-pub(crate) fn written_entry_index(doc: &Document, field: &str, written: &str) -> Option<usize> {
-    let matches = |raw: &str| Link::parse(raw).target == written;
-    match doc.meta.get_path(field)? {
-        Value::Sequence(items) => items
-            .iter()
-            .position(|item| item.as_str().is_some_and(matches)),
-        other => other.as_str().is_some_and(matches).then_some(0),
-    }
-}
-
-/// The fig address of a field — one key per dotted segment, so `generated.how`
-/// addresses the key inside the mapping, as [`Value::get_path`] reads it.
-fn field_address(field: &str) -> Vec<Segment<'_>> {
-    field.split('.').map(Segment::Key).collect()
-}
-
-/// The fig address of that entry — the field alone for a scalar, field + index
-/// for a sequence. The shape distinction [`MetaEditor`] needs, in one place so
-/// the removal and the retarget cannot disagree about it.
-fn entry_address<'a>(doc: &Document, field: &'a str, index: usize) -> Vec<Segment<'a>> {
-    let mut address = field_address(field);
-    if doc
-        .meta
-        .get_path(field)
-        .and_then(Value::as_sequence)
-        .is_some()
-    {
-        address.push(Segment::Index(index));
-    }
-    address
+/// `None` when the field is absent or nothing in it is written that way.
+pub(crate) fn written_entry_address(doc: &Document, field: &str, written: &str) -> Option<Address> {
+    strings_at(&doc.meta, &FieldPath::parse(field))
+        .into_iter()
+        .find(|(_, raw)| Link::parse(raw).target == written)
+        .map(|(address, _)| address)
 }
 
 /// Drop the entry of `field` in `doc` written as `written`, comment- and
@@ -492,16 +447,14 @@ pub(crate) fn remove_written_entry(
     field: &str,
     written: &str,
 ) -> Result<Option<String>> {
-    let (Some(index), Some(carrier)) = (written_entry_index(doc, field, written), doc.carrier)
+    let (Some(address), Some(carrier)) = (written_entry_address(doc, field, written), doc.carrier)
     else {
         return Ok(None);
     };
-    let address = entry_address(doc, field, index);
     let mut editor = MetaEditor::open(text, carrier)?;
-    if matches!(address.last(), Some(Segment::Index(_))) {
-        editor.remove_item(&field_address(field), index)?;
-    } else {
-        editor.delete(&address)?;
+    match address.as_item() {
+        Some((list, index)) => editor.remove_item(&list.segments(), index)?,
+        None => editor.delete(&address.segments())?,
     }
     Ok(Some(editor.render()?))
 }
@@ -517,13 +470,13 @@ pub(crate) fn replace_written_entry(
     written: &str,
     replacement: &str,
 ) -> Result<Option<String>> {
-    let (Some(index), Some(carrier)) = (written_entry_index(doc, field, written), doc.carrier)
+    let (Some(address), Some(carrier)) = (written_entry_address(doc, field, written), doc.carrier)
     else {
         return Ok(None);
     };
     let mut editor = MetaEditor::open(text, carrier)?;
     editor.replace_value(
-        &entry_address(doc, field, index),
+        &address.segments(),
         fig::Value::Str(replacement.to_string()),
     )?;
     Ok(Some(editor.render()?))
@@ -534,9 +487,9 @@ pub(crate) fn replace_written_entry(
 /// entry's label and wrapper so a `[Jul](jul.md)` stays labeled and a `[[jul]]`
 /// stays a wikilink.
 ///
-/// The sibling of [`retarget_entry`](Workspace::retarget_entry) for targets that
-/// do not resolve — that one finds its entry by walking to a real path, which is
-/// exactly what a broken or dangling link cannot offer.
+/// The sibling of [`retarget_frontmatter`](Workspace::retarget_frontmatter) for
+/// targets that do not resolve — that one finds its entries by walking to a
+/// real path, which is exactly what a broken or dangling link cannot offer.
 pub(crate) fn retarget_written_entry(
     text: &str,
     doc: &Document,
@@ -544,14 +497,12 @@ pub(crate) fn retarget_written_entry(
     written: &str,
     new_target: &str,
 ) -> Result<Option<String>> {
-    let index = written_entry_index(doc, field, written);
-    let raw = match (index, doc.meta.get_path(field)) {
-        (Some(i), Some(Value::Sequence(items))) => items.get(i).and_then(Value::as_str),
-        (Some(_), Some(other)) => other.as_str(),
-        _ => None,
-    };
+    let raw = strings_at(&doc.meta, &FieldPath::parse(field))
+        .into_iter()
+        .map(|(_, raw)| raw)
+        .find(|raw| Link::parse(raw).target == written);
     let Some(raw) = raw else { return Ok(None) };
-    let rendered = Link::parse(raw).with_path(new_target.to_string()).render();
+    let rendered = Link::parse(&raw).with_path(new_target.to_string()).render();
     replace_written_entry(text, doc, field, written, &rendered)
 }
 
@@ -925,5 +876,56 @@ mod tests {
         );
         assert!(root.contains("renamed.md"), "the move landed: {root}");
         assert_eq!(block_on(ws.check("README.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_written_entry_is_addressed_through_a_list_path() {
+        // A path-valued field's value sits inside a list item beside other
+        // facts. The repairs address it by the concrete path a finding names;
+        // a removal takes the one key and leaves the facts beside it, the way
+        // unlinking a body link leaves its text.
+        let text = "---\ntitle: Card\nsources:\n- resource: a.md\n  title: A\n- resource: gone.md\n  title: Gone\n---\n";
+        let doc = Document::parse("card.md", text).unwrap();
+
+        assert_eq!(
+            written_entry_address(&doc, "sources[].resource", "gone.md").map(|a| a.to_string()),
+            Some("sources[1].resource".to_string())
+        );
+        assert_eq!(
+            written_entry_address(&doc, "sources[1].resource", "gone.md").map(|a| a.to_string()),
+            Some("sources[1].resource".to_string())
+        );
+        assert!(written_entry_address(&doc, "sources[0].resource", "gone.md").is_none());
+
+        let removed = remove_written_entry(text, &doc, "sources[1].resource", "gone.md")
+            .unwrap()
+            .unwrap();
+        assert!(!removed.contains("gone.md"), "{removed}");
+        assert!(
+            removed.contains("  title: Gone"),
+            "the fact beside it stays: {removed}"
+        );
+        assert!(
+            removed.contains("- resource: a.md\n  title: A\n"),
+            "{removed}"
+        );
+
+        let retargeted =
+            retarget_written_entry(text, &doc, "sources[1].resource", "gone.md", "/b.md")
+                .unwrap()
+                .unwrap();
+        assert!(
+            retargeted.contains("- resource: /b.md\n  title: Gone"),
+            "{retargeted}"
+        );
+
+        // A relation entry is still an item of its list: removal drops the
+        // item, not a key.
+        let text = "---\ntitle: Root\ncontents:\n- a.md\n- gone.md\n---\n";
+        let doc = Document::parse("index.md", text).unwrap();
+        let removed = remove_written_entry(text, &doc, "contents", "gone.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(removed, "---\ntitle: Root\ncontents:\n- a.md\n---\n");
     }
 }

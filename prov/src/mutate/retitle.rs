@@ -8,12 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use fig::Segment;
-
 use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
 use crate::workspace::inbound::Form;
-use prov_graph::document::Document;
+use fig::Segment;
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::Target;
 use prov_graph::link::{self, Link};
@@ -124,50 +122,34 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         target: &Path,
         new_title: &str,
     ) -> Result<Option<String>> {
-        let (original, _) = self.load(source).await?;
-        let mut text = original.clone();
-        for relation in self.relations().relations() {
-            let doc = Document::parse(source, &text)?;
-            let Some(carrier) = doc.carrier else {
-                return Ok(None);
-            };
-            let meta = fig::Value::from(&doc.meta);
-            let Some(value) = meta.get(relation.name.as_str()) else {
-                continue;
-            };
-            let is_seq = value.as_seq().is_some();
-            let items = prov_graph::meta::link_strings(value);
-
-            // Which entries resolve to `target`, carry a label, and are stale.
-            let edits: Vec<(usize, String)> = items
-                .iter()
-                .enumerate()
-                .filter_map(|(i, raw)| {
-                    let link = Link::parse(raw);
-                    if link.label.is_none() || link.label.as_deref() == Some(new_title) {
-                        return None;
-                    }
-                    if self.resolve_link(source, &link) != Target::Path(target.to_path_buf()) {
-                        return None;
-                    }
-                    Some((i, link.with_label(new_title).render()))
-                })
-                .collect();
-            if edits.is_empty() {
-                continue;
-            }
-
-            let mut editor = MetaEditor::open(&text, carrier)?;
-            for (i, rendered) in edits {
-                let path = if is_seq {
-                    vec![Segment::Key(relation.name.as_str()), Segment::Index(i)]
-                } else {
-                    vec![Segment::Key(relation.name.as_str())]
-                };
-                editor.replace_value(&path, fig::Value::Str(rendered))?;
-            }
-            text = editor.render()?;
+        let (original, doc) = self.load(source).await?;
+        let Some(carrier) = doc.carrier else {
+            return Ok(None);
+        };
+        // Which frontmatter links — relation entries and path-valued field
+        // values alike — resolve to `target`, carry a label, and are stale.
+        let edits: Vec<_> = self
+            .frontmatter_links(&fig::Value::from(&doc.meta))
+            .into_iter()
+            .filter_map(|site| {
+                let link = Link::parse(&site.raw);
+                if link.label.is_none() || link.label.as_deref() == Some(new_title) {
+                    return None;
+                }
+                if self.resolve_link(source, &link) != Target::Path(target.to_path_buf()) {
+                    return None;
+                }
+                Some((site.address, link.with_label(new_title).render()))
+            })
+            .collect();
+        if edits.is_empty() {
+            return Ok(None);
         }
+        let mut editor = MetaEditor::open(&original, carrier)?;
+        for (address, rendered) in edits {
+            editor.replace_value(&address.segments(), fig::Value::Str(rendered))?;
+        }
+        let text = editor.render()?;
         Ok((text != original).then_some(text))
     }
 }

@@ -35,6 +35,15 @@ pub enum LinkSite {
     /// `None` for a scalar field (`part_of`, `content`) — see
     /// [`Edge::index`](crate::relation::Edge::index) for how a list is counted.
     Relation { field: String, index: Option<usize> },
+    /// A value of a path-valued field — a `fields` declaration of `type: ref`
+    /// — at its concrete address: `sources[2].resource`, the declared
+    /// `sources[].resource` with the list position filled in, or
+    /// `sources[2].resource[1]` when the value there is itself a list. The
+    /// address is the whole of the site: it is what a finding prints and
+    /// what a repair edits, and it parses back as a
+    /// [`Address`](crate::field::Address). Not a relation — no inverse, never
+    /// spanning — which is why [`relation`](Self::relation) is `None` for it.
+    Field { path: String },
     /// A link in the body, at this byte span: a `[[…]]` wikilink, a
     /// markdown/djot `[label](target)`, or the `[alt](target)` of an
     /// `![alt](target)` image (the span starts after the `!`, as
@@ -56,9 +65,35 @@ impl LinkSite {
     pub fn relation(&self) -> Option<&str> {
         match self {
             LinkSite::Relation { field, .. } => Some(field),
+            LinkSite::Field { .. } | LinkSite::Body(_) => None,
+        }
+    }
+
+    /// The concrete address of a frontmatter site — the editor path a rewrite
+    /// addresses. `None` for a body site.
+    pub fn address(&self) -> Option<crate::field::Address> {
+        match self {
+            LinkSite::Relation { field, index } => {
+                let address = crate::field::Address::key(field);
+                Some(match index {
+                    Some(i) => address.item(*i),
+                    None => address,
+                })
+            }
+            LinkSite::Field { path } => crate::field::Address::parse(path),
             LinkSite::Body(_) => None,
         }
     }
+}
+
+/// One frontmatter link site as [`Graph::frontmatter_links`] enumerates it:
+/// where it is, as a [`LinkSite`] and as the [`Address`](crate::field::Address)
+/// an editor takes, and the target exactly as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmatterLink {
+    pub site: LinkSite,
+    pub address: crate::field::Address,
+    pub raw: String,
 }
 
 impl fmt::Display for LinkSite {
@@ -69,6 +104,7 @@ impl fmt::Display for LinkSite {
                 index: Some(i),
             } => write!(f, "{field}[{i}]"),
             LinkSite::Relation { field, index: None } => f.write_str(field),
+            LinkSite::Field { path } => f.write_str(path),
             LinkSite::Body(_) => f.write_str("body"),
         }
     }
@@ -514,17 +550,19 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 });
             }
 
-            // Frontmatter relation edges — the only links that can be spanning.
-            for edge in self.relations().edges(&meta) {
+            // Frontmatter links — relation edges, the only links that can be
+            // spanning, and the values of path-valued fields, which never are.
+            for FrontmatterLink { site, raw, .. } in self.frontmatter_links(&meta) {
                 // Parse once: `link.target` is the bare target (any `[label](…)`
                 // stripped), which is what both the census and findings record.
-                let link = Link::parse(&edge.target);
+                let link = Link::parse(&raw);
                 if titles.is_none() && title::is_alias_shaped(&link.target) {
                     titles = Some(self.title_index_scoped(start, parked).await?);
                 }
                 let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
 
-                if Some(edge.relation.as_str()) == spanning.as_deref()
+                if site.relation() == spanning.as_deref()
+                    && site.relation().is_some()
                     && let Some(resolved) = resolution.resolved_path().cloned()
                 {
                     // Single-parent check, inverse check, descent.
@@ -569,10 +607,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
                 census.push(CensusEntry {
                     source: path.clone(),
-                    site: LinkSite::Relation {
-                        field: edge.relation,
-                        index: edge.index,
-                    },
+                    site,
                     label: link.label,
                     target_text: link.target,
                     resolution,

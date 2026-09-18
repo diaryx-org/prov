@@ -20,8 +20,11 @@
 //! next; the seams are in place so that port has somewhere to land.
 
 use prov_graph::document::{Body, Document};
+use prov_graph::field::FieldPath;
 use prov_graph::fs::{DirEntry, Metadata};
-use prov_graph::graph::{Backlink, CensusEntry, Graph, Node, ReadSettings, TreeOptions, Walk};
+use prov_graph::graph::{
+    Backlink, CensusEntry, FrontmatterLink, Graph, Node, ReadSettings, TreeOptions, Walk,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -82,6 +85,8 @@ fn store_dir(store_index: &Path) -> PathBuf {
 pub struct Settings {
     /// The relation vocabulary — see [`Workspace::relations`].
     pub relations: RelationSet,
+    /// The path-valued fields — see [`Workspace::references`].
+    pub references: Vec<FieldPath>,
     /// The path style links are authored in — see [`Workspace::link_style`].
     pub link_style: LinkStyle,
     /// The legacy "author links by id" axis, superseded by an explicit
@@ -128,6 +133,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             relations: RelationSet::diaryx(),
+            references: Vec::new(),
             link_style: LinkStyle::default(),
             id_links: false,
             reference_style: None,
@@ -164,6 +170,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
     fn from(config: &crate::config::WorkspaceConfig) -> Self {
         Self {
             relations: config.relation_set(),
+            references: config.reference_fields(),
             link_style: config.link_format(),
             reference_style: Some(config.reference_style()),
             default_embed_format: config.default_embed_format,
@@ -288,6 +295,19 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The configured relation vocabulary.
     pub fn relations(&self) -> &RelationSet {
         &self.settings.relations
+    }
+
+    /// The path-valued fields — the `fields` declarations of `type: ref`,
+    /// each a path into the metadata whose every value is a link (spec §3).
+    /// Read beside the relations wherever they are read.
+    pub fn references(&self) -> &[FieldPath] {
+        &self.settings.references
+    }
+
+    /// Every frontmatter link site in `meta` — relation entries and
+    /// path-valued field values alike. See [`Graph::frontmatter_links`].
+    pub fn frontmatter_links(&self, meta: &fig::Value) -> Vec<FrontmatterLink> {
+        self.graph.frontmatter_links(meta)
     }
 
     /// Open a **read scope**: for as long as the returned guard is held, a
@@ -1635,6 +1655,12 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Set the path-valued fields — see [`Workspace::references`].
+    pub fn references(mut self, references: Vec<FieldPath>) -> Self {
+        self.settings.references = references;
+        self
+    }
+
     /// Set the link style this workspace authors in (typically read from the
     /// root's `link_format`).
     pub fn link_style(mut self, link_style: LinkStyle) -> Self {
@@ -1758,6 +1784,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     pub fn build(self) -> Workspace<FS, Id, Ix> {
         let read = ReadSettings {
             relations: self.settings.relations.clone(),
+            references: self.settings.references.clone(),
             workspace_id: self.settings.workspace_id.clone(),
             id_storage: self.settings.id_storage,
         };
@@ -1826,6 +1853,7 @@ mod tests {
     fn every_setting_survives_the_builder_type_flips() {
         let settings = Settings {
             relations: RelationSet::diaryx(),
+            references: vec![FieldPath::parse("sources[].resource")],
             link_style: LinkStyle::PlainRelative,
             id_links: true,
             reference_style: None,
@@ -1856,6 +1884,7 @@ mod tests {
         assert_eq!(ws.workspace_id(), "notes");
         assert_eq!(ws.out_of_scope(), [PathBuf::from("history")]);
         assert_eq!(ws.relations().spanning_relation(), Some("contents"));
+        assert_eq!(ws.references(), [FieldPath::parse("sources[].resource")]);
         // `id_links` has no field of its own on the far side — it is read back
         // through the reference style it feeds, which is the whole of what it
         // means.

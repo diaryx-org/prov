@@ -196,11 +196,47 @@ than one to apply: respell the value, or widen the vocabulary to admit it. A
 *retired* term is never offered the second — writing a bare `term:` over it would
 un-retire it and destroy the `id` and `means` it carries.
 
-A declaration names a top-level key, or a **dotted path** into a mapping —
+A declaration names a top-level key, a **dotted path** into a mapping —
 `generated.how` is the act recorded inside a `generated` mapping (see
-[Provenance](provenance.md) §1) — and governs whatever is at that path; a
-document with nothing there is held to nothing. A dot is always a separator,
-as it is for `prov get`. The finding names the path as written.
+[Provenance](provenance.md) §1) — or a path through **every item of a list**:
+`confirmed[].by` is the actor of each confirmation, `sources[].resource` the
+target of each source. The steps compose, and a declaration governs every
+value its path reaches; a document with nothing there is held to nothing. A
+dot is always a separator, as it is for `prov get`. A finding names the
+**concrete** path — `sources[2].resource`, the declared path with the list
+position filled in — because that is the value it is about and the address a
+repair edits; the path grammar is its own address grammar. A `default:` is
+written at a key path and never at a list path, which has no list to fill.
+
+### A field that holds links
+
+`fields` promotes a carried string two ways, and `values:` is only one of
+them. A declaration's **`type:`** says what the value *is*, and one type prov
+reads rather than carries: **`ref`**, a link to another document.
+
+```yaml
+prov:
+  fields:
+    sources[].resource:
+      type: ref
+```
+
+A field declared `ref` is a **link site**. Each value it reaches is read
+exactly as a relation entry is — a bare path, `[label](path)`, `[[Title]]`,
+`id:…`, a URL, a `#locator` — and resolved the same way (§4): censused, so the
+target is reached and is not an orphan; checked, so a target that is missing
+is `BrokenLink` at its concrete address; rewritten when the target moves,
+label and wrapper kept; relabelled on a retitle; reported by a delete that
+leaves it dangling; offered the same repairs. What it is not is a relation:
+it has **no inverse**, nothing is written on the target, and it is **never
+spanning**. The rule for choosing: *a link that stands alone is a relation; a
+link that sits beside other facts about itself is a path-valued field* — a
+citation carries its page and the date consulted, a person their role, and a
+relation's entry is a link and nothing else. Whether a key holds links is a
+fact about the vocabulary and holds workspace-wide, as a relation's name does;
+a `ref` declaration that also says `under:` is a config issue
+(`ScopedReference`), and the field is read as a link everywhere regardless.
+See [path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md).
 
 A declaration governs the whole workspace unless it names an index with
 `under:` — a link resolved as a view's anchor is (by path, `id:`, or title) —
@@ -261,6 +297,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **Opaque payload** | the `content` field | *not a node* — the bytes are the body of a sidecar node (an attachment); hashed for fixity, never parsed. A body reference to the payload (`![…](photo.jpg)`) is censused **by path** — a missing picture is a broken link, and the picture is reached — and **rewritten on move** as a reference to the sidecar: the payload travels with its node, and every reference to where it was is respelled for where it is. Never nominal: a bare name in an image is a file, not a title |
 | **A directory of opaque payloads** | the `manifest` field (exclusive with `content`) | *not nodes* — one node stands for the whole set through a manifest store listing every opaque file under a directory it claims completely, each row optionally hashed; the node hashes the manifest. Not in the graph, not orphan-checked, never parsed. See [Manifests](/docs/manifests.md) |
 | **Controlled term** | a `fields` value | resolved by term *key* against the field's vocabulary, checked (§3) — not traversed, and no more traversed when the terms are nodes (below) than when they are rows |
+| **Path-valued field** | a `fields` value under `type: ref` | *not a new kind* — whichever of the kinds above or below the value spells (a content node, an external URL, a locator), reached through a field prov was told holds one (§3). One-way: censused, checked, rewritten on move, orphan-checked as a target; **no inverse, never spanning** |
 | **Reified vocabulary** | a `fields` `vocabulary` pointer under `reify: true` — the index node, and its spanning children as terms | *ordinary content*: in the graph; two-way (inverse maintained); ID-able, and the term node's own id **is** the term's; rewritten on move; orphan-checked. Reached twice over — down the spanning tree like any node, and through the `fields` pointer, which is configuration naming content rather than a pointer to machinery |
 | **Generated prose** | a one-way pointer relation (`about`) | plaintext in the workspace's *content* format; reached from the root only; **no inverse, no `part_of`, no id, not in the spanning tree, not orphan-checked**; rewritten **whole** by prov and never merged; a pure function of configuration, therefore **discardable** — deleting it loses nothing |
 | **External** | a URL | recognized by syntax, never resolved or validated |

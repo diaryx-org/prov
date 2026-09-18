@@ -24,7 +24,6 @@ use prov_graph::content::{ContentFormat, transcode};
 use prov_graph::document::{Document, EmbedStyle, MetaCarrier};
 use prov_graph::error::{Error, Result};
 use prov_graph::link::{self, Link};
-use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -589,8 +588,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         style: prov_graph::link::LinkStyle,
     ) -> Result<Option<String>> {
         let (text, doc) = self.load(path).await?;
-        let meta_rewritten =
-            restyle_frontmatter_links(&text, &doc, self.relations().relations(), path, style)?;
+        let sites = self.frontmatter_links(&fig::Value::from(&doc.meta));
+        let meta_rewritten = restyle_frontmatter_links(&text, &doc, &sites, path, style)?;
         let final_text = restyle_body_links(&meta_rewritten, &doc.body, path, style);
         Ok((final_text != text).then_some(final_text))
     }
@@ -607,7 +606,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 fn restyle_frontmatter_links(
     text: &str,
     doc: &Document,
-    relations: &[prov_graph::relation::Relation],
+    sites: &[prov_graph::graph::FrontmatterLink],
     file: &Path,
     style: prov_graph::link::LinkStyle,
 ) -> Result<String> {
@@ -615,41 +614,17 @@ fn restyle_frontmatter_links(
         return Ok(text.to_string()); // no metadata: nothing to restyle
     };
     let mut editor = MetaEditor::open(text, carrier)?;
-    let restyle = |raw: &str| -> Option<String> {
-        let link = Link::parse(raw);
+    for site in sites {
+        let link = Link::parse(&site.raw);
         if !link.is_path_target() || prov_graph::title::is_alias_shaped(&link.target) {
-            return None;
+            continue;
         }
         let resolved = link::resolve(file, &link.target);
-        Some(
-            link.with_path(link::path_text(style, file, &resolved))
-                .render(),
-        )
-    };
-    for relation in relations {
-        let Some(value) = doc.meta.get(&relation.name) else {
-            continue;
-        };
-        match value {
-            Value::String(raw) => {
-                if let Some(updated) = restyle(raw) {
-                    editor
-                        .replace_value(&[Segment::Key(&relation.name)], fig::Value::Str(updated))?;
-                }
-            }
-            Value::Sequence(items) => {
-                for (i, item) in items.iter().enumerate() {
-                    if let Some(raw) = item.as_str()
-                        && let Some(updated) = restyle(raw)
-                    {
-                        editor.replace_value(
-                            &[Segment::Key(&relation.name), Segment::Index(i)],
-                            fig::Value::Str(updated),
-                        )?;
-                    }
-                }
-            }
-            _ => {}
+        let updated = link
+            .with_path(link::path_text(style, file, &resolved))
+            .render();
+        if updated != site.raw {
+            editor.replace_value(&site.address.segments(), fig::Value::Str(updated))?;
         }
     }
     editor.render()

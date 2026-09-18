@@ -210,12 +210,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let spanning = self.relations().spanning_relation();
         let meta = fig::Value::from(&doc.meta);
         let mut edges = DocEdges::default();
-        for edge in self.relations().edges(&meta) {
-            let link = Link::parse(&edge.target);
+        for site in self.frontmatter_links(&meta) {
+            let link = Link::parse(&site.raw);
             let Target::Path(target) = self.resolve_link(path, &link) else {
                 continue;
             };
-            if Some(edge.relation.as_str()) == spanning {
+            if site.site.relation().is_some() && site.site.relation() == spanning {
                 edges.spanning.insert(target.clone());
             }
             edges.targets.entry(target).or_default().add(&link);

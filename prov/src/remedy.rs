@@ -126,6 +126,9 @@ pub enum Fix {
     /// Addressed by the target *as written*, because the findings that need this
     /// are precisely the ones whose target does not resolve. A written target is
     /// not unique, so the first matching entry goes; a second run takes the next.
+    /// `relation` is a field path: a relation's name, or the concrete address
+    /// of a path-valued field's value (`sources[2].resource`), as the finding's
+    /// site names it.
     RemoveEntry {
         doc: PathBuf,
         relation: String,
@@ -611,9 +614,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ) -> Result<Vec<Remedy>> {
         let mut out = Vec::new();
         match site {
+            // A relation entry and a path-valued field value take the same
+            // pair: both are addressed by field path and written target, and
+            // a `Field` site's path *is* its concrete address.
             LinkSite::Relation {
                 field: relation, ..
-            } => {
+            }
+            | LinkSite::Field { path: relation } => {
                 for candidate in candidates {
                     let to = link::path_text(self.link_style(), doc, candidate);
                     out.push(Remedy::new(
@@ -1167,6 +1174,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // root is elsewhere, and rewriting it to `index.md` would
                 // silently agree to a root this directory may not even hold.
                 crate::config::ConfigIssueKind::MalformedRoot { .. } => Ok(Vec::new()),
+                // Dropping the scope and dropping the type are both defensible
+                // and mean different things — one says the vocabulary holds
+                // everywhere, the other that the field is not a link. Diagnosis
+                // only.
+                crate::config::ConfigIssueKind::ScopedReference { .. } => Ok(Vec::new()),
                 // Two defensible repairs — drop the `nest`, or stop declaring
                 // the field a `seq` — and they mean different things about the
                 // workspace: one says this lens does not file, the other says

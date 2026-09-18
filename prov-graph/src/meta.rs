@@ -82,15 +82,19 @@ impl Value {
         self.as_mapping().and_then(|m| m.get(key))
     }
 
-    /// Look up a dotted field path — `title`, or `generated.how` for a key
-    /// inside a mapping — each segment a mapping key. This is how a `fields`
-    /// declaration names what it governs, so a controlled vocabulary can
-    /// reach a key one level down (the act in a `generated` mapping) as it
-    /// reaches a top-level one; a dot is always a separator, as it is for
-    /// `prov get`. `None` when any segment is missing or the value on the way
-    /// is not a mapping.
+    /// Look up a field path — `title`, `generated.how` for a key inside a
+    /// mapping, `sources[2].resource` for a key inside one item of a list —
+    /// and return the first value it reaches. This is how a `fields`
+    /// declaration names what it governs (see [`crate::field`]); a dot is
+    /// always a separator, as it is for `prov get`. A path with a `[]` step
+    /// reaches every item, and this returns the first — a caller that wants
+    /// them all walks [`field::values_at`](crate::field::values_at). `None`
+    /// when the path lands on nothing.
     pub fn get_path(&self, path: &str) -> Option<&Value> {
-        path.split('.').try_fold(self, |value, key| value.get(key))
+        crate::field::values_at(self, &crate::field::FieldPath::parse(path))
+            .into_iter()
+            .next()
+            .map(|(_, value)| value)
     }
 
     /// Interpret this value as a list of link strings: a bare string yields one
@@ -112,7 +116,14 @@ impl Value {
 /// on the way — the write that pairs with [`Value::get_path`]. A segment that
 /// exists and is not a mapping is replaced by one, since the path says what
 /// the caller means to write.
+///
+/// A path with a list step (`sources[].resource`) has nowhere to write: a
+/// new document has no list to fill, and one item of a list is not a
+/// starting value. Nothing is written for such a path.
 pub fn insert_path(map: &mut Mapping, path: &str, value: Value) {
+    if crate::field::FieldPath::parse(path).enters_list() {
+        return;
+    }
     let mut segments = path.split('.').peekable();
     let mut map = map;
     while let Some(key) = segments.next() {

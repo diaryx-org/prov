@@ -47,6 +47,7 @@ use std::path::{Path, PathBuf};
 use crate::workspace::Workspace;
 use prov_graph::content::ContentFormat;
 use prov_graph::error::{Error, Result};
+use prov_graph::field::{FieldPath, strings_at};
 use prov_graph::graph::{
     CensusEntry, LinkSite, Resolution, StructuralFact, Target, Walk, reachable_set,
 };
@@ -947,6 +948,12 @@ impl fmt::Display for Finding {
                     doc.display(),
                     issue.key,
                 ),
+                crate::config::ConfigIssueKind::ScopedReference { field } => write!(
+                    f,
+                    "{}: config `{}` scopes `{field}`, which is declared `type: ref` — whether a field holds links is read everywhere, as a relation's name is, so the scope narrows its other axes and not that (drop `under`, or declare the type once for the whole workspace)",
+                    doc.display(),
+                    issue.key,
+                ),
             },
             Finding::ConfigSpecAhead { doc, declared } => write!(
                 f,
@@ -1510,18 +1517,21 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             };
             for (field, index, values, vocab) in &vocabs {
-                // A declaration names a top-level key or a dotted path into a
-                // mapping (`generated.how`), and governs whatever is there.
-                let Some(field_value) = doc.meta.get_path(field) else {
+                // A declaration names a top-level key, a dotted path into a
+                // mapping (`generated.how`), or a path through every item of
+                // a list (`confirmed[].by`), and governs every value it
+                // reaches. Nothing there: held to nothing.
+                let terms = strings_at(&doc.meta, &FieldPath::parse(field));
+                if terms.is_empty() {
                     continue;
-                };
+                }
                 // A vocabulary judges only the documents its declaration
                 // governs: a task's `status` is not held to the proposals'
                 // terms, and a document in neither scope is held to nothing.
                 if scopes.index_for(&config, field, &path) != Some(*index) {
                     continue;
                 }
-                for term in field_value.link_strings() {
+                for (_, term) in terms {
                     if vocab.accepts(&term) {
                         continue;
                     }
@@ -2688,6 +2698,62 @@ mod tests {
                     if doc == Path::new("copied.md") && field == "generated.how" && value == "copied"
             ),
             "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_closed_vocabulary_reaches_the_actor_of_every_confirmation() {
+        // `confirmed` is a list of mappings, and `confirmed[].by` reaches the
+        // `by` of each item: two confirmations, one by an actor the vocabulary
+        // has never heard of, is one finding naming that one. A repair
+        // respells the value where it was found.
+        let dir = tempdir("vocab-confirmed-by");
+        write(
+            &dir,
+            "index.md",
+            "---\n\
+             contents:\n- reviewed.md\n\
+             prov:\n  fields:\n    confirmed[].by:\n      values: closed\n      vocabulary: vocab/actors.yaml\n\
+             ---\n",
+        );
+        write(
+            &dir,
+            "reviewed.md",
+            "---\npart_of: index.md\nconfirmed:\n- by: amh\n  at: 2026-09-11T09:20:00Z\n- by: ahm\n  at: 2026-09-12T09:20:00Z\n---\n",
+        );
+        write(
+            &dir,
+            "vocab/actors.yaml",
+            "title: Actors\nvocabulary:\n  field: confirmed[].by\n  values: closed\nterms:\n  amh: {}\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let unknown: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::UnknownTerm { .. }))
+            .collect();
+        assert!(
+            matches!(
+                unknown.as_slice(),
+                [Finding::UnknownTerm { doc, field, value, retired: false }]
+                    if doc == Path::new("reviewed.md") && field == "confirmed[].by" && value == "ahm"
+            ),
+            "{findings:?}"
+        );
+        // The respelling repair edits the second item's `by`, and nothing else.
+        let (text, doc) = block_on(ws.load(Path::new("reviewed.md"))).unwrap();
+        let fixed = crate::mutate::maintain::replace_written_entry(
+            &text,
+            &doc,
+            "confirmed[].by",
+            "ahm",
+            "amh",
+        )
+        .unwrap()
+        .expect("the entry is found by its written value");
+        assert!(
+            fixed.contains("- by: amh\n  at: 2026-09-11T09:20:00Z\n- by: amh\n  at: 2026-09-12"),
+            "{fixed}"
         );
     }
 

@@ -503,12 +503,17 @@ document. The value is carried as written — `default: 0` is an int, `default:
 the workspace rather than in a caller's flags so that a stencil can state it
 and `about.md` can say it.
 
-`<name>` is a top-level key, or a dotted path into a mapping — `generated.how`
+`<name>` is a top-level key, a dotted path into a mapping — `generated.how`
 declares the act a `generated` mapping records beside its `by` and `at` (see
-[Provenance](provenance.md) §1). A dot is always a separator, as it is for
-`prov get`, and every reader of the declaration follows it: `check` judges the
-value at that path, a `SetTerm` repair respells it there, and a `default:` is
-written there — inside the mapping, creating it if the document has none.
+[Provenance](provenance.md) §1) — or a path through every item of a list:
+`confirmed[].by` is the actor of each confirmation, `sources[].resource` the
+target of each source. A dot is always a separator, as it is for `prov get`,
+and every reader of the declaration follows it: `check` judges every value
+the path reaches, a repair respells or retargets the one its finding named —
+by the concrete path, `sources[2].resource`, which is how a finding spells a
+site inside a list — and a `default:` is written at a key path, inside the
+mapping, creating it if the document has none. A list path has no list to
+fill in a new document, so a `default:` on one is carried and never written.
 
 ### Scoping a declaration
 
@@ -551,12 +556,24 @@ identically instead of agreeing by convention:
 | `datetime`       | an instant with offset, `2026-07-24T07:32:00Z` |
 | `local-datetime` | a date and time with no offset             |
 | `time`           | a time of day, `07:32:00`                  |
-| `ref`            | a link to another document                 |
+| `ref`            | a link to another document — **read**, see below |
 | `map` / `seq`    | a nested mapping or list                   |
 
-prov carries the type without interpreting it — nothing in `check` fails because
-a value does not match its declared type. It is there so a frontend can parse and
-render the field faithfully (a `date` gets a date picker, not a text box).
+prov carries every type but one without interpreting it — nothing in `check`
+fails because a value does not match its declared type. They are there so a
+frontend can parse and render the field faithfully (a `date` gets a date
+picker, not a text box).
+
+**`ref` is the exception.** A field declared `type: ref` is a link site
+(Spec §3): each value it reaches is resolved as a relation entry is —
+censused, checked, rewritten by `mv`, relabelled by `retitle`, reported by
+`rm`, restyled by `convert --links` — and its target is reached, so it is not
+an orphan. It is one-way: no inverse, nothing written on the target, never
+spanning. Declare a relation for a list of bare links and a `ref` for a link
+that sits beside other facts about itself — `sources[].resource` with a
+`title` and a `page` in the same entry. Whether a key holds links holds
+workspace-wide, as a relation's name does; a `ref` that also says `under:`
+is reported (`ScopedReference`) and read as a link everywhere regardless.
 
 The date and time types map onto the underlying format's native scalars where it
 has them — a TOML `created = 2026-07-24` stays a date rather than becoming a

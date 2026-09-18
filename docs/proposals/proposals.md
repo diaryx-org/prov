@@ -14,6 +14,7 @@ contents:
 - '[crossing the boundary](/docs/proposals/boundary/proposal-boundary-v1.md)'
 - '[the workspace node](/docs/proposals/workspace-node/proposal-workspace-node-v1.md)'
 - '[presets](/docs/proposals/presets/proposal-presets-v1.md)'
+- '[path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a

@@ -93,7 +93,9 @@ pub mod scan;
 pub mod shadow;
 pub mod tree;
 
-pub use census::{Backlink, CensusEntry, LinkSite, Resolution, StructuralFact, inbound, invert};
+pub use census::{
+    Backlink, CensusEntry, FrontmatterLink, LinkSite, Resolution, StructuralFact, inbound, invert,
+};
 pub use census::{Walk, reachable_set};
 pub use resolve::Target;
 pub use shadow::{ShadowProbe, sidecar_candidates};
@@ -102,6 +104,7 @@ pub use tree::{Node, NodeKind, TreeOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::field::{Address, FieldPath};
 use crate::identity::IdStorage;
 use crate::memo::{ReadMemo, ReadScope};
 use crate::relation::RelationSet;
@@ -123,6 +126,13 @@ pub struct ReadSettings {
     /// The relation vocabulary: which metadata fields are links, and which one
     /// (if any) is the spanning relation the tree walk follows.
     pub relations: RelationSet,
+    /// The path-valued fields — each a `fields` declaration of `type: ref`,
+    /// naming a path into the metadata (`sources[].resource`) whose every
+    /// value is a link. Read beside the relations at every site that reads
+    /// them: censused, resolved, checked, rewritten on a move. Never
+    /// spanning, and with no inverse — a link that sits beside other facts
+    /// about itself, where a relation is a link that stands alone.
+    pub references: Vec<FieldPath>,
     /// What this workspace calls itself — the qualifier a cross-workspace
     /// reference names it by. Empty means anonymous, so no `id:<ws>/<id>`
     /// reference can ever be recognized as pointing back here.
@@ -136,6 +146,7 @@ impl Default for ReadSettings {
     fn default() -> Self {
         Self {
             relations: RelationSet::diaryx(),
+            references: Vec::new(),
             workspace_id: String::new(),
             id_storage: IdStorage::default(),
         }
@@ -223,6 +234,47 @@ impl<FS, Ix> Graph<FS, Ix> {
     /// The relation vocabulary — which metadata fields are links.
     pub fn relations(&self) -> &RelationSet {
         &self.settings.relations
+    }
+
+    /// The path-valued fields — which metadata *paths* are links, beside the
+    /// relations. See [`ReadSettings::references`].
+    pub fn references(&self) -> &[FieldPath] {
+        &self.settings.references
+    }
+
+    /// Every frontmatter link site in `meta`, with the concrete address it is
+    /// written at and the target as written: each relation entry, then each
+    /// value of each path-valued field. The one enumeration the census, the
+    /// inbound index and every rewriter share, so that a field declared a
+    /// link is a link to all of them or to none.
+    pub fn frontmatter_links(&self, meta: &fig::Value) -> Vec<FrontmatterLink> {
+        let mut out = Vec::new();
+        for edge in self.relations().edges(meta) {
+            let mut address = Address::key(&edge.relation);
+            if let Some(i) = edge.index {
+                address = address.item(i);
+            }
+            out.push(FrontmatterLink {
+                site: LinkSite::Relation {
+                    field: edge.relation,
+                    index: edge.index,
+                },
+                address,
+                raw: edge.target,
+            });
+        }
+        for path in self.references() {
+            for (address, raw) in crate::field::strings_at(meta, path) {
+                out.push(FrontmatterLink {
+                    site: LinkSite::Field {
+                        path: address.to_string(),
+                    },
+                    address,
+                    raw,
+                });
+            }
+        }
+        out
     }
 
     /// What this workspace calls itself; empty means anonymous.

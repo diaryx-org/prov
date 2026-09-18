@@ -667,6 +667,31 @@ fn relations_section(
         s.push_str(&para(&closing));
     }
 
+    // Path-valued fields: links that sit beside other facts about themselves,
+    // where a relation is a link that stands alone. Said here, beside the
+    // relations, because a reader with `cat` sees the same thing in both — a
+    // path — and the difference is what happens on the other end.
+    let references: Vec<String> = config
+        .reference_fields()
+        .iter()
+        .map(|path| code(&path.to_string()))
+        .collect();
+    if !references.is_empty() {
+        s.push('\n');
+        let one = references.len() == 1;
+        s.push_str(&para(&format!(
+            "{} also {} to another document, written inside a field that \
+             carries other facts beside it — a citation with its page, a \
+             person with their role. {} followed and kept in step like a \
+             relation's entries: a target that is missing is reported, and \
+             one that moves is rewritten here. Nothing is written on the \
+             document at the other end.",
+            join_list(&references),
+            if one { "holds a link" } else { "hold links" },
+            if one { "It is" } else { "They are" },
+        )));
+    }
+
     s
 }
 

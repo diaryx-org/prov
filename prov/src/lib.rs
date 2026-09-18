@@ -98,15 +98,15 @@ pub use prov_graph::identity;
 /// [`prov_graph::twig`] for why the coupling is accepted.
 pub use prov_graph::twig;
 pub use prov_graph::{
-    Addressing, Backlink, Body, BodyLink, Cardinality, CensusEntry, Collision, ContentFormat,
-    DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FileType, Format, Graph, Id,
-    IdIndex, IdStorage, Link, LinkSite, LinkStyle, Manifest, ManifestEntry, Mapping, MetaCarrier,
-    Metadata, NoIndex, NoPeers, Node, NodeKind, Notation, PathStyle, PeerLocation, PeerLookup,
-    PeerResolver, ReadScope, ReadSettings, ReadStorage, ReferenceStyle, Relation, RelationSet,
-    Resolution, Result, StdFs, StructuralFact, Target, TitleIndex, TitleMatch, TreeOptions,
-    Unconfirmed, Value, Walk, Wikilink, Wrapper, block_on, code_spans, embed_carrier,
-    embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title, reachable_set,
-    render_html, require_whole_file,
+    Address, Addressing, Backlink, Body, BodyLink, Cardinality, CensusEntry, Collision,
+    ContentFormat, DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FieldPath,
+    FileType, Format, Graph, Id, IdIndex, IdStorage, Link, LinkSite, LinkStyle, Manifest,
+    ManifestEntry, Mapping, MetaCarrier, Metadata, NoIndex, NoPeers, Node, NodeKind, Notation,
+    PathStyle, PeerLocation, PeerLookup, PeerResolver, ReadScope, ReadSettings, ReadStorage,
+    ReferenceStyle, Relation, RelationSet, Resolution, Result, StdFs, StructuralFact, Target,
+    TitleIndex, TitleMatch, TreeOptions, Unconfirmed, Value, Walk, Wikilink, Wrapper, block_on,
+    code_spans, embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload,
+    path_to_title, reachable_set, render_html, require_whole_file,
 };
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.

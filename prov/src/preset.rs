@@ -128,6 +128,9 @@ impl Preset {
                     K::NestNotSingleValued { field } => {
                         format!("nests by `{field}`, which is declared `type: seq`")
                     }
+                    K::ScopedReference { field } => {
+                        format!("scopes `{field}`, which is declared `type: ref`")
+                    }
                 };
                 lines.push_str(&format!("\n  {}: {what}", issue.key));
             }

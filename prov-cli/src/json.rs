@@ -192,9 +192,15 @@ pub fn workspace_report(workspace: &str, declares: &str, root: &Path, findings: 
 /// `null` for a scalar field and for a body site. Two keys rather than the
 /// `contents[2]` the human line prints, so a consumer reads a number rather
 /// than parsing one out of a name.
+///
+/// A path-valued field's site is its concrete address whole —
+/// `sources[2].resource` — with `index` null: the position is inside the
+/// path, not beside it, because the path has as many as it has list steps
+/// and one integer could not carry them.
 fn site(site: &LinkSite, fields: &mut Vec<(&'static str, J)>) {
     let (name, index) = match site {
         LinkSite::Relation { field, index } => (field.clone(), *index),
+        LinkSite::Field { path } => (path.clone(), None),
         LinkSite::Body(_) => ("body".to_string(), None),
     };
     fields.push(("site", J::Str(name)));
@@ -359,6 +365,10 @@ pub fn finding(f: &Finding) -> J {
                 prov::ConfigIssueKind::MalformedRoot { value } => {
                     fields.push(("issue", s("malformed_root")));
                     fields.push(("value", s(value)));
+                }
+                prov::ConfigIssueKind::ScopedReference { field } => {
+                    fields.push(("issue", s("scoped_reference")));
+                    fields.push(("field", s(field)));
                 }
             }
         }

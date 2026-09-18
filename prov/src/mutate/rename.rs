@@ -15,8 +15,8 @@ use crate::identity::IdentityPolicy;
 use crate::workspace::Workspace;
 use prov_graph::document::Document;
 use prov_graph::error::{Error, Result};
+use prov_graph::graph::{FrontmatterLink, LinkSite};
 use prov_graph::link::{self, Link, LinkStyle};
-use prov_graph::meta::Value;
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
@@ -172,11 +172,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let meta_rewritten = rerelativize(
                 &from_text,
                 &from_doc,
-                self.relations().relations(),
+                &self.frontmatter_links(&fig::Value::from(&from_doc.meta)),
                 &from,
                 &to,
                 &moves,
-                |field| self.reference_style_for(field).path_style,
+                |site| self.site_path_style(site),
             )?;
             rerelativize_body_links(
                 &meta_rewritten,
@@ -390,54 +390,34 @@ struct BodyMove {
 /// are untouched — neither depends on where the document lives. A target that
 /// `moves` relocates too — a fellow mover in a directory move, the body beside
 /// a node — is spelled for where *it* lands.
+///
+/// `sites` is every frontmatter link the document holds, relation entries and
+/// path-valued field values alike, as
+/// [`frontmatter_links`](Workspace::frontmatter_links) enumerates them;
+/// `style_for` is the path style each is authored in.
 pub(super) fn rerelativize(
     text: &str,
     doc: &Document,
-    relations: &[prov_graph::relation::Relation],
+    sites: &[FrontmatterLink],
     from: &Path,
     to: &Path,
     moves: &Moves,
-    style_for: impl Fn(&str) -> LinkStyle,
+    style_for: impl Fn(&LinkSite) -> LinkStyle,
 ) -> Result<String> {
     let Some(carrier) = doc.carrier else {
         return Ok(text.to_string()); // no metadata: nothing to re-relativize
     };
     let mut editor = MetaEditor::open(text, carrier)?;
-    for relation in relations {
-        let Some(value) = doc.meta.get(&relation.name) else {
+    for site in sites {
+        let target = Link::parse(&site.raw);
+        if !target.is_path_target() {
             continue;
-        };
-        let style = style_for(&relation.name);
-        let rewrite = |raw: &str| -> Option<String> {
-            let target = Link::parse(raw);
-            if !target.is_path_target() {
-                return None;
-            }
-            let resolved = moves.landed_or_same(&link::resolve(from, &target.target));
-            let new_target = link::path_text(style, to, &resolved);
-            let rendered = target.with_path(new_target).render();
-            (rendered != raw).then_some(rendered)
-        };
-        match value {
-            Value::String(raw) => {
-                if let Some(updated) = rewrite(raw) {
-                    editor
-                        .replace_value(&[Segment::Key(&relation.name)], fig::Value::Str(updated))?;
-                }
-            }
-            Value::Sequence(items) => {
-                for (i, item) in items.iter().enumerate() {
-                    if let Some(raw) = item.as_str()
-                        && let Some(updated) = rewrite(raw)
-                    {
-                        editor.replace_value(
-                            &[Segment::Key(&relation.name), Segment::Index(i)],
-                            fig::Value::Str(updated),
-                        )?;
-                    }
-                }
-            }
-            _ => {}
+        }
+        let resolved = moves.landed_or_same(&link::resolve(from, &target.target));
+        let new_target = link::path_text(style_for(&site.site), to, &resolved);
+        let rendered = target.with_path(new_target).render();
+        if rendered != site.raw {
+            editor.replace_value(&site.address.segments(), fig::Value::Str(rendered))?;
         }
     }
     editor.render()
@@ -568,6 +548,63 @@ mod tests {
         assert!(mid.ends_with("mid body\n"), "{mid}");
         // The whole workspace still validates.
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn rename_rewrites_a_ref_field_in_the_mover_and_in_a_citer() {
+        // `sources[].resource` is declared a link. The card cites the sheet
+        // (inbound: rewritten like an overlay `links` entry) and the sheet
+        // cites the card back from inside its own list (the mover's own:
+        // re-relativized like its `part_of`). Everything beside the link in
+        // each entry is untouched, and the URL entry is never read.
+        let dir = tempdir("rename-ref-field");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- card.md\n- sheet.md\n---\n",
+        );
+        write(
+            &dir,
+            "card.md",
+            "---\npart_of: index.md\nsources:\n- resource: '[Sheet](sheet.md#row-4)'\n  title: The sheet\n- resource: https://example.org/x\n  title: Elsewhere\n---\n",
+        );
+        write(
+            &dir,
+            "sheet.md",
+            "---\npart_of: index.md\nsources:\n- resource: card.md\n  note: cited back\n---\n",
+        );
+        let ws = || {
+            Workspace::builder(StdFs)
+                .root(&dir)
+                .references(vec![prov_graph::field::FieldPath::parse(
+                    "sources[].resource",
+                )])
+                .build()
+        };
+
+        block_on(ws().rename(Path::new("sheet.md"), Path::new("records/sheet.md"))).unwrap();
+
+        let card = read(&dir, "card.md");
+        assert!(
+            card.contains("- resource: '[Sheet](/records/sheet.md#row-4)'\n  title: The sheet"),
+            "the citer's resource follows, label and locator kept: {card}"
+        );
+        assert!(card.contains("https://example.org/x"), "{card}");
+        let sheet = read(&dir, "records/sheet.md");
+        assert!(
+            sheet.contains("- resource: /card.md\n  note: cited back"),
+            "the mover's own resource is re-relativized: {sheet}"
+        );
+        assert!(sheet.contains("part_of: /index.md"), "{sheet}");
+        assert_eq!(block_on(ws().check("index.md")).unwrap(), vec![]);
+
+        // A retitle refreshes the label a citation carries.
+        block_on(ws().retitle(Path::new("records/sheet.md"), "Census sheet")).unwrap();
+        let card = read(&dir, "card.md");
+        assert!(
+            card.contains("'[Census sheet](/records/sheet.md#row-4)'"),
+            "{card}"
+        );
     }
 
     #[test]
