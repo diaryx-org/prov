@@ -389,3 +389,59 @@ fn ignore_keeps_the_rules_on_stdout_and_the_narration_on_stderr() {
     assert!(out.contains("\"line\": \"/loose.md\""), "{out:?}");
     assert!(!err.contains("rule(s)"), "{err:?}");
 }
+
+/// A reader that stops early — `prov docs --json | head` — must not turn into
+/// a panic on stderr. The Rust runtime ignores `SIGPIPE`, so a write to the
+/// closed pipe fails with `EPIPE` and `print!` panics on it; `main` restores
+/// the default disposition so the process ends the way `cat | head` does:
+/// silently, killed by the signal.
+#[cfg(unix)]
+#[test]
+fn a_closed_stdout_ends_the_process_silently() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+    let dir = std::env::temp_dir().join(format!("prov-cli-sigpipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Enough rows that the JSON is larger than a pipe buffer, so the write
+    // cannot complete before the reader is gone.
+    let mut contents = String::from("---\ntitle: Home\ncontents:\n");
+    for i in 0..2000 {
+        contents.push_str(&format!("- n{i}.md\n"));
+        std::fs::write(
+            dir.join(format!("n{i}.md")),
+            format!("---\ntitle: Note {i}\npart_of: index.md\n---\nbody {i}\n"),
+        )
+        .unwrap();
+    }
+    contents.push_str("---\n");
+    std::fs::write(dir.join("index.md"), contents).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prov"))
+        .current_dir(&dir)
+        .args(["docs", "--json", "--body"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn prov");
+    // Take the read end and drop it: the reader is gone before prov has
+    // finished writing.
+    drop(child.stdout.take());
+    let out = child.wait_with_output().expect("wait for prov");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.is_empty(), "a closed pipe wrote to stderr: {err}");
+    assert!(!err.contains("panicked"), "{err}");
+    assert_eq!(
+        out.status.signal(),
+        Some(libc_sigpipe()),
+        "ended by SIGPIPE, not an exit code: {:?}",
+        out.status
+    );
+}
+
+#[cfg(unix)]
+fn libc_sigpipe() -> i32 {
+    // The one signal number this test needs, without a dev-dependency for it:
+    // 13 on every platform the binary builds for.
+    13
+}

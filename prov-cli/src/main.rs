@@ -65,6 +65,21 @@ type CmdResult = Result<ExitCode, Box<dyn std::error::Error>>;
 type AnyError = Box<dyn std::error::Error>;
 
 fn main() -> ExitCode {
+    // The Rust runtime ignores `SIGPIPE` before `main`, so a write to a
+    // reader that has gone away comes back as `EPIPE` — and `print!` answers
+    // `EPIPE` with a panic. Every `--json` here is meant for a pipe, and `prov
+    // docs --json | head` must not end in a stack trace on stderr; restoring
+    // the default disposition ends it the way `cat | head` ends, silently
+    // and with the signal as the status. The alternative — threading a
+    // fallible writer through every command and mapping `BrokenPipe` to a
+    // quiet exit — is the same outcome at every call site instead of one.
+    #[cfg(unix)]
+    // SAFETY: `signal` is async-signal-safe, called once on the main thread
+    // before any other thread exists, with a valid signal number and the
+    // default disposition.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     // `-C <dir>` / `--root <dir>` (or `PROV_ROOT`, which it overrides) runs prov
     // as if it had started in that directory: chdir once, up front, so every

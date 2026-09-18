@@ -546,6 +546,7 @@ dependencies = [
  "clap",
  "cliclack",
  "fig",
+ "libc",
  "prov",
  "prov-testkit",
 ]

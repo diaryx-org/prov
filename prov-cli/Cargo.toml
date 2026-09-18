@@ -28,6 +28,11 @@ fig.workspace = true
 # Arg parsing.
 clap = { version = "4.5", features = ["derive"] }
 cliclack = "0.5.5"
+# One call, at startup: reset `SIGPIPE` to its default so that `prov docs
+# --json | head` ends the way `cat | head` does (see `main`). Already in the
+# tree through cliclack; named here because we call it ourselves.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 prov-testkit = { workspace = true }
