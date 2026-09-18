@@ -33,6 +33,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 - **cli** — `prov docs --json --body` carries each document's prose ([`c4b9d51`](https://github.com/diaryx-org/prov/commit/c4b9d51db0e6fa156bd239ab635b00014ccb70f0))
 - **fields** — a field path reaches into a list, and `type: ref` is read ([`53f2b49`](https://github.com/diaryx-org/prov/commit/53f2b49b30001f3fdb3004525f9cce6c46b3e439))
 - **views** — a date is EDTF, and a date field holding prose is a finding ([`ed14c25`](https://github.com/diaryx-org/prov/commit/ed14c25846e9163f596795b6a0476d6348476b1e))
+- **views** — `nest: ref` files a record under the document it links to ([`35211c8`](https://github.com/diaryx-org/prov/commit/35211c819e58ac1d597cb74a2802dd304392ba60))
 
 ### Fixed
 
@@ -78,6 +79,12 @@ instant, or EDTF. A workspace whose date fields hold prose, or diaryx's
 `unknown` marker, goes from clean to red; `--fix` offers the EDTF
 spelling. `Finding` gains the variant and `RemedyKind` gains `SetDate`
 (`set-date`); exhaustive matches over either need editing.
+
+- `ViewSpec::nest` is `Option<Nest>` rather than `Option<Grain>`, and `ViewSpec::nest_route` returns `Option<NestRoute>` rather than `Option<Vec<String>>`; a consumer filing by grain matches `Nest::Grain` and `NestRoute::Titles`.
+
+- a `group:` key is read as a field path, so `written.on` now reaches the `on` key inside `written` where it previously matched only a top-level key spelled with a dot.
+
+- a `nest:` value that is not a grain is reported as a bad nest with `ref` among the expected spellings, rather than as a bad grain.
 
 <!-- git-cliff:end -->
 
