@@ -968,6 +968,12 @@ impl fmt::Display for Finding {
                     doc.display(),
                     issue.key,
                 ),
+                crate::config::ConfigIssueKind::NestRefNotDeclared { field } => write!(
+                    f,
+                    "{}: config `{}` files by reference through `{field}`, which is not declared `type: ref` — until it is, the value is a string rather than a link, and a move of the shelf would leave it pointing at where the shelf was (declare the field `type: ref`, or drop `nest`)",
+                    doc.display(),
+                    issue.key,
+                ),
                 crate::config::ConfigIssueKind::ScopedReference { field } => write!(
                     f,
                     "{}: config `{}` scopes `{field}`, which is declared `type: ref` — whether a field holds links is read everywhere, as a relation's name is, so the scope narrows its other axes and not that (drop `under`, or declare the type once for the whole workspace)",

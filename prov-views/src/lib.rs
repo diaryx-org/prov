@@ -102,4 +102,7 @@ pub use filter::{CONDITION_KEYS, Condition};
 pub use group::{Group, RowSet, group};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};
 pub use select::{Row, Selection, documents, select, select_with};
-pub use spec::{GRAINS, Grain, Grouping, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize, views_from};
+pub use spec::{
+    GRAINS, Grain, Grouping, NESTS, Nest, NestRoute, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize,
+    views_from,
+};

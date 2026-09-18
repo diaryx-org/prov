@@ -17,7 +17,7 @@
 //! carried since before views existed. A view has no business restating it.
 
 use prov_graph::meta::{Mapping, Value};
-use prov_views::{Grain, Grouping, ViewSpec, views_from};
+use prov_views::{Grain, Grouping, Nest, ViewSpec, views_from};
 
 /// The five lenses, as a workspace would now declare them.
 const DECLARED: &str = "\
@@ -82,7 +82,7 @@ fn all_five_diaryx_facets_express_as_declared_views() {
         }
     );
     assert_eq!(daily.under.as_deref(), Some("[Daily](id:abc1234)"));
-    assert_eq!(daily.nest, Some(Grain::Year));
+    assert_eq!(daily.nest, Some(Nest::Grain(Grain::Year)));
 
     // The four that always were fields, and stay one line each.
     for (view, key) in views[1..]

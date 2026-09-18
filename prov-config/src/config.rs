@@ -1370,6 +1370,17 @@ pub enum ConfigIssueKind {
     /// choose between them. The *grouping* is fine — one document under several
     /// groups is what a view is for — so only the filing half is reported.
     NestNotSingleValued { field: String },
+    /// A view declares `nest: ref` but groups by a field the workspace does
+    /// not declare `type: ref`.
+    ///
+    /// Filing by reference files a record under the document its own value
+    /// links to, and the value is only a *link* — resolved, checked, rewritten
+    /// when its target moves — once the field is declared one. Until then it
+    /// is a string that used to be a path: the filing works on the day it is
+    /// written and breaks, silently, the day the shelf is moved. Reported for
+    /// every key in the grouping chain, since the chain files by whichever is
+    /// filled in.
+    NestRefNotDeclared { field: String },
     /// `workspace_id` holds a name that cannot be written as the qualifier of an
     /// `id:<workspace>/<id>` reference — it contains `/`, `:` or whitespace, or
     /// is not a string at all. `apply` ignored it, so the workspace stayed
@@ -1966,7 +1977,7 @@ fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mappin
                         ],
                     },
                 }),
-                ViewIssueKind::BadGrain => issues.push(ConfigIssue {
+                ViewIssueKind::BadGrain | ViewIssueKind::BadNest => issues.push(ConfigIssue {
                     key: dotted.clone(),
                     kind: ConfigIssueKind::InvalidValue {
                         value: spec
@@ -2056,6 +2067,32 @@ fn diagnose_nest_is_fileable(
                 field: (*field).clone(),
             },
         });
+    }
+    // `nest: ref` files under what the value links to, and prov only knows
+    // the value is a link — and only rewrites it when the shelf moves — if the
+    // field says `type: ref`. A key in the chain that does not is reported:
+    // the filing would work until the first move, and then break without a
+    // word. Bounded to this surface like the check above, for the same reason.
+    if view.nest == Some(prov_views::Nest::Ref) {
+        let declares_ref = |decl: &Value| {
+            decl.get("type")
+                .and_then(Value::as_str)
+                .and_then(field_type_from_config_str)
+                == Some(FieldType::Ref)
+        };
+        let undeclared = view.group.keys.iter().find(|key| !match fields.get(*key) {
+            Some(Value::Sequence(decls)) => decls.iter().any(declares_ref),
+            Some(decl) => declares_ref(decl),
+            None => false,
+        });
+        if let Some(field) = undeclared {
+            issues.push(ConfigIssue {
+                key: format!("{prefix}.nest"),
+                kind: ConfigIssueKind::NestRefNotDeclared {
+                    field: field.clone(),
+                },
+            });
+        }
     }
 }
 
@@ -2678,7 +2715,7 @@ mod tests {
                     filter: Some(prov_views::Condition::Not(Box::new(
                         prov_views::Condition::Has("draft".to_string()),
                     ))),
-                    nest: Some(prov_views::Grain::Year),
+                    nest: Some(prov_views::Nest::Grain(prov_views::Grain::Year)),
                 },
                 // …and the minimal one, which must not gain keys on the way
                 // back.
@@ -3663,6 +3700,61 @@ mod tests {
             diagnose(&block(&[("group", str_value("people"))])).is_empty(),
             "grouping by a multi-valued field is not the problem"
         );
+    }
+
+    /// `nest: ref` over a field not declared `type: ref` files by a string
+    /// that would stop being a path the day the shelf moved. Reported here
+    /// rather than then.
+    #[test]
+    fn nesting_by_reference_wants_the_field_declared_a_ref() {
+        let block = |ty: Option<&str>, chain: Value| {
+            let mut fields = Mapping::new();
+            if let Some(ty) = ty {
+                let mut on = Mapping::new();
+                on.insert("type".into(), str_value(ty));
+                fields.insert("written.on".into(), Value::Mapping(on));
+            }
+            let mut entry = Mapping::new();
+            entry.insert("group".into(), chain);
+            entry.insert("nest".into(), str_value("ref"));
+            let mut views = Mapping::new();
+            views.insert("journal".into(), Value::Mapping(entry));
+            let mut top = Mapping::new();
+            top.insert("fields".into(), Value::Mapping(fields));
+            top.insert("views".into(), Value::Mapping(views));
+            Value::Mapping(top)
+        };
+
+        assert!(
+            diagnose(&block(Some("ref"), str_value("written.on"))).is_empty(),
+            "declared a ref: clean"
+        );
+
+        let issues = diagnose(&block(Some("str"), str_value("written.on")));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "views.journal.nest");
+        assert_eq!(
+            issues[0].kind,
+            ConfigIssueKind::NestRefNotDeclared {
+                field: "written.on".into()
+            }
+        );
+
+        // Every key in the chain files, so every key must be a ref — the
+        // undeclared fallback is the one reported.
+        let chain = Value::Sequence(vec![str_value("written.on"), str_value("about")]);
+        let issues = diagnose(&block(Some("ref"), chain));
+        assert_eq!(
+            issues[0].kind,
+            ConfigIssueKind::NestRefNotDeclared {
+                field: "about".into()
+            }
+        );
+
+        // A field declared nowhere in this surface: the same finding — the
+        // declaration is what prov reads the link by, and there is none.
+        let issues = diagnose(&block(None, str_value("written.on")));
+        assert_eq!(issues.len(), 1, "{issues:?}");
     }
 
     /// The bound worth knowing: `diagnose` lints one surface at a time, so the

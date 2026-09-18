@@ -422,6 +422,11 @@ pub(crate) fn cmd_config(
                             "prov: `{field}` is declared `type: ref` and scoped — a link field is read everywhere, so the scope narrows its other axes and not that"
                         );
                     }
+                    prov::ConfigIssueKind::NestRefNotDeclared { field } => {
+                        eprintln!(
+                            "prov: cannot file by reference through `{field}` — it is not declared `type: ref`, so a move of the shelf would not rewrite it"
+                        );
+                    }
                 }
                 return Ok(ExitCode::FAILURE);
             }

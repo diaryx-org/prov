@@ -209,9 +209,9 @@ pub use peers::PeerFile;
 /// `prov-views` directly instead: it reaches nothing that can write.
 pub mod views {
     pub use prov_views::{
-        CONDITION_KEYS, Condition, Error, Grain, Group, Grouping, Row, RowSet, Selection,
-        VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind, ViewSpec, date, diagnose_view,
-        diagnose_views, documents, group, select, select_with, views_from,
+        CONDITION_KEYS, Condition, Error, Grain, Group, Grouping, NESTS, Nest, NestRoute, Row,
+        RowSet, Selection, VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind, ViewSpec, date,
+        diagnose_view, diagnose_views, documents, group, select, select_with, views_from,
     };
 }
 /// Named, closed-by-default document sets that may leave the workspace — the

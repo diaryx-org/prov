@@ -131,6 +131,11 @@ impl Preset {
                     K::ScopedReference { field } => {
                         format!("scopes `{field}`, which is declared `type: ref`")
                     }
+                    K::NestRefNotDeclared { field } => {
+                        format!(
+                            "files by reference through `{field}`, which is not declared `type: ref`"
+                        )
+                    }
                 };
                 lines.push_str(&format!("\n  {}: {what}", issue.key));
             }

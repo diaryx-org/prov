@@ -69,7 +69,7 @@ pub(crate) fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
             // a new record, and how deep, is worth seeing without opening the
             // config.
             let nest = match view.nest {
-                Some(grain) => format!(", files by {}", grain.display()),
+                Some(nest) => format!(", files by {}", nest.display()),
                 None => String::new(),
             };
             println!(

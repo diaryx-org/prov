@@ -15,6 +15,7 @@ contents:
 - '[the workspace node](/docs/proposals/workspace-node/proposal-workspace-node-v1.md)'
 - '[presets](/docs/proposals/presets/proposal-presets-v1.md)'
 - '[path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md)'
+- '[nest by reference](/docs/proposals/nest-by-ref/proposal-nest-by-ref-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a

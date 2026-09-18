@@ -1229,6 +1229,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // would be guessing which the author meant, and the second
                 // silently changes how every *other* consumer reads that field.
                 crate::config::ConfigIssueKind::NestNotSingleValued { .. } => Ok(Vec::new()),
+                // The same two repairs — declare the field `type: ref`, or drop
+                // the `nest` — and the first changes how every other consumer
+                // reads the field: it becomes a link site, checked and
+                // rewritten. That is very likely what the author meant, and
+                // still theirs to say. Diagnosis only.
+                crate::config::ConfigIssueKind::NestRefNotDeclared { .. } => Ok(Vec::new()),
             },
             _ => Ok(Vec::new()),
         }

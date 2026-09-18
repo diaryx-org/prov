@@ -151,6 +151,10 @@ prov:
       where:                  # conditions a document in scope must also meet
         not: { has: draft }
       nest: year              # how deep a *new* entry is filed, independent of `by`
+    journal:
+      group: written.on       # a field path — a key inside a mapping, or `confirmed[].by`
+      under: '[Calendar](/Calendar/index.md)'
+      nest: ref               # file under the document the value links to
   exports:                    # what may *leave* — see "Exports" below
     letters:
       label: Letters home
@@ -224,11 +228,11 @@ spine cannot do.
 
 | key      | means                                                                 |
 | -------- | --------------------------------------------------------------------- |
-| `group`  | a field name, or a list of field names tried in order (first non-empty wins). **Required** — an entry without one is not a view |
+| `group`  | a field path, or a list of them tried in order (first non-empty wins) — `people`, `written.on`, `confirmed[].by`, as a `fields` declaration writes one. **Required** — an entry without one is not a view |
 | `by`     | a **grain** — cut the chosen value coarser before grouping (see below) |
 | `under`  | a link to an index — by path, by `id:`, or by title (`[[Tasks]]`); the view covers its whole spanning subtree. A title several documents carry is an error, not a union. Absent = the whole workspace |
 | `where`  | conditions a document in scope must also meet. Absent = everything scope reaches |
-| `nest`   | a grain — how deep a *new* entry is filed. Only grains that chain, and only single-valued fields |
+| `nest`   | a grain — how deep a *new* entry is filed — or `ref`, to file under the document the value links to. Only grains that chain, and only single-valued fields |
 | `label`  | what a person calls it (absent = the name, humanized)                 |
 | `icon`   | a glyph hint, uninterpreted                                           |
 
@@ -349,6 +353,46 @@ a `check` finding, and a document that turns out multi-valued at filing time
 simply has no route. Grouping by such a field stays perfectly good; one document
 under several groups is the whole point of a view. Only the filing half is
 constrained.
+
+#### `nest: ref` — filing by reference
+
+A grain computes the shelf from the value, and prov has to know what a year
+is to do it. The other way to say where a record files is for the record to
+**link to the shelf**, and for the shelf's own place in the spine to be the
+rest of the chain:
+
+```yaml
+fields:
+  written.on:
+    type: ref
+views:
+  journal:
+    group: written.on
+    under: '[Calendar](/Calendar/index.md)'
+    nest: ref
+```
+
+A record carrying `written: { on: /Calendar/2026/09/17.md, at: "09:12" }`
+files under that day node, full stop. The day already sits under its month,
+which sits under its year, because that is the calendar index's own
+`contents` chain — so the chain condition above is met by construction, and
+prov does not know the target is a day. The same declaration files a note
+under a person, a place or a project, and prov cannot tell which. Order
+comes with it: a calendar index in spine order is already chronological, and
+a view nested by reference inherits that without a date being read anywhere.
+
+What it costs is that the shelf must exist. prov creates nothing here: a link
+to a document that is not there is the ordinary broken-link finding, and
+making the day node is the frontend's, which is where that opinion belongs.
+The value grains stay for a workspace that would rather not keep a node per
+day, or whose dates are `1913~` and `1918/1922` and have no node to point at.
+
+The field must be declared `type: ref`. That is what makes the value a link
+— resolved, checked, rewritten when the shelf moves — rather than a string
+that used to be a path; a `nest: ref` over a field the same surface does not
+declare a `ref` is a `check` finding, because the filing would work on the
+day it was written and break, silently, the day the shelf was moved. `ref` is
+a way to file and not a way to read: `by: ref` is a bad grain.
 
 **`under:` is a traversal, not a path filter.** The scope is resolved by walking
 the spanning relation below the anchor, so it survives a rename, a move and a

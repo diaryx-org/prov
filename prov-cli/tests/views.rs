@@ -283,6 +283,66 @@ fn nesting_by_a_multi_valued_field_is_reported() {
     );
 }
 
+/// `nest: ref` files a record under the document its own field links to.
+/// The listing says so, the view groups by the link, and the field not being
+/// declared `type: ref` is a finding — the filing would break the day the
+/// shelf moved.
+#[test]
+fn nesting_by_reference_is_listed_grouped_and_checked() {
+    let dir = std::env::temp_dir().join(format!("prov-views-cli-ref-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let index = |declared: &str| {
+        format!(
+            "---\ntitle: Home\nprov:\n  fields:\n    written.on:\n      type: {declared}\n  views:\n    journal:\n      \
+             group: written.on\n      nest: ref\ncontents:\n- calendar.md\n- a.md\n---\n"
+        )
+    };
+    write(&dir, "index.md", &index("ref"));
+    write(
+        &dir,
+        "calendar.md",
+        "---\ntitle: Calendar\npart_of: index.md\ncontents:\n- d17.md\n---\n",
+    );
+    write(
+        &dir,
+        "d17.md",
+        "---\ntitle: '17'\npart_of: calendar.md\n---\n",
+    );
+    write(
+        &dir,
+        "a.md",
+        "---\ntitle: Morning\npart_of: index.md\nwritten:\n  on: d17.md\n  at: '09:12'\n---\n",
+    );
+
+    // Not `ok`: a fresh vault has no `about.md`, and that finding is not this
+    // test's. What matters is that the view itself is not one.
+    let (_, out) = run(&dir, &["check"]);
+    assert!(
+        !out.contains("views.journal.nest"),
+        "declared a ref: clean\n{out}"
+    );
+
+    let (ok, out) = run(&dir, &["views"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("files by ref"), "{out}");
+
+    let (ok, out) = run(&dir, &["views", "journal"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("d17.md (1)"),
+        "groups by the link as written: {out}"
+    );
+
+    write(&dir, "index.md", &index("string"));
+    let (ok, out) = run(&dir, &["check"]);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("views.journal.nest") && out.contains("not declared `type: ref`"),
+        "{out}"
+    );
+}
+
 /// An anchor that names nothing must not read as an archive with nothing in it.
 #[test]
 fn a_dead_anchor_fails_loudly_rather_than_printing_an_empty_view() {

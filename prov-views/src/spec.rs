@@ -76,6 +76,41 @@
 //!   would be a poor bargain if a picker that reads like a display setting
 //!   silently changed where tomorrow's entry lands.
 //!
+//! # Filing by reference
+//!
+//! A grain computes the shelf from the value: `2026-07-24` becomes the index
+//! titled `2026` and the one titled `2026-07` inside it, and the crate has to
+//! know what a year is to do it. The other way to say where a record files is
+//! for the record to *link to the shelf* and for the shelf's own place in the
+//! spine to be the chain:
+//!
+//! ```yaml
+//! fields:
+//!   written.on:
+//!     type: ref
+//! views:
+//!   journal:
+//!     group: written.on
+//!     under: '[Calendar](/Calendar/index.md)'
+//!     nest: ref
+//! ```
+//!
+//! `nest: ref` ([`Nest::Ref`]) files the record under the document its
+//! grouping value links to, and nothing else. The day node already sits under
+//! its month, which sits under its year, because that is the calendar index's
+//! own `contents` chain — so the chain condition a grain has to prove is
+//! satisfied by construction, and this crate does not know that the target is
+//! a day. The same declaration files a note under a person, a place or a
+//! project. What it costs is that the shelf must exist: a link to a document
+//! that is not there is the ordinary broken-link finding, not a shelf prov
+//! makes. The value grains stay for a workspace that would rather not keep a
+//! node per day.
+//!
+//! The field should be declared `type: ref`, so that a move of the shelf
+//! rewrites every record that files under it — that is what makes the link a
+//! link rather than a string that used to be a path (`prov-config` reports a
+//! `nest: ref` over a field that is not).
+//!
 //! # Inheritance and override
 //!
 //! `under:` is inherited: a view covers the whole subtree below its anchor, not
@@ -88,6 +123,7 @@
 //!
 //! [MoReq2010]: https://moreq.info/files/moreq2010_vol1_v1_1_en.pdf
 
+use prov_graph::field::{FieldPath, values_at};
 use prov_graph::meta::{Mapping, Value};
 
 use crate::filter::Condition;
@@ -159,6 +195,9 @@ pub enum Grain {
 /// offers. [`Grain::Initial`] also takes a parameterized form
 /// (`{ initial: 2 }`) that is not a spelling to suggest.
 pub const GRAINS: &[&str] = &["year", "month", "day", "initial"];
+
+/// The `nest:` spellings that are a bare word: every grain's, and `ref`.
+pub const NESTS: &[&str] = &["year", "month", "day", "initial", "ref"];
 
 impl Grain {
     /// The config spelling, when this grain has a bare-word one.
@@ -307,6 +346,77 @@ impl Grain {
     }
 }
 
+/// How a view **files** a new record — the `nest:` value.
+///
+/// Two shapes, and the difference is who knows where the shelf is. A
+/// [`Grain`] computes it from the value, so the crate must know what a year
+/// or an initial is. [`Ref`](Self::Ref) reads it off the record: the value is
+/// a link, and the record files under the document it links to, whose place
+/// in the spine is the whole chain. See the module docs, *Filing by
+/// reference*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nest {
+    /// File under an index at this grain, the coarser indexes above it —
+    /// `["2026", "2026-07"]` for a month.
+    Grain(Grain),
+    /// File under the document the grouping value links to.
+    Ref,
+}
+
+impl Nest {
+    /// Read a `nest:` value: a grain's spelling, or the word `ref`.
+    pub fn parse(value: &Value) -> Option<Self> {
+        if let Some(text) = value.as_str()
+            && text.trim() == "ref"
+        {
+            return Some(Nest::Ref);
+        }
+        Grain::parse(value).map(Nest::Grain)
+    }
+
+    /// The value this writes back as.
+    pub fn to_value(self) -> Value {
+        match self {
+            Nest::Grain(grain) => grain.to_value(),
+            Nest::Ref => Value::String("ref".into()),
+        }
+    }
+
+    /// How this reads in a listing (`month`, `initial 2`, `ref`).
+    pub fn display(self) -> String {
+        match self {
+            Nest::Grain(grain) => grain.display(),
+            Nest::Ref => "ref".to_string(),
+        }
+    }
+
+    /// The grain, when this nest is one.
+    pub fn grain(self) -> Option<Grain> {
+        match self {
+            Nest::Grain(grain) => Some(grain),
+            Nest::Ref => None,
+        }
+    }
+}
+
+/// Where a record files under a view — what [`ViewSpec::nest_route`] answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NestRoute {
+    /// The index *titles* to file under, coarsest first, below the view's
+    /// [`under`](ViewSpec::under) — `["2026", "2026-07"]` — which is exactly
+    /// what prov's route addressing takes, so a frontend hands them to
+    /// `plan_route` and never assembles a path. An index that does not exist
+    /// yet is the frontend's to create.
+    Titles(Vec<String>),
+    /// The link the record's own grouping field carries, as written. The
+    /// record files under whatever it resolves to — by path, by `id:`, or by
+    /// title, the way a view's anchor resolves — and the frontend resolves it
+    /// from where the record will live, since a relative link is relative to
+    /// its document. Nothing is created: a link to no document is a broken
+    /// link, not a shelf.
+    Link(String),
+}
+
 /// What a view sorts records by — MoReq2010's *classification*.
 ///
 /// One shape, not a set of blessed kinds: an ordered chain of field keys, and
@@ -314,8 +424,11 @@ impl Grain {
 /// there is no `date` variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grouping {
-    /// The field keys to read, in order — the first that carries a value wins,
-    /// and supplies *all* of that view's group keys for the document.
+    /// The field paths to read, in order — the first that carries a value
+    /// wins, and supplies *all* of that view's group keys for the document.
+    /// Each is a path as a `fields` declaration writes one (`people`,
+    /// `written.on`, `confirmed[].by`), so a view groups by a key inside a
+    /// mapping or inside every item of a list, not only by a top-level key.
     /// Guaranteed non-empty by [`ViewSpec::parse`].
     pub keys: Vec<String>,
     /// The grain the chosen value is cut at, or `None` to group on the value
@@ -347,8 +460,14 @@ impl Grouping {
     /// claim; leaving it ungrouped shows the bad value instead.
     pub fn keys_of(&self, meta: &Value) -> Vec<String> {
         for key in &self.keys {
-            let Some(value) = meta.get(key) else { continue };
-            let raw = scalar_texts(value);
+            // A path, not a key: `written.on` reaches into a mapping and
+            // `confirmed[].by` into every item of a list, each value it lands
+            // on contributing its scalars. A plain key reaches its one value,
+            // as before.
+            let raw: Vec<String> = values_at(meta, &FieldPath::parse(key))
+                .into_iter()
+                .flat_map(|(_, value)| scalar_texts(value))
+                .collect();
             if raw.is_empty() {
                 continue;
             }
@@ -424,11 +543,12 @@ pub struct ViewSpec {
     /// matches nothing is an ordinary empty answer.
     pub filter: Option<Condition>,
     /// Materialization: when set, filing a new record through this view nests
-    /// it under an index at this grain below [`under`](Self::under), creating
-    /// the index if the calendar has turned. `None` files flat.
+    /// it — under an index at a grain below [`under`](Self::under), creating
+    /// the index if the calendar has turned, or under the document the
+    /// record's grouping value links to ([`Nest::Ref`]). `None` files flat.
     ///
     /// Independent of [`Grouping::by`] on purpose — see the module docs.
-    pub nest: Option<Grain>,
+    pub nest: Option<Nest>,
 }
 
 impl ViewSpec {
@@ -452,7 +572,7 @@ impl ViewSpec {
             },
             under: non_empty(map.get("under")),
             filter: map.get("where").and_then(Condition::parse),
-            nest: map.get("nest").and_then(Grain::parse),
+            nest: map.get("nest").and_then(Nest::parse),
         })
     }
 
@@ -483,14 +603,29 @@ impl ViewSpec {
         map
     }
 
-    /// The index titles a new record nests under, coarsest first — or `None`
-    /// when this view does not nest, or `meta` cannot be filed.
+    /// The link a record nests under when this view files by reference —
+    /// `None` when it does not, when the grouping chain carries no value, or
+    /// when it carries several. The single-valued half of
+    /// [`nest_route`](Self::nest_route), for a caller that only files by
+    /// reference; the route is the general answer.
+    pub fn nest_link(&self, meta: &Value) -> Option<String> {
+        match self.nest_route(meta)? {
+            NestRoute::Link(link) => Some(link),
+            NestRoute::Titles(_) => None,
+        }
+    }
+
+    /// Where a new record nests under this view — or `None` when the view
+    /// does not nest, or `meta` cannot be filed.
     ///
-    /// For a date view at month grain this is `["2026", "2026-07"]`; for an
-    /// alphabetical one at `initial 2`, `["A", "AD"]`. Those are *titles*, which
-    /// is exactly what prov's route addressing takes (`prov new --under
-    /// "Daily/2026/2026-07" -p`), so a frontend that materializes a view hands
-    /// this straight to `plan_route` and never assembles a path itself.
+    /// For a date view at month grain this is the titles `["2026",
+    /// "2026-07"]`; for an alphabetical one at `initial 2`, `["A", "AD"]`.
+    /// Those are *titles*, which is exactly what prov's route addressing takes
+    /// (`prov new --under "Daily/2026/2026-07" -p`), so a frontend that
+    /// materializes a view hands this straight to `plan_route` and never
+    /// assembles a path itself. For a view that files by reference it is the
+    /// [link](NestRoute::Link) the record carries, and the frontend files under
+    /// what that resolves to.
     ///
     /// `None` in three cases, all of which mean *this record has no single home
     /// under this view* rather than *nowhere*:
@@ -503,8 +638,9 @@ impl ViewSpec {
     ///   parents, and picking one would be inventing an answer the workspace
     ///   did not give. Such a view groups perfectly well — it just cannot be
     ///   materialized, which is why `nest` on a multi-valued field is a config
-    ///   finding rather than a runtime surprise.
-    pub fn nest_route(&self, meta: &Value) -> Option<Vec<String>> {
+    ///   finding rather than a runtime surprise. A record linking to two
+    ///   shelves is the same case in the reference shape.
+    pub fn nest_route(&self, meta: &Value) -> Option<NestRoute> {
         let nest = self.nest?;
         // Read the chain *uncut*: `by:` is how this view reads, and reading must
         // not decide where a file lands (the whole point of keeping the two
@@ -517,14 +653,20 @@ impl ViewSpec {
         let [value] = values.as_slice() else {
             return None;
         };
-        let route: Vec<String> = nest
+        let grain = match nest {
+            // The value *is* the route: the record says where it files, and
+            // the shelf's own place in the spine is the rest of the chain.
+            Nest::Ref => return Some(NestRoute::Link(value.clone())),
+            Nest::Grain(grain) => grain,
+        };
+        let route: Vec<String> = grain
             .chain()
             .into_iter()
-            .filter_map(|grain| grain.cut(value))
+            .filter_map(|step| step.cut(value))
             .collect();
         // A partial chain would file a July entry under `2026` and call it
         // done, which is a different place from the one the view describes.
-        (route.len() == nest.chain().len()).then_some(route)
+        (route.len() == grain.chain().len()).then_some(NestRoute::Titles(route))
     }
 
     /// What a person calls this view: its label, else its name humanized
@@ -834,7 +976,7 @@ mod tests {
         .expect("a view");
         assert_eq!(
             materialized.nest,
-            Some(Grain::Year),
+            Some(Nest::Grain(Grain::Year)),
             "a view may group finer than it files"
         );
     }
@@ -862,7 +1004,10 @@ mod tests {
         doc.insert("created".into(), Value::String("2026-07-24".into()));
         assert_eq!(
             spec.nest_route(&Value::Mapping(doc)),
-            Some(vec!["2026".to_string(), "2026-07".to_string()]),
+            Some(NestRoute::Titles(vec![
+                "2026".to_string(),
+                "2026-07".to_string()
+            ])),
             "a month nest is a year index holding a month index"
         );
     }
@@ -884,7 +1029,7 @@ mod tests {
         doc.insert("surname".into(), Value::String("Lovelace".into()));
         assert_eq!(
             spec.nest_route(&Value::Mapping(doc)),
-            Some(vec!["L".to_string(), "LO".to_string()])
+            Some(NestRoute::Titles(vec!["L".to_string(), "LO".to_string()]))
         );
     }
 
@@ -900,7 +1045,7 @@ mod tests {
         one.insert("people".into(), Value::String("Ada".into()));
         assert_eq!(
             spec.nest_route(&Value::Mapping(one)),
-            Some(vec!["A".to_string()]),
+            Some(NestRoute::Titles(vec!["A".to_string()])),
             "one value files fine"
         );
 
@@ -927,7 +1072,7 @@ mod tests {
         about.insert("date_of_document".into(), Value::String("1913~".into()));
         assert_eq!(
             spec.nest_route(&Value::Mapping(about)),
-            Some(vec!["1913".to_string()])
+            Some(NestRoute::Titles(vec!["1913".to_string()]))
         );
 
         let mut between = Mapping::new();
@@ -950,7 +1095,10 @@ mod tests {
         doc.insert("created".into(), Value::String("2026-07-24".into()));
         assert_eq!(
             spec.nest_route(&Value::Mapping(doc)),
-            Some(vec!["2026".to_string(), "2026-07".to_string()]),
+            Some(NestRoute::Titles(vec![
+                "2026".to_string(),
+                "2026-07".to_string()
+            ])),
             "grouped by year, filed by month — `by` never reaches the route"
         );
     }
@@ -995,7 +1143,7 @@ mod tests {
                 group,
                 under: Some("[Daily](id:abc1234)".into()),
                 filter: Some(Condition::Not(Box::new(Condition::Has("draft".into())))),
-                nest: Some(Grain::Year),
+                nest: Some(Nest::Grain(Grain::Year)),
             };
             let back =
                 ViewSpec::parse("daily", &Value::Mapping(spec.to_mapping())).expect("a view");
@@ -1048,5 +1196,114 @@ mod tests {
         let mut doc = Mapping::new();
         doc.insert("rating".into(), Value::Int(5));
         assert_eq!(spec.group.keys_of(&Value::Mapping(doc)), ["5"]);
+    }
+
+    /// A grouping key is a field path, as a declaration's is: `written.on`
+    /// reaches into a mapping, `confirmed[].by` into every item of a list.
+    #[test]
+    fn a_grouping_key_is_a_field_path() {
+        let nested = ViewSpec::parse("journal", &text(&[("group", "written.on")])).expect("a view");
+        let mut doc = Mapping::new();
+        doc.insert(
+            "written".into(),
+            text(&[("on", "/Calendar/2026/09/17.md"), ("at", "09:12")]),
+        );
+        assert_eq!(
+            nested.group.keys_of(&Value::Mapping(doc)),
+            ["/Calendar/2026/09/17.md"]
+        );
+
+        let each = ViewSpec::parse("who", &text(&[("group", "confirmed[].by")])).expect("a view");
+        let mut doc = Mapping::new();
+        doc.insert(
+            "confirmed".into(),
+            Value::Sequence(vec![text(&[("by", "Ada")]), text(&[("by", "Grace")])]),
+        );
+        assert_eq!(each.group.keys_of(&Value::Mapping(doc)), ["Ada", "Grace"]);
+    }
+
+    /// The generalization of `nest` past grains: the record links to its
+    /// shelf, and the route is that link. Nothing here knows the target is a
+    /// day, which is the point.
+    #[test]
+    fn nest_ref_files_under_what_the_record_links_to() {
+        let spec = ViewSpec::parse(
+            "journal",
+            &text(&[("group", "written.on"), ("nest", "ref")]),
+        )
+        .expect("a view");
+        assert_eq!(spec.nest, Some(Nest::Ref));
+
+        let mut doc = Mapping::new();
+        doc.insert(
+            "written".into(),
+            text(&[("on", "[17](/Calendar/2026/09/17.md)"), ("at", "09:12")]),
+        );
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(doc.clone())),
+            Some(NestRoute::Link("[17](/Calendar/2026/09/17.md)".into())),
+            "the link as written — resolving it is the frontend's, from where the record lives"
+        );
+        assert_eq!(
+            spec.nest_link(&Value::Mapping(doc)),
+            Some("[17](/Calendar/2026/09/17.md)".into())
+        );
+
+        // Two shelves is two homes, exactly as two people is.
+        let mut two = Mapping::new();
+        two.insert("written".into(), {
+            let mut m = Mapping::new();
+            m.insert("on".into(), seq(&["/a.md", "/b.md"]));
+            Value::Mapping(m)
+        });
+        assert_eq!(spec.nest_route(&Value::Mapping(two)), None);
+
+        // Nothing linked, nothing filed.
+        assert_eq!(spec.nest_route(&Value::Mapping(Mapping::new())), None);
+    }
+
+    /// `ref` is a way to file, not a way to read: `by:` takes grains only, and
+    /// a grain view never answers with a link.
+    #[test]
+    fn ref_is_a_nest_and_not_a_grain() {
+        assert_eq!(Grain::parse(&text_value("ref")), None);
+        assert_eq!(Nest::parse(&text_value("ref")), Some(Nest::Ref));
+        assert_eq!(Nest::parse(&text_value(" ref ")), Some(Nest::Ref));
+        assert_eq!(
+            Nest::parse(&text_value("month")),
+            Some(Nest::Grain(Grain::Month))
+        );
+        assert_eq!(Nest::parse(&text_value("reff")), None);
+        assert_eq!(Nest::Ref.grain(), None);
+
+        let by_ref = ViewSpec::parse("x", &text(&[("group", "written.on"), ("by", "ref")]))
+            .expect("still a view");
+        assert_eq!(
+            by_ref.group.by, None,
+            "an unreadable `by:` is no grain, as before"
+        );
+
+        let grained = ViewSpec::parse("daily", &text(&[("group", "created"), ("nest", "month")]))
+            .expect("a view");
+        let mut doc = Mapping::new();
+        doc.insert("created".into(), Value::String("2026-07-24".into()));
+        assert_eq!(grained.nest_link(&Value::Mapping(doc)), None);
+    }
+
+    #[test]
+    fn nest_ref_round_trips_through_its_mapping() {
+        let spec = ViewSpec::parse(
+            "journal",
+            &text(&[("group", "written.on"), ("nest", "ref")]),
+        )
+        .expect("a view");
+        let written = spec.to_mapping();
+        assert_eq!(written.get("nest"), Some(&Value::String("ref".into())));
+        assert_eq!(
+            ViewSpec::parse("journal", &Value::Mapping(written)),
+            Some(spec.clone())
+        );
+        assert_eq!(Nest::Ref.display(), "ref");
+        assert_eq!(Nest::Grain(Grain::Initial(2)).display(), "initial 2");
     }
 }

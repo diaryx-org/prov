@@ -370,6 +370,10 @@ pub fn finding(f: &Finding) -> J {
                     fields.push(("issue", s("scoped_reference")));
                     fields.push(("field", s(field)));
                 }
+                prov::ConfigIssueKind::NestRefNotDeclared { field } => {
+                    fields.push(("issue", s("nest_ref_not_declared")));
+                    fields.push(("field", s(field)));
+                }
             }
         }
         Finding::ConfigSpecAhead { doc, declared } => {
@@ -557,7 +561,7 @@ pub fn view(spec: &ViewSpec) -> J {
         ("by", opt(spec.group.by.map(Grain::display))),
         ("under", opt(spec.under.clone())),
         ("filtered", J::Bool(spec.filter.is_some())),
-        ("nest", opt(spec.nest.map(Grain::display))),
+        ("nest", opt(spec.nest.map(prov::views::Nest::display))),
     ])
 }
 

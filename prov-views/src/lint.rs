@@ -20,7 +20,7 @@
 use prov_graph::meta::Value;
 
 use crate::filter::{CONDITION_KEYS, Condition};
-use crate::spec::{GRAINS, Grain, VIEW_KEYS, ViewSpec};
+use crate::spec::{GRAINS, Grain, NESTS, Nest, VIEW_KEYS, ViewSpec};
 
 /// Something wrong with one `views.<name>` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,13 +44,18 @@ pub enum ViewIssueKind {
     /// A key this format does not define. Reported so a `labl:` is caught;
     /// a near-miss suggestion is the caller's to add.
     UnknownKey,
-    /// A `by:` or `nest:` whose value is not a grain.
+    /// A `by:` whose value is not a grain.
     ///
     /// Carries no rendering of the offending value: the key names it, and how a
     /// value is summarized for a human is the caller's vocabulary, not this
     /// crate's — the same division that leaves near-miss suggestions to
     /// `prov-config`.
     BadGrain,
+    /// A `nest:` whose value is neither a grain nor `ref`. Its own kind
+    /// because its own spellings: `ref` is a way to file and not a way to
+    /// read, so offering it for `by:` would be offering a word that key
+    /// refuses.
+    BadNest,
     /// A `where:` that yields no condition — not a mapping, empty, or naming
     /// only predicates this format does not define.
     ///
@@ -73,6 +78,7 @@ impl ViewIssueKind {
         match self {
             ViewIssueKind::UnknownKey => VIEW_KEYS,
             ViewIssueKind::BadGrain => GRAINS,
+            ViewIssueKind::BadNest => NESTS,
             ViewIssueKind::NoCondition => CONDITION_KEYS,
             _ => &[],
         }
@@ -101,7 +107,7 @@ pub fn diagnose_view(name: &str, value: &Value) -> Vec<ViewIssue> {
                     issues.push(issue(key, ViewIssueKind::NoCondition));
                 }
             }
-            "by" | "nest" => {
+            "by" => {
                 // `ViewSpec::parse` reads an unparseable grain as *no grain* —
                 // it will not invent a cut the config did not ask for, and the
                 // view stays usable by grouping on the raw values. That is the
@@ -109,6 +115,14 @@ pub fn diagnose_view(name: &str, value: &Value) -> Vec<ViewIssue> {
                 // the only place a `by: yearr` is ever heard from.
                 if Grain::parse(value).is_none() {
                     issues.push(issue(key, ViewIssueKind::BadGrain));
+                }
+            }
+            "nest" => {
+                // The same silence: an unreadable `nest:` is read as *files
+                // flat*, and a frontend would file every new record at the
+                // anchor without a word.
+                if Nest::parse(value).is_none() {
+                    issues.push(issue(key, ViewIssueKind::BadNest));
                 }
             }
             _ => issues.push(issue(key, ViewIssueKind::UnknownKey)),
@@ -176,17 +190,37 @@ mod tests {
     /// ever says the config was wrong.
     #[test]
     fn a_misspelled_grain_is_reported_for_both_axes() {
-        for key in ["by", "nest"] {
+        for (key, kind, expected) in [
+            ("by", ViewIssueKind::BadGrain, GRAINS),
+            ("nest", ViewIssueKind::BadNest, NESTS),
+        ] {
             let issues = diagnose_view("daily", &view(&[("group", "created"), (key, "yearr")]));
             assert_eq!(
                 issues,
                 vec![ViewIssue {
                     view: "daily".into(),
                     key: key.into(),
-                    kind: ViewIssueKind::BadGrain,
+                    kind,
                 }]
             );
+            assert_eq!(issues[0].kind.expected(), expected);
         }
+    }
+
+    /// `ref` files and does not read: clean on `nest:`, a bad grain on `by:`.
+    #[test]
+    fn ref_is_a_nest_spelling_and_not_a_by_spelling() {
+        assert!(
+            diagnose_view(
+                "journal",
+                &view(&[("group", "written.on"), ("nest", "ref")])
+            )
+            .is_empty()
+        );
+        let issues = diagnose_view("journal", &view(&[("group", "written.on"), ("by", "ref")]));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, ViewIssueKind::BadGrain);
+        assert!(!issues[0].kind.expected().contains(&"ref"));
     }
 
     /// A `where:` nobody can read has two possible silent readings — select

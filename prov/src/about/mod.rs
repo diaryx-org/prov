@@ -2331,7 +2331,7 @@ mod tests {
                 },
                 under: Some("[Daily](/Daily/daily_index.md)".into()),
                 filter: None,
-                nest: Some(Grain::Month),
+                nest: Some(prov_views::Nest::Grain(Grain::Month)),
             },
             ViewSpec {
                 name: "open_tasks".into(),
