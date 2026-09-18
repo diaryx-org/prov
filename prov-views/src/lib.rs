@@ -26,12 +26,13 @@
 //!     nest: month
 //! ```
 //!
-//! ## Nothing here knows what a date is
+//! ## Nothing here knows which field is the date
 //!
-//! This crate has no `date` grouping, no built-in field chain, and no calendar.
-//! `group:` is an ordered list of field keys and `by:` is a **coarsening** —
-//! `year`/`month`/`day` cut ISO-8601 text, `initial` cuts the first letters for
-//! an A–Z index, and both are the same kind of thing. So the three field names
+//! This crate has no `date` grouping and no built-in field chain. `group:` is
+//! an ordered list of field keys and `by:` is a **coarsening** —
+//! `year`/`month`/`day` cut a date value (read as EDTF, so an archive's
+//! `1913~` and `1918/1922` file — see [`date`]), `initial` cuts the first
+//! letters for an A–Z index, and both are the same kind of thing. So the three field names
 //! in the example above are a *declaration the workspace makes*, not a
 //! convention this crate blesses. A workspace that files by `taken_on` writes
 //! that instead, and every prov tool reading the same `views:` block agrees,
@@ -88,6 +89,7 @@
 //! # }
 //! ```
 
+pub mod date;
 pub mod error;
 pub mod filter;
 pub mod group;

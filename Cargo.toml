@@ -72,6 +72,19 @@ twig-doc = "3"
 # no `os`/`js` features — is all it needs. See `prov/src/identity.rs`.
 moid = "1"
 
+# Dates as an archive writes them. EDTF (ISO 8601-2, the Library of Congress
+# Extended Date/Time Format) is how a `type: date` field says a reduced
+# precision (`1943-05`), an approximation (`1913~`), a decade (`192X`), an
+# interval (`1918/1922`, `../1920`), or that the date is not known at all
+# (`XXXX`). `edtf-core` parses and bounds it — levels 0–2, `no_std`, no
+# dependencies — and is what the calendar grains cut through
+# (`prov-views/src/date.rs`) and what `check` judges a `type: date` value by.
+# `edtf-normalize` is the repair: a deterministic reading of date prose
+# (`May 1943` → `1943-05`, `c. 1913` → `1913~`) that reports ambiguity rather
+# than guessing, which is what a `check` remedy is allowed to be.
+edtf-core = "1.2"
+edtf-normalize = "1.2"
+
 # SHA-256, for `prov_graph::fixity`. Fixity used to carry its own scalar
 # implementation alongside the one a dependency already pulled in, which meant
 # two SHA-256s in one binary and only one of them reaching SHA-NI / the ARMv8

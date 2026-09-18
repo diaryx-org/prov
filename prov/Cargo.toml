@@ -47,6 +47,9 @@ fs-transaction = { workspace = true }
 fig.workspace = true
 # Field-type vocabulary for `fields.<name>.type` — see `src/config.rs`.
 fig-schema.workspace = true
+# The repair a `MalformedDate` finding offers: prose read as EDTF, or nothing.
+# See `src/remedy.rs`.
+edtf-normalize.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 

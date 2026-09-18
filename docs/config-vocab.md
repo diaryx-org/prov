@@ -290,17 +290,40 @@ key. The calendar is one family of them, not the subject:
 
 | `by:` / `nest:`  | groups                                       |
 | ---------------- | -------------------------------------------- |
-| `year`           | `2026-07-24` → `2026`                        |
-| `month`          | `2026-07-24` → `2026-07`                     |
+| `year`           | `2026-07-24` → `2026`, `1913~` → `1913`, `192X` → `192X` |
+| `month`          | `2026-07-24` → `2026-07`, `1943-05` → `1943-05` |
 | `day`            | `2026-07-24` → `2026-07-24`                  |
 | `initial`        | `Lovelace` → `L` — the A–Z index             |
 | `{ initial: 2 }` | `Lovelace` → `LO`                            |
 
 The date grains **validate** rather than slicing, so `banana` at year grain is
-not the group `bana` and `20264` is not the year `2026`; anything after the cut
-is ignored, so an RFC 3339 instant cuts like the plain date it starts with.
-`initial` cuts by *character* (`Ålesund` → `Å`) and upper-cases, deliberately:
-an index that files `ada` apart from `Ada` is not an index.
+not the group `bana` and `20264` is not the year `2026`. What they validate
+*as* is [EDTF](https://www.loc.gov/standards/datetime/) — the Library of
+Congress Extended Date/Time Format, ISO 8601-2 — because an archive is mostly
+approximate dates and a calendar date is only the exact case of one:
+
+| written     | means                            | at `year`          | at `month`  |
+| ----------- | -------------------------------- | ------------------ | ----------- |
+| `1943-05`   | May 1943, day unknown            | `1943`             | `1943-05`   |
+| `1913~`     | approximately 1913 (`?` uncertain, `%` both) | `1913` | ungrouped |
+| `192X`      | some year in the 1920s           | `192X`             | ungrouped   |
+| `1918/1922` | sometime between 1918 and 1922   | `1918` … `1922`, all five | ungrouped |
+| `../1920`   | before 1920 (`1918/..` after)    | `1920`             | ungrouped   |
+| `XXXX`      | a date, not known                | ungrouped          | ungrouped   |
+
+The qualifier is dropped, so `1913~` files beside the `1913` that was sure of
+itself — a group key names a shelf, not a value. An unspecified digit is kept
+in the year, because a decade is a shelf people use (`192X` sorts between
+`1929` and `1930`), and refused below it: "some month of 1943" is not a
+month, so `1943-XX` is `1943` at year grain and nothing at month. A year with
+no digit at all — `XXXX`, EDTF's spelling of *undated* — is the ungrouped
+bucket said on purpose, which is where a frontend's "Undated" label already
+points. An interval is under every group both of its ends reach, the way a
+letter about two people is under both; an open or unknown end contributes
+nothing, so `../1920` is under `1920` alone — under-claiming, never wrong.
+An RFC 3339 instant cuts like the plain date it starts with, as it always
+has. `initial` cuts by *character* (`Ålesund` → `Å`) and upper-cases,
+deliberately: an index that files `ada` apart from `Ada` is not an index.
 
 New grains are added by one rule — a concrete lens that cannot otherwise be
 said, not a shape that seems likely to be wanted. A numeric `bucket` is the
@@ -314,7 +337,9 @@ grain-aware, which is the deferred `sort:` axis under another name.
 it **writes**. Filing builds a hierarchy of index documents, so a grain may nest
 only if its coarser steps are *determined* by its finer ones — `2026-07-24` →
 `2026-07` → `2026`, `Ada` → `Ad` → `A`. Every grain above chains; an arbitrary
-sequence of coarsenings would not.
+sequence of coarsenings would not. An interval that spans several groups at
+the nesting grain has several homes, and is not filed, for the reason a
+document with two people is not.
 
 The second limit is prov's spine, not taste. `nest:` files into the spanning
 relation, which is single-parent, so the grouping field must be **single-valued**
@@ -552,19 +577,31 @@ identically instead of agreeing by convention:
 | `str`            | text                                       |
 | `bool`           | `true` / `false`                           |
 | `int` / `float`  | a number                                   |
-| `date`           | a calendar date, `2026-07-24`              |
+| `date`           | a date as an archive writes one: `2026-07-24`, or EDTF — `1943-05`, `1913~`, `192X`, `1918/1922`, `XXXX` for not known. **Checked** — see below |
 | `datetime`       | an instant with offset, `2026-07-24T07:32:00Z` |
 | `local-datetime` | a date and time with no offset             |
 | `time`           | a time of day, `07:32:00`                  |
 | `ref`            | a link to another document — **read**, see below |
 | `map` / `seq`    | a nested mapping or list                   |
 
-prov carries every type but one without interpreting it — nothing in `check`
-fails because a value does not match its declared type. They are there so a
-frontend can parse and render the field faithfully (a `date` gets a date
-picker, not a text box).
+prov carries every type but two without interpreting it — nothing in `check`
+fails because a `str` or an `int` does not match its declared type. They are
+there so a frontend can parse and render the field faithfully (a `date` gets a
+date picker, not a text box).
 
-**`ref` is the exception.** A field declared `type: ref` is a link site
+**`date` is checked.** A `type: date` value must be a calendar date, an RFC
+3339 instant (read as the date it starts with), or
+[EDTF](https://www.loc.gov/standards/datetime/) — the reduced precision,
+qualification, intervals and `XXXX` the grains table above reads. Anything
+else is a `MalformedDate` finding naming the field, because a date view files
+a value it cannot read as *undated*, silently, and `May 1943` and a torn-off
+day must not look the same. The repair, where the prose has one reading, is
+its EDTF spelling — `May 1943` → `1943-05`, `c. 1913` → `1913~`, `before
+1920` → `../1920`, `unknown` → `XXXX`; where it has two (`5/12/1943`) both
+are offered and neither assumed. `datetime` is not checked: it is what a
+machine stamps, and a stamp with fractional seconds is not EDTF.
+
+**`ref` is the other exception.** A field declared `type: ref` is a link site
 (Spec §3): each value it reaches is resolved as a relation entry is —
 censused, checked, rewritten by `mv`, relabelled by `retitle`, reported by
 `rm`, restyled by `convert --links` — and its target is reached, so it is not
@@ -674,8 +711,9 @@ and **controlled fields** (see [Spec](/docs/spec.md)): a `MalformedStore` findin
 for a registry/deletions/*flat*-vocabulary pointer that resolves to a markdown
 document rather than a whole-file config document (a `reify: true` vocabulary is
 content, so the rule does not reach it); `UnknownTerm` for a closed-field value
-that is not a known term; and `TermNearMiss` for an open-field value that closely
-resembles one.
+that is not a known term; `TermNearMiss` for an open-field value that closely
+resembles one; and `MalformedDate` for a `type: date` value that is neither a
+calendar date nor EDTF (see "Field types" above).
 
 `prov config <key> <value>` runs the same `diagnose` over a one-key probe and
 **refuses to write** a setting `check` would flag. Dotted keys address nested

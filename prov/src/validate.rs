@@ -45,6 +45,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::workspace::Workspace;
+use fig::ExtKind;
+use fig_schema::FieldType;
 use prov_graph::content::ContentFormat;
 use prov_graph::error::{Error, Result};
 use prov_graph::field::{FieldPath, strings_at};
@@ -458,6 +460,21 @@ pub enum Finding {
         value: String,
         suggestion: String,
     },
+    /// A field declared `type: date` carries a `value` that is not one: not
+    /// a calendar date, not an RFC 3339 instant, and not EDTF — the
+    /// `1943-05`, `1913~`, `192X`, `1918/1922`, `XXXX` an archive writes
+    /// (see [`prov_views::date`]). `why` is the parser's reason.
+    ///
+    /// The value is what a date view *silently* leaves ungrouped: `May 1943`
+    /// and a torn-off day both land in the undated bucket, and only one of
+    /// them meant to. This is what makes the other visible. The repair,
+    /// where the prose has one reading, is its EDTF spelling.
+    MalformedDate {
+        doc: PathBuf,
+        field: String,
+        value: String,
+        why: String,
+    },
     /// The root reaches its deletion log through `recycle_bin`, the pointer
     /// relation `deletions` replaced. `root` is the document declaring it,
     /// `relation` the old spelling, and `log` what it points at.
@@ -660,6 +677,7 @@ impl Finding {
             | Finding::ConfigSpecAhead { doc, .. }
             | Finding::MalformedStore { doc, .. }
             | Finding::UnknownTerm { doc, .. }
+            | Finding::MalformedDate { doc, .. }
             | Finding::TermNearMiss { doc, .. }
             | Finding::ManifestConflict { doc }
             | Finding::ManifestMalformed { doc, .. } => doc,
@@ -733,6 +751,7 @@ impl Finding {
             | Finding::NamedRootContained { .. }
             | Finding::MalformedStore { .. }
             | Finding::UnknownTerm { .. }
+            | Finding::MalformedDate { .. }
             | Finding::AboutStale { .. }
             | Finding::FieldScopeUnresolved { .. }
             | Finding::ManifestConflict { .. }
@@ -772,6 +791,7 @@ impl Finding {
             Finding::MalformedStore { .. } => "malformed_store",
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
+            Finding::MalformedDate { .. } => "malformed_date",
             Finding::LegacyDeletionsPointer { .. } => "legacy_deletions_pointer",
             Finding::LegacyBodyHash { .. } => "legacy_body_hash",
             Finding::AboutStale { .. } => "about_stale",
@@ -1019,6 +1039,17 @@ impl fmt::Display for Finding {
                 "{}: `{field}: {value}` is not a known term — did you mean `{suggestion}`?",
                 doc.display(),
             ),
+            Finding::MalformedDate {
+                doc,
+                field,
+                value,
+                why,
+            } => write!(
+                f,
+                "{}: `{field}: {value}` is not a date ({why}) — write a calendar date or EDTF: \
+                 `1943-05`, `1913~`, `192X`, `1918/1922`, or `XXXX` for not known",
+                doc.display(),
+            ),
             Finding::LegacyBodyHash {
                 root,
                 count,
@@ -1250,6 +1281,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             self.vocabulary_findings(start, &census, &content_bodies)
                 .await?,
         );
+        findings.extend(self.date_findings(start, &census, &content_bodies).await?);
         findings.extend(self.stale_label_findings(&census).await?);
         findings.extend(
             self.confirmation_findings(start, &census, &content_bodies)
@@ -1555,6 +1587,71 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                                 });
                             }
                         }
+                    }
+                }
+            }
+        }
+        Ok(findings)
+    }
+
+    /// Check every value of a field declared `type: date` over the reachable
+    /// document set — the same set and the same scoping as
+    /// [`vocabulary_findings`](Self::vocabulary_findings), with a parse in
+    /// place of a vocabulary. A value that is neither a calendar date, an
+    /// instant, nor EDTF is a [`Finding::MalformedDate`].
+    ///
+    /// `date` is the one declared type `check` holds a value to. The others
+    /// are carried uninterpreted, as they always were: a `datetime` is what
+    /// a machine stamps and a `str` is anything, but a `date` is what an
+    /// archive files by, and a date view leaves a value it cannot read
+    /// silently ungrouped — which is the failure this exists to name.
+    async fn date_findings(
+        &self,
+        start: &Path,
+        census: &[CensusEntry],
+        content_bodies: &[PathBuf],
+    ) -> Result<Vec<Finding>> {
+        let config = self.effective_config(start).await?;
+        let dated: Vec<(String, usize)> = config
+            .fields
+            .iter()
+            .flat_map(|(field, declarations)| {
+                declarations
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, spec)| spec.ty == Some(FieldType::Extended(ExtKind::LocalDate)))
+                    .map(move |(index, _)| (field.clone(), index))
+            })
+            .collect();
+        if dated.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Unresolved scopes are `vocabulary_findings`'s to report; here a
+        // declaration that governs nothing simply judges nothing.
+        let scopes = self.field_scopes_of(start, &config).await?;
+        let reachable = self
+            .reachable_documents(start, census, content_bodies)
+            .await?;
+        let mut findings = Vec::new();
+        for path in reachable {
+            let Ok((_, doc)) = self.load(&path).await else {
+                continue;
+            };
+            for (field, index) in &dated {
+                if scopes.index_for(&config, field, &path) != Some(*index) {
+                    continue;
+                }
+                // Only what is written as text is judged: YAML hands a bare
+                // `1943` back as an integer, which is a year and needs no
+                // saying, and an absent or null field is not a bad value.
+                for (_, value) in strings_at(&doc.meta, &FieldPath::parse(field)) {
+                    if let Err(err) = crate::views::date::parse(&value) {
+                        findings.push(Finding::MalformedDate {
+                            doc: path.clone(),
+                            field: field.clone(),
+                            value: value.clone(),
+                            why: err.message.to_string(),
+                        });
                     }
                 }
             }
@@ -2647,6 +2744,67 @@ mod tests {
                 .iter()
                 .any(|f| matches!(f, Finding::UnknownTerm { value, .. } if value == "public")),
             "{findings:?}"
+        );
+    }
+
+    /// A `type: date` field is held to what a date view can read: a calendar
+    /// date, an instant, or EDTF. Prose in it is a finding naming the field,
+    /// so `May 1943` stops being a silent undated record.
+    #[test]
+    fn a_date_field_flags_prose_and_accepts_edtf() {
+        let dir = tempdir("date-field");
+        write(
+            &dir,
+            "index.md",
+            "---\n\
+             contents:\n- letter.md\n- photo.md\n- birth.md\n- scan.md\n- typo.md\n\
+             updated: 2026-09-17T00:00:00.000000Z\n\
+             prov:\n  fields:\n    date_of_document:\n      type: date\n    updated:\n      type: date\n\
+             ---\n",
+        );
+        write(
+            &dir,
+            "letter.md",
+            "---\npart_of: index.md\ndate_of_document: 1943-05\n---\n",
+        );
+        write(
+            &dir,
+            "photo.md",
+            "---\npart_of: index.md\ndate_of_document: 1913~\n---\n",
+        );
+        write(
+            &dir,
+            "birth.md",
+            "---\npart_of: index.md\ndate_of_document: 1918/1922\n---\n",
+        );
+        write(
+            &dir,
+            "scan.md",
+            "---\npart_of: index.md\ndate_of_document: XXXX\n---\n",
+        );
+        write(
+            &dir,
+            "typo.md",
+            "---\npart_of: index.md\ndate_of_document: May 1943\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let dates: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::MalformedDate { .. }))
+            .collect();
+        assert!(
+            matches!(
+                dates.as_slice(),
+                [Finding::MalformedDate { doc, field, value, .. }]
+                    if doc == Path::new("typo.md") && field == "date_of_document" && value == "May 1943"
+            ),
+            "{findings:?}"
+        );
+        assert_eq!(
+            dates[0].kind(),
+            "malformed_date",
+            "the instant with fractional seconds on the root, and every EDTF value, passed"
         );
     }
 

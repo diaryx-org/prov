@@ -44,12 +44,14 @@
 //! by `taken_on` or `received`.
 //!
 //! A [`Grain`] is not a calendar either — it is any coarsening (see
-//! [`Grain::cut`]), and the date grains are one family beside
+//! [`Grain::cuts`]), and the date grains are one family beside
 //! [`Initial`](Grain::Initial)'s A–Z index. It applies to a *value*, never to a
 //! declared type, so it works on the `2026-07-24` that YAML hands back as a
 //! string without this crate resolving the workspace's `fields.<name>.type`
-//! declarations. A value the grain cannot cut does not group at all, rather
-//! than grouping wrongly.
+//! declarations. The date grains read that value as EDTF (see [`crate::date`]),
+//! so an archive's `1943-05`, `1913~`, `192X` and `1918/1922` all file. A
+//! value the grain cannot cut does not group at all, rather than grouping
+//! wrongly.
 //!
 //! # Classification is not aggregation
 //!
@@ -99,16 +101,18 @@ pub const VIEW_KEYS: &[&str] = &["label", "icon", "group", "by", "under", "nest"
 
 /// A **coarsening**: how finely a value is cut into groups.
 ///
-/// Not a date vocabulary. A grain is any many-to-one function from a value to a
-/// group key, and the calendar grains are one family of them — `year` is
-/// "the first four characters, if they are a year", and [`Initial`](Self::Initial)
-/// is "the first *n* characters" with no such condition. What makes something a
-/// grain is the two properties below, not what it is about.
+/// Not a date vocabulary. A grain is any many-to-one function from a value to
+/// group keys, and the calendar grains are one family of them — `year` is
+/// "the year this date names", and [`Initial`](Self::Initial) is "the first
+/// *n* characters" with no such condition. What makes something a grain is
+/// the two properties below, not what it is about.
 ///
 /// # Two properties, and what each one licenses
 ///
-/// - [`cut`](Self::cut) — value → key. This is all [`by`](Grouping::by) needs,
-///   because grouping is a *reading* operation with no invariant to keep.
+/// - [`cuts`](Self::cuts) — value → keys. This is all [`by`](Grouping::by)
+///   needs, because grouping is a *reading* operation with no invariant to
+///   keep. Usually one key; an interval (`1918/1922`) is under every year it
+///   spans, which is what makes it *keys*.
 /// - [`chain`](Self::chain) — the coarser grains this one refines, coarsest
 ///   first. This is what [`nest`](ViewSpec::nest) needs, and it is a strictly
 ///   stronger requirement: nesting builds a hierarchy of index documents, so
@@ -254,22 +258,8 @@ impl Grain {
         }
     }
 
-    /// How many characters of an ISO-8601 date a calendar grain keeps:
-    /// `2026-07-25` cut to 4, 7 or 10.
-    ///
-    /// The group key is a *prefix* because an ISO date sorts lexically, so the
-    /// group order falls out of the string with no calendar arithmetic and no
-    /// time zone to get wrong.
-    fn prefix_len(self) -> usize {
-        match self {
-            Grain::Year => 4,
-            Grain::Month => 7,
-            Grain::Day => 10,
-            Grain::Initial(n) => n,
-        }
-    }
-
-    /// Cut `value` to this grain, or `None` if the value does not reach it.
+    /// Every group key `value` falls under at this grain — empty when the
+    /// value does not reach it.
     ///
     /// The calendar grains *validate* rather than taking a blind prefix, which
     /// is what keeps `by:` usable on a view whose field is only usually a date:
@@ -277,10 +267,17 @@ impl Grain {
     /// that looks like data. A value this rejects falls to the ungrouped
     /// bucket, where it is visible as something that did not sort.
     ///
-    /// Anything after the cut is ignored, so an RFC 3339 instant
+    /// What they validate *as* is EDTF, so `1913~` is the group `1913`, `192X`
+    /// is a group of its own, `1918/1922` is five groups, and `XXXX` is none
+    /// — the rules are in [`crate::date`]. An RFC 3339 instant
     /// (`2026-07-24T07:32:00Z` — what a machine-maintained `updated` field
     /// carries) cuts exactly like the plain date it starts with.
-    pub fn cut(self, value: &str) -> Option<String> {
+    ///
+    /// The group keys are spelled so that an ISO date's lexical order is its
+    /// calendar order, so the group order falls out of the string with no
+    /// calendar arithmetic and no time zone to get wrong. (Years before 0000
+    /// sort backwards among themselves; nothing files there yet.)
+    pub fn cuts(self, value: &str) -> Vec<String> {
         let text = value.trim();
         if let Grain::Initial(n) = self {
             // By *character*, not byte: a name may begin with any of them, and
@@ -288,33 +285,25 @@ impl Grain {
             // cut is taken whole rather than rejected — `Bo` under a two-letter
             // index belongs at `BO`, and there is no coarser truth to wait for.
             let cut: String = text.chars().take(n).flat_map(char::to_uppercase).collect();
-            return (!cut.is_empty()).then_some(cut);
-        }
-        let bytes = text.as_bytes();
-        if bytes.len() < self.prefix_len() {
-            return None;
-        }
-        // `YYYY`, then `-MM` and `-DD` as the grain demands. Checked by byte
-        // because every character an ISO date is allowed to use is ASCII, so
-        // the prefix is a character boundary by construction.
-        let shape_ok = bytes[..4].iter().all(u8::is_ascii_digit)
-            && match self {
-                Grain::Month => bytes[4] == b'-' && bytes[5..7].iter().all(u8::is_ascii_digit),
-                Grain::Day => {
-                    bytes[4] == b'-'
-                        && bytes[5..7].iter().all(u8::is_ascii_digit)
-                        && bytes[7] == b'-'
-                        && bytes[8..10].iter().all(u8::is_ascii_digit)
-                }
-                _ => true,
+            return if cut.is_empty() {
+                Vec::new()
+            } else {
+                vec![cut]
             };
-        // A year cut must not swallow the head of a longer number: `20264` is
-        // not the year 2026. Every other grain is already delimited by its `-`.
-        let bounded = match bytes.get(self.prefix_len()) {
-            Some(b) if self == Grain::Year => !b.is_ascii_digit(),
-            _ => true,
-        };
-        (shape_ok && bounded).then(|| text[..self.prefix_len()].to_string())
+        }
+        crate::date::keys(text, self)
+    }
+
+    /// The one group key `value` falls under at this grain, or `None` when it
+    /// falls under none — or under several.
+    ///
+    /// The single-valued half of [`cuts`](Self::cuts), for the caller that
+    /// needs one answer: filing. An interval has several homes at a grain it
+    /// spans, and [`ViewSpec::nest_route`] must not pick one, for the reason
+    /// it does not pick between two people.
+    pub fn cut(self, value: &str) -> Option<String> {
+        let mut keys = self.cuts(value);
+        (keys.len() == 1).then(|| keys.remove(0))
     }
 }
 
@@ -364,7 +353,7 @@ impl Grouping {
                 continue;
             }
             return match self.by {
-                Some(grain) => raw.iter().filter_map(|t| grain.cut(t)).collect(),
+                Some(grain) => raw.iter().flat_map(|t| grain.cuts(t)).collect(),
                 None => raw,
             };
         }
@@ -803,6 +792,31 @@ mod tests {
         assert_eq!(Grain::Month.cut(""), None);
     }
 
+    /// The archive's dates, read at a grain — the rules are `date`'s; this is
+    /// the view seeing them. `1913~` stands beside `1913`, and an interval is
+    /// under every year it spans.
+    #[test]
+    fn a_grain_reads_edtf() {
+        assert_eq!(Grain::Year.cut("1913~"), Some("1913".into()));
+        assert_eq!(Grain::Year.cut("192X"), Some("192X".into()));
+        assert_eq!(Grain::Month.cut("1943-05"), Some("1943-05".into()));
+        assert_eq!(Grain::Day.cut("1943-05"), None);
+        assert_eq!(Grain::Year.cut("XXXX"), None);
+        assert_eq!(Grain::Year.cuts("1918/1920"), ["1918", "1919", "1920"]);
+        assert_eq!(
+            Grain::Year.cut("1918/1920"),
+            None,
+            "several homes is not one home"
+        );
+        let sel_by_year = Grouping {
+            keys: vec!["date_of_document".into()],
+            by: Some(Grain::Year),
+        };
+        let mut doc = Mapping::new();
+        doc.insert("date_of_document".into(), Value::String("../1920".into()));
+        assert_eq!(sel_by_year.keys_of(&Value::Mapping(doc)), ["1920"]);
+    }
+
     /// The load-bearing separation: `by:` is classification, `nest:` is
     /// aggregation, and reading one does not set the other. A view that grouped
     /// by month would otherwise start filing next month's entry somewhere new.
@@ -897,6 +911,28 @@ mod tests {
             None,
             "two values are two homes, and prov's spine allows one"
         );
+    }
+
+    /// An interval is the same shape one value at a time: `1918/1922` is
+    /// under five years and so has no single home, while `1913~` has one.
+    #[test]
+    fn an_interval_has_no_nest_route_where_it_spans() {
+        let spec = ViewSpec::parse(
+            "daily",
+            &text(&[("group", "date_of_document"), ("nest", "year")]),
+        )
+        .expect("a view");
+
+        let mut about = Mapping::new();
+        about.insert("date_of_document".into(), Value::String("1913~".into()));
+        assert_eq!(
+            spec.nest_route(&Value::Mapping(about)),
+            Some(vec!["1913".to_string()])
+        );
+
+        let mut between = Mapping::new();
+        between.insert("date_of_document".into(), Value::String("1918/1922".into()));
+        assert_eq!(spec.nest_route(&Value::Mapping(between)), None);
     }
 
     /// Reading must not decide where a file lands: a view that groups by year

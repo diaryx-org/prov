@@ -196,6 +196,12 @@ than one to apply: respell the value, or widen the vocabulary to admit it. A
 *retired* term is never offered the second — writing a bare `term:` over it would
 un-retire it and destroy the `id` and `means` it carries.
 
+A field declared `type: date` is held the same way, to a parse rather than a
+vocabulary: a value that is neither a calendar date, an RFC 3339 instant, nor
+EDTF (ISO 8601-2 — `1943-05`, `1913~`, `192X`, `1918/1922`, `XXXX` for a date
+not known) is a `MalformedDate`, offered its EDTF spelling where the prose has
+one. The other declared types are carried uninterpreted.
+
 A declaration names a top-level key, a **dotted path** into a mapping —
 `generated.how` is the act recorded inside a `generated` mapping (see
 [Provenance](provenance.md) §1) — or a path through **every item of a list**:

@@ -210,8 +210,8 @@ pub use peers::PeerFile;
 pub mod views {
     pub use prov_views::{
         CONDITION_KEYS, Condition, Error, Grain, Group, Grouping, Row, RowSet, Selection,
-        VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind, ViewSpec, diagnose_view, diagnose_views,
-        documents, group, select, select_with, views_from,
+        VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind, ViewSpec, date, diagnose_view,
+        diagnose_views, documents, group, select, select_with, views_from,
     };
 }
 /// Named, closed-by-default document sets that may leave the workspace — the

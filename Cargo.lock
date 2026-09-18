@@ -208,6 +208,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "edtf-core"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9ce7075601dfd0cf8c5117a8ef452d748cbb8866194349d39177353e93ee1c0"
+
+[[package]]
+name = "edtf-normalize"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3641adf5cb7c6b0d4c0a28df7394c03a374282335f27964d08f143c1db11c636"
+dependencies = [
+ "edtf-core",
+]
+
+[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,6 +539,7 @@ dependencies = [
 name = "prov"
 version = "0.14.0"
 dependencies = [
+ "edtf-normalize",
  "fig",
  "fig-schema",
  "fs-transaction",
@@ -607,6 +623,7 @@ version = "0.14.0"
 name = "prov-views"
 version = "0.14.0"
 dependencies = [
+ "edtf-core",
  "prov-graph",
  "prov-testkit",
 ]

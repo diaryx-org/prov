@@ -235,6 +235,34 @@ mod tests {
         assert_eq!(rows.ungrouped.len(), 2, "the unparseable and the absent");
     }
 
+    /// An interval is one document in several groups, like a letter about two
+    /// people — and, like that letter, one document when counted.
+    #[test]
+    fn an_interval_is_under_every_year_it_spans() {
+        let sel = selection(&[
+            ("birth.md", &[("date_of_document", text("1918/1920"))]),
+            ("photo.md", &[("date_of_document", text("1919~"))]),
+            ("scan.md", &[("date_of_document", text("XXXX"))]),
+        ]);
+        let rows = group(
+            &sel,
+            &Grouping {
+                keys: vec!["date_of_document".into()],
+                by: Some(Grain::Year),
+            },
+        );
+        assert_eq!(
+            rows.groups
+                .iter()
+                .map(|g| (g.key.as_str(), g.rows.len()))
+                .collect::<Vec<_>>(),
+            [("1918", 1), ("1919", 2), ("1920", 1)]
+        );
+        assert_eq!(rows.ungrouped.len(), 1, "undated, on purpose");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.placements(), 5);
+    }
+
     /// One selection, several lenses — what borrowing rather than copying is
     /// for, and what a frontend offering a view switcher actually does.
     #[test]

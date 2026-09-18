@@ -419,6 +419,17 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("value", s(value)));
             fields.push(("suggestion", s(suggestion)));
         }
+        Finding::MalformedDate {
+            doc,
+            field,
+            value,
+            why,
+        } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("field", s(field)));
+            fields.push(("value", s(value)));
+            fields.push(("why", s(why)));
+        }
         Finding::LegacyBodyHash {
             root,
             count,

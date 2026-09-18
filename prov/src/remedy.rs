@@ -392,6 +392,8 @@ pub enum RemedyKind {
     SetTerm,
     /// Widen the vocabulary to admit the value as written.
     AddTerm,
+    /// Respell a date written as prose in EDTF.
+    SetDate,
     /// Correct a misspelled configuration key.
     SetConfigKey,
     /// Correct an unreadable configuration value.
@@ -417,6 +419,7 @@ impl RemedyKind {
             RemedyKind::Restamp => "restamp",
             RemedyKind::SetTerm => "set-term",
             RemedyKind::AddTerm => "add-term",
+            RemedyKind::SetDate => "set-date",
             RemedyKind::SetConfigKey => "set-config-key",
             RemedyKind::SetConfigValue => "set-config-value",
             RemedyKind::Rebuild => "rebuild",
@@ -1120,6 +1123,46 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     ));
                 }
                 Ok(out)
+            }
+            // Prose where a date should be. The readings are `edtf-normalize`'s
+            // — a bounded grammar over what people write in a date field, which
+            // answers, lists its readings, or declines, and never guesses. Every
+            // offer is a judgment: `May 1943` reads one way, but the reading is
+            // still of prose, and whether `5/12/1943` is May or December is
+            // exactly what the crate refuses to decide and so does this.
+            //
+            // A value that says there is no date (`unknown`, `n.d.`, `undated`)
+            // is offered EDTF's spelling of that, `XXXX`, which a date view
+            // files as undated and `check` accepts.
+            Finding::MalformedDate {
+                doc, field, value, ..
+            } => {
+                use edtf_normalize::{NoMatchReason, Outcome, normalize};
+                let respell = |to: String| {
+                    Remedy::new(
+                        RemedyKind::SetDate,
+                        Warrant::Judgment,
+                        format!("write it as {to}"),
+                        Fix::SetFieldValue {
+                            doc: doc.clone(),
+                            field: field.clone(),
+                            from: value.clone(),
+                            to,
+                        },
+                    )
+                };
+                Ok(match normalize(value) {
+                    Outcome::Normalized(reading) => vec![respell(reading.edtf)],
+                    Outcome::Ambiguous(readings) => readings
+                        .interpretations
+                        .into_iter()
+                        .map(|reading| respell(reading.edtf))
+                        .collect(),
+                    Outcome::NoMatch {
+                        reason: NoMatchReason::ExplicitNoDate,
+                    } => vec![respell("XXXX".to_string())],
+                    Outcome::NoMatch { .. } => Vec::new(),
+                })
             }
             // A key `apply` silently ignores. The value the author wrote was right
             // — only its key was misspelled — so the repair keeps the value,
@@ -1985,6 +2028,88 @@ mod tests {
         assert!(read(&dir, "vocab.yaml").contains("to-do"));
         assert!(read(&dir, "note.md").contains("to-do"));
         assert!(block_on(ws.check("index.md")).unwrap().is_empty());
+    }
+
+    /// Prose in a date field is offered its EDTF spelling — one reading, every
+    /// reading, or the "not known" marker — and never a guess.
+    #[test]
+    fn a_malformed_date_offers_its_edtf_spelling() {
+        let dir = tempdir("remedy-date");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\ncontents:\n- letter.md\n- slash.md\n- scan.md\n- prose.md\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "spec: 1\nfields:\n  date_of_document:\n    type: date\n",
+        );
+        write(
+            &dir,
+            "letter.md",
+            "---\ntitle: Letter\npart_of: /index.md\ndate_of_document: c. May 1943\n---\n",
+        );
+        write(
+            &dir,
+            "slash.md",
+            "---\ntitle: Slash\npart_of: /index.md\ndate_of_document: 5/12/1943\n---\n",
+        );
+        write(
+            &dir,
+            "scan.md",
+            "---\ntitle: Scan\npart_of: /index.md\ndate_of_document: unknown\n---\n",
+        );
+        write(
+            &dir,
+            "prose.md",
+            "---\ntitle: Prose\npart_of: /index.md\ndate_of_document: the week Dad was born\n---\n",
+        );
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let for_doc = |name: &str| {
+            findings
+                .iter()
+                .find(|f| matches!(f, Finding::MalformedDate { doc, .. } if doc == Path::new(name)))
+                .unwrap_or_else(|| panic!("no date finding on {name}: {findings:#?}"))
+        };
+        let offers = |name: &str| -> Vec<String> {
+            block_on(ws.remedies(for_doc(name)))
+                .unwrap()
+                .into_iter()
+                .map(|r| {
+                    assert_eq!(r.kind, RemedyKind::SetDate);
+                    assert_eq!(r.warrant, Warrant::Judgment);
+                    match r.fix {
+                        Fix::SetFieldValue { to, .. } => to,
+                        other => panic!("{other:?}"),
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(offers("letter.md"), ["1943-05~"]);
+        assert_eq!(
+            offers("slash.md"),
+            ["1943-12-05", "1943-05-12"],
+            "both readings, no guess"
+        );
+        assert_eq!(offers("scan.md"), ["XXXX"], "not known, said in EDTF");
+        assert!(
+            offers("prose.md").is_empty(),
+            "outside the grammar is a person's to fix"
+        );
+
+        // Taking the one reading writes it, and the field goes quiet.
+        let fix = block_on(ws.remedies(for_doc("letter.md")))
+            .unwrap()
+            .remove(0)
+            .fix;
+        block_on(ws.apply_fix(&fix)).unwrap();
+        assert!(read(&dir, "letter.md").contains("date_of_document: 1943-05~"));
+        assert!(!block_on(ws.check("index.md")).unwrap().iter().any(
+            |f| matches!(f, Finding::MalformedDate { doc, .. } if doc == Path::new("letter.md"))
+        ));
     }
 
     #[test]

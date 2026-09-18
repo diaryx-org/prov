@@ -4,11 +4,34 @@ description: "The date grains cut an ISO date and refuse anything else, and `che
 author: adammharris
 created: 2026-09-17
 updated: 2026-09-17
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A date is exact or unknown, and nothing in between
+
+**Status.** Done, 2026-09-17, in `feat(views): a date is EDTF, and a date
+field holding prose is a finding`. The parse is the
+`edtf-core` crate's, levels 0–2, wrapped by `prov-views/src/date.rs`, which
+decides what a grain makes of it; the repair is `edtf-normalize`'s reading of
+the prose. Three of the questions below settled differently from how they
+were asked:
+
+- **`unknown` is not a value the type knows.** EDTF has its own spelling of
+  a date that is not known — `XXXX`, a year with every digit unspecified —
+  so prov has no keyword: `XXXX` is what the type accepts and what a view
+  files as undated, and `unknown` is a `MalformedDate` whose repair is
+  `XXXX`. Diaryx's document record spec and its importers move from
+  `unknown` to `XXXX`; that is diaryx's task, downstream of this one.
+- **An interval is under every group both ends reach**, not its start —
+  `1918/1922` at year grain is five groups, the way a letter about two
+  people is under both. An open or unknown end contributes nothing. The
+  per-view choice of which end (`by: { year: start }`) waits for the view
+  language that would spell it.
+- **Level 1 is not a line.** The crate parses all three levels, and the
+  grains cut what they understand: a season to its year, a set to nothing.
+- **Sorting within a group** is left as it was — rows in path order — and
+  is the deferred `sort:` axis's to take up, which can now read a date.
 
 The date grains (`year`, `month`, `day`) validate rather than slice, which is
 right: `banana` at year grain is no group, not the group `bana`. But the only
