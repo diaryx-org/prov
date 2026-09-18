@@ -32,6 +32,7 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 - **cli** — `prov docs --json --body` carries each document's prose ([`c4b9d51`](https://github.com/diaryx-org/prov/commit/c4b9d51db0e6fa156bd239ab635b00014ccb70f0))
 - **fields** — a field path reaches into a list, and `type: ref` is read ([`53f2b49`](https://github.com/diaryx-org/prov/commit/53f2b49b30001f3fdb3004525f9cce6c46b3e439))
+- **views** — a date is EDTF, and a date field holding prose is a finding ([`ed14c25`](https://github.com/diaryx-org/prov/commit/ed14c25846e9163f596795b6a0476d6348476b1e))
 
 ### Fixed
 
@@ -61,6 +62,22 @@ the same steps. A `default:` on a list path is never written.
 and `Settings` gain a `references` field; exhaustive matches and struct
 literals over any of them need editing. `check --json` writes a ref
 site as `"site": "sources[2].resource"` with `"index": null`.
+
+- a date grain now reads its value as EDTF. A value
+that grouped before still groups the same, and these now group where
+they were ungrouped: `1913~`/`1913?` under `1913`, `192X` under `192X`,
+`1943-05` at month grain, and an interval `1918/1922` under every year
+it spans. Two things that cut before no longer do: a calendar date with
+an impossible component (`2026-13-01` was `2026` at year grain, and is
+now ungrouped) and a date followed by text that is not a time.
+
+- `check` reports a new error, `MalformedDate`
+(`malformed_date` in `--json`, with `doc`, `field`, `value`, `why`),
+for a `type: date` value that is not a calendar date, an RFC 3339
+instant, or EDTF. A workspace whose date fields hold prose, or diaryx's
+`unknown` marker, goes from clean to red; `--fix` offers the EDTF
+spelling. `Finding` gains the variant and `RemedyKind` gains `SetDate`
+(`set-date`); exhaustive matches over either need editing.
 
 <!-- git-cliff:end -->
 
