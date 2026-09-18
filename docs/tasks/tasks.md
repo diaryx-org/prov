@@ -3,7 +3,7 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-09
-updated: 2026-09-16
+updated: 2026-09-17
 part_of: '[prov](/README.md)'
 contents:
 - '[A retitle censuses the whole workspace to find its inbound links](/docs/tasks/retitle-censuses-the-whole-workspace.md)'
@@ -12,6 +12,7 @@ contents:
 - '[A `generated` pair says who and when, and not what was done](/docs/tasks/generated-records-no-activity.md)'
 - '[No relation lets a document say it replaces, or was derived from, another](/docs/tasks/no-relation-says-replaces-or-derived-from.md)'
 - '[A directory moves one document at a time, and a payload''s references do not move at all](/docs/tasks/a-directory-moves-one-document-at-a-time.md)'
+- '[A date is exact or unknown, and nothing in between](/docs/tasks/a-date-is-exact-or-unknown.md)'
 ---
 
 # Tasks
