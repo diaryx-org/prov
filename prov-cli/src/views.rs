@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use prov::{Format, IdIndex, Value, block_on, meta};
+use prov::{Format, IdIndex, MetaCarrier, Value, block_on, meta};
 
 use crate::CmdResult;
 use crate::about::refresh_about;
@@ -148,25 +148,37 @@ fn print_view_row(row: &prov::views::Row) {
 /// it carries one, the registry's answer otherwise, so the column reads the
 /// same under every `id_storage` and a consumer joining on it need not know
 /// which the workspace chose. Same precedence as a reified vocabulary term's.
-pub(crate) fn cmd_docs(as_json: bool) -> CmdResult {
+///
+/// `--body` adds the prose, read through `Graph::body` so a separated node's
+/// row carries the text of the file its `content` names and not the empty
+/// prose of its own `.yaml`. A document with no prose to read — an attachment
+/// sidecar, a whole-file metadata node with no `content` — is `null` rather
+/// than `""`, decided *before* the read rather than from an error after it,
+/// because `Graph::body` refuses a sidecar and an error is not what a row
+/// with nothing to say looks like. A `content` that names a missing file is
+/// still an error: that document claims a body it has not got, which is a
+/// `check` finding and not a document without one.
+pub(crate) fn cmd_docs(as_json: bool, with_body: bool) -> CmdResult {
     let session = Session::open()?;
-    let rows = block_on(prov::views::documents(
-        session.ws.graph(),
-        &session.ctx.root_doc,
-    ))?;
+    let graph = session.ws.graph();
+    let _scope = graph.read_scope();
+    let rows = block_on(prov::views::documents(graph, &session.ctx.root_doc))?;
     if as_json {
-        let records = rows
-            .iter()
-            .map(|row| {
-                let id = row
-                    .meta
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .or_else(|| session.ws.index().id_for_path(&row.path).map(|id| id.0));
-                json::doc_row(row, id)
-            })
-            .collect();
+        let mut records = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let id = row
+                .meta
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| session.ws.index().id_for_path(&row.path).map(|id| id.0));
+            let body = if with_body {
+                Some(block_on(body_of_row(graph, &row.path))?)
+            } else {
+                None
+            };
+            records.push(json::doc_row(row, id, body));
+        }
         print!("{}", json::J::Arr(records).render());
         return Ok(ExitCode::SUCCESS);
     }
@@ -177,6 +189,29 @@ pub(crate) fn cmd_docs(as_json: bool) -> CmdResult {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The prose of one `docs --body` row, or `None` for a document that has no
+/// prose to read — the two shapes `Graph::body` would refuse or answer with
+/// an empty string that means "none": an attachment sidecar, and a whole-file
+/// metadata node with no `content` (a manifest node, a node standing for
+/// itself). A combined document with an empty body is `Some("")`.
+async fn body_of_row<FS, Ix>(
+    graph: &prov::Graph<FS, Ix>,
+    path: &Path,
+) -> prov::Result<Option<String>>
+where
+    FS: prov::ReadStorage,
+    Ix: IdIndex,
+{
+    let doc = graph.document(path).await?;
+    if doc.is_attachment() {
+        return Ok(None);
+    }
+    if matches!(doc.carrier, Some(MetaCarrier::WholeFile(_))) && doc.content_attr().is_none() {
+        return Ok(None);
+    }
+    Ok(Some(graph.body(path).await?.text))
 }
 
 /// `prov exports [NAME]` — list the declared exports, or preview one's plan.

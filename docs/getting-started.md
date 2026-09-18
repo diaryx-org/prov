@@ -259,7 +259,10 @@ More single-document readers:
 
 And the whole workspace at once: `prov docs` lists every document `tree`
 reaches, one per line in path order, and `prov docs --json` gives each with
-its metadata block and its id — the rows to point a query tool at.
+its metadata block and its id — the rows to point a query tool at. Add
+`--body` and each row carries its prose too, read the way `prov body` reads
+it, so a separated node's row has the text of the file its `content` names
+and a sidecar's is `null`.
 
 <!-- exec -->
 ```sh

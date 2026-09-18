@@ -300,6 +300,24 @@ pub(crate) enum Command {
         /// stderr in this mode.
         #[arg(long)]
         json: bool,
+        /// With `--json`, carry each document's prose body as a `body` string
+        /// beside its metadata — the whole workspace as text, in one record
+        /// set, for a search table, a corpus dump, or a pipeline that wants
+        /// the words and not only the fields.
+        ///
+        /// The body is prov's reading of it, which is why this is offered at
+        /// all: a combined document's prose is what is left once the metadata
+        /// block is taken out (and the block need not sit at the file's edge),
+        /// and a separated node's prose is in the file its `content` names —
+        /// so `cat` on the `path` column gets the wrong text both ways, and
+        /// `prov body` one document at a time gets the right text N spawns at
+        /// a time. `null` where a document has no prose to carry: an
+        /// attachment sidecar (its `content` is opaque bytes) or a whole-file
+        /// metadata node standing for itself or for a manifest. An empty body
+        /// is `""`, so "has none" and "has nothing in it" stay distinguishable.
+        /// Off by default because bodies are most of a workspace's bytes.
+        #[arg(long, requires = "json")]
+        body: bool,
     },
     /// List the exports this workspace declares, or preview one.
     ///

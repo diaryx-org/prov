@@ -153,3 +153,110 @@ fn a_root_alone_is_one_row() {
     assert!(ok);
     assert_eq!(out.matches("\"path\":").count(), 1, "{out}");
 }
+
+/// `--body` is the census as text. Four shapes of document, four answers, and
+/// the `path` column alone would get three of them wrong: a combined
+/// document's file is its metadata block *and* its prose (and the block need
+/// not sit at the file's edge — an HTML data island has host text on both
+/// sides), a separated node's `.yaml` has no prose of its own, a sidecar's
+/// `content` is bytes prov promised never to open, and a `.yaml` node with no
+/// `content` has nothing to read at all.
+#[test]
+fn body_column_is_prov_s_reading_of_the_prose_and_null_where_there_is_none() {
+    let dir = std::env::temp_dir().join(format!("prov-docs-cli-body-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\ncontents:\n- mid.html\n- empty.md\n- sep.yaml\n- photo.jpg.yaml\n- bare.yaml\n---\n",
+    );
+    // The block sits in the middle of the file; the body is the host text on
+    // both sides of it.
+    write(
+        &dir,
+        "mid.html",
+        "<p>above</p>\n<script type=\"application/yaml\">\ntitle: Mid\npart_of: index.md\n</script>\n<p>below</p>\n",
+    );
+    write(
+        &dir,
+        "empty.md",
+        "---\ntitle: Empty\npart_of: index.md\n---\n",
+    );
+    write(
+        &dir,
+        "sep.yaml",
+        "title: Separated\npart_of: index.md\ncontent: sep.md\n",
+    );
+    write(&dir, "sep.md", "# Separated\n\nthe prose is here\n");
+    write(
+        &dir,
+        "photo.jpg.yaml",
+        "title: Photo\npart_of: index.md\ncontent: photo.jpg\nattachment: true\n",
+    );
+    std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8, 0xff, 0x00]).unwrap();
+    write(&dir, "bare.yaml", "title: Bare\npart_of: index.md\n");
+
+    let (ok, out, err) = run(&dir, &["docs", "--json", "--body"]);
+    assert!(ok, "{err}");
+    assert!(
+        err.is_empty(),
+        "stderr should be silent under --json: {err}"
+    );
+    let rows: Vec<(String, Option<String>)> = out
+        .split("\"path\": \"")
+        .skip(1)
+        .map(|chunk| {
+            let path = chunk.split('"').next().unwrap().to_owned();
+            let body = chunk
+                .split("\"body\": ")
+                .nth(1)
+                .map(|b| b.split_once('\n').unwrap().0.to_owned());
+            (path, body)
+        })
+        .collect();
+    let body_of = |path: &str| {
+        rows.iter()
+            .find(|(p, _)| p == path)
+            .unwrap_or_else(|| panic!("{path} is a row: {out}"))
+            .1
+            .clone()
+            .unwrap_or_else(|| panic!("{path} has a body key: {out}"))
+    };
+    // Prose from both sides of the block, the block itself left out.
+    assert_eq!(
+        body_of("mid.html"),
+        "\"<p>above</p>\\n<p>below</p>\\n\"",
+        "{out}"
+    );
+    // A body with nothing in it is `""`, distinct from none.
+    assert_eq!(body_of("empty.md"), "\"\"", "{out}");
+    // The separated node's row carries the sibling's text, not its `.yaml`'s.
+    assert_eq!(
+        body_of("sep.yaml"),
+        "\"# Separated\\n\\nthe prose is here\\n\"",
+        "{out}"
+    );
+    assert_eq!(body_of("photo.jpg.yaml"), "null", "{out}");
+    assert_eq!(body_of("bare.yaml"), "null", "{out}");
+    // The prose file behind a separated node is not a row of its own.
+    assert!(
+        !rows.iter().any(|(p, _)| p == "sep.md"),
+        "sep.md is a body, not a document: {out}"
+    );
+}
+
+/// Without `--body` the key is absent, not `null`: a consumer of the plain
+/// census sees the row it always saw.
+#[test]
+fn body_column_is_absent_unless_asked_for() {
+    let dir = vault("nobody");
+    let (ok, out, _) = run(&dir, &["docs", "--json"]);
+    assert!(ok);
+    assert!(!out.contains("\"body\""), "{out}");
+    // …and asking for it without `--json` is a usage error, since the line
+    // form has nowhere to put it.
+    let (ok, _, err) = run(&dir, &["docs", "--body"]);
+    assert!(!ok);
+    assert!(err.contains("--json"), "{err}");
+}

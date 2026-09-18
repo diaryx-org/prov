@@ -590,13 +590,23 @@ fn view_row(row: &Row) -> J {
 /// decides where it goes on the wire. `null` for a document without one, for
 /// the reason `title` is: a fixed set of keys, however the document is
 /// stored.
-pub fn doc_row(row: &Row, id: Option<String>) -> J {
-    J::Obj(vec![
+///
+/// `body` is three-valued on purpose. The outer `None` is "not asked for" —
+/// the key is absent, so a consumer of the plain `docs --json` sees the row it
+/// always saw. The inner `None` is "asked for, and this document has none",
+/// written `null` like an absent id; `Some("")` is a body with nothing in it,
+/// which is a different fact about the document and keeps its own spelling.
+pub fn doc_row(row: &Row, id: Option<String>, body: Option<Option<String>>) -> J {
+    let mut fields = vec![
         ("path", p(&row.path)),
         ("title", opt(row.title().map(str::to_owned))),
         ("id", opt(id)),
         ("meta", meta(&row.meta)),
-    ])
+    ];
+    if let Some(body) = body {
+        fields.push(("body", opt(body)));
+    }
+    J::Obj(fields)
 }
 
 #[cfg(test)]

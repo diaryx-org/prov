@@ -365,6 +365,21 @@ starts here rather than by declaring a view that says "everything". Reached,
 not present: a file in a directory nothing links into is not a row, for the
 same reason `check` does not report it (`prov_views::documents`).
 
+`prov docs --json --body` adds the prose: each row carries a `body` string,
+so the whole workspace comes out as text in one record set — for a search
+table, a corpus dump, a pipeline that wants the words and not only the
+fields. The body is prov's reading of it, which is the reason to ask prov
+rather than `cat` the `path` column: a combined document's prose is what is
+left once the metadata block is taken out, and a separated node's prose is
+in the file its `content` names, so `cat` gets the wrong text both ways.
+`null` where a document has no prose to carry — an attachment sidecar, a
+whole-file metadata node standing for itself or for a manifest — and `""`
+for a body with nothing in it, so the two stay distinguishable. Off by
+default because bodies are most of a workspace's bytes, and the plain
+`--json` row is unchanged: the key is absent, not `null`, when not asked
+for. Still only carried, never read: what prov does with a body is hand it
+over, as `prov body` does one document at a time (DESIGN §2, tier 3).
+
 ### Exports
 
 Everything above reads open by default — a view with no `under:` covers the
