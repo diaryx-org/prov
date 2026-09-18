@@ -28,7 +28,39 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **cli** — `prov docs --json --body` carries each document's prose ([`c4b9d51`](https://github.com/diaryx-org/prov/commit/c4b9d51db0e6fa156bd239ab635b00014ccb70f0))
+- **fields** — a field path reaches into a list, and `type: ref` is read ([`53f2b49`](https://github.com/diaryx-org/prov/commit/53f2b49b30001f3fdb3004525f9cce6c46b3e439))
+
+### Fixed
+
+- **cli** — a closed stdout ends the process silently, not with a panic ([`8ed07db`](https://github.com/diaryx-org/prov/commit/8ed07dba95504e27efd8533dc26df41cee0a0737))
+
+### Behavioural changes
+
+- on unix, a `prov` whose stdout closes early is now
+killed by SIGPIPE (status 141 in a shell) instead of exiting non-zero with a
+panic message on stderr.
+
+- a field declared `type: ref` in `fields` is now
+read. Its values are resolved by `check` and reported when broken
+(`BrokenLink` at a site such as `sources[2].resource`), retargeted by
+`mv`, relabelled by `retitle`, reported by `rm`, restyled by `convert
+--links`, and their targets count as reached, so a document reached only
+through one stops being an orphan. Before, the declaration was carried
+and the values were ordinary strings.
+
+- a `fields` declaration whose name carries `[]` or
+`[n]` now reaches into a list (`confirmed[].by`), where before the
+bracketed text was a key that matched nothing. `Value::get_path` reads
+the same steps. A `default:` on a list path is never written.
+
+- `LinkSite` gains a `Field { path }` variant,
+`ConfigIssueKind` gains `ScopedReference { field }`, and `ReadSettings`
+and `Settings` gain a `references` field; exhaustive matches and struct
+literals over any of them need editing. `check --json` writes a ref
+site as `"site": "sources[2].resource"` with `"index": null`.
 
 <!-- git-cliff:end -->
 
