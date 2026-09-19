@@ -32,6 +32,22 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.15.1 — 2026-09-19
+
+### Fixed
+
+- **validate** — the config document's own keys are not field values ([`dc52f3e`](https://github.com/diaryx-org/prov/commit/dc52f3e17cea58170e67cf61cd6c0a52a957926f))
+
+### Behavioural changes
+
+- `check` no longer reports `MalformedDate`, `UnknownTerm`
+or `TermNearMiss` findings whose subject is the config document. A
+workspace that declares a `created` field of `type: date` and writes its
+config through `WorkspaceConfig::to_mapping` with stamping off — every
+diaryx vault — reported a `malformed_date` on `config.yaml` under 0.15.0
+and checks clean again.
+
+
 ## v0.15.0 — 2026-09-18
 
 ### Added
