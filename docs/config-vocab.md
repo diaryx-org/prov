@@ -449,6 +449,20 @@ default because bodies are most of a workspace's bytes, and the plain
 for. Still only carried, never read: what prov does with a body is hand it
 over, as `prov body` does one document at a time (DESIGN §2, tier 3).
 
+`prov search WORD...` is the view over that corpus: every document that
+mentions each of the words — as substrings, case and diacritics folded, so
+`alesund` finds `Ålesund` — in its title, its metadata values or its body,
+best first, each with the passage around the match (`--json` for the hits
+as records, `--limit` for how many). A key is left unread when it carries
+structure rather than what the author wrote: every relation the workspace
+declares, since a link's label is another document's title, and the
+identifier keys `id`, `content`, `manifest` and `root`
+(`prov_views::search`, and `prov_views::corpus` for a consumer with
+structural keys of its own to add). The index is built from the files for
+the one answer and kept nowhere — derived and disposable, never written
+into the workspace, so the body stays carried and the census stays the
+only thing read.
+
 ### Exports
 
 Everything above reads open by default — a view with no `under:` covers the

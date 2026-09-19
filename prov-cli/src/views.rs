@@ -191,6 +191,42 @@ pub(crate) fn cmd_docs(as_json: bool, with_body: bool) -> CmdResult {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `prov search WORD...` — every document that mentions each word, best
+/// first, with the passage that shows it.
+///
+/// The corpus is built from the files for this one answer and dropped with
+/// it: a command that runs once has nothing to keep an index for, and the
+/// view keeps none anywhere (see `prov_views::search`). A query with no
+/// words in it is refused by the argument parser, so there is always
+/// something to look for.
+pub(crate) fn cmd_search(words: &[String], limit: usize, as_json: bool) -> CmdResult {
+    let session = Session::open()?;
+    let graph = session.ws.graph();
+    let _scope = graph.read_scope();
+    let Some(query) = prov::views::Query::parse(&words.join(" ")) else {
+        return Err("nothing to search for".into());
+    };
+    let corpus = block_on(prov::views::corpus(graph, &session.ctx.root_doc, &[]))?;
+    let hits = block_on(prov::views::search(graph, &corpus, &query, limit));
+    if as_json {
+        let records = hits.iter().map(json::hit).collect();
+        print!("{}", json::J::Arr(records).render());
+        return Ok(ExitCode::SUCCESS);
+    }
+    for hit in &hits {
+        let p = &hit.passage;
+        println!(
+            "{} — {}\t{}«{}»{}",
+            hit.path.display(),
+            hit.title,
+            p.before,
+            p.matched,
+            p.after
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// The prose of one `docs --body` row, or `None` for a document that has no
 /// prose to read — the two shapes `Graph::body` would refuse or answer with
 /// an empty string that means "none": an attachment sidecar, and a whole-file

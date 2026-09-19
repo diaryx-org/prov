@@ -94,6 +94,11 @@ edtf-normalize = "1.2"
 # `wasm32-unknown-unknown` like the rest of the workspace.
 sha2 = "0.11.0"
 
+# Unicode NFD, for `prov_views::search`: a query and a text compare with case
+# and diacritics removed, so `alesund` finds `Ålesund`. Pure Rust, no
+# dependencies beyond `tinyvec`, and its own floor (1.36) is well under ours.
+unicode-normalization = "0.1"
+
 # Internal crate.
 prov = { path = "prov", version = "0.14.0" }
 # Read-only graph and storage ports, identity policy, and content fixity.

@@ -264,6 +264,18 @@ its metadata block and its id — the rows to point a query tool at. Add
 it, so a separated node's row has the text of the file its `content` names
 and a sidecar's is `null`.
 
+`search` is the other everyday question about the whole workspace — which
+documents mention a word. Every word given must occur, case and diacritics
+aside, somewhere in the title, the metadata or the body; a hit is one line
+with the passage around the match, and `--json` gives the hits as records.
+The index is built from the files for the one answer and kept nowhere.
+
+<!-- exec -->
+```sh
+$ prov search rust
+rust.md — Rust	«Rust»
+```
+
 <!-- exec -->
 ```sh
 $ prov backlinks index.md
@@ -774,6 +786,8 @@ rules as records for a program making it.
 | `convert FILE AXIS VALUE`       | restate a document: links (`notation` / `path_style`), metadata (`metadata.format` / `metadata.embed`), or prose (`content_format`) |
 | `id FILE` / `resolve ID`        | mint / look up a stable ID                               |
 | `backlinks FILE`                | list inbound links                                       |
+| `docs [--json [--body]]`        | every document the root reaches, as lines or as records with their metadata (and prose) |
+| `search WORD... [--limit N]`    | every document that mentions each word, best first, with the passage around the match |
 | `config [KEY [VALUE]]`          | read/write workspace settings                            |
 | `ignore [--why\|--json]`        | what a tool copying this folder should leave alone, as gitignore lines |
 | `presets [DIR] [--write]`       | what a preset would write here (the built-in, with no DIR), and, with `--write`, writing it |

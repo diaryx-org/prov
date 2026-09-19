@@ -123,6 +123,7 @@ fn main() -> ExitCode {
         }
         Command::Views { name, json } => views::cmd_views(name.as_deref(), json),
         Command::Docs { json, body } => views::cmd_docs(json, body),
+        Command::Search { words, limit, json } => views::cmd_search(&words, limit, json),
         Command::Exports { name } => views::cmd_exports(name.as_deref()),
         Command::Presets { dir, write } => views::cmd_presets(dir.as_deref(), write),
         Command::Tree {

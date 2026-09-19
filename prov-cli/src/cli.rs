@@ -319,6 +319,40 @@ pub(crate) enum Command {
         #[arg(long, requires = "json")]
         body: bool,
     },
+    /// Find every document that mentions each of the given words, best first.
+    ///
+    /// Plain words, matched as substrings — case and diacritics aside, so
+    /// `alesund` finds `Ålesund` — over the title, the metadata values and
+    /// the body of every document `docs` lists. Every word must occur, but
+    /// not in one place: `ogden pen` finds a letter titled *From Ogden* whose
+    /// body mentions the pen. A document is ranked by how much of the query
+    /// its title holds, then by how much its fields hold, then by path.
+    ///
+    /// A metadata value is searched unless its key carries structure — every
+    /// relation the workspace declares, `id`, `content` and the like — since
+    /// a hit through a link's label would be a hit on another document's
+    /// name. The index is built from the files each time and kept nowhere:
+    /// nothing is written to the workspace.
+    ///
+    /// Each hit is one line: the path, the title, and the passage around the
+    /// match with the match itself between `«` and `»`. A passage cut from a
+    /// field opens with the field's key. `--json` gives the same hits as
+    /// records.
+    Search {
+        /// The words to look for; every one must occur.
+        #[arg(value_name = "WORD", required = true, num_args = 1..)]
+        words: Vec<String>,
+        /// How many hits to show, best first.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        limit: usize,
+        /// Print to stdout as JSON instead of a line each: one array, one
+        /// object per hit, each carrying its path, its title, the site the
+        /// passage was cut from (`title`, `field` or `body`, with `field`
+        /// naming the key or `null`), and the passage as its `before`,
+        /// `matched` and `after` text. No hits prints `[]`.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the exports this workspace declares, or preview one.
     ///
     /// An export is a named, closed-by-default set of documents that may leave

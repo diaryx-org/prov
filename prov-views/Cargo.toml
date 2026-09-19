@@ -19,6 +19,9 @@ prov-graph = { workspace = true, default-features = false }
 # What a calendar grain reads a value through — see `src/date.rs`. Pure and
 # dependency-free, so the guarantee above holds: nothing here can write.
 edtf-core.workspace = true
+# What `search` folds text through — see `src/search.rs`. Pure and
+# dependency-free, so the guarantee above still holds.
+unicode-normalization.workspace = true
 
 [dev-dependencies]
 prov-testkit = { workspace = true }

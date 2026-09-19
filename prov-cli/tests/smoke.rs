@@ -80,6 +80,9 @@ fn every_command_runs_end_to_end() {
     );
     ok(&dir, &["check"]); // a fresh vault is consistent → exit 0
     ok(&dir, &["backlinks", "index.md"]);
+    let found = ok(&dir, &["search", "zig"]);
+    assert!(found.contains("zig.md"), "search finds the title: {found}");
+    ok(&dir, &["search", "--json", "--limit", "1", "zig"]);
 
     // ── stable IDs ──
     let id_out = ok(&dir, &["id", "rust.md"]);

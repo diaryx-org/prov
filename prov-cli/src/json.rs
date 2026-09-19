@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use prov::meta::Value;
-use prov::views::{Grain, Row, RowSet, Selection, ViewSpec};
+use prov::views::{Grain, Hit, Row, RowSet, Selection, Site, ViewSpec};
 use prov::{Finding, LinkSite};
 
 /// A JSON value. Objects keep insertion order so the output is diffable.
@@ -632,6 +632,31 @@ pub fn doc_row(row: &Row, id: Option<String>, body: Option<Option<String>>) -> J
         fields.push(("body", opt(body)));
     }
     J::Obj(fields)
+}
+
+/// One `search` hit. `site` is where the passage was cut from — `title`,
+/// `field` or `body` — and `field` the key when it is a field, `null`
+/// otherwise, so a consumer reads two fixed keys rather than a variant shape.
+pub fn hit(hit: &Hit) -> J {
+    let (site, field) = match &hit.site {
+        Site::Title => ("title", None),
+        Site::Field(key) => ("field", Some(key.clone())),
+        Site::Body => ("body", None),
+    };
+    J::Obj(vec![
+        ("path", p(&hit.path)),
+        ("title", s(&hit.title)),
+        ("site", s(site)),
+        ("field", opt(field)),
+        (
+            "passage",
+            J::Obj(vec![
+                ("before", s(&hit.passage.before)),
+                ("matched", s(&hit.passage.matched)),
+                ("after", s(&hit.passage.after)),
+            ]),
+        ),
+    ])
 }
 
 #[cfg(test)]

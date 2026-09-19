@@ -94,6 +94,7 @@ pub mod error;
 pub mod filter;
 pub mod group;
 pub mod lint;
+pub mod search;
 pub mod select;
 pub mod spec;
 
@@ -101,6 +102,7 @@ pub use error::{Error, Result};
 pub use filter::{CONDITION_KEYS, Condition};
 pub use group::{Group, RowSet, group};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};
+pub use search::{Corpus, Excluded, Hit, IndexedDoc, Passage, Query, Site, corpus, fold, search};
 pub use select::{Row, Selection, documents, select, select_with};
 pub use spec::{
     GRAINS, Grain, Grouping, NESTS, Nest, NestRoute, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize,
