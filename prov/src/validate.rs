@@ -1549,8 +1549,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let reachable = self
             .reachable_documents(start, census, content_bodies)
             .await?;
+        let config_doc = self.config_path(start).await?;
 
         for path in reachable {
+            // The config document's keys are settings, not a record's
+            // values: its `created: ""` is the stamping policy switched
+            // off, and a field declared under the same name has nothing
+            // to say about it.
+            if config_doc.as_deref() == Some(path.as_path()) {
+                continue;
+            }
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
@@ -1638,8 +1646,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let reachable = self
             .reachable_documents(start, census, content_bodies)
             .await?;
+        let config_doc = self.config_path(start).await?;
         let mut findings = Vec::new();
         for path in reachable {
+            // Settings, not values — see `vocabulary_findings`.
+            if config_doc.as_deref() == Some(path.as_path()) {
+                continue;
+            }
             let Ok((_, doc)) = self.load(&path).await else {
                 continue;
             };
@@ -2811,6 +2824,42 @@ mod tests {
             dates[0].kind(),
             "malformed_date",
             "the instant with fractional seconds on the root, and every EDTF value, passed"
+        );
+    }
+
+    /// The config document carries settings under names a field may share:
+    /// `created: ""` is the stamping policy switched off, and a workspace
+    /// that declares a `created` date field — diaryx does — must not be told
+    /// its own config holds a malformed date. Nor is a setting a term.
+    #[test]
+    fn the_config_documents_own_keys_are_not_field_values() {
+        let dir = tempdir("config-keys-are-settings");
+        write(
+            &dir,
+            "index.md",
+            "---\ncontents:\n- letter.md\nconfig: ./config.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "config.yaml",
+            "title: prov config\nspec: 1\ncreated: ''\nupdated: updated\n\
+             fields:\n  created:\n    type: date\n  title:\n    values: closed\n    vocabulary: vocab/titles.yaml\n",
+        );
+        write(&dir, "vocab/titles.yaml", "terms:\n  - name: Letter\n");
+        write(
+            &dir,
+            "letter.md",
+            "---\npart_of: index.md\ntitle: Letter\ncreated: 2026-09-18\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings.iter().any(|f| matches!(
+                f,
+                Finding::MalformedDate { doc, .. } | Finding::UnknownTerm { doc, .. }
+                    if doc == Path::new("config.yaml")
+            )),
+            "{findings:?}"
         );
     }
 
