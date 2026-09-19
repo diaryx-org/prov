@@ -28,12 +28,20 @@ and `prov-transaction`, `prov-identity` and `prov-fixity` with it.)
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.15.0 — 2026-09-18
+
 ### Added
 
 - **cli** — `prov docs --json --body` carries each document's prose ([`c4b9d51`](https://github.com/diaryx-org/prov/commit/c4b9d51db0e6fa156bd239ab635b00014ccb70f0))
 - **fields** — a field path reaches into a list, and `type: ref` is read ([`53f2b49`](https://github.com/diaryx-org/prov/commit/53f2b49b30001f3fdb3004525f9cce6c46b3e439))
 - **views** — a date is EDTF, and a date field holding prose is a finding ([`ed14c25`](https://github.com/diaryx-org/prov/commit/ed14c25846e9163f596795b6a0476d6348476b1e))
 - **views** — `nest: ref` files a record under the document it links to ([`35211c8`](https://github.com/diaryx-org/prov/commit/35211c819e58ac1d597cb74a2802dd304392ba60))
+- **mutate** — reorder a container's children ([`f3af966`](https://github.com/diaryx-org/prov/commit/f3af9661ddf3d168fe00a327b01e825d9c90bc82))
+- **views** — search the census by title, field and body ([`0c1c097`](https://github.com/diaryx-org/prov/commit/0c1c097c6f8d4089df0893597a2d990ff7f74570))
 
 ### Fixed
 
@@ -86,7 +94,6 @@ spelling. `Finding` gains the variant and `RemedyKind` gains `SetDate`
 
 - a `nest:` value that is not a grain is reported as a bad nest with `ref` among the expected spellings, rather than as a bad grain.
 
-<!-- git-cliff:end -->
 
 ## v0.14.0 — 2026-09-16
 
