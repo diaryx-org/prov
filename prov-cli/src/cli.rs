@@ -587,6 +587,30 @@ pub(crate) enum Command {
         #[arg(long, requires = "in_target")]
         dry_run: bool,
     },
+    /// Put a document's children in the order given, touching nothing else.
+    ///
+    /// The one structural verb that moves no link. The children named are
+    /// permuted into that order; a child not named keeps its place, so naming
+    /// two of ten swaps those two and leaves the other eight where they were.
+    /// The children themselves are not edited — their `part_of` names the
+    /// parent, not a position in it — and a comment beside an entry, or the
+    /// spelling of its link, survives the move.
+    ///
+    /// Every child named must already be listed by the parent: this changes
+    /// where a child sits, never whether it is there (that is `reparent`). A
+    /// document the parent does not list is an error, and so is one named
+    /// twice. Says whether the order changed; an order the parent already
+    /// holds writes nothing.
+    Reorder {
+        /// The parent: a path, a title route (`@Daily/2026/07`), or an id
+        /// (`id:fpk38j`).
+        #[arg(value_name = "PARENT")]
+        parent: String,
+        /// Its children, in the order wanted — each a path, a title route, or
+        /// an id.
+        #[arg(value_name = "CHILD", required = true, num_args = 1..)]
+        children: Vec<String>,
+    },
     /// Delete a document, removing its parent's spanning entry. Refuses when
     /// the document has children unless --force.
     ///

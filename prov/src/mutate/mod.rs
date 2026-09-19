@@ -41,7 +41,8 @@
 //! - `create` — a new document authored under a parent, in the parent's shape.
 //! - `adopt`, `reparent` — an *existing* document linked under a parent:
 //!   additively (`adopt`), or in place of the parent it already claims
-//!   (`reparent`).
+//!   (`reparent`); `reorder` — a parent's children put in a given order, the
+//!   one containment change that touches no child.
 //! - `rename` — a document's path changes and every link that touched it
 //!   follows; `move_tree` — a directory's does, every document under it a
 //!   mover in one change set; `retitle` — its title changes and every inbound
@@ -77,6 +78,7 @@ mod duplicate;
 pub(crate) mod maintain;
 mod move_tree;
 mod rename;
+mod reorder;
 mod reparent;
 mod retitle;
 mod save;
@@ -85,6 +87,7 @@ pub(crate) mod tombstone;
 
 pub use create::Created;
 pub use delete::Diagnosis;
+pub use reorder::Reordered;
 pub use reparent::Reparented;
 pub use save::ContentState;
 

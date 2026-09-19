@@ -1,5 +1,5 @@
-//! The structural mutations: `new`, `attach`, `mv`, `reparent`, `rm`,
-//! `restore`, `clear-deletions`, `duplicate`.
+//! The structural mutations: `new`, `attach`, `mv`, `reparent`, `reorder`,
+//! `rm`, `restore`, `clear-deletions`, `duplicate`.
 //!
 //! Every verb here changes where a document sits in the containment tree, and
 //! every one that may mint an ID ensures a registry exists *before* the
@@ -501,6 +501,36 @@ pub(crate) fn cmd_reparent(
         ),
     }
     println!("{}", path_rel.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn cmd_reorder(parent: &str, children: &[String]) -> CmdResult {
+    // Nothing here authors a link, so nothing can mint: an ordinary session, as
+    // for `rm`. Every target is resolved before the session opens, since a
+    // route or an id opens one of its own to look itself up.
+    let parent_resolved = resolve_target(parent)?;
+    let children_resolved = children
+        .iter()
+        .map(|child| resolve_target(child))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut session = Session::open()?;
+    let parent_rel = ws_rel(&session.ctx, &parent_resolved)?;
+    let order = children_resolved
+        .iter()
+        .map(|child| ws_rel(&session.ctx, child))
+        .collect::<Result<Vec<_>, _>>()?;
+    let outcome = block_on(session.ws.reorder(&parent_rel, &order))?;
+    session.commit()?;
+    // As with `reparent`: a run that wrote nothing says so, rather than
+    // reporting a change the file did not see.
+    match outcome {
+        prov::Reordered::Moved => eprintln!("reordered {}", parent_rel.display()),
+        prov::Reordered::Unchanged => eprintln!(
+            "{} already holds that order — nothing to do",
+            parent_rel.display()
+        ),
+    }
+    println!("{}", parent_rel.display());
     Ok(ExitCode::SUCCESS)
 }
 

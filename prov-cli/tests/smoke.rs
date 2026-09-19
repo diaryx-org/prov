@@ -101,6 +101,7 @@ fn every_command_runs_end_to_end() {
     // ── move / reparent / duplicate ──
     ok(&dir, &["mv", "rust.md", "notes/rust.md"]);
     ok(&dir, &["reparent", "notes/rust.md", "--in", "zig.md"]);
+    ok(&dir, &["reorder", "zig.md", "notes/rust.md"]);
     ok(&dir, &["duplicate", "zig.md"]);
 
     // ── convert a document's link spelling ──

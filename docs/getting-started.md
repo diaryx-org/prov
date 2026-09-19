@@ -751,6 +751,7 @@ rules as records for a program making it.
 | `new TITLE --in P [--set K=V]`  | create a child document, linking both directions; `--set` adds a field it opens with |
 | `mv FROM TO [--in P]`           | move/rename, maintaining every affected link             |
 | `reparent PATH --in P`          | change a document's parent, leaving the file put         |
+| `reorder P CHILD...`            | put a document's children in that order; unnamed ones keep their place |
 | `rm PATH [--force]`             | delete the file, removing the parent's entry and recording it |
 | `restore PATH`                  | put a deleted document back in the graph, once its bytes are back |
 | `clear-deletions`               | forget every deletion the log records                    |

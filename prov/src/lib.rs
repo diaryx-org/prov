@@ -242,7 +242,7 @@ pub use identity::{
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use journal::{Recovered, recover};
 pub use manifest::{ManifestStatus, ManifestUpdate};
-pub use mutate::{ContentState, Created, Diagnosis, Reparented};
+pub use mutate::{ContentState, Created, Diagnosis, Reordered, Reparented};
 pub use prov_exports::ExportSpec;
 pub use prov_views::ViewSpec;
 pub use provenance::{Actor, Confirmation, Confirmations, Generated, Tier};

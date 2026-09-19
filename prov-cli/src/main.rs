@@ -168,6 +168,7 @@ fn main() -> ExitCode {
             layout,
             dry_run,
         } => structure::cmd_reparent(&path, &in_target, parents, layout.into(), dry_run),
+        Command::Reorder { parent, children } => structure::cmd_reorder(&parent, &children),
         Command::Rm { path, force } => structure::cmd_rm(&path, force),
         Command::Restore { path } => structure::cmd_restore(&path),
         Command::ClearDeletions => structure::cmd_clear_deletions(),

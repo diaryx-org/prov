@@ -84,6 +84,15 @@ enum Op {
         child: usize,
         parent: usize,
     },
+    /// A permutation of `parent`'s children: `order` is read as a Lehmer-style
+    /// sequence of picks (see [`apply`]), so any value addresses *some*
+    /// permutation and none is unreachable. Shrinks toward the identity, which
+    /// the verb refuses to write — the readable counterexample is the smallest
+    /// swap that broke something.
+    Reorder {
+        parent: usize,
+        order: Vec<usize>,
+    },
     Duplicate {
         subject: usize,
     },
@@ -117,6 +126,8 @@ fn op() -> impl Strategy<Value = Op> {
         }),
         (ix.clone(), ix.clone()).prop_map(|(child, parent)| Op::Reparent { child, parent }),
         (ix.clone(), ix.clone()).prop_map(|(child, parent)| Op::Adopt { child, parent }),
+        (ix.clone(), prop::collection::vec(0..6usize, 0..6))
+            .prop_map(|(parent, order)| Op::Reorder { parent, order }),
         ix.clone().prop_map(|subject| Op::Duplicate { subject }),
         (ix.clone(), 0..TITLES.len()).prop_map(|(subject, title)| Op::Retitle { subject, title }),
         ix.clone().prop_map(|subject| Op::Separate { subject }),
@@ -268,6 +279,24 @@ fn apply(ws: &mut Workspace<&InMemoryFs>, op: &Op) -> Option<crate::Result<Vec<F
         Op::Adopt { child, parent } => {
             let (child, parent) = (pick(*child, &subjects)?, pick(*parent, &all)?);
             block_on(ws.adopt(&child, &parent)).map(|_| Vec::new())
+        }
+        Op::Reorder { parent, order } => {
+            let parent = pick(*parent, &all)?;
+            // The parent's children as the tree currently reads them, permuted
+            // by `order`: each pick removes one of the remaining children, so a
+            // generated sequence is always a valid permutation of a prefix of
+            // them — the rest are the entries the verb must leave in place.
+            let mut remaining: Vec<PathBuf> = block_on(ws.tree(&parent))
+                .map(|node| node.children.iter().map(|c| c.path.clone()).collect())
+                .unwrap_or_default();
+            let mut permuted = Vec::with_capacity(order.len());
+            for choice in order {
+                if remaining.is_empty() {
+                    break;
+                }
+                permuted.push(remaining.remove(choice % remaining.len()));
+            }
+            block_on(ws.reorder(&parent, &permuted)).map(|_| Vec::new())
         }
         Op::Duplicate { subject } => {
             let subject = pick(*subject, &subjects)?;
