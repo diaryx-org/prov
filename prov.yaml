@@ -58,3 +58,4 @@ exports:
     gate:
       field: audience
       value: public
+    hold: draft
