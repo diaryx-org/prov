@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-16
 updated: 2026-09-16
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A directory moves one document at a time, and a payload's references do not move at all
@@ -71,7 +71,7 @@ by `convert_content_format`. The census (`workspace/inbound.rs`,
 returns images with `image: true` since the body-images fix, and the census
 "can keep ignoring images as edges, or count them as references to an
 attachment payload; that is a separate decision" —
-[rename-leaves-body-images-behind](/docs/tasks/rename-leaves-body-images-behind.md)
+[rename-leaves-body-images-behind](/docs/tasks/closed/rename-leaves-body-images-behind.md)
 left it unmade. This is the decision.
 
 **What to do.** Two things, and the second is what makes the first sufficient.

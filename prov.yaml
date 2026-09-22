@@ -39,6 +39,7 @@ views:
     group: status
     under: '[[Tasks]]'
     where:
+      has: status
       not:
         equals: { status: [done, dropped] }
   proposals:

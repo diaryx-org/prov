@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn a_book_moves_by_one_call_with_every_image_resolving() {
-        // docs/tasks/a-directory-moves-one-document-at-a-time.md. Moved as N
+        // docs/tasks/closed/a-directory-moves-one-document-at-a-time.md. Moved as N
         // renames, steps 1 and 2 respelled each page's image for where the
         // payload was, and step 3 carried the payload away from under both.
         // Moved as one, every page still has its picture, spelled — like

@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-16
 updated: 2026-09-16
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # No relation lets a document say it replaces, or was derived from, another

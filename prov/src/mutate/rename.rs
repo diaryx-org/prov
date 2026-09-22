@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn rename_carries_body_images_across_directories() {
-        // docs/tasks/rename-leaves-body-images-behind.md: the link on the first
+        // docs/tasks/closed/rename-leaves-body-images-behind.md: the link on the first
         // line moved and the two images below it did not, because twig parses
         // `![…](…)` as an image rather than a link and the body scan asked only
         // for links. Relative to the moved page they then named a directory
@@ -811,7 +811,7 @@ mod tests {
 
     #[test]
     fn moving_a_sidecar_carries_every_reference_to_its_payload() {
-        // docs/tasks/a-directory-moves-one-document-at-a-time.md, the
+        // docs/tasks/closed/a-directory-moves-one-document-at-a-time.md, the
         // one-page half: a sidecar renamed out of its page's `attachments/`
         // took the payload with it and left the page's `![](…)` naming a file
         // that had just left — an image is not an edge, so the census never

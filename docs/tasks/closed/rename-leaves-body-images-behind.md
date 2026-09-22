@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-10
 updated: 2026-09-10
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A move rewrites a document's body links but not its body images
@@ -20,7 +20,7 @@ the inbound pass, and `convert`'s restyle) carry an image exactly as they
 carry a link and cannot drop the `!` — and an empty alt text is kept. The
 census and the spanning scan skip images, so `check` reports nothing new; the
 separate decision below is still not made. *(Made since, in
-[a-directory-moves-one-document-at-a-time](/docs/tasks/a-directory-moves-one-document-at-a-time.md):
+[a-directory-moves-one-document-at-a-time](/docs/tasks/closed/a-directory-moves-one-document-at-a-time.md):
 the census reports an image by path, and a missing picture is a broken link.)*
 
 **Repro.** A workspace with `page.md` containing

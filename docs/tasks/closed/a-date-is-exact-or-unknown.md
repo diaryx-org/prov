@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-17
 updated: 2026-09-17
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A date is exact or unknown, and nothing in between

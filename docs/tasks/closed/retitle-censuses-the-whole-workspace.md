@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-09
 updated: 2026-09-10
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A retitle censuses the whole workspace to find its inbound links
