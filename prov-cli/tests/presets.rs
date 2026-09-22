@@ -218,6 +218,17 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
     );
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
     assert!(out.contains("no documents in scope"), "{out}");
+    // `dropped` closes a task as surely as `done` does.
+    ok(
+        &dir,
+        &["set", "docs/tasks/fix-the-build.md", "status", "dropped"],
+    );
+    let (out, _) = ok(&dir, &["views", "open-tasks"]);
+    assert!(out.contains("no documents in scope"), "{out}");
+    ok(
+        &dir,
+        &["set", "docs/tasks/fix-the-build.md", "status", "done"],
+    );
 
     // A closed task filed on a shelf under `Tasks` is still a task — its term
     // still checked, still in `work` — and the shelf, which says no status, is

@@ -41,7 +41,9 @@ views:
     where:
       has: status
       not:
-        equals: { status: [done, dropped] }
+        any-of:
+          - equals: { status: done }
+          - equals: { status: dropped }
   proposals:
     label: Proposals
     group: status

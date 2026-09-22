@@ -33,7 +33,12 @@ views:
     # closed task moves to — says no status, and is not an open task.
     where:
       has: status
-      not: { equals: { status: [done, dropped] } }
+      # One `equals` per term: a list under `equals` is read as its first
+      # element alone, which left `dropped` tasks in this view.
+      not:
+        any-of:
+          - equals: { status: done }
+          - equals: { status: dropped }
   proposals:
     label: Proposals
     group: status
