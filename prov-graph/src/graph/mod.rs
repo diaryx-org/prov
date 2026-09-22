@@ -104,6 +104,7 @@ pub use tree::{Node, NodeKind, TreeOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::bulk::{BulkReads, Hook};
 use crate::field::{Address, FieldPath};
 use crate::identity::IdStorage;
 use crate::memo::{ReadMemo, ReadScope};
@@ -180,6 +181,10 @@ pub struct Graph<FS, Ix> {
     /// census is a read-only operation, and making it `&mut` to let it remember
     /// what it read would be the tail wagging the dog.
     memo: Arc<Mutex<ReadMemo>>,
+    /// Who to tell when a whole-tree read starts and ends — see
+    /// [`crate::bulk`]. `None` for a backend priced by the byte, which is
+    /// every backend that has no use for the notice.
+    bulk: Option<Hook>,
 }
 
 impl<FS, Ix> Graph<FS, Ix> {
@@ -191,7 +196,37 @@ impl<FS, Ix> Graph<FS, Ix> {
             index,
             settings,
             memo: Arc::new(Mutex::new(ReadMemo::default())),
+            bulk: None,
         }
+    }
+
+    /// Tell this graph who to notify when a whole-tree read starts and ends
+    /// — see [`crate::bulk`]. A backend priced per call installs itself here
+    /// to pay once per pass instead of once per document.
+    pub fn with_bulk_reads(mut self, hook: Arc<dyn BulkReads>) -> Self {
+        self.set_bulk_reads(hook);
+        self
+    }
+
+    /// [`with_bulk_reads`](Self::with_bulk_reads) for a graph already built.
+    pub fn set_bulk_reads(&mut self, hook: Arc<dyn BulkReads>) {
+        self.bulk = Some(Hook::new(hook));
+    }
+
+    /// The hook [`with_bulk_reads`](Self::with_bulk_reads) installed, if any
+    /// — for a consumer that rebuilds a graph and wants the new one told
+    /// what the old one was.
+    pub fn bulk_reads(&self) -> Option<Arc<dyn BulkReads>> {
+        self.bulk.as_ref().map(Hook::get)
+    }
+
+    /// Announce a whole-tree read to the hook, if there is one, for as long
+    /// as the returned guard lives. Called by the walk and nothing else; see
+    /// [`crate::bulk`] for why that is the one place.
+    pub(crate) fn bulk_pass(&self) -> Option<crate::bulk::Pass<'_>> {
+        self.bulk
+            .as_ref()
+            .map(|hook| crate::bulk::Pass::open(hook.as_dyn(), &self.root))
     }
 
     /// The underlying filesystem.
@@ -320,11 +355,13 @@ impl<FS, Ix> Graph<FS, Ix> {
 
 impl<FS: Clone, Ix: Clone> Clone for Graph<FS, Ix> {
     fn clone(&self) -> Self {
-        Self::new(
-            self.fs.clone(),
-            self.root.clone(),
-            self.index.clone(),
-            self.settings.clone(),
-        )
+        Self {
+            fs: self.fs.clone(),
+            root: self.root.clone(),
+            index: self.index.clone(),
+            settings: self.settings.clone(),
+            memo: Arc::new(Mutex::new(ReadMemo::default())),
+            bulk: self.bulk.clone(),
+        }
     }
 }

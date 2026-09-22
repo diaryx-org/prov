@@ -19,6 +19,9 @@
 //! The filesystem-driven `scan`/traverse/mutate engine ports from `diaryx_core`
 //! next; the seams are in place so that port has somewhere to land.
 
+use std::sync::Arc;
+
+use prov_graph::bulk::{BulkReads, Hook};
 use prov_graph::document::{Body, Document};
 use prov_graph::field::FieldPath;
 use prov_graph::fs::{DirEntry, Metadata};
@@ -259,6 +262,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             identity: NoIdentity,
             index: NoIndex,
             settings: Settings::default(),
+            bulk: None,
         }
     }
 }
@@ -276,6 +280,21 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The workspace root.
     pub fn root(&self) -> &Path {
         self.graph.root()
+    }
+
+    /// Tell the read core who to notify when a whole-tree read starts and
+    /// ends — [`Graph::set_bulk_reads`], for a workspace already built. A
+    /// backend priced per call installs itself here so that the census a
+    /// `rename` or `retitle` runs costs it one scope rather than one round
+    /// trip per document; see [`prov_graph::bulk`].
+    pub fn set_bulk_reads(&mut self, hook: Arc<dyn BulkReads>) {
+        self.graph.set_bulk_reads(hook);
+    }
+
+    /// The hook [`set_bulk_reads`](Self::set_bulk_reads) installed, if any —
+    /// so a consumer that rebuilds its workspace can carry it over.
+    pub fn bulk_reads(&self) -> Option<Arc<dyn BulkReads>> {
+        self.graph.bulk_reads()
     }
 
     /// Join a workspace-relative path — a [`Node::path`](prov_graph::graph::Node::path),
@@ -1640,12 +1659,20 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     identity: Id,
     index: Ix,
     settings: Settings,
+    bulk: Option<Hook>,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// Set the workspace root.
     pub fn root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
+        self
+    }
+
+    /// Who to tell when a whole-tree read starts and ends — see
+    /// [`Workspace::set_bulk_reads`] and [`prov_graph::bulk`].
+    pub fn bulk_reads(mut self, hook: Arc<dyn BulkReads>) -> Self {
+        self.bulk = Some(Hook::new(hook));
         self
     }
 
@@ -1761,6 +1788,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             identity,
             index: self.index,
             settings: self.settings,
+            bulk: self.bulk,
         }
     }
 
@@ -1772,6 +1800,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             identity: self.identity,
             index,
             settings: self.settings,
+            bulk: self.bulk,
         }
     }
 
@@ -1788,8 +1817,12 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             workspace_id: self.settings.workspace_id.clone(),
             id_storage: self.settings.id_storage,
         };
+        let mut graph = Graph::new(self.fs, self.root, self.index, read);
+        if let Some(hook) = self.bulk {
+            graph.set_bulk_reads(hook.get());
+        }
         Workspace {
-            graph: Graph::new(self.fs, self.root, self.index, read),
+            graph,
             identity: self.identity,
             settings: self.settings,
             pending_stamps: Vec::new(),

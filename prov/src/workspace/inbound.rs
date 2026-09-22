@@ -470,9 +470,11 @@ mod tests {
     use super::*;
     use crate::fs_faults::CountingFs;
     use crate::identity::Minter;
+    use prov_graph::bulk::BulkReads;
     use prov_graph::exec::block_on;
     use prov_store::index::FileIndex;
     use prov_testkit::{read, scratch, write};
+    use std::sync::Arc;
 
     /// A root with three children, `c.md` linked by its parent (a labeled
     /// `contents` entry) and by `a.md` (a labeled `links` entry); `b.md`
@@ -508,6 +510,84 @@ mod tests {
             .identity(Minter::lazy(3))
             .index(FileIndex::new(fig::Format::Yaml))
             .build()
+    }
+
+    /// A backend that batches its reads is told when the census starts and
+    /// when it ends — once each per census, and the end comes *before* the
+    /// set lands, so a backend whose scope is a read lock over the root is
+    /// never asked to write inside it.
+    struct Batching {
+        /// Every notice, in order, with the title `c.md` carried on disk at
+        /// the moment `end` was called.
+        log: std::sync::Mutex<Vec<String>>,
+        dir: PathBuf,
+    }
+
+    impl BulkReads for Batching {
+        fn begin(&self, root: &Path) {
+            assert_eq!(
+                root, self.dir,
+                "the pass is announced under the graph's root"
+            );
+            self.log.lock().unwrap().push("begin".into());
+        }
+        fn end(&self) {
+            let title = read(&self.dir, "c.md")
+                .lines()
+                .find_map(|l| l.strip_prefix("title: ").map(str::to_owned))
+                .unwrap_or_default();
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("end while c.md is {title:?}"));
+        }
+    }
+
+    #[test]
+    fn a_census_is_announced_to_the_backend_and_closed_before_the_set_lands() {
+        let dir = tree("batched-census");
+        let hook = Arc::new(Batching {
+            log: Default::default(),
+            dir: dir.clone(),
+        });
+        let mut w = Workspace::builder(CountingFs::default())
+            .root(&dir)
+            .identity(Minter::lazy(3))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .bulk_reads(hook.clone())
+            .build();
+
+        // The first retitle censuses: one pass, closed while c.md still
+        // carries its old title — the write came after.
+        assert_eq!(block_on(w.retitle(Path::new("c.md"), "C two")).unwrap(), 2);
+        assert_eq!(
+            *hook.log.lock().unwrap(),
+            vec!["begin".to_string(), "end while c.md is \"C\"".to_string()]
+        );
+        assert!(read(&dir, "c.md").contains("title: C two"));
+
+        // The second is answered from the index: no pass at all.
+        assert_eq!(
+            block_on(w.retitle(Path::new("c.md"), "C three")).unwrap(),
+            2
+        );
+        assert_eq!(
+            hook.log.lock().unwrap().len(),
+            2,
+            "an indexed ask announces nothing"
+        );
+
+        // A rename drops the index; the next ask is one more pass, again
+        // closed before anything moves.
+        block_on(w.rename(Path::new("b.md"), Path::new("bb.md"))).unwrap();
+        assert_eq!(block_on(w.retitle(Path::new("c.md"), "C four")).unwrap(), 2);
+        assert_eq!(
+            hook.log.lock().unwrap()[2..],
+            [
+                "begin".to_string(),
+                "end while c.md is \"C three\"".to_string()
+            ]
+        );
     }
 
     /// The task's done state: a second retitle on an unchanged workspace

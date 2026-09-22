@@ -98,7 +98,7 @@ pub use prov_graph::identity;
 /// [`prov_graph::twig`] for why the coupling is accepted.
 pub use prov_graph::twig;
 pub use prov_graph::{
-    Address, Addressing, Backlink, Body, BodyLink, Cardinality, CensusEntry, Collision,
+    Address, Addressing, Backlink, Body, BodyLink, BulkReads, Cardinality, CensusEntry, Collision,
     ContentFormat, DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FieldPath,
     FileType, Format, Graph, Id, IdIndex, IdStorage, Link, LinkSite, LinkStyle, Manifest,
     ManifestEntry, Mapping, MetaCarrier, Metadata, NoIndex, NoPeers, Node, NodeKind, Notation,
@@ -111,7 +111,7 @@ pub use prov_graph::{
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.
 pub use prov_graph::{
-    content, document, error, exec, graph, link, memo, meta, peer, relation, title,
+    bulk, content, document, error, exec, graph, link, memo, meta, peer, relation, title,
 };
 /// Metadata editing, at the path it had before the write surface moved out of
 /// the read core into `prov-store`.

@@ -461,6 +461,12 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// everything the walk read.
     pub async fn walk(&self, start: &Path, parked: &[PathBuf]) -> Result<Walk> {
         let _scope = self.read_scope();
+        // Declared after the memo scope so it is dropped before it: the
+        // backend's scope closes when the walk's reads are done, and what the
+        // walk read stays remembered for the rest of the operation — which
+        // is what lets a mutation load its rewrites after the scope has
+        // closed without paying the backend again. See `crate::bulk`.
+        let _pass = self.bulk_pass();
         let mut census = Vec::new();
         let mut structural = Vec::new();
         // Prose bodies reached through a separated node's `content` pointer.

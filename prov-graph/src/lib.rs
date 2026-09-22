@@ -66,6 +66,7 @@ compile_error!(
      You have disabled the default feature without selecting a replacement."
 );
 
+pub mod bulk;
 pub mod content;
 pub mod document;
 pub mod error;
@@ -84,6 +85,7 @@ pub mod peer;
 pub mod relation;
 pub mod title;
 
+pub use bulk::BulkReads;
 pub use content::{ContentFormat, code_spans, render_html};
 pub use document::{
     Body, Document, EmbedStyle, EmbedType, MetaCarrier, embed_carrier, embed_style_of,
