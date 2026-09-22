@@ -29,7 +29,10 @@ views:
     label: Open tasks
     group: status
     under: '[[Tasks]]'
+    # `has` first: an index filed under `Tasks` — the `Closed tasks` shelf a
+    # closed task moves to — says no status, and is not an open task.
     where:
+      has: status
       not: { equals: { status: [done, dropped] } }
   proposals:
     label: Proposals

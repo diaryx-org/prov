@@ -219,6 +219,60 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
     assert!(out.contains("no documents in scope"), "{out}");
 
+    // A closed task filed on a shelf under `Tasks` is still a task — its term
+    // still checked, still in `work` — and the shelf, which says no status, is
+    // not an open task.
+    ok(
+        &dir,
+        &[
+            "new",
+            "Closed tasks",
+            "--in",
+            "docs/tasks/tasks.md",
+            "--as",
+            "docs/tasks/closed/closed.md",
+            "--set",
+            "status=null",
+        ],
+    );
+    ok(&dir, &["unset", "docs/tasks/closed/closed.md", "status"]);
+    ok(
+        &dir,
+        &[
+            "mv",
+            "docs/tasks/fix-the-build.md",
+            "docs/tasks/closed/fix-the-build.md",
+            "--in",
+            "docs/tasks/closed/closed.md",
+        ],
+    );
+    let (out, err) = ok(&dir, &["check"]);
+    assert!(err.contains("no findings"), "{out}{err}");
+    let (out, _) = ok(&dir, &["views", "open-tasks"]);
+    assert!(out.contains("no documents in scope"), "{out}");
+    let (out, _) = ok(&dir, &["views", "work"]);
+    assert!(out.contains("docs/tasks/closed/fix-the-build.md"), "{out}");
+    ok(
+        &dir,
+        &[
+            "set",
+            "docs/tasks/closed/fix-the-build.md",
+            "status",
+            "wontfix",
+        ],
+    );
+    let (ok_, out, err) = run(&dir, &["check"]);
+    assert!(!ok_ && (out + &err).contains("not a known term"));
+    ok(
+        &dir,
+        &[
+            "set",
+            "docs/tasks/closed/fix-the-build.md",
+            "status",
+            "done",
+        ],
+    );
+
     // Applying it again finds nothing to add.
     let (out, err) = ok(&dir, &["presets", &preset, "--write"]);
     assert!(!out.contains("+ ") && out.contains("(already"), "{out}");
