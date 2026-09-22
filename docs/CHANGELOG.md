@@ -32,6 +32,14 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.15.2 — 2026-09-21
+
+### Added
+
+- **graph** — a backend is told when the census reads the whole tree ([`1ba0ba0`](https://github.com/diaryx-org/prov/commit/1ba0ba0444117e1aa8c288ae8fa54285124eb1b8))
+- hold:draft to prov.yaml ([`68d4090`](https://github.com/diaryx-org/prov/commit/68d4090bbb8ea42b4c5ced9fc8fee152e36dd347))
+
+
 ## v0.15.1 — 2026-09-19
 
 ### Fixed
