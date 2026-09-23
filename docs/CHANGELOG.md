@@ -32,6 +32,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.15.3 — 2026-09-22
+
+### Fixed
+
+- **presets** — open-tasks lists only documents that state a status ([`5e9e3a8`](https://github.com/diaryx-org/prov/commit/5e9e3a88f01ea2587f3fedbcb44bdc32e710d113))
+- **presets** — open-tasks leaves out dropped tasks as well as done ones ([`7660508`](https://github.com/diaryx-org/prov/commit/76605085a631432b8767bd858b5462a9b08cb32f))
+
+### Behavioural changes
+
+- a workspace carrying the `tasks` preset no longer lists a document under `Tasks` that has no `status` at all in `prov views open-tasks`; one that says `open` or `in-progress` is listed as before. The view is copied into a workspace's own config when the preset is applied, and re-applying reports it as a collision, so a workspace that wants the change adds `has: status` to its `open-tasks` view's `where:` by hand.
+
+- a workspace carrying the `tasks` preset no longer lists a task whose `status` is `dropped` in `prov views open-tasks`. As with the previous change, a workspace that applied the preset earlier keeps its own copy of the view and picks this up by editing its `where:` to the preset's.
+
+
 ## v0.15.2 — 2026-09-21
 
 ### Added
