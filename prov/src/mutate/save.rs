@@ -121,13 +121,60 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if link::escapes_root(&path) {
             return Err(prov_graph::error::Error::Escape(path));
         }
+        self.write_document(path, text, None, updated)
+            .await
+            .map(drop)
+    }
+
+    /// [`save_document`](Self::save_document) for an editor: refused with
+    /// [`Error::Drifted`] — and nothing written — unless the document on disk
+    /// is still `read`, the bytes the caller last read or wrote there.
+    ///
+    /// An editor holds a document for minutes. Anything may write it in the
+    /// meantime — another window, a sync client, `prov` itself restamping or
+    /// rewriting a link to a renamed target — and a save that replaced those
+    /// bytes unseen would discard that write without a trace. The check is the
+    /// change set's own [expectation](crate::change::ChangeSet::expect), so it
+    /// is made inside the same apply as the write, not in a read beforehand
+    /// that a writer could slip in behind.
+    ///
+    /// Returns the bytes written — `text` with whatever stamps applied — which
+    /// is what the document now is, so what the caller should show and what
+    /// its next call should pass as `read`.
+    pub async fn save_document_expecting(
+        &mut self,
+        path: impl AsRef<Path>,
+        text: &str,
+        read: &str,
+        updated: Option<(&str, &str)>,
+    ) -> Result<String> {
+        let path = link::normalize(path.as_ref());
+        if link::escapes_root(&path) {
+            return Err(prov_graph::error::Error::Escape(path));
+        }
+        self.write_document(path, text, Some(read), updated).await
+    }
+
+    /// The write both save verbs share: stamp, stage, expect if asked, commit.
+    async fn write_document(
+        &mut self,
+        path: std::path::PathBuf,
+        text: &str,
+        read: Option<&str>,
+        updated: Option<(&str, &str)>,
+    ) -> Result<String> {
         let doc = prov_graph::document::Document::parse(&path, text)?;
         let stamped = self.stamped(&path, text, &doc, updated).await?;
-        let mut cs = self.change();
         // No stamp applying is not "nothing to do" here, the way it is for
         // `record_content_update`: the caller's text is the point, stamped or not.
-        cs.write(&path, stamped.unwrap_or_else(|| text.to_string()));
-        self.commit(cs).await
+        let written = stamped.unwrap_or_else(|| text.to_string());
+        let mut cs = self.change();
+        if let Some(read) = read {
+            cs.expect(&path, read);
+        }
+        cs.write(&path, written.clone());
+        self.commit(cs).await?;
+        Ok(written)
     }
 
     /// Apply to `text` the frontmatter stamps a content change implies, given the
@@ -627,6 +674,79 @@ mod tests {
             "{err:?}"
         );
         assert!(!dir.parent().unwrap().join("escape.md").exists());
+    }
+
+    #[test]
+    fn save_document_expecting_refuses_when_the_document_changed_since_it_was_read() {
+        // An editor read the document, something else wrote it, the editor
+        // saved: the other write stands and the save says why it did not land.
+        let dir = separated("save-expecting-drift");
+        let mut w = ws(&dir);
+        let read = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
+        let theirs = "title: Theirs\npart_of: index.md\ncontent: note.md\n";
+        std::fs::write(dir.join("note.yaml"), theirs).unwrap();
+
+        let err = block_on(w.save_document_expecting(
+            "note.yaml",
+            "title: Mine\npart_of: index.md\ncontent: note.md\n",
+            &read,
+            None,
+        ))
+        .expect_err("a document that moved underneath the editor must not be overwritten");
+
+        assert!(
+            matches!(&err, prov_graph::error::Error::Drifted(p) if p == Path::new("note.yaml")),
+            "{err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("note.yaml")).unwrap(),
+            theirs
+        );
+    }
+
+    #[test]
+    fn save_document_expecting_returns_what_it_wrote_and_that_is_the_next_expectation() {
+        // The stamps change the bytes, so the caller cannot know what is on
+        // disk unless it is told — and what it is told has to be exactly what a
+        // second save should expect, or an editor's second save always drifts.
+        let dir = separated("save-expecting-chain");
+        let mut w = ws(&dir);
+        let read = std::fs::read_to_string(dir.join("note.yaml")).unwrap();
+        let stamp = Some(("updated", "2026-08-06T09:00:00Z"));
+
+        let first = block_on(w.save_document_expecting(
+            "note.yaml",
+            "title: Once\npart_of: index.md\ncontent: note.md\n",
+            &read,
+            stamp,
+        ))
+        .unwrap();
+        assert_eq!(
+            first,
+            std::fs::read_to_string(dir.join("note.yaml")).unwrap()
+        );
+        assert!(first.contains("updated: 2026-08-06T09:00:00Z"), "{first}");
+
+        let again = first.replace("title: Once", "title: Twice");
+        let second =
+            block_on(w.save_document_expecting("note.yaml", &again, &first, stamp)).unwrap();
+        assert!(second.contains("title: Twice"), "{second}");
+    }
+
+    #[test]
+    fn save_document_expecting_refuses_a_path_that_escapes_the_root() {
+        let dir = tempdir("save-expecting-escape");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        let mut w = ws(&dir);
+
+        let err =
+            block_on(w.save_document_expecting("../escape.md", "---\ntitle: X\n---\n", "", None))
+                .expect_err("an escaping path must be refused");
+
+        assert!(
+            matches!(err, prov_graph::error::Error::Escape(_)),
+            "{err:?}"
+        );
     }
 
     #[test]
