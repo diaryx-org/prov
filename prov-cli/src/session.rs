@@ -16,13 +16,12 @@
 use std::path::{Path, PathBuf};
 
 use prov::{
-    ChangeSet, Document, FileIndex, Id, IdIndex, IdStorage, IndexStore, Layout, Mapping, Minter,
-    Settings, StdFs, Value, Workspace, WorkspaceConfig, block_on, edit, link,
+    Document, FileIndex, Id, IdIndex, Layout, Minter, StdFs, Workspace, WorkspaceConfig,
+    WorkspaceRoot, block_on, link,
 };
 
 use crate::AnyError;
 use crate::about::refresh_about;
-use crate::cli::{REGISTRY_STEM, sidecar_name};
 
 /// The discovered workspace context: where the root is, which document is the
 /// root, and where the root says the registry lives.
@@ -41,6 +40,18 @@ pub(crate) struct Ctx {
     /// The effective workspace config (root frontmatter overlaid by the linked
     /// config document, over defaults).
     pub(crate) config: WorkspaceConfig,
+}
+
+impl Ctx {
+    /// This workspace, as the library's writable-workspace calls read it.
+    pub(crate) fn as_root(&self) -> WorkspaceRoot<'_> {
+        WorkspaceRoot {
+            root_dir: &self.root_dir,
+            root_doc: &self.root_doc,
+            registry: self.registry.as_deref(),
+            config: &self.config,
+        }
+    }
 }
 
 impl From<prov::Discovered> for Ctx {
@@ -262,89 +273,30 @@ pub(crate) fn updated_stamp<'a>(
 }
 
 /// The workspace the multi-document commands drive: rooted at the discovered
-/// root, a lazy identity policy, and the registry the root declares (an empty
-/// in-memory one when the root declares none — see `ensure_registry`).
+/// root, the configured identity policy, and the id index the workspace keeps
+/// — [`Workspace::open_for_writing`], which is where that assembly lives so
+/// that every writer, and not only this one, builds it the same way.
 pub(crate) fn workspace(ctx: &Ctx) -> Result<Workspace<StdFs, Minter, FileIndex>, AnyError> {
-    let index = if ctx.config.id_storage == IdStorage::FrontmatterOnly {
-        // No registry document: rebuild the id→path map by scanning each file's
-        // self-stored `id` field — a flat scan, independent of link resolution.
-        let probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&ctx.root_dir).build();
-        let mut index = FileIndex::new(ctx.config.default_embed_format);
-        for (id, path) in block_on(probe.scan_ids())? {
-            index.register(&id, &path);
-        }
-        // A scanned index reflects on-disk state, so it starts clean.
-        index.mark_clean();
-        index
-    } else {
-        match &ctx.registry {
-            Some(rel) => {
-                let full = ctx.root_dir.join(rel);
-                let text = match std::fs::read_to_string(&full) {
-                    Ok(text) => text,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(e) => return Err(e.into()),
-                };
-                FileIndex::parse(rel, &text)?
-            }
-            // No registry declared yet: an empty in-memory one in the workspace's
-            // metadata format, so a later bootstrap writes that format.
-            None => FileIndex::new(ctx.config.default_embed_format),
-        }
-    };
-    // Every policy knob comes from the config, whole: the relation vocabulary
-    // (declared definitions + spanning, or the diaryx preset, with per-relation
-    // `style` overrides overlaid), the reference style, the embedding pair the
-    // store's own documents are authored through, the fixity and history axes,
-    // the identity-storage mode, and what this workspace calls itself. Threading
-    // them one at a time is what `Settings` exists to stop; a knob added to the
-    // config now reaches the workspace without touching this function.
-    //
-    // The one thing that cannot come across is `identity`: it is a policy *type*
-    // here, not a value, which is what lets identity be compiled out entirely.
-    Ok(Workspace::builder(StdFs)
-        .root(&ctx.root_dir)
-        .settings(Settings::from(&ctx.config))
-        .identity(Minter::with(ctx.config.identity, entropy_seed()))
-        .index(index)
-        .build())
+    Ok(block_on(Workspace::open_for_writing(
+        StdFs,
+        ctx.as_root(),
+        entropy_seed(),
+    ))?)
 }
 
 /// Make sure the workspace *declares* a registry, bootstrapping one when it
-/// does not: create `registry.<ext>` (in the workspace's metadata format) beside
-/// the root (self-described with a title and a part_of back to the root) and add
-/// the `registry` pointer to the root's metadata — comment-preservingly, like
-/// any other edit.
-///
-/// Two files, so one [`ChangeSet`]: a bootstrap that wrote the registry document
-/// but failed to point the root at it would leave a registry no scan can find —
-/// invisible, and silently re-bootstrapped (over) next run.
+/// does not — [`prov::ensure_registry`], which writes `registry.<ext>` beside
+/// the root and the root's pointer to it as one change set. What is the CLI's
+/// is saying so, recording the registry in `ctx`, and refreshing `about.md`,
+/// which lists the machinery the root points at.
 pub(crate) fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
-    // Frontmatter-only storage keeps no registry document — IDs live solely in
-    // each file's `id` field, so there is nothing to bootstrap or point at.
-    if !ctx.config.id_storage.keeps_registry() {
+    let Some(boot) = block_on(prov::ensure_registry(StdFs, ctx.as_root()))? else {
         return Ok(());
-    }
-    if ctx.registry.is_some() {
-        return Ok(());
-    }
-    let format = ctx.config.default_embed_format;
-    let registry_rel = PathBuf::from(sidecar_name(REGISTRY_STEM, format));
-
-    // Seed: a self-describing node titled "ID registry". Machinery is reached
-    // *one-way* through the root's `registry` pointer, so it carries no `part_of`
-    // back-link — that would assert a spanning-tree membership it does not have
-    // (DESIGN §5, "link target kinds"). The crash-safe "create sidecar + point the
-    // root at it" landing lives in the library ([`Workspace::link_sidecar`]).
-    let mut seed = Mapping::new();
-    seed.insert("title".into(), Value::String("ID registry".into()));
-    let probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&ctx.root_dir).build();
-    let created =
-        block_on(probe.link_sidecar(&ctx.root_doc, "registry", &registry_rel, &seed, format))?;
-    if created {
+    };
+    if boot.created {
         eprintln!(
             "initialized {} (linked from {})",
-            registry_rel.display(),
+            boot.path.display(),
             ctx.root_doc.display()
         );
         // A new machinery file the root now points at, which `about.md` lists
@@ -353,96 +305,14 @@ pub(crate) fn ensure_registry(ctx: &mut Ctx) -> Result<(), AnyError> {
         // it is squarely inside what the page describes.
         refresh_about(&ctx.root_dir)?;
     }
-    ctx.registry = Some(registry_rel);
-    Ok(())
-}
-
-/// Persist the registry when a mutation could not stage it itself.
-///
-/// Normally this does nothing: the library stages the registry write into the
-/// same change set as the documents whose links it describes, so by the time a
-/// command returns, the index is already clean. The exception is a workspace
-/// with no registry document *yet* — `check --fix` deliberately declines to
-/// bootstrap one until a fix has actually minted an ID, so the index it dirtied
-/// had nowhere to stage to. Give it its new home and write it.
-fn save_index(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<(), AnyError> {
-    if !ws.index().is_dirty() {
-        return Ok(());
-    }
-    let Some(rel) = &ctx.registry else {
-        return Err("the registry changed but no registry document is declared".into());
-    };
-    let full = ctx.root_dir.join(rel);
-    let host_text = match std::fs::read_to_string(&full) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.into()),
-    };
-    ws.index_mut().set_host(rel, &host_text)?;
-    let Some((path, rendered)) = ws.index_mut().pending_write()? else {
-        return Ok(());
-    };
-    let mut cs = ChangeSet::new();
-    cs.write(path, rendered);
-    block_on(prov::journal::workspace_journal().apply(&cs, &StdFs, &ctx.root_dir))?;
-    ws.index_mut().committed(true);
+    ctx.registry = Some(boot.path);
     Ok(())
 }
 
 /// Persist a mutation's identity changes according to the workspace's
-/// [`IdStorage`] mode: stamp each live ID into its document's `id` frontmatter
-/// (frontmatter / frontmatter-only), and write the registry snapshot (registry /
-/// frontmatter). Frontmatter-only keeps no registry, so the in-memory index —
-/// rebuilt next run by scanning — is simply marked clean.
+/// [`IdStorage`](prov::IdStorage) mode — [`Workspace::persist_identity`].
 fn persist(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<(), AnyError> {
-    if ctx.config.id_storage.stamps_frontmatter() {
-        stamp_ids(ctx, ws)?;
-    }
-    if ctx.config.id_storage.keeps_registry() {
-        save_index(ctx, ws)?;
-    } else {
-        // No registry document to write; the id→path map is derived from the
-        // frontmatter we just stamped, so discard the dirtiness.
-        ws.index_mut().mark_clean();
-    }
-    Ok(())
-}
-
-/// Stamp every live ID into its document's `id` frontmatter field, so the ID
-/// travels with the file (DESIGN §5's self-describing shadow). Idempotent: a
-/// document already carrying the right ID is left untouched, so this both
-/// back-fills a workspace that just switched to frontmatter storage and records
-/// freshly-minted IDs. A tombstoned ID has no live path and is skipped.
-fn stamp_ids(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<(), AnyError> {
-    let pairs: Vec<(Id, PathBuf)> = ws
-        .index()
-        .iter()
-        .map(|(id, path)| (id.clone(), path.clone()))
-        .collect();
-    for (id, rel) in pairs {
-        let full = ctx.root_dir.join(&rel);
-        let Ok(text) = std::fs::read_to_string(&full) else {
-            continue;
-        };
-        let Ok(doc) = Document::parse(&rel, &text) else {
-            continue;
-        };
-        // Already carries this exact ID — nothing to write.
-        if doc.meta.get("id").and_then(Value::as_str) == Some(id.0.as_str()) {
-            continue;
-        }
-        // Always a string scalar, never `infer_scalar`: an ID from the NOID
-        // alphabet may be all digits, and inferring would stamp it as an integer
-        // (dropping any leading zero) that `Value::as_str` then can't read back.
-        let updated = edit::set_in_text(
-            &text,
-            doc.carrier,
-            "id",
-            (&Value::String(id.0.clone())).into(),
-        )?;
-        std::fs::write(&full, updated)?;
-    }
-    Ok(())
+    Ok(block_on(ws.persist_identity(ctx.as_root()))?)
 }
 
 /// How a CLI argument names a document — the addressing mode carried by the

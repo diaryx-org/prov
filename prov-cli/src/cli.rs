@@ -35,15 +35,6 @@ impl From<LayoutArg> for Layout {
     }
 }
 
-/// The filename stem of the registry document the CLI creates on first
-/// `prov id` — visible, beside the root, and *linked from the root's own
-/// metadata* via the `registry` relation. Its extension is the workspace's
-/// metadata format (see [`sidecar_name`]). Where the registry lives is a fact
-/// about the workspace, declared in it; the CLI only supplies this default when
-/// bootstrapping one. (It can equally be a `.md` file whose frontmatter carries
-/// the records — anything the pointer targets.)
-pub(crate) const REGISTRY_STEM: &str = "registry";
-
 /// The filename stem of the config document the CLI creates on first
 /// `prov config <k> <v>` (or at `init`) — beside the root, linked via the
 /// `config` relation (the reachability move the registry uses). Workspace policy

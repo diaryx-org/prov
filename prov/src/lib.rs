@@ -76,6 +76,7 @@ pub mod route;
 pub mod validate;
 pub use prov_config::vocabulary;
 pub mod workspace;
+pub mod writable;
 
 /// The read core, re-exported whole.
 ///
@@ -252,3 +253,4 @@ pub use route::{Layout, RoutePlan};
 pub use validate::{CheckDiff, Finding, Severity};
 pub use vocabulary::{Term, Vocabulary};
 pub use workspace::{Ignore, IgnoreList, Reason, Settings, Workspace, WorkspaceBuilder};
+pub use writable::{REGISTRY_STEM, RegistryBootstrap, WorkspaceRoot, ensure_registry};
