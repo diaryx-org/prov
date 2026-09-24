@@ -153,13 +153,14 @@ pub mod change {
 pub mod journal {
     use prov_graph::error::Result;
     use prov_store::fs::Storage;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     pub use fs_transaction::journal::{Journal, Recovered, decode, encode};
 
-    /// The name of prov's write-ahead journal: a single transient dotfile at
-    /// the workspace root, present only between a change set's commit point
-    /// and its completion.
+    /// The name of prov's write-ahead journal: a single transient dotfile,
+    /// present only between a change set's commit point and its completion —
+    /// at the workspace root by default, or in the directory a caller gave
+    /// the workspace as its [journal home](crate::Workspace::set_journal_home).
     pub const JOURNAL_NAME: &str = ".prov-journal";
 
     /// prov's write-ahead journal — [`JOURNAL_NAME`] at the workspace root.
@@ -173,7 +174,11 @@ pub mod journal {
     /// half-applied with no record of how to finish.
     ///
     /// Every prov apply and every prov recovery goes through this one value, so
-    /// the two cannot disagree about where to look.
+    /// the two cannot disagree about where to look. A workspace given a
+    /// [journal home](crate::Workspace::set_journal_home) keeps the same name
+    /// and moves only the directory — this value [kept
+    /// in](Journal::kept_in) the home — so the name is still the one fact both
+    /// ends share.
     pub fn workspace_journal() -> Journal {
         Journal::named(JOURNAL_NAME).expect("JOURNAL_NAME is a single path component")
     }
@@ -184,8 +189,49 @@ pub mod journal {
     /// A no-op when no journal is present, so it is cheap to call
     /// unconditionally — `prov check` runs it before it reads anything, so an
     /// interrupted mutation heals before it is diagnosed.
+    ///
+    /// This reads the journal **in the tree**, and only there. A workspace
+    /// whose journal was [kept elsewhere](crate::Workspace::set_journal_home)
+    /// is recovered by [`recover_kept_in`] instead; this one is still what
+    /// finishes a change such a workspace's tree carried *before* it was
+    /// given a home — see that function for whether to call both.
     pub async fn recover<FS: Storage>(fs: &FS, root: &Path) -> Result<Recovered> {
         Ok(workspace_journal().recover(fs, root).await?)
+    }
+
+    /// Finish any change set a crash left journaled in `home` against `root`,
+    /// rolling the workspace forward and removing the journal — [`recover`]
+    /// for a workspace whose [journal home](crate::Workspace::set_journal_home)
+    /// is `home`.
+    ///
+    /// `home` must be the directory the interrupted apply journaled into, and
+    /// `root` the tree it applied to. Neither fact is written down anywhere:
+    /// the journal records the ops, not which tree they were for, so the
+    /// pairing is the caller's to keep — one home per root. Pointed at the
+    /// wrong home, this finds nothing and reports [`Recovered::Nothing`];
+    /// pointed at the wrong *root*, it replays one tree's intent into another.
+    ///
+    /// A relative `home` is refused — the same refusal
+    /// [`Workspace::journal`](crate::Workspace::journal) makes — because it
+    /// would resolve against whatever the current directory is, which the
+    /// crashed process and this one have no reason to share.
+    ///
+    /// **A legacy journal in the tree is not consulted.** A workspace written
+    /// by a version of prov (or a configuration) that journaled in-tree can
+    /// carry a `.prov-journal` at its root from a crash before the home was
+    /// set. Whether to finish it is the caller's call, not this function's:
+    /// on a tree only this machine writes it is this machine's unfinished
+    /// change, and [`recover`] rolls it forward; on a tree something syncs it
+    /// may be another machine's crash state, carried here, whose replay
+    /// would apply that machine's intent to a tree that has since moved on.
+    /// A homed apply ignores it either way, so leaving it costs nothing but
+    /// the file.
+    pub async fn recover_kept_in<FS: Storage>(
+        fs: &FS,
+        root: &Path,
+        home: impl Into<PathBuf>,
+    ) -> Result<Recovered> {
+        Ok(workspace_journal().kept_in(home)?.recover(fs, root).await?)
     }
 }
 pub use config::{
@@ -242,7 +288,7 @@ pub use identity::{
     mint_workspace_id,
 };
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
-pub use journal::{Recovered, recover};
+pub use journal::{Recovered, recover, recover_kept_in};
 pub use manifest::{ManifestStatus, ManifestUpdate};
 pub use mutate::{ContentState, Created, Diagnosis, Reordered, Reparented};
 pub use prov_exports::ExportSpec;

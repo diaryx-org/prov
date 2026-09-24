@@ -50,6 +50,7 @@ impl Ctx {
             root_doc: &self.root_doc,
             registry: self.registry.as_deref(),
             config: &self.config,
+            journal_home: None,
         }
     }
 }

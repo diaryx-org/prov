@@ -66,7 +66,9 @@ pub enum Error {
     /// overwrite that journal and lose the record needed to complete the
     /// interrupted change, so the apply refuses: run recovery
     /// (`prov`'s `journal::recover`, which `prov check` performs) first, then
-    /// retry.
+    /// retry. A workspace whose journal is kept outside the tree (`prov`'s
+    /// `Workspace::set_journal_home`) names a path in that home here, and is
+    /// recovered by `Workspace::recover_journal` — `prov check` knows no home.
     #[error(
         "a previous change was interrupted and not yet recovered (found {0}); \
          recover it first (run `prov check`), then retry"

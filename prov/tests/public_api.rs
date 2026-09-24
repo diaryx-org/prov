@@ -452,3 +452,57 @@ fn provs_journal_is_the_one_provs_recovery_reads() {
         "new"
     );
 }
+
+#[test]
+fn a_journal_kept_outside_the_tree_is_written_and_recovered_through_the_public_api() {
+    // The pair a caller with a synced tree reaches for: a workspace built with
+    // a journal home applies through it, and the homed recovery is the one
+    // that reads it back. The in-tree recovery is not, and must not be.
+    let root = tmp("journal-home");
+    let home = tmp("journal-home-home");
+    std::fs::write(root.join("parent.md"), "old").unwrap();
+    let ws: Workspace<StdFs> = Workspace::builder(StdFs)
+        .root(&root)
+        .journal_home(&home)
+        .build();
+    let journal = ws.journal().unwrap();
+    assert_eq!(journal.name(), prov::journal::JOURNAL_NAME);
+    assert_eq!(
+        journal.path_in(&root),
+        home.join(prov::journal::JOURNAL_NAME)
+    );
+
+    let mut cs = ChangeSet::new();
+    cs.write("child.md", "child");
+    cs.write("parent.md", "new");
+    std::fs::write(
+        journal.path_in(&root),
+        prov::journal::encode(cs.ops()).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        block_on(prov::recover(&StdFs, &root)).unwrap(),
+        prov::Recovered::Nothing
+    );
+    assert_eq!(
+        block_on(prov::recover_kept_in(&StdFs, &root, &home)).unwrap(),
+        prov::Recovered::Applied(2)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("parent.md")).unwrap(),
+        "new"
+    );
+
+    // And an apply through the workspace leaves no journal behind anywhere.
+    let mut cs = ChangeSet::new();
+    cs.write("a.md", "a");
+    cs.write("b.md", "b");
+    block_on(ws.apply_set(&cs)).unwrap();
+    assert!(!root.join(prov::journal::JOURNAL_NAME).exists());
+    assert!(!home.join(prov::journal::JOURNAL_NAME).exists());
+    assert_eq!(
+        block_on(ws.recover_journal()).unwrap(),
+        prov::Recovered::Nothing
+    );
+}

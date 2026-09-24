@@ -219,6 +219,11 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     /// ask is made from `&self`, and `apply_set` — which every write passes
     /// through — takes `&self` too.
     inbound: std::sync::Mutex<Option<inbound::InboundIndex>>,
+    /// The directory this workspace's write-ahead journal is kept in, when it
+    /// is not the root — see [`set_journal_home`](Workspace::set_journal_home).
+    /// Held as given and checked at use ([`journal`](Workspace::journal)),
+    /// because [`WorkspaceBuilder::build`] has no way to refuse.
+    journal_home: Option<PathBuf>,
 }
 
 /// Hand-written rather than derived, because the read memo carries its own
@@ -232,6 +237,11 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
 /// The **inbound index** starts empty for the same family of reason: what one
 /// handle has remembered, the other would have to be told about on every
 /// write, and a clone that begins with nothing simply censuses once.
+///
+/// The **journal home** is carried over. It is not a memory but a location,
+/// and a second handle that journaled into the tree while the first kept its
+/// journal elsewhere would be two writers disagreeing about where the crash
+/// state lives — the one disagreement recovery cannot survive.
 impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
     fn clone(&self) -> Self {
         Self {
@@ -240,6 +250,7 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
             settings: self.settings.clone(),
             pending_stamps: self.pending_stamps.clone(),
             inbound: inbound::empty(),
+            journal_home: self.journal_home.clone(),
         }
     }
 }
@@ -263,6 +274,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             index: NoIndex,
             settings: Settings::default(),
             bulk: None,
+            journal_home: None,
         }
     }
 }
@@ -295,6 +307,82 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// so a consumer that rebuilds its workspace can carry it over.
     pub fn bulk_reads(&self) -> Option<Arc<dyn BulkReads>> {
         self.graph.bulk_reads()
+    }
+
+    /// Keep this workspace's write-ahead journal in `home` instead of in the
+    /// tree it applies to — or, given `None`, back in the root, which is the
+    /// default.
+    ///
+    /// The default is right for a tree only this machine writes. It is wrong
+    /// for a tree something **syncs**. The journal is one machine's crash
+    /// state, and a sync service cannot tell it from content: it carries the
+    /// file to machines that never crashed, where a recovery would replay
+    /// *another* machine's intent against a tree that may have moved on, and
+    /// where every apply would refuse the "stale" journal no local change
+    /// left behind. Even with no crash at all, every change set of more than
+    /// one op writes and then deletes a file in the root, and a sync service
+    /// sees and ships both. With a home, the tree never holds a journal —
+    /// not after a crash, and not for the length of an apply: a mutation
+    /// writes the documents it changes and nothing else.
+    ///
+    /// `home` is a directory the caller owns and nothing syncs — an
+    /// application-support or cache directory. The journal keeps its name,
+    /// [`JOURNAL_NAME`](crate::journal::JOURNAL_NAME), inside it, and an
+    /// apply makes the directory if it does not exist yet. Two obligations
+    /// come with it, both the caller's:
+    ///
+    /// - **`home` must be absolute.** A relative one would resolve against the
+    ///   process's current directory, which an apply and a later recovery have
+    ///   no reason to share. It is not refused here — the builder's
+    ///   [`journal_home`](WorkspaceBuilder::journal_home) cannot refuse, and
+    ///   the two take it on the same terms — but every write is: the
+    ///   workspace's [`journal`](Self::journal) is an error, so
+    ///   [`apply_set`](Self::apply_set) fails before it writes anything, the
+    ///   journal included. Call `journal()` once after setting a home to find
+    ///   out at open rather than at the first save.
+    /// - **One home, one root.** Nothing records which tree a journal was
+    ///   for, so two workspaces sharing a home would each see the other's
+    ///   interrupted change as a stale journal of their own — and recover it
+    ///   into the wrong tree. Give each root its own directory.
+    ///
+    /// Setting a home moves where *this* workspace journals from now on; it
+    /// does not move a journal already on disk. At open, recover the homed
+    /// journal with [`recover_journal`](Self::recover_journal) (or
+    /// [`recover_kept_in`](crate::journal::recover_kept_in)); whether also to
+    /// finish a legacy journal left in the tree by an earlier, in-tree
+    /// configuration is the caller's decision — see `recover_kept_in` for
+    /// what turns on it.
+    pub fn set_journal_home(&mut self, home: Option<PathBuf>) {
+        self.journal_home = home;
+    }
+
+    /// The directory [`set_journal_home`](Self::set_journal_home) or
+    /// [`WorkspaceBuilder::journal_home`] gave this workspace's journal, if
+    /// any — so a consumer that rebuilds its workspace can carry it over.
+    /// `None` means the journal lives in the root.
+    pub fn journal_home(&self) -> Option<&Path> {
+        self.journal_home.as_deref()
+    }
+
+    /// The write-ahead journal this workspace's writes go through: prov's
+    /// [`workspace_journal`](crate::journal::workspace_journal), [kept
+    /// in](crate::journal::Journal::kept_in) the
+    /// [journal home](Self::set_journal_home) when there is one.
+    ///
+    /// Every write [`apply_set`](Self::apply_set) makes and every
+    /// [`recover_journal`](Self::recover_journal) reads through this one
+    /// value, which is what keeps the two naming the same file. A caller that
+    /// lands a [`ChangeSet`] some other way — a bootstrap before the
+    /// workspace exists — should apply it through this too.
+    ///
+    /// An error when the home is relative, which is the one way a home can be
+    /// wrong that prov can see; nothing has been written when it says so.
+    pub fn journal(&self) -> Result<crate::journal::Journal> {
+        let journal = crate::journal::workspace_journal();
+        Ok(match &self.journal_home {
+            Some(home) => journal.kept_in(home.clone())?,
+            None => journal,
+        })
     }
 
     /// Join a workspace-relative path — a [`Node::path`](prov_graph::graph::Node::path),
@@ -1239,26 +1327,32 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 
     /// Land `cs` against this workspace's tree, all-or-nothing, through prov's
-    /// write-ahead journal.
+    /// write-ahead journal — this workspace's [`journal`](Self::journal), in
+    /// its [home](Self::set_journal_home) when it has one.
     ///
     /// **Use this rather than [`ChangeSet::apply`] for anything that mutates a
     /// workspace.** `ChangeSet::apply` journals under `fs-transaction`'s own
-    /// default name, which prov's recovery — [`crate::journal::recover`], the
-    /// one `prov check` runs — does not look for. A crash mid-apply would then
-    /// leave a journal nothing ever reads, stranding the change half-applied
-    /// with no record of how to finish it. Routing every workspace write
-    /// through here is what keeps the two ends naming the same file.
+    /// default name, in the root, which prov's recovery —
+    /// [`crate::journal::recover`], the one `prov check` runs, or
+    /// [`recover_journal`](Self::recover_journal) — does not look for. A
+    /// crash mid-apply would then leave a journal nothing ever reads,
+    /// stranding the change half-applied with no record of how to finish it.
+    /// Routing every workspace write through here is what keeps the two ends
+    /// naming the same file.
+    ///
+    /// Refused before anything is written when the journal home is relative
+    /// (see [`journal`](Self::journal)). With a home, a journal left in the
+    /// tree is not this apply's concern: only the homed journal can block it
+    /// as stale.
     ///
     /// It is also the one place every write passes, which makes it where the
     /// inbound index learns what changed: decided from the staged bytes before
     /// the apply, settled against the disk after it, and dropped if the apply
     /// failed — see [`inbound`].
     pub async fn apply_set(&self, cs: &ChangeSet) -> Result<()> {
+        let journal = self.journal()?;
         let plan = self.plan_inbound(cs);
-        match crate::journal::workspace_journal()
-            .apply(cs, self.fs(), self.root())
-            .await
-        {
+        match journal.apply(cs, self.fs(), self.root()).await {
             Ok(()) => {
                 self.settle_inbound(plan).await;
                 Ok(())
@@ -1268,6 +1362,32 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Err(e.into())
             }
         }
+    }
+
+    /// Finish any change set a crash left in this workspace's
+    /// [`journal`](Self::journal), rolling the tree forward to the
+    /// fully-applied state, then remove the journal.
+    ///
+    /// The recovery that pairs with [`apply_set`](Self::apply_set): it reads
+    /// the journal in the [home](Self::set_journal_home) when the workspace
+    /// has one and in the root when it does not, through the same value the
+    /// apply wrote, so the two cannot look in different places. Call it at
+    /// open, before anything reads the tree. A no-op when there is no
+    /// journal, so it is cheap to call unconditionally.
+    ///
+    /// With a home set, a journal in the tree is **not** read: a legacy one
+    /// from before the home is recovered, if at all, by
+    /// [`crate::journal::recover`] — the caller's decision, for the reasons
+    /// [`recover_kept_in`](crate::journal::recover_kept_in) gives.
+    pub async fn recover_journal(&self) -> Result<crate::journal::Recovered> {
+        let recovered = self.journal()?.recover(self.fs(), self.root()).await?;
+        if recovered != crate::journal::Recovered::Nothing {
+            // Recovery wrote behind the inbound index's back; it is
+            // stat-validated on every ask, but a dropped index is simply
+            // honest about having missed the writes.
+            self.forget_inbound();
+        }
+        Ok(recovered)
     }
 
     /// Drain [`pending_stamps`](Self::pending_stamps) into `cs`: for each
@@ -1660,6 +1780,7 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     index: Ix,
     settings: Settings,
     bulk: Option<Hook>,
+    journal_home: Option<PathBuf>,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
@@ -1673,6 +1794,20 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// [`Workspace::set_bulk_reads`] and [`prov_graph::bulk`].
     pub fn bulk_reads(mut self, hook: Arc<dyn BulkReads>) -> Self {
         self.bulk = Some(Hook::new(hook));
+        self
+    }
+
+    /// Keep the workspace's write-ahead journal in `home`, a directory
+    /// outside the tree — for a tree something syncs. See
+    /// [`Workspace::set_journal_home`] for why, and for the two obligations
+    /// (an absolute home, one home per root) that come with it.
+    ///
+    /// A relative `home` is accepted here, since [`build`](Self::build)
+    /// cannot fail, and refused at the workspace's first write instead —
+    /// before anything is written. [`Workspace::journal`] reports it
+    /// straight after `build` for a caller that would rather know at open.
+    pub fn journal_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.journal_home = Some(home.into());
         self
     }
 
@@ -1789,6 +1924,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             index: self.index,
             settings: self.settings,
             bulk: self.bulk,
+            journal_home: self.journal_home,
         }
     }
 
@@ -1801,6 +1937,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             index,
             settings: self.settings,
             bulk: self.bulk,
+            journal_home: self.journal_home,
         }
     }
 
@@ -1827,6 +1964,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             settings: self.settings,
             pending_stamps: Vec::new(),
             inbound: inbound::empty(),
+            journal_home: self.journal_home,
         }
     }
 }
@@ -2292,6 +2430,249 @@ mod reified_vocabulary_tests {
             ))
             .unwrap()
             .is_none()
+        );
+    }
+}
+
+/// A journal kept outside the tree — [`Workspace::set_journal_home`] — over a
+/// real filesystem, because the claims are about which files exist, and when.
+#[cfg(test)]
+mod journal_home_tests {
+    use super::*;
+    use crate::fs_faults::{FsEvent, RecordingFs};
+    use crate::journal::{JOURNAL_NAME, Recovered};
+    use prov_graph::exec::block_on;
+    use prov_graph::fs::StdFs;
+    use prov_testkit::{read, write};
+
+    /// A workspace root with one parent document, and a separate journal home.
+    fn fixture(tag: &str) -> (PathBuf, PathBuf) {
+        let root = prov_testkit::scratch("journal-home", tag);
+        write(&root, "index.md", "---\ntitle: Home\n---\n");
+        let home = prov_testkit::scratch("journal-home", &format!("{tag}-home"));
+        (root, home)
+    }
+
+    /// Is this a file the journal owns, by name — the journal itself or the
+    /// staging sibling `write_atomic` publishes it through?
+    fn is_journal(path: &Path) -> bool {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains(JOURNAL_NAME))
+    }
+
+    /// Every path an event touched.
+    fn touched(event: &FsEvent) -> Vec<&Path> {
+        match event {
+            FsEvent::Write(p) | FsEvent::Remove(p) | FsEvent::Sync(p, _) => vec![p],
+            FsEvent::Rename(from, to) => vec![from, to],
+        }
+    }
+
+    /// **The synced-folder deployment.** A verb that journals — `create`
+    /// writes the new document and edits its parent, a set of two — writes
+    /// the documents it changes and nothing else in the tree, at any point
+    /// of the apply. The recording backend sees every write, so this is
+    /// checked as stated rather than inferred from the end state.
+    #[test]
+    fn a_homed_mutation_leaves_nothing_in_the_tree_but_its_documents() {
+        let (root, home) = fixture("clean");
+        let fs = RecordingFs::local();
+        let mut ws = Workspace::builder(&fs)
+            .root(&root)
+            .journal_home(&home)
+            .build();
+
+        block_on(ws.create(Path::new("note.md"), Path::new("index.md"))).unwrap();
+
+        let events = fs.events();
+        // Not vacuous: the set *was* journaled — into the home.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, FsEvent::Write(p) if p.starts_with(&home) && is_journal(p))),
+            "the set was not journaled in the home: {events:?}"
+        );
+        // Every file the apply wrote, renamed or removed under the root is one
+        // of the two documents it changes, or the staging sibling a
+        // `write_atomic` of one of them goes through.
+        let documents = ["index.md", "note.md"];
+        for event in &events {
+            if matches!(event, FsEvent::Sync(..)) {
+                continue;
+            }
+            for path in touched(event) {
+                let Ok(rel) = path.strip_prefix(&root) else {
+                    continue;
+                };
+                let name = rel.to_str().unwrap();
+                let staged = documents.iter().any(|d| name == format!(".{d}.fstx-tmp"));
+                assert!(
+                    documents.contains(&name) || staged,
+                    "the apply touched {name} in the tree: {events:?}"
+                );
+            }
+        }
+        assert!(!root.join(JOURNAL_NAME).exists());
+        assert!(!home.join(JOURNAL_NAME).exists(), "retired after the apply");
+        assert!(read(&root, "index.md").contains("note.md"));
+    }
+
+    /// The same verb without a home journals in the root, as it always has —
+    /// what the test above is the difference from.
+    #[test]
+    fn without_a_home_the_journal_is_in_the_root() {
+        let (root, _) = fixture("in-tree");
+        let fs = RecordingFs::local();
+        let mut ws = Workspace::builder(&fs).root(&root).build();
+        assert_eq!(ws.journal_home(), None);
+
+        block_on(ws.create(Path::new("note.md"), Path::new("index.md"))).unwrap();
+
+        assert!(
+            fs.events()
+                .iter()
+                .any(|e| matches!(e, FsEvent::Write(p) if p.starts_with(&root) && is_journal(p)))
+        );
+    }
+
+    /// An interrupted set journaled in the home is rolled forward by the
+    /// homed recovery — both spellings of it — and not by the in-tree one,
+    /// which looks where the journal is not.
+    #[test]
+    fn a_homed_journal_is_rolled_forward_by_the_homed_recovery() {
+        let (root, home) = fixture("recover");
+        let ws = Workspace::builder(StdFs)
+            .root(&root)
+            .journal_home(&home)
+            .build();
+        let mut cs = ChangeSet::new();
+        cs.write("note.md", "---\ntitle: Note\npart_of: index.md\n---\n");
+        cs.write("index.md", "---\ntitle: Home\ncontents:\n- note.md\n---\n");
+        // The state a crash just after the commit point leaves: the whole
+        // intent in the home, nothing yet in the tree.
+        let journal = ws.journal().unwrap();
+        assert_eq!(journal.path_in(&root), home.join(JOURNAL_NAME));
+        std::fs::write(
+            journal.path_in(&root),
+            crate::journal::encode(cs.ops()).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            block_on(crate::journal::recover(&StdFs, &root)).unwrap(),
+            Recovered::Nothing,
+            "the in-tree recovery does not read a homed journal"
+        );
+        assert!(!root.join("note.md").exists());
+
+        assert_eq!(
+            block_on(ws.recover_journal()).unwrap(),
+            Recovered::Applied(2)
+        );
+        assert!(read(&root, "index.md").contains("note.md"));
+        assert!(root.join("note.md").exists());
+        assert!(!home.join(JOURNAL_NAME).exists());
+
+        // The free function finds the same file.
+        std::fs::write(
+            home.join(JOURNAL_NAME),
+            crate::journal::encode(cs.ops()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            block_on(crate::journal::recover_kept_in(&StdFs, &root, &home)).unwrap(),
+            Recovered::Applied(2)
+        );
+        assert!(!home.join(JOURNAL_NAME).exists());
+    }
+
+    /// A `.prov-journal` in the tree — synced in from another machine, or left
+    /// by an in-tree configuration before the home — is not a homed apply's
+    /// concern: it neither blocks the write nor is touched by it. The same
+    /// file does block a workspace that journals in the tree, which is what
+    /// makes it a stale journal at all.
+    #[test]
+    fn a_journal_in_the_tree_does_not_block_a_homed_apply() {
+        let (root, home) = fixture("stale-in-tree");
+        write(&root, JOURNAL_NAME, "another machine's crash state");
+        let mut cs = ChangeSet::new();
+        cs.write("a.md", "a");
+        cs.write("b.md", "b");
+
+        let in_tree = Workspace::builder(StdFs).root(&root).build();
+        let err = block_on(in_tree.apply_set(&cs)).unwrap_err();
+        assert!(matches!(err, Error::StaleJournal(_)), "{err:?}");
+
+        let homed = Workspace::builder(StdFs)
+            .root(&root)
+            .journal_home(&home)
+            .build();
+        block_on(homed.apply_set(&cs)).unwrap();
+        assert_eq!(read(&root, "b.md"), "b");
+        assert_eq!(
+            read(&root, JOURNAL_NAME),
+            "another machine's crash state",
+            "a homed apply leaves the in-tree journal for the caller to decide on"
+        );
+        assert_eq!(
+            block_on(homed.recover_journal()).unwrap(),
+            Recovered::Nothing,
+            "nor does the homed recovery read it"
+        );
+    }
+
+    /// A relative home is refused at the first write, before anything —
+    /// journal or document — is written, and is visible through `journal()`
+    /// straight after `build` for a caller that wants to know at open.
+    #[test]
+    fn a_relative_home_is_refused_before_anything_is_written() {
+        let (root, _) = fixture("relative");
+        let ws = Workspace::builder(StdFs)
+            .root(&root)
+            .journal_home("not/absolute")
+            .build();
+        assert!(ws.journal().is_err());
+        assert!(block_on(ws.recover_journal()).is_err());
+
+        let mut cs = ChangeSet::new();
+        cs.write("a.md", "a");
+        cs.write("b.md", "b");
+        let err = block_on(ws.apply_set(&cs)).unwrap_err();
+        assert!(err.to_string().contains("absolute"), "{err}");
+        assert!(!root.join("a.md").exists());
+        assert!(!root.join(JOURNAL_NAME).exists());
+        assert!(
+            block_on(crate::journal::recover_kept_in(
+                &StdFs,
+                &root,
+                "not/absolute"
+            ))
+            .is_err()
+        );
+    }
+
+    /// A clone journals where its original does, and `None` puts the journal
+    /// back in the root.
+    #[test]
+    fn the_home_is_carried_by_a_clone_and_cleared_by_none() {
+        let (root, home) = fixture("clone");
+        let mut ws = Workspace::builder(StdFs)
+            .root(&root)
+            .journal_home(&home)
+            .build();
+        let copy = ws.clone();
+        assert_eq!(copy.journal_home(), Some(home.as_path()));
+        assert_eq!(
+            copy.journal().unwrap().path_in(&root),
+            home.join(JOURNAL_NAME)
+        );
+
+        ws.set_journal_home(None);
+        assert_eq!(ws.journal_home(), None);
+        assert_eq!(
+            ws.journal().unwrap().path_in(&root),
+            root.join(JOURNAL_NAME)
         );
     }
 }

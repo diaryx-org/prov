@@ -61,6 +61,18 @@ pub struct WorkspaceRoot<'a> {
     pub registry: Option<&'a Path>,
     /// The effective workspace configuration.
     pub config: &'a WorkspaceConfig,
+    /// Where this machine keeps the workspace's write-ahead journal, when not
+    /// in `root_dir` — see [`Workspace::set_journal_home`]. `None` journals
+    /// in the root, the default.
+    ///
+    /// Unlike the fields above, this is not something the workspace says
+    /// about itself: it is a fact about the device, which is why
+    /// [`Discovered::as_root`] cannot know it and leaves it `None`. It is
+    /// here so that the workspace [`open_for_writing`](Workspace::open_for_writing)
+    /// builds, and the registry [`ensure_registry`] writes before there is
+    /// one, both journal where the caller's every other write does — a tree
+    /// kept journal-free has to be kept so from the first write.
+    pub journal_home: Option<&'a Path>,
 }
 
 impl Discovered {
@@ -72,6 +84,7 @@ impl Discovered {
             root_doc: &self.root_doc,
             registry: self.registry.as_deref(),
             config: &self.config,
+            journal_home: None,
         }
     }
 }
@@ -97,7 +110,8 @@ pub struct RegistryBootstrap {
 /// repair that has just minted asks regardless. Otherwise it writes
 /// `registry.<ext>` beside the root — titled, in the workspace's metadata
 /// format — and points the root's `registry` key at it, as one change set
-/// ([`Workspace::link_sidecar`]).
+/// ([`Workspace::link_sidecar`]), journaled in `at.journal_home` when there
+/// is one.
 ///
 /// Call it *before* [`Workspace::open_for_writing`], with the registry it
 /// reports folded into the root that call is given: the workspace is built
@@ -118,7 +132,8 @@ pub async fn ensure_registry<FS: Storage>(
     // place in the spanning tree the registry does not have.
     let mut seed = Mapping::new();
     seed.insert("title".into(), Value::String("ID registry".into()));
-    let probe: Workspace<FS> = Workspace::builder(fs).root(at.root_dir).build();
+    let mut probe: Workspace<FS> = Workspace::builder(fs).root(at.root_dir).build();
+    probe.set_journal_home(at.journal_home.map(Path::to_path_buf));
     let created = probe
         .link_sidecar(at.root_doc, "registry", &path, &seed, format)
         .await?;
@@ -139,6 +154,10 @@ impl<FS: Storage + Clone> Workspace<FS, Minter, FileIndex> {
     /// `seed` seeds the minter. Uniqueness is enforced against the index, so
     /// the seed only has to differ between runs; the library draws no entropy
     /// of its own.
+    ///
+    /// The workspace journals in `at.journal_home` when one is given — see
+    /// [`set_journal_home`](Workspace::set_journal_home), including for
+    /// recovering it at open, which this does not do.
     ///
     /// A mutation that may mint wants [`ensure_registry`] first, and every
     /// mutation wants [`persist_identity`](Self::persist_identity) after.
@@ -166,12 +185,14 @@ impl<FS: Storage + Clone> Workspace<FS, Minter, FileIndex> {
             index.mark_clean();
             index
         };
-        Ok(Workspace::builder(fs)
+        let mut ws = Workspace::builder(fs)
             .root(at.root_dir)
             .settings(Settings::from(config))
             .identity(Minter::with(config.identity, seed))
             .index(index)
-            .build())
+            .build();
+        ws.set_journal_home(at.journal_home.map(Path::to_path_buf));
+        Ok(ws)
     }
 
     /// Land the identity changes a mutation made, where the workspace's
@@ -307,6 +328,7 @@ mod tests {
             root_doc: Path::new("README.md"),
             registry,
             config,
+            journal_home: None,
         }
     }
 
@@ -394,5 +416,41 @@ mod tests {
         );
         block_on(ws.persist_identity(root(&dir, None, &config))).unwrap();
         assert!(!dir.join("registry.yaml").exists());
+    }
+
+    /// A journal home given in the root reaches both writers the root feeds:
+    /// the registry bootstrap, which writes before any workspace is open, and
+    /// the workspace `open_for_writing` builds. A tree kept journal-free has
+    /// to be kept so from its first write.
+    #[test]
+    fn a_journal_home_reaches_the_bootstrap_and_the_opened_workspace() {
+        use crate::fs_faults::{FsEvent, RecordingFs};
+        use crate::journal::JOURNAL_NAME;
+
+        let dir = workspace("journal-home");
+        let home = prov_testkit::scratch("writable", "journal-home-home");
+        let config = config(IdStorage::Frontmatter);
+        let at = WorkspaceRoot {
+            journal_home: Some(&home),
+            ..root(&dir, None, &config)
+        };
+
+        let fs = RecordingFs::local();
+        let boot = block_on(ensure_registry(&fs, at)).unwrap().unwrap();
+        let journaled = |under: &Path| {
+            fs.events().iter().any(|e| {
+                matches!(e, FsEvent::Write(p) if p.starts_with(under)
+                    && p.to_str().is_some_and(|p| p.contains(JOURNAL_NAME)))
+            })
+        };
+        assert!(journaled(&home), "the bootstrap's set journals in the home");
+        assert!(!journaled(&dir), "and never in the tree");
+
+        let at = WorkspaceRoot {
+            registry: Some(&boot.path),
+            ..at
+        };
+        let ws = block_on(Workspace::open_for_writing(StdFs, at, 7)).unwrap();
+        assert_eq!(ws.journal_home(), Some(home.as_path()));
     }
 }
