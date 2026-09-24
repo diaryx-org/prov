@@ -32,6 +32,19 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.15.4 — 2026-09-24
+
+### Added
+
+- **mutate** — save_document_expecting, a save refused when the document changed since it was read ([`260b596`](https://github.com/diaryx-org/prov/commit/260b596b5c66cba21482c6553d14924243d1686c))
+- open a workspace for writing from the library, not only the CLI ([`2ba32fc`](https://github.com/diaryx-org/prov/commit/2ba32fc4f0e2dba6d854fdc632b928d1cd004639))
+- **journal** — keep a workspace's journal outside the tree it applies to ([`8a89177`](https://github.com/diaryx-org/prov/commit/8a89177c0960924df9ea97a997c4c72243ff8a42))
+
+### Behavioural changes
+
+- prov's CLI now writes the id stamps a mutation leaves behind as one journaled change set rather than one plain write per document, so a failure partway lands none of them rather than some.
+
+
 ## v0.15.3 — 2026-09-22
 
 ### Fixed
