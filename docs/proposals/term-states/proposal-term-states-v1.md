@@ -9,7 +9,10 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 ## Status
 
-**Draft.** Argued 2026-09-24. Nothing here is built.
+**Draft.** Argued 2026-09-24. Nothing here is built. The four open questions
+are decided, and the body says so where it had asked them: no reserved state
+names; grain ordering is left to a proposal of its own; `deferred` is a closed
+state; and `state` holds on an open vocabulary as on a closed one.
 
 ## Summary
 
@@ -142,8 +145,9 @@ promised it.
 
 The alternative — a handful of reserved names prov defines, `closed` among
 them — lets a tool act on any workspace without knowing its preset. It is
-not taken here because nothing needs it yet, and it can be added on top of
-this without undoing any of it.
+rejected (open question 1): a name prov defines is a meaning prov imposes on
+every vocabulary, and the reader of a state is always something that can
+name the one it means.
 
 ### Reading states in a view
 
@@ -185,7 +189,9 @@ that cannot otherwise be said: no condition turns four groups into two.
 Its keys sort as every grain's do, ascending, which puts `closed` before
 `live`. Sorting them in the order the vocabulary declares them is grain-aware
 ordering — the deferred `sort:` axis under another name, which the grains
-section already says a new grain must not smuggle in. Open question 2.
+section already says a new grain must not smuggle in. It is not done here
+(open question 2); `sort:` is a proposal of its own, and this grain is one
+of its cases.
 
 ## 3. `views --follow`
 
@@ -256,9 +262,12 @@ and the rewriting pass is not ported.
 
 ## 5. The `tasks` preset, after
 
-- Both vocabularies declare `live` and `closed` (and the proposal vocabulary
-  whatever split of `draft`, `accepted` and `deferred` it wants — open
-  question 3), and every term names its state.
+- Both vocabularies declare `live` and `closed`, and every term names its
+  state. For tasks, `open` and `in-progress` are live and `done` and
+  `dropped` closed. For proposals, `draft` and `accepted` are live, and
+  `implemented`, `rejected` and `deferred` closed — a deferred proposal is
+  not open work, and `in-state: { status: closed }` beside `equals: {
+  status: deferred }` finds it again (open question 3).
 - `open-tasks` filters `not: { in-state: { status: closed } }`, and lists no
   term by name.
 - A `closed-tasks` shelf, as in §4. No proposal shelf: resolved proposals keep
@@ -303,19 +312,18 @@ joining, enforced by the tool rather than stated beside it.
 
 ## Open questions
 
-1. **Reserved state names.** None, as argued in §2. Revisit when a tool needs
-   to act on a workspace whose preset it does not know.
-2. **How `state`-grain groups sort.** Ascending by key, as every grain today,
-   or in declaration order — which is the first concrete case for the
-   deferred `sort:` axis, and may be the reason to design it rather than a
-   reason to special-case this grain. The same question, asked of `group:
-   status` with no grain, is whether a closed vocabulary's groups should
-   follow its term order; that would change what existing views print, and
-   would want a `Behavioural-change:` trailer.
-3. **The proposal vocabulary's split.** `implemented` and `rejected` are
-   closed. Whether `deferred` is live — agreed, unscheduled — or a state of
-   its own is the preset's call, and the answer decides what a `work` view
-   grouped `by: state` shows.
-4. **`state` on an open vocabulary.** Nothing here needs it, and nothing
-   stops it: an unknown value is in no state either way. Allowed, unless a
-   reason turns up not to.
+1. **Reserved state names.** *Decided: none.* prov gives no state name a
+   meaning; the preset carries the convention, and whatever reads a state
+   names it (§2).
+2. **How `state`-grain groups sort.** *Decided: not here.* Ascending by key,
+   as every grain today. Declaration order — and whether a closed
+   vocabulary's groups follow its term order under `group:` with no grain,
+   which would change what existing views print — is the deferred `sort:`
+   axis, and goes to a proposal of its own.
+3. **The proposal vocabulary's split.** *Decided: `deferred` is closed*,
+   beside `implemented` and `rejected`. Agreed and unscheduled is not open
+   work; a view filtering `in-state: { status: closed }` and `equals: {
+   status: deferred }` retrieves the deferred ones (§5).
+4. **`state` on an open vocabulary.** *Decided: allowed.* A known term's
+   state is read the same way whether unknown values are admitted or not,
+   and an unknown value is in no state either way.
