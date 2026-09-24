@@ -2,7 +2,7 @@
 title: Proposals
 author: adammharris
 created: 2026-07-31
-updated: 2026-09-11T18:52:30.380775Z
+updated: 2026-09-24T22:40:29.116742Z
 part_of: '[prov](/README.md)'
 contents:
 - '[Snapshots — a pre-sync safety net](/docs/proposals/history/proposal-snapshots-v1.md)'
@@ -16,6 +16,7 @@ contents:
 - '[presets](/docs/proposals/presets/proposal-presets-v1.md)'
 - '[path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md)'
 - '[nest by reference](/docs/proposals/nest-by-ref/proposal-nest-by-ref-v1.md)'
+- '[term states, following views, and shelves](/docs/proposals/term-states/proposal-term-states-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a
