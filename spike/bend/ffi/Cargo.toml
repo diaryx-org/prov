@@ -1,0 +1,28 @@
+# The host services `main.bend` cannot get from Base: what a directory holds,
+# and what a document says — its metadata as a flat value tree and the links
+# prov's body scanner finds in its prose. A static library the generated C
+# program links; `../RUNTIME.md` says why this is the shape, and `../check.py`
+# builds it.
+#
+# Deliberately not a member of the workspace above: it is the spike's, it
+# publishes nothing, and its only consumer is a Bend program. It reaches the
+# parsers through `prov-graph` by path, so the document the Bend side reasons
+# about is the one `prov` itself reads — the parse is the boundary, and
+# everything after it is Bend's.
+[package]
+name = "prov-bend-ffi"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+prov-graph = { path = "../../../prov-graph", features = ["yaml", "json", "toml", "fig-lang"] }
+fig = { version = "4", default-features = false, features = ["serde", "derive", "indexmap"] }
+
+[profile.release]
+panic = "unwind"
