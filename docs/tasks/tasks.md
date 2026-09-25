@@ -8,6 +8,7 @@ part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[A list under `equals` is read as its first element](/docs/tasks/equals-keeps-a-lists-first-element.md)'
+- '[`check` reads a directory above the root to judge a link that climbs out of it](/docs/tasks/check-reads-above-the-root.md)'
 ---
 
 # Tasks
