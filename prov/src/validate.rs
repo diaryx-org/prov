@@ -1245,6 +1245,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             facts,
             content_bodies,
         } = self.walk(start).await?;
+        // What the walk reached, and the documents among it — derived once
+        // here rather than once per pass. The census holds an entry per link,
+        // so deriving the set once per pass would be most of what `check`
+        // costs on a large workspace.
+        let reachable = reachable_set(start, &census, &content_bodies);
+        let documents = self.graph().documents_among(&reachable).await?;
         let mut findings: Vec<Finding> = facts.into_iter().map(Finding::from).collect();
         for entry in &census {
             // An `about` pointer at a page that is not there is not a broken
@@ -1264,35 +1270,18 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         // Islands first: what it finds is what the (reachability-bounded) orphan
         // sweep must not report a second time under a vaguer name.
-        let (islands, island_members) = self
-            .missing_containment(start, &census, &content_bodies)
-            .await?;
+        let (islands, island_members) = self.missing_containment(start, &reachable).await?;
         findings.extend(islands);
-        findings.extend(
-            self.orphans(start, &census, &content_bodies, &island_members)
-                .await?,
-        );
-        findings.extend(
-            self.fixity_findings(start, &census, &content_bodies)
-                .await?,
-        );
-        findings.extend(
-            self.manifest_findings(start, &census, &content_bodies)
-                .await?,
-        );
+        findings.extend(self.orphans(start, &reachable, &island_members).await?);
+        findings.extend(self.fixity_findings(start, &documents).await?);
+        findings.extend(self.manifest_findings(&documents).await?);
         findings.extend(self.config_findings(start).await?);
         findings.extend(self.store_findings(start).await?);
         findings.extend(self.deletions_findings(start).await?);
-        findings.extend(
-            self.vocabulary_findings(start, &census, &content_bodies)
-                .await?,
-        );
-        findings.extend(self.date_findings(start, &census, &content_bodies).await?);
+        findings.extend(self.vocabulary_findings(start, &documents).await?);
+        findings.extend(self.date_findings(start, &documents).await?);
         findings.extend(self.stale_label_findings(&census).await?);
-        findings.extend(
-            self.confirmation_findings(start, &census, &content_bodies)
-                .await?,
-        );
+        findings.extend(self.confirmation_findings(&documents).await?);
         Ok(findings)
     }
 
@@ -1307,20 +1296,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// rule. Nothing here consults any other finding, and no other finding
     /// consults this list: a confirmation is a claim about meaning, a finding
     /// is a claim about state, and neither is evidence for the other.
-    async fn confirmation_findings(
-        &self,
-        start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
-    ) -> Result<Vec<Finding>> {
-        let reachable = self
-            .reachable_documents(start, census, content_bodies)
-            .await?;
+    async fn confirmation_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for path in reachable {
+        for path in documents {
             // A reached payload file will not parse as a document — nothing to
             // read, and not this pass's business.
-            let Ok((_, doc)) = self.load(&path).await else {
+            let Ok((_, doc)) = self.load(path).await else {
                 continue;
             };
             let standing = crate::provenance::Confirmations::read(&doc.meta, self.updated_field());
@@ -1335,7 +1316,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             };
             findings.push(Finding::ConfirmationStale {
-                doc: path,
+                doc: path.clone(),
                 by: newest.by.clone(),
                 at: newest.at.clone(),
             });
@@ -1488,8 +1469,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn vocabulary_findings(
         &self,
         start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
+        documents: &BTreeSet<PathBuf>,
     ) -> Result<Vec<Finding>> {
         let config = self.effective_config(start).await?;
         if config.fields.is_empty() {
@@ -1542,16 +1522,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             }
         }
 
-        // The reachable document set (mirrors `fixity_findings`), minus any
-        // shadowed attachment payload — its `fields` values are an exhibit's,
-        // not this workspace's, and `attach --opaque` promises never to read
-        // them (see `reachable_documents`).
-        let reachable = self
-            .reachable_documents(start, census, content_bodies)
-            .await?;
         let config_doc = self.config_path(start).await?;
 
-        for path in reachable {
+        // `documents` is the reachable set minus any shadowed attachment
+        // payload — its `fields` values are an exhibit's, not this
+        // workspace's, and `attach --opaque` promises never to read them (see
+        // `reachable_documents`).
+        for path in documents {
             // The config document's keys are settings, not a record's
             // values: its `created: ""` is the stamping policy switched
             // off, and a field declared under the same name has nothing
@@ -1559,7 +1536,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             if config_doc.as_deref() == Some(path.as_path()) {
                 continue;
             }
-            let Ok((_, doc)) = self.load(&path).await else {
+            let Ok((_, doc)) = self.load(path).await else {
                 continue;
             };
             for (field, index, values, vocab) in &vocabs {
@@ -1574,7 +1551,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // A vocabulary judges only the documents its declaration
                 // governs: a task's `status` is not held to the proposals'
                 // terms, and a document in neither scope is held to nothing.
-                if scopes.index_for(&config, field, &path) != Some(*index) {
+                if scopes.index_for(&config, field, path) != Some(*index) {
                     continue;
                 }
                 for (_, term) in terms {
@@ -1622,8 +1599,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn date_findings(
         &self,
         start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
+        documents: &BTreeSet<PathBuf>,
     ) -> Result<Vec<Finding>> {
         let config = self.effective_config(start).await?;
         let dated: Vec<(String, usize)> = config
@@ -1643,21 +1619,18 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // Unresolved scopes are `vocabulary_findings`'s to report; here a
         // declaration that governs nothing simply judges nothing.
         let scopes = self.field_scopes_of(start, &config).await?;
-        let reachable = self
-            .reachable_documents(start, census, content_bodies)
-            .await?;
         let config_doc = self.config_path(start).await?;
         let mut findings = Vec::new();
-        for path in reachable {
+        for path in documents {
             // Settings, not values — see `vocabulary_findings`.
             if config_doc.as_deref() == Some(path.as_path()) {
                 continue;
             }
-            let Ok((_, doc)) = self.load(&path).await else {
+            let Ok((_, doc)) = self.load(path).await else {
                 continue;
             };
             for (field, index) in &dated {
-                if scopes.index_for(&config, field, &path) != Some(*index) {
+                if scopes.index_for(&config, field, path) != Some(*index) {
                     continue;
                 }
                 // Only what is written as text is judged: YAML hands a bare
@@ -1850,23 +1823,18 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn fixity_findings(
         &self,
         start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
+        documents: &BTreeSet<PathBuf>,
     ) -> Result<Vec<Finding>> {
-        let reachable = self
-            .reachable_documents(start, census, content_bodies)
-            .await?;
-
         let mut findings = Vec::new();
         // Documents whose recorded hash covers their own body — see
         // [`Finding::LegacyBodyHash`]. Counted here rather than in a pass of its
         // own because this loop already has the two facts it takes, so the
         // report costs no read that `check` was not making anyway.
         let mut body_hashed: (usize, Option<PathBuf>) = (0, None);
-        for path in reachable {
+        for path in documents {
             // A reached payload file (a `.png`) will not parse as a document —
             // skip it; it is verified through its sidecar, not on its own.
-            let Ok((_, doc)) = self.load(&path).await else {
+            let Ok((_, doc)) = self.load(path).await else {
                 continue;
             };
             let meta = fig::Value::from(&doc.meta);
@@ -1905,7 +1873,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             };
             if actual != recorded {
                 findings.push(Finding::FixityMismatch {
-                    doc: path,
+                    doc: path.clone(),
                     recorded: recorded.to_string(),
                     actual,
                 });
@@ -1942,25 +1910,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// no trustworthy row set there is nothing to compare a listing against, and
     /// reporting every file in the directory as unlisted would bury the one
     /// finding that matters under ten thousand that do not.
-    async fn manifest_findings(
-        &self,
-        start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
-    ) -> Result<Vec<Finding>> {
-        let reachable = self
-            .reachable_documents(start, census, content_bodies)
-            .await?;
-
+    async fn manifest_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        for path in reachable {
-            let Ok((_, doc)) = self.load(&path).await else {
+        for path in documents {
+            let Ok((_, doc)) = self.load(path).await else {
                 continue;
             };
             let Some(raw) = doc.manifest_attr() else {
                 continue;
             };
-            let manifest_doc = link::resolve(&path, raw);
+            let manifest_doc = link::resolve(path, raw);
             // An absent manifest is the census's broken-link finding, already
             // raised against the node; saying it twice in different words helps
             // nobody.
@@ -1997,7 +1956,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
             if !missing.is_empty() || !extra.is_empty() {
                 findings.push(Finding::ManifestDrift {
-                    node: path,
+                    node: path.clone(),
                     manifest: manifest_doc,
                     missing,
                     extra,
@@ -2035,14 +1994,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn orphans(
         &self,
         start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
+        reachable: &BTreeSet<PathBuf>,
         island: &BTreeSet<PathBuf>,
     ) -> Result<Vec<Finding>> {
-        let reachable = reachable_set(start, census, content_bodies);
         // Scan only the directories the reachable set occupies (their direct
         // children), never descending into unreached subdirectories.
-        let reached_dirs = Self::reached_dirs(&reachable);
+        let reached_dirs = Self::reached_dirs(reachable);
         let mut docs: Vec<PathBuf> = self
             .direct_child_files(&reached_dirs)
             .await?
@@ -2091,15 +2048,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn missing_containment(
         &self,
         start: &Path,
-        census: &[CensusEntry],
-        content_bodies: &[PathBuf],
+        reachable: &BTreeSet<PathBuf>,
     ) -> Result<(Vec<Finding>, BTreeSet<PathBuf>)> {
         let empty = BTreeSet::new();
         // No spanning relation, no containment to be missing from.
         let Ok((spanning, inverse)) = self.spanning_pair() else {
             return Ok((Vec::new(), empty));
         };
-        let reachable = reachable_set(start, census, content_bodies);
         let parked = self.parked_dirs(start).await?;
 
         // Every unreached content document that names a parent, in path order so

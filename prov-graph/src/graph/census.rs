@@ -2,7 +2,7 @@
 //! reachability views built over the result. See the module doc at
 //! [`crate::graph`] for why the census is ground truth.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -303,6 +303,14 @@ pub struct Walk {
 ///
 /// The one definition of "reachable" that the orphan check, the fixity pass, the
 /// vocabulary pass, and the history capture set all share (DESIGN §8).
+///
+/// A census holds one entry per *link*, and a workspace links the same few
+/// documents over and over: twenty thousand notes with sixty links each is a
+/// million entries naming twenty thousand paths. Ordered insertion compares
+/// paths component by component, so sending every entry through the tree costs
+/// a dozen of those comparisons each, for an answer the first sighting settled.
+/// The census is thinned through a hash set first, and only the distinct
+/// targets pay for the ordering.
 pub fn reachable_set(
     start: &Path,
     census: &[CensusEntry],
@@ -311,10 +319,13 @@ pub fn reachable_set(
     let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
     reachable.insert(link::normalize(start));
     reachable.extend(content_bodies.iter().cloned());
+    let mut seen: HashSet<&Path> = HashSet::new();
     for entry in census {
         match &entry.resolution {
             Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                reachable.insert(p.clone());
+                if seen.insert(p) {
+                    reachable.insert(p.clone());
+                }
             }
             Resolution::CaseMismatch { got, actual } => {
                 reachable.insert(got.with_file_name(actual));
@@ -348,13 +359,24 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         census: &[CensusEntry],
         content_bodies: &[PathBuf],
     ) -> Result<BTreeSet<PathBuf>> {
-        let reachable = reachable_set(start, census, content_bodies);
-        let reached_dirs = Self::reached_dirs(&reachable);
+        self.documents_among(&reachable_set(start, census, content_bodies))
+            .await
+    }
+
+    /// [`reachable_documents`](Self::reachable_documents) over a reachable set
+    /// the caller already holds — for a caller that wants both halves, the
+    /// file set and the document set, and should not have to derive the first
+    /// twice to get the second.
+    pub async fn documents_among(
+        &self,
+        reachable: &BTreeSet<PathBuf>,
+    ) -> Result<BTreeSet<PathBuf>> {
+        let reached_dirs = Self::reached_dirs(reachable);
         let probe = super::ShadowProbe::over(self.direct_child_files(&reached_dirs).await?.iter());
         let mut documents = BTreeSet::new();
         for path in reachable {
-            if !self.is_shadowed_payload(&path, &probe).await {
-                documents.insert(path);
+            if !self.is_shadowed_payload(path, &probe).await {
+                documents.insert(path.clone());
             }
         }
         Ok(documents)
