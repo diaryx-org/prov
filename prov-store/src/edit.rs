@@ -22,18 +22,18 @@ use prov_graph::{Error, Result};
 /// `compile_error!` in `lib.rs` guarantees at least one does.
 fn default_embed_type() -> EmbedType {
     #[cfg(feature = "yaml")]
-    return EmbedType::FrontmatterYaml;
+    return EmbedType::Frontmatter;
     #[cfg(all(not(feature = "yaml"), feature = "json"))]
-    return EmbedType::FrontmatterJson;
+    return EmbedType::Semicolons;
     #[cfg(all(not(feature = "yaml"), not(feature = "json"), feature = "toml"))]
-    return EmbedType::PlusToml;
+    return EmbedType::Plus;
     #[cfg(all(
         not(feature = "yaml"),
         not(feature = "json"),
         not(feature = "toml"),
         feature = "fig-lang"
     ))]
-    return EmbedType::FrontmatterFig;
+    return EmbedType::FencedFig;
 }
 
 /// A comment-preserving editor over a document's metadata, generic over where
@@ -94,8 +94,8 @@ impl MetaEditor {
     /// Rename the key at `path`, keeping its value, position, and comments.
     pub fn replace_key(&mut self, path: &[Segment], key: &str) -> Result<()> {
         match self {
-            MetaEditor::Fenced(e) => e.replace_key(path, key)?,
-            MetaEditor::Whole(e) => e.replace_key(path, key)?,
+            MetaEditor::Fenced(e) => e.rename_key(path, key)?,
+            MetaEditor::Whole(e) => e.rename_key(path, key)?,
         }
         Ok(())
     }
@@ -112,8 +112,8 @@ impl MetaEditor {
     /// Delete the mapping entry at `path`.
     pub fn delete(&mut self, path: &[Segment]) -> Result<()> {
         match self {
-            MetaEditor::Fenced(e) => e.delete(path)?,
-            MetaEditor::Whole(e) => e.delete(path)?,
+            MetaEditor::Fenced(e) => e.delete_key(path)?,
+            MetaEditor::Whole(e) => e.delete_key(path)?,
         }
         Ok(())
     }
@@ -121,8 +121,8 @@ impl MetaEditor {
     /// Remove the item at `index` from the sequence at `path`.
     pub fn remove_item(&mut self, path: &[Segment], index: usize) -> Result<()> {
         match self {
-            MetaEditor::Fenced(e) => e.remove_item(path, index)?,
-            MetaEditor::Whole(e) => e.remove_item(path, index)?,
+            MetaEditor::Fenced(e) => e.delete_item(path, index)?,
+            MetaEditor::Whole(e) => e.delete_item(path, index)?,
         }
         Ok(())
     }

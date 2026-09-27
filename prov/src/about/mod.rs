@@ -426,17 +426,17 @@ fn fence_prose(
     };
 
     match kind {
-        E::FrontmatterYaml => delimited("---", "three dashes", sample_yaml),
-        E::FrontmatterJson => delimited(";;;", "three semicolons", sample_json),
-        E::PlusToml => delimited("+++", "three plus signs", sample_toml),
-        E::MdFrontmatterJson => delimited("---json", "`---json`", sample_json),
-        E::MdFrontmatterToml => delimited("---toml", "`---toml`", sample_toml),
-        E::MdFrontmatterFig => delimited("---fig", "`---fig`", sample_fig),
+        E::Frontmatter => delimited("---", "three dashes", sample_yaml),
+        E::Semicolons => delimited(";;;", "three semicolons", sample_json),
+        E::Plus => delimited("+++", "three plus signs", sample_toml),
+        E::MdJson => delimited("---json", "`---json`", sample_json),
+        E::MdToml => delimited("---toml", "`---toml`", sample_toml),
+        E::MdFig => delimited("---fig", "`---fig`", sample_fig),
         E::FencedYaml => fenced("yaml", sample_yaml),
         E::FencedJson => fenced("json", sample_json),
         E::FencedToml => fenced("toml", sample_toml),
-        E::FrontmatterFig => fenced("fig", sample_fig),
-        E::EndmatterYaml => (
+        E::FencedFig => fenced("fig", sample_fig),
+        E::Endmatter => (
             "A file *ends* with a fenced code block labelled `endmatter`:".into(),
             Some(fenced_block(&format!(
                 "The document itself comes first.\n\n```endmatter\n{sample_yaml}\n```"

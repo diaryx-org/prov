@@ -400,7 +400,7 @@ impl FileIndex {
             // No metadata yet: default by extension, else fresh YAML frontmatter.
             whole_file_format(path)
                 .map(MetaCarrier::WholeFile)
-                .unwrap_or(MetaCarrier::Fenced(fig::EmbedType::FrontmatterYaml))
+                .unwrap_or(MetaCarrier::Fenced(fig::EmbedType::Frontmatter))
         });
         // A registry is a record store, so it must be a whole-file config
         // document — a markdown carrier is refused (DESIGN §5, whole-file rule).

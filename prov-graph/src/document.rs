@@ -132,12 +132,12 @@ pub fn whole_file_extension(format: fig::Format) -> &'static str {
 pub fn frontmatter_carrier(format: fig::Format) -> MetaCarrier {
     let embed = match format {
         #[cfg(feature = "json")]
-        fig::Format::Json => EmbedType::FrontmatterJson,
+        fig::Format::Json => EmbedType::Semicolons,
         #[cfg(feature = "toml")]
-        fig::Format::Toml => EmbedType::PlusToml,
+        fig::Format::Toml => EmbedType::Plus,
         #[cfg(feature = "fig-lang")]
-        fig::Format::Fig => EmbedType::FrontmatterFig,
-        _ => EmbedType::FrontmatterYaml,
+        fig::Format::Fig => EmbedType::FencedFig,
+        _ => EmbedType::Frontmatter,
     };
     MetaCarrier::Fenced(embed)
 }
@@ -211,13 +211,10 @@ impl EmbedStyle {
 pub fn embed_style_of(kind: EmbedType) -> EmbedStyle {
     use EmbedType as E;
     match kind {
-        E::FrontmatterYaml
-        | E::FrontmatterJson
-        | E::PlusToml
-        | E::MdFrontmatterJson
-        | E::MdFrontmatterToml
-        | E::MdFrontmatterFig => EmbedStyle::Delimited,
-        E::EndmatterYaml | E::FencedYaml | E::FencedJson | E::FencedToml | E::FrontmatterFig => {
+        E::Frontmatter | E::Semicolons | E::Plus | E::MdJson | E::MdToml | E::MdFig => {
+            EmbedStyle::Delimited
+        }
+        E::Endmatter | E::FencedYaml | E::FencedJson | E::FencedToml | E::FencedFig => {
             EmbedStyle::CodeBlock
         }
         E::HtmlScriptYaml | E::HtmlScriptJson | E::HtmlScriptToml | E::HtmlScriptFig => {
@@ -249,15 +246,15 @@ pub fn embed_carrier(style: EmbedStyle, format: fig::Format) -> Option<MetaCarri
     let kind = match style {
         EmbedStyle::Separate => return Some(MetaCarrier::WholeFile(format)),
         EmbedStyle::Delimited => match format {
-            F::Yaml => E::FrontmatterYaml,
-            F::Toml => E::PlusToml,
-            _ if is_json => E::FrontmatterJson,
+            F::Yaml => E::Frontmatter,
+            F::Toml => E::Plus,
+            _ if is_json => E::Semicolons,
             _ => return None,
         },
         EmbedStyle::CodeBlock => match format {
             F::Yaml => E::FencedYaml,
             F::Toml => E::FencedToml,
-            F::Fig => E::FrontmatterFig,
+            F::Fig => E::FencedFig,
             _ if is_json => E::FencedJson,
             _ => return None,
         },
@@ -539,7 +536,7 @@ mod tests {
         assert_eq!(doc.body, "# Body\n\nhello\n");
         assert_eq!(
             doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::FrontmatterYaml))
+            Some(MetaCarrier::Fenced(EmbedType::Frontmatter))
         );
         assert!(doc.has_meta());
     }
@@ -551,10 +548,7 @@ mod tests {
         let doc = Document::parse("README.md", text).unwrap();
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("prov"));
         assert_eq!(doc.body, "# Body\n");
-        assert_eq!(
-            doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::FrontmatterFig))
-        );
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(EmbedType::FencedFig)));
         assert!(doc.has_meta());
     }
 
@@ -566,7 +560,7 @@ mod tests {
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Root"));
         assert_eq!(
             doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::FrontmatterJson))
+            Some(MetaCarrier::Fenced(EmbedType::Semicolons))
         );
     }
 
@@ -577,10 +571,7 @@ mod tests {
         let doc = Document::parse("note.md", text).unwrap();
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Tail"));
         assert_eq!(doc.body, "# Body first\n");
-        assert_eq!(
-            doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::EndmatterYaml))
-        );
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(EmbedType::Endmatter)));
     }
 
     #[cfg(feature = "yaml")]
@@ -637,21 +628,21 @@ mod tests {
         // Delimited: the three delimiter formats, but the fig dialect has none.
         assert_eq!(
             embed_carrier(EmbedStyle::Delimited, Format::Yaml),
-            fenced(EmbedType::FrontmatterYaml)
+            fenced(EmbedType::Frontmatter)
         );
         assert_eq!(
             embed_carrier(EmbedStyle::Delimited, Format::Toml),
-            fenced(EmbedType::PlusToml)
+            fenced(EmbedType::Plus)
         );
         assert_eq!(
             embed_carrier(EmbedStyle::Delimited, Format::Json),
-            fenced(EmbedType::FrontmatterJson)
+            fenced(EmbedType::Semicolons)
         );
         assert_eq!(embed_carrier(EmbedStyle::Delimited, Format::Fig), None);
         // Code block: fig lands in the ```fig block; the rest in ```lang blocks.
         assert_eq!(
             embed_carrier(EmbedStyle::CodeBlock, Format::Fig),
-            fenced(EmbedType::FrontmatterFig)
+            fenced(EmbedType::FencedFig)
         );
         assert_eq!(
             embed_carrier(EmbedStyle::CodeBlock, Format::Yaml),
@@ -700,7 +691,7 @@ mod tests {
     fn split_borrows_yaml_frontmatter_and_body_without_parsing() {
         let text = "---\ntitle: Root\n---\n# Body\n\nhello\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterYaml));
+        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::Frontmatter));
         assert_eq!(meta, "title: Root\n");
         assert_eq!(before, "", "frontmatter has no host text above it");
         assert_eq!(after, "# Body\n\nhello\n");
@@ -715,7 +706,7 @@ mod tests {
     fn split_handles_crlf_line_endings() {
         let text = "---\r\ntitle: Root\r\n---\r\nbody\r\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterYaml));
+        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::Frontmatter));
         assert_eq!(meta, "title: Root\r\n");
         assert_eq!(before, "");
         assert_eq!(after, "body\r\n");
@@ -737,7 +728,7 @@ mod tests {
     fn split_recognizes_a_non_yaml_carrier() {
         let text = "```fig\ntitle = prov\n```\n# Body\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterFig));
+        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FencedFig));
         assert_eq!(meta, "title = prov\n");
         assert_eq!(before, "");
         assert_eq!(after, "# Body\n");
@@ -748,7 +739,7 @@ mod tests {
     fn split_recognizes_json_frontmatter() {
         let text = ";;;\n{\"title\": \"Root\"}\n;;;\nbody\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FrontmatterJson));
+        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::Semicolons));
         assert_eq!(meta, "{\"title\": \"Root\"}\n");
         assert_eq!(before, "");
         assert_eq!(after, "body\n");
@@ -797,7 +788,7 @@ mod tests {
         let doc = Document::parse("x.md", text).unwrap();
         assert_eq!(
             doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::FrontmatterYaml))
+            Some(MetaCarrier::Fenced(EmbedType::Frontmatter))
         );
         assert_eq!(doc.body, "body\r\n");
         // Exact scalar — fig ≥ 2.1.1 treats \r\n as a single line break.

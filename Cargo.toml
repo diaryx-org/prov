@@ -48,12 +48,18 @@ license = "MIT OR Apache-2.0"
 #   letting accessor-only call sites work on `fig::Value` directly instead of
 #   going through `prov_graph::meta::Value`.
 #
-# **4.0 is the current floor** for a plainer reason: it carries core 3.0, whose
+# **4.0 was the floor** for a plainer reason: it carries core 3.0, whose
 # C ABI is version 2 with the native payloads rebuilt to match, and fig-schema
 # (below) sits on it too. The Rust surface prov uses kept its shape; what
 # moved is that a plist `<date>`/`<data>` arrives as `Value::Extended` rather
 # than `Value::Str`, and `Format` gained a tuple variant.
-fig = { version = "4", default-features = false, features = ["serde", "derive", "indexmap"] }
+#
+# **5.0 is the current floor**: the one-version release of every fig artifact,
+# and fig-schema moves with it. `EmbedType`'s variants took the CLI's archetype
+# names (`FrontmatterYaml` is `Frontmatter`, `FrontmatterJson` is
+# `Semicolons`, …) and the editor's `delete`/`remove_item`/`replace_key` became
+# `delete_key`/`delete_item`/`rename_key`; `MetaEditor` keeps its own names.
+fig = { version = "5", default-features = false, features = ["serde", "derive", "indexmap"] }
 # The schema layer over fig's value tree. prov uses only its `FieldType` — the
 # vocabulary a `fields.<name>.type` declaration is spelled in — so that prov, a
 # schema-aware frontend, and (later) a view engine all name field types
