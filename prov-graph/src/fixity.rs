@@ -41,6 +41,21 @@
 //! vectors, and the tests below pin this module's output to the NIST vectors
 //! and to what `sha256sum` produces — now testing the binding rather than a
 //! local compression loop, which is exactly what they are for.
+//!
+//! ## Hashing many files
+//!
+//! A manifest's rows are one digest per file, and an archive is thousands of
+//! files and gigabytes of bytes. Even on the hardware path SHA-256 is slower
+//! than a warm read, so a pass that reads and hashes in turn spends most of its
+//! time hashing on one core while the others sit idle. [`Digests`] takes the
+//! bytes as they are read and, with the `parallel` feature, hashes them on
+//! rayon's pool while the caller reads the next file.
+//!
+//! The reading stays on the caller's thread. prov reads through an async
+//! storage port whose futures are not `Send`, and a backend priced per call
+//! (see [`bulk`](crate::bulk)) would not welcome a dozen threads at once.
+//! What moves is only the pure half: a digest is a function of the bytes, and
+//! the bytes are already in hand.
 
 use sha2::{Digest, Sha256};
 
@@ -135,6 +150,181 @@ pub fn digest(bytes: &[u8]) -> String {
     s
 }
 
+/// Digests of many byte buffers, in the order they were handed over — the bulk
+/// form of [`digest`] for a pass that reads a whole archive. See the module
+/// docs.
+///
+/// Hand each file's bytes to [`push`](Digests::push) as they are read, then
+/// [`finish`](Digests::finish) for the digests in push order. With the
+/// `parallel` feature on a target that has threads, each push is hashed on
+/// rayon's global pool while the caller carries on reading; otherwise it is
+/// hashed where it is pushed, exactly as [`digest`] would. The answer is the
+/// same either way.
+///
+/// Memory is bounded: once the bytes waiting to be hashed pass a budget,
+/// `push` blocks until enough of them are done. A single file larger than the
+/// budget still goes through, alone.
+pub struct Digests {
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pool: Option<pool::Pool>,
+    done: Vec<String>,
+}
+
+impl Digests {
+    /// No digests yet.
+    pub fn new() -> Self {
+        Digests {
+            // Pushing from inside the pool would block a worker on work queued
+            // behind it, which a one-thread pool never gets to. A caller
+            // already running on rayon has its parallelism elsewhere, so it
+            // hashes in place.
+            #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+            pool: rayon::current_thread_index()
+                .is_none()
+                .then(pool::Pool::new),
+            done: Vec::new(),
+        }
+    }
+
+    /// Queue `bytes` for hashing. Their digest is the next one [`finish`]
+    /// returns after those already pushed.
+    ///
+    /// [`finish`]: Digests::finish
+    pub fn push(&mut self, bytes: Vec<u8>) {
+        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+        if let Some(pool) = &mut self.pool {
+            pool.push(bytes);
+            return;
+        }
+        self.done.push(digest(&bytes));
+    }
+
+    /// Every digest, in the order its bytes were pushed, once all are done.
+    pub fn finish(self) -> Vec<String> {
+        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+        if let Some(pool) = self.pool {
+            return pool.finish();
+        }
+        self.done
+    }
+}
+
+impl Default for Digests {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+mod pool {
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    /// How many bytes may be read and waiting for a hash at once. Enough to
+    /// keep every core busy on files of any ordinary size; small enough that
+    /// verifying an archive never holds more than a sliver of it in memory.
+    const BUDGET: usize = 256 * 1024 * 1024;
+
+    /// The bytes in flight, and a signal when some are done.
+    struct InFlight {
+        budget: usize,
+        bytes: Mutex<usize>,
+        freed: Condvar,
+    }
+
+    impl InFlight {
+        fn acquire(&self, len: usize) {
+            let mut bytes = crate::memo::lock(&self.bytes);
+            // Nothing in flight admits anything, so a file larger than the
+            // budget waits for the queue to empty rather than forever.
+            while *bytes > 0 && *bytes + len > self.budget {
+                bytes = self
+                    .freed
+                    .wait(bytes)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            *bytes += len;
+        }
+
+        fn release(&self, len: usize) {
+            *crate::memo::lock(&self.bytes) -= len;
+            self.freed.notify_all();
+        }
+    }
+
+    pub(super) struct Pool {
+        in_flight: Arc<InFlight>,
+        tx: Sender<(usize, String)>,
+        rx: Receiver<(usize, String)>,
+        pushed: usize,
+    }
+
+    impl Pool {
+        pub(super) fn new() -> Self {
+            Self::with_budget(BUDGET)
+        }
+
+        fn with_budget(budget: usize) -> Self {
+            let (tx, rx) = channel();
+            Pool {
+                in_flight: Arc::new(InFlight {
+                    budget,
+                    bytes: Mutex::new(0),
+                    freed: Condvar::new(),
+                }),
+                tx,
+                rx,
+                pushed: 0,
+            }
+        }
+
+        pub(super) fn push(&mut self, bytes: Vec<u8>) {
+            let len = bytes.len();
+            self.in_flight.acquire(len);
+            let in_flight = Arc::clone(&self.in_flight);
+            let tx = self.tx.clone();
+            let index = self.pushed;
+            self.pushed += 1;
+            rayon::spawn(move || {
+                let hash = super::digest(&bytes);
+                drop(bytes);
+                in_flight.release(len);
+                // The receiver is gone only if the caller gave up on the
+                // pass, and then nobody wants this digest.
+                let _ = tx.send((index, hash));
+            });
+        }
+
+        pub(super) fn finish(self) -> Vec<String> {
+            let Pool { tx, rx, pushed, .. } = self;
+            drop(tx);
+            let mut out = vec![None; pushed];
+            for (index, hash) in rx {
+                out[index] = Some(hash);
+            }
+            out.into_iter()
+                .map(|hash| hash.expect("every pushed buffer is hashed"))
+                .collect()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_budget_smaller_than_the_files_still_hashes_every_one() {
+            let buffers: Vec<Vec<u8>> = (0..64u8).map(|i| vec![i; 4096 + i as usize]).collect();
+            let mut pool = Pool::with_budget(1024);
+            for bytes in &buffers {
+                pool.push(bytes.clone());
+            }
+            let expected: Vec<String> = buffers.iter().map(|b| super::super::digest(b)).collect();
+            assert_eq!(pool.finish(), expected);
+        }
+    }
+}
+
 /// Whether `bytes` still hash to the `recorded` digest. `true` when the recorded
 /// value is empty — nothing was ever recorded, so there is nothing to contradict
 /// (a document predating fixity is not "corrupt"). A recorded value prov
@@ -187,6 +377,20 @@ mod tests {
             digest(&million_a),
             "sha256:cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    #[test]
+    fn digests_come_back_in_push_order_and_match_digest() {
+        let buffers: Vec<Vec<u8>> = (0..200u32)
+            .map(|i| vec![i as u8; (i as usize * 997) % 70_000])
+            .collect();
+        let mut digests = Digests::new();
+        for bytes in &buffers {
+            digests.push(bytes.clone());
+        }
+        let expected: Vec<String> = buffers.iter().map(|b| digest(b)).collect();
+        assert_eq!(digests.finish(), expected);
+        assert!(Digests::new().finish().is_empty());
     }
 
     #[test]

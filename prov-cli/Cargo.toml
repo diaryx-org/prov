@@ -19,8 +19,9 @@ path = "src/main.rs"
 # The library. Inherited plainly, so prov's own default feature (`yaml`) is
 # always on — YAML is a hard baseline for the CLI, which seeds `registry.yaml`
 # and falls back to `---` frontmatter. The other formats are additive and
-# forwarded through this crate's features below.
-prov.workspace = true
+# forwarded through this crate's features below. `parallel` hashes archives
+# on every core; on the WASI build it compiles to the sequential path.
+prov = { workspace = true, features = ["parallel"] }
 # `RelationSet::children`/`edges` read `fig::Value` directly (fig 3.1's own
 # accessors superseded prov-graph's `meta::Value` wrapper for read-only call
 # sites); the CLI still needs the type to hand it a converted `doc.meta`.

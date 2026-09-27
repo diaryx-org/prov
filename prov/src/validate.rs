@@ -1831,6 +1831,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // own because this loop already has the two facts it takes, so the
         // report costs no read that `check` was not making anyway.
         let mut body_hashed: (usize, Option<PathBuf>) = (0, None);
+        // The recorded hashes, in document order. The bytes each covers go to
+        // `Digests`, which hashes them while the loop reads on — on every core,
+        // with the `parallel` feature — and hands the digests back in the same
+        // order once the loop is done.
+        let mut recorded_hashes: Vec<(&PathBuf, String)> = Vec::new();
+        let mut digests = crate::fixity::Digests::new();
         for path in documents {
             // A reached payload file (a `.png`) will not parse as a document —
             // skip it; it is verified through its sidecar, not on its own.
@@ -1850,12 +1856,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // the same relationship an attachment sidecar has with its payload —
             // and it is what makes the per-row digests inside worth anything,
             // since a rewritten row is then a rewritten file the node has hashed.
-            let actual = match doc.content_attr().or_else(|| doc.manifest_attr()) {
+            let covered = match doc.content_attr().or_else(|| doc.manifest_attr()) {
                 Some(raw) => {
                     let dir = path.parent().unwrap_or(Path::new(""));
                     let target = link::normalize(dir.join(raw));
                     match self.read_bytes(&target).await {
-                        Ok(bytes) => crate::fixity::digest(&bytes),
+                        Ok(bytes) => bytes,
                         // A missing payload is a broken-`content` matter, not a
                         // fixity one — leave it for that check, don't double-report.
                         Err(_) => continue,
@@ -1868,13 +1874,17 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 None => {
                     body_hashed.0 += 1;
                     body_hashed.1.get_or_insert_with(|| path.clone());
-                    crate::fixity::digest(doc.body.as_bytes())
+                    doc.body.into_bytes()
                 }
             };
+            digests.push(covered);
+            recorded_hashes.push((path, recorded.to_string()));
+        }
+        for ((path, recorded), actual) in recorded_hashes.into_iter().zip(digests.finish()) {
             if actual != recorded {
                 findings.push(Finding::FixityMismatch {
                     doc: path.clone(),
-                    recorded: recorded.to_string(),
+                    recorded,
                     actual,
                 });
             }

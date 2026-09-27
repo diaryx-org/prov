@@ -156,18 +156,26 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         hash: bool,
     ) -> Result<Manifest> {
         let covered = link::resolve(manifest_doc, root);
-        let mut files = Vec::new();
-        for rel in self.graph().scan_covered(&covered).await? {
-            let hash = if hash {
-                let bytes = self
-                    .read_bytes(&link::normalize(covered.join(&rel)))
-                    .await?;
-                Some(crate::fixity::digest(&bytes))
-            } else {
-                None
-            };
-            files.push(ManifestEntry { path: rel, hash });
-        }
+        let paths = self.graph().scan_covered(&covered).await?;
+        let files = if hash {
+            let mut digests = crate::fixity::Digests::new();
+            for rel in &paths {
+                digests.push(self.read_bytes(&link::normalize(covered.join(rel))).await?);
+            }
+            paths
+                .into_iter()
+                .zip(digests.finish())
+                .map(|(path, hash)| ManifestEntry {
+                    path,
+                    hash: Some(hash),
+                })
+                .collect()
+        } else {
+            paths
+                .into_iter()
+                .map(|path| ManifestEntry { path, hash: None })
+                .collect()
+        };
         let mut manifest = Manifest {
             root: root.to_string(),
             files,
@@ -261,7 +269,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let Some((manifest_doc, manifest)) = self.manifest_of(node).await? else {
             return Ok(Vec::new());
         };
-        let mut findings = Vec::new();
+        let mut read = Vec::new();
+        let mut digests = crate::fixity::Digests::new();
         for entry in &manifest.files {
             let Some(recorded) = &entry.hash else {
                 continue;
@@ -273,18 +282,21 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             let Ok(bytes) = self.read_bytes(&path).await else {
                 continue; // absent: the drift pass's finding, not this one's
             };
-            let actual = crate::fixity::digest(&bytes);
-            if &actual != recorded {
-                findings.push(Finding::ManifestMismatch {
-                    node: node.to_path_buf(),
-                    manifest: manifest_doc.clone(),
-                    path,
-                    recorded: recorded.clone(),
-                    actual,
-                });
-            }
+            digests.push(bytes);
+            read.push((path, recorded));
         }
-        Ok(findings)
+        Ok(read
+            .into_iter()
+            .zip(digests.finish())
+            .filter(|((_, recorded), actual)| actual != *recorded)
+            .map(|((path, recorded), actual)| Finding::ManifestMismatch {
+                node: node.to_path_buf(),
+                manifest: manifest_doc.clone(),
+                path,
+                recorded: recorded.clone(),
+                actual,
+            })
+            .collect())
     }
 
     /// What rebuilding `node`'s manifest from the directory would change, and

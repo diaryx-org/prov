@@ -39,6 +39,12 @@ twig-doc.workspace = true
 # dependency it looks like.
 sha2.workspace = true
 
+# Hashing a manifest's files on every core — see `fixity::Digests`. Optional,
+# behind `parallel`, and only where there are threads to use: on wasm the
+# feature is accepted and compiles to the sequential path.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon = { workspace = true, optional = true }
+
 [dev-dependencies]
 prov-testkit = { workspace = true }
 # Property-based testing. The laws this crate carries — `resolve ∘ format = id`,
@@ -53,3 +59,4 @@ yaml = ["fig/yaml"]
 json = ["fig/json"]
 toml = ["fig/toml"]
 fig-lang = ["fig/fig"]
+parallel = ["dep:rayon"]

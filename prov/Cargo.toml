@@ -92,3 +92,9 @@ toml = ["fig/toml", "prov-config/toml", "prov-graph/toml",
 # `fig-lang` (a feature and a dependency may not share a name unambiguously).
 fig-lang = ["fig/fig", "prov-config/fig-lang", "prov-graph/fig-lang",
     "prov-store/fig-lang", "prov-views/fig-lang", "prov-exports/fig-lang"]
+
+# Hash a manifest's files, and `check`'s attachment payloads, on every core
+# rather than one (`fixity::Digests`). Off by default so that a library
+# consumer chooses whether rayon's thread pool joins its process; the CLI turns
+# it on. A no-op on wasm, which has no threads to use.
+parallel = ["prov-graph/parallel"]
