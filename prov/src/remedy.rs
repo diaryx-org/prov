@@ -1224,7 +1224,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 crate::config::ConfigIssueKind::ScopedReference { .. } => Ok(Vec::new()),
                 // Two defensible repairs — drop the `nest`, or stop declaring
                 // the field a `seq` — and they mean different things about the
-                // workspace: one says this lens does not file, the other says
+                // workspace: one says this entry does not file, the other says
                 // the field never held more than one value. Offering either
                 // would be guessing which the author meant, and the second
                 // silently changes how every *other* consumer reads that field.
@@ -1235,6 +1235,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // rewritten. That is very likely what the author meant, and
                 // still theirs to say. Diagnosis only.
                 crate::config::ConfigIssueKind::NestRefNotDeclared { .. } => Ok(Vec::new()),
+                // Only the author knows what the expression was meant to say.
+                crate::config::ConfigIssueKind::BadExpression { .. } => Ok(Vec::new()),
+                // The replacement is exact, but it may add a `filing:` entry
+                // beside the view, and a config rewrite across two blocks is
+                // not a fix this machinery can apply as one edit. The finding
+                // prints it to paste.
+                crate::config::ConfigIssueKind::ViewRetired { .. } => Ok(Vec::new()),
             },
             _ => Ok(Vec::new()),
         }

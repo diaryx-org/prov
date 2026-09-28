@@ -136,6 +136,11 @@ impl Preset {
                             "files by reference through `{field}`, which is not declared `type: ref`"
                         )
                     }
+                    K::BadExpression { message } => format!("not an expression: {message}"),
+                    K::ViewRetired { .. } => {
+                        "written with the retired view keys; `prov check` prints its replacement"
+                            .to_string()
+                    }
                 };
                 lines.push_str(&format!("\n  {}: {what}", issue.key));
             }

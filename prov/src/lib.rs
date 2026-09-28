@@ -256,10 +256,13 @@ pub use peers::PeerFile;
 /// `prov-views` directly instead: it reaches nothing that can write.
 pub mod views {
     pub use prov_views::{
-        CONDITION_KEYS, Condition, Corpus, Error, Excluded, Grain, Group, Grouping, Hit,
-        IndexedDoc, NESTS, Nest, NestRoute, Passage, Query, Row, RowSet, Selection, Site,
-        VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind, ViewSpec, corpus, date, diagnose_view,
-        diagnose_views, documents, fold, group, search, select, select_with, views_from,
+        Ancestor, Clause, Corpus, Error, Evaluator, Excluded, Expression, ExpressionError,
+        FILING_KEY, FILING_KEYS, FUNCTIONS, Failure, FilingIssue, FilingIssueKind, FilingSpec,
+        GRAINS, Grain, Group, Hit, IndexedDoc, KeyShape, NESTS, Nest, NestRoute, Passage, Query,
+        RETIRED_VIEW_KEYS, Row, RowSet, Selection, Site, Translation, VIEW_KEYS, VIEWS_KEY,
+        ViewIssue, ViewIssueKind, ViewSpec, corpus, date, diagnose_filing, diagnose_view,
+        diagnose_views, documents, filing_from, fold, group, narrow, search, select, translate,
+        views_from,
     };
 }
 /// Named, closed-by-default document sets that may leave the workspace — the

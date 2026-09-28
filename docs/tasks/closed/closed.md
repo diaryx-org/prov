@@ -11,6 +11,7 @@ contents:
 - '[No relation lets a document say it replaces, or was derived from, another](/docs/tasks/closed/no-relation-says-replaces-or-derived-from.md)'
 - '[A move rewrites a document''s body links but not its body images](/docs/tasks/closed/rename-leaves-body-images-behind.md)'
 - '[A retitle censuses the whole workspace to find its inbound links](/docs/tasks/closed/retitle-censuses-the-whole-workspace.md)'
+- '[A list under `equals` is read as its first element](/docs/tasks/closed/equals-keeps-a-lists-first-element.md)'
 ---
 
 # Closed tasks

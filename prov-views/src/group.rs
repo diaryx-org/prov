@@ -13,19 +13,19 @@
 //!
 //! Ascending is the honest default rather than the convenient one: it is right
 //! for `people` and `tags`, and wrong for a date view, where a reader wants the
-//! newest first. There is deliberately no `sort:` axis yet — ordering, like
-//! formulas, is a place the format grows teeth, and a consumer that wants
-//! newest-first reverses a `Vec` it already has.
+//! newest first. There is deliberately no `sort:` axis yet — ordering is a
+//! place the format grows teeth, and a consumer that wants newest-first
+//! reverses a `Vec` it already has.
 
 use std::collections::BTreeMap;
 
-use crate::select::{Row, Selection};
-use crate::spec::Grouping;
+use crate::expr::{Evaluator, Expression};
+use crate::select::{Clause, Failure, Row, Selection};
 
 /// One group of a view's result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group<'a> {
-    /// The group key — a field value, or a value cut at the view's grain.
+    /// The group key — one of the values the view's `key:` gave.
     pub key: String,
     /// The documents under this key, ordered by path.
     pub rows: Vec<&'a Row>,
@@ -38,8 +38,7 @@ pub struct RowSet<'a> {
     pub view: String,
     /// Groups, ascending by key.
     pub groups: Vec<Group<'a>>,
-    /// Documents in scope that no field in the grouping chain gave a usable
-    /// value for.
+    /// Documents the view's `key:` gave no key for.
     ///
     /// Reported rather than dropped: a view whose entries have all quietly
     /// stopped grouping looks exactly like an empty archive, and the difference
@@ -47,6 +46,11 @@ pub struct RowSet<'a> {
     /// "Untagged"); which words to use is a presentation decision this crate
     /// does not make.
     pub ungrouped: Vec<&'a Row>,
+    /// Documents the `key:` could not be evaluated on. They are in neither
+    /// [`groups`](Self::groups) nor [`ungrouped`](Self::ungrouped): "no key"
+    /// is a fact about the document, and "the key failed" is a fact about the
+    /// view, and a reader needs to tell the two apart.
+    pub failures: Vec<Failure>,
 }
 
 impl RowSet<'_> {
@@ -81,28 +85,38 @@ impl RowSet<'_> {
     }
 }
 
-/// Group `selection` by `grouping`.
+/// Group `selection` by the `key` expression.
 ///
-/// Pure, and total: every row of the selection lands in at least one group or
-/// in [`ungrouped`](RowSet::ungrouped), so nothing selected can go missing on
-/// the way to being displayed.
-pub fn group<'a>(selection: &'a Selection, grouping: &Grouping) -> RowSet<'a> {
+/// Pure: no I/O and no workspace. Every row of the selection lands in at least
+/// one group, in [`ungrouped`](RowSet::ungrouped), or in
+/// [`failures`](RowSet::failures), so nothing selected can go missing on the
+/// way to being displayed.
+pub fn group<'a>(selection: &'a Selection, key: &Expression) -> RowSet<'a> {
+    let evaluator = Evaluator::new();
     let mut grouped: BTreeMap<String, Vec<&'a Row>> = BTreeMap::new();
     let mut ungrouped: Vec<&'a Row> = Vec::new();
+    let mut failures = Vec::new();
 
     for row in &selection.rows {
-        let keys = grouping.keys_of(&row.meta);
+        // Deduplicated by the evaluator: a field may repeat a value
+        // (`people: [Ada, Ada]`), and one document belongs to a group once.
+        let keys = match evaluator.keys(key, row) {
+            Ok(keys) => keys,
+            Err(message) => {
+                failures.push(Failure {
+                    path: row.path.clone(),
+                    clause: Clause::Key,
+                    message,
+                });
+                continue;
+            }
+        };
         if keys.is_empty() {
             ungrouped.push(row);
             continue;
         }
         for key in keys {
-            let bucket = grouped.entry(key).or_default();
-            // A field may repeat a value (`people: [Ada, Ada]`); one document
-            // belongs to a group once.
-            if !bucket.iter().any(|r| r.path == row.path) {
-                bucket.push(row);
-            }
+            grouped.entry(key).or_default().push(row);
         }
     }
 
@@ -117,13 +131,14 @@ pub fn group<'a>(selection: &'a Selection, grouping: &Grouping) -> RowSet<'a> {
         view: selection.view.clone(),
         groups,
         ungrouped,
+        failures,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::Grain;
+    use crate::select::Ancestor;
     use prov_graph::meta::{Mapping, Value};
     use std::path::PathBuf;
 
@@ -141,15 +156,22 @@ mod tests {
                     }
                     Row {
                         path: PathBuf::from(path),
+                        id: None,
+                        ancestors: Vec::<Ancestor>::new(),
                         meta: Value::Mapping(meta),
                     }
                 })
                 .collect(),
+            failures: Vec::new(),
         }
     }
 
     fn text(s: &str) -> Value {
         Value::String(s.to_string())
+    }
+
+    fn key(src: &str) -> Expression {
+        Expression::parse(src).expect(src)
     }
 
     fn seq(items: &[&str]) -> Value {
@@ -163,13 +185,7 @@ mod tests {
             ("a.md", &[("created", text("2026-07-24"))]),
             ("c.md", &[("created", text("2026-07-30"))]),
         ]);
-        let rows = group(
-            &sel,
-            &Grouping {
-                keys: vec!["created".into()],
-                by: Some(Grain::Month),
-            },
-        );
+        let rows = group(&sel, &key("month(created)"));
         assert_eq!(
             rows.groups
                 .iter()
@@ -196,7 +212,7 @@ mod tests {
             ("note.md", &[("people", seq(&["Ada"]))]),
             ("bare.md", &[]),
         ]);
-        let rows = group(&sel, &Grouping::field("people"));
+        let rows = group(&sel, &key("people"));
 
         assert_eq!(rows.len(), 3, "three documents");
         assert_eq!(
@@ -211,7 +227,7 @@ mod tests {
     #[test]
     fn a_repeated_value_does_not_double_a_row_within_its_group() {
         let sel = selection(&[("letter.md", &[("people", seq(&["Ada", "Ada"]))])]);
-        let rows = group(&sel, &Grouping::field("people"));
+        let rows = group(&sel, &key("people"));
         assert_eq!(rows.groups.len(), 1);
         assert_eq!(rows.groups[0].rows.len(), 1);
     }
@@ -224,13 +240,7 @@ mod tests {
             ("b.md", &[("created", text("banana"))]),
             ("c.md", &[]),
         ]);
-        let rows = group(
-            &sel,
-            &Grouping {
-                keys: vec!["created".into()],
-                by: Some(Grain::Year),
-            },
-        );
+        let rows = group(&sel, &key("year(created)"));
         assert_eq!(rows.len(), 3);
         assert_eq!(rows.ungrouped.len(), 2, "the unparseable and the absent");
     }
@@ -244,13 +254,7 @@ mod tests {
             ("photo.md", &[("date_of_document", text("1919~"))]),
             ("scan.md", &[("date_of_document", text("XXXX"))]),
         ]);
-        let rows = group(
-            &sel,
-            &Grouping {
-                keys: vec!["date_of_document".into()],
-                by: Some(Grain::Year),
-            },
-        );
+        let rows = group(&sel, &key("year(date_of_document)"));
         assert_eq!(
             rows.groups
                 .iter()
@@ -271,19 +275,57 @@ mod tests {
             "letter.md",
             &[("people", seq(&["Ada"])), ("created", text("2026-07-24"))],
         )]);
-        let by_people = group(&sel, &Grouping::field("people"));
-        let by_year = group(
-            &sel,
-            &Grouping {
-                keys: vec!["created".into()],
-                by: Some(Grain::Year),
-            },
-        );
+        let by_people = group(&sel, &key("people"));
+        let by_year = group(&sel, &key("year(created)"));
         assert_eq!(by_people.groups[0].key, "Ada");
         assert_eq!(by_year.groups[0].key, "2026");
         assert_eq!(
             by_people.groups[0].rows[0].path,
             by_year.groups[0].rows[0].path
         );
+    }
+
+    /// The union the `group:` chain could not say: a document under every day
+    /// it has a date for, and once under a day both dates fall on.
+    #[test]
+    fn a_union_puts_a_document_under_each_of_its_keys() {
+        let sel = selection(&[
+            (
+                "a.md",
+                &[
+                    ("created", text("2026-09-01")),
+                    ("updated", text("2026-09-20T08:00:00Z")),
+                ],
+            ),
+            (
+                "b.md",
+                &[
+                    ("created", text("2026-09-01")),
+                    ("updated", text("2026-09-01")),
+                ],
+            ),
+        ]);
+        let rows = group(&sel, &key("[day(created), day(updated)]"));
+        assert_eq!(
+            rows.groups
+                .iter()
+                .map(|g| (g.key.as_str(), g.rows.len()))
+                .collect::<Vec<_>>(),
+            [("2026-09-01", 2), ("2026-09-20", 1)]
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.placements(), 3);
+    }
+
+    /// A key that fails is reported, and the document is neither grouped nor
+    /// called ungrouped.
+    #[test]
+    fn a_failing_key_is_a_failure_not_ungrouped() {
+        let sel = selection(&[("a.md", &[("people", seq(&["Ada"]))])]);
+        let rows = group(&sel, &key("doc.meta"));
+        assert!(rows.groups.is_empty());
+        assert!(rows.ungrouped.is_empty());
+        assert_eq!(rows.failures.len(), 1);
+        assert_eq!(rows.failures[0].clause, Clause::Key);
     }
 }

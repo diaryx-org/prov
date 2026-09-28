@@ -879,6 +879,7 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         // reading a corpus, and at `init` there is no corpus yet to have
         // learned anything about.
         views: Vec::new(),
+        filing: Vec::new(),
         // No exports either, for the stronger form of the same reason: an
         // export says what may *leave*, and the only right default for a
         // workspace that has not said anything is that nothing does.

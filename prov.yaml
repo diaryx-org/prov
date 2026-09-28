@@ -36,23 +36,22 @@ fields:
 views:
   open-tasks:
     label: Open tasks
-    group: status
-    under: '[[Tasks]]'
-    where:
-      has: status
-      not:
-        any-of:
-          - equals: { status: done }
-          - equals: { status: dropped }
+    # `present(status)` first: an index filed under `Tasks` — the `Closed
+    # tasks` shelf a closed task moves to — says no status, and is not an open
+    # task.
+    where: >-
+      doc.ancestors.exists(a, a.title == 'Tasks')
+      && present(status) && !(status in ['done', 'dropped'])
+    key: status
   proposals:
     label: Proposals
-    group: status
-    under: '[[Proposals]]'
-    where: { has: status }
+    where: >-
+      doc.ancestors.exists(a, a.title == 'Proposals') && present(status)
+    key: status
   work:
     label: All work
-    group: status
-    where: { has: status }
+    where: present(status)
+    key: status
 workspace_id: prov
 root: README.md
 exports:

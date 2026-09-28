@@ -217,14 +217,14 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
         &["set", "docs/tasks/fix-the-build.md", "status", "done"],
     );
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
-    assert!(out.contains("no documents in scope"), "{out}");
+    assert!(out.contains("no documents match"), "{out}");
     // `dropped` closes a task as surely as `done` does.
     ok(
         &dir,
         &["set", "docs/tasks/fix-the-build.md", "status", "dropped"],
     );
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
-    assert!(out.contains("no documents in scope"), "{out}");
+    assert!(out.contains("no documents match"), "{out}");
     ok(
         &dir,
         &["set", "docs/tasks/fix-the-build.md", "status", "done"],
@@ -260,7 +260,7 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
     let (out, err) = ok(&dir, &["check"]);
     assert!(err.contains("no findings"), "{out}{err}");
     let (out, _) = ok(&dir, &["views", "open-tasks"]);
-    assert!(out.contains("no documents in scope"), "{out}");
+    assert!(out.contains("no documents match"), "{out}");
     let (out, _) = ok(&dir, &["views", "work"]);
     assert!(out.contains("docs/tasks/closed/fix-the-build.md"), "{out}");
     ok(

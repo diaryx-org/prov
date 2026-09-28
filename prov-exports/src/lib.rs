@@ -6,7 +6,7 @@
 //!
 //! ## What an export is
 //!
-//! Everything else prov reads is open by default — a view with no `under:`
+//! Everything else prov reads is open by default — a view with no `where:`
 //! covers the whole workspace, the spanning walk reaches everything. An
 //! export is the boundary where that flips: a document is in an export only
 //! if the document *itself* declares the export's gate value, and a document

@@ -17,10 +17,44 @@
 //! carried since before views existed. A view has no business restating it.
 
 use prov_graph::meta::{Mapping, Value};
-use prov_views::{Grain, Grouping, Nest, ViewSpec, views_from};
+use prov_views::{
+    Evaluator, Expression, FilingSpec, Grain, KeyShape, Nest, Row, ViewSpec, filing_from,
+    translate, views_from,
+};
 
-/// The five lenses, as a workspace would now declare them.
+/// The five lenses, as a workspace now declares them.
 const DECLARED: &str = "\
+views:
+  daily:
+    label: Daily
+    icon: calendar
+    where: doc.ancestors.exists(a, a.id == 'abc1234')
+    key: year(first(date_of_document, created, updated))
+  people:
+    label: People
+    icon: person.2
+    key: people
+  places:
+    label: Places
+    icon: mappin.and.ellipse
+    key: places
+  tags:
+    label: Tags
+    icon: tag
+    key: tags
+  audience:
+    label: Audience
+    icon: eye
+    key: audience
+filing:
+  daily:
+    under: '[Daily](id:abc1234)'
+    field: [date_of_document, created, updated]
+    nest: year
+";
+
+/// The same five, as they were declared before views were queries.
+const RETIRED: &str = "\
 daily:
   label: Daily
   icon: calendar
@@ -46,19 +80,18 @@ audience:
   group: audience
 ";
 
-fn parse_block(yaml: &str) -> Value {
-    let mut config = Mapping::new();
-    config.insert(
-        "views".into(),
-        prov_graph::meta::parse_value(yaml, prov_graph::Format::Yaml).expect("the fixture parses"),
-    );
-    Value::Mapping(config)
+fn parse(yaml: &str) -> Mapping {
+    prov_graph::meta::parse_mapping(yaml, prov_graph::Format::Yaml).expect("the fixture parses")
+}
+
+fn field(name: &str) -> KeyShape {
+    KeyShape::Field(name.into())
 }
 
 #[test]
 fn all_five_diaryx_facets_express_as_declared_views() {
-    let config = parse_block(DECLARED);
-    let views = views_from(config.as_mapping().unwrap());
+    let config = parse(DECLARED);
+    let views = views_from(&config);
 
     assert_eq!(
         views.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
@@ -71,27 +104,31 @@ fn all_five_diaryx_facets_express_as_declared_views() {
     // used to hold separately.
     let daily = &views[0];
     assert_eq!(
-        daily.group,
-        Grouping {
-            keys: vec![
-                "date_of_document".into(),
-                "created".into(),
-                "updated".into()
-            ],
-            by: Some(Grain::Year),
-        }
+        daily.key.key_shape(),
+        KeyShape::Cut(
+            Grain::Year,
+            Box::new(KeyShape::First(vec![
+                field("date_of_document"),
+                field("created"),
+                field("updated"),
+            ]))
+        )
     );
-    assert_eq!(daily.under.as_deref(), Some("[Daily](id:abc1234)"));
-    assert_eq!(daily.nest, Some(Nest::Grain(Grain::Year)));
+    // Where it files is a declaration of its own.
+    let filing = filing_from(&config);
+    assert_eq!(filing[0].under.as_deref(), Some("[Daily](id:abc1234)"));
+    assert_eq!(filing[0].nest, Some(Nest::Grain(Grain::Year)));
 
     // The four that always were fields, and stay one line each.
     for (view, key) in views[1..]
         .iter()
         .zip(["people", "places", "tags", "audience"])
     {
-        assert_eq!(view.group, Grouping::field(key), "{key}");
-        assert_eq!(view.group.by, None, "{key} does not cut");
-        assert_eq!(view.under, None, "{key} is unscoped, as the app's was");
+        assert_eq!(view.key.key_shape(), field(key), "{key}");
+        assert_eq!(
+            view.filter, None,
+            "{key} covers everything, as the app's did"
+        );
     }
 }
 
@@ -99,33 +136,60 @@ fn all_five_diaryx_facets_express_as_declared_views() {
 /// round-trips, so no key of the fixture was quietly dropped on the way in.
 #[test]
 fn the_five_survive_a_round_trip_with_nothing_dropped() {
-    let config = parse_block(DECLARED);
-    let views = views_from(config.as_mapping().unwrap());
-
-    for view in &views {
+    let config = parse(DECLARED);
+    for view in views_from(&config) {
         let back = ViewSpec::parse(&view.name, &Value::Mapping(view.to_mapping()))
             .expect("a declared view re-reads as one");
-        assert_eq!(&back, view, "{} lost something", view.name);
+        assert_eq!(back, view, "{} lost something", view.name);
+    }
+    for entry in filing_from(&config) {
+        let back = FilingSpec::parse(&entry.name, &Value::Mapping(entry.to_mapping()));
+        assert_eq!(back, Some(entry));
     }
 }
 
-/// The old spelling is gone, not aliased. `group: date` is now a view grouped
-/// on a field *named* `date` — which is a real thing a workspace may declare,
-/// and no longer a token meaning "the chain this program knows".
+/// The retired declarations translate to the current ones, key for key.
 #[test]
-fn the_retired_date_token_is_now_an_ordinary_field_name() {
-    let config = parse_block("legacy:\n  group: date\n");
-    let views = views_from(config.as_mapping().unwrap());
-    assert_eq!(views.len(), 1);
-    assert_eq!(views[0].group, Grouping::field("date"));
+fn the_retired_declarations_translate_to_these() {
+    let retired = parse(RETIRED);
+    let current = parse(DECLARED);
+    let views = current.get("views").and_then(Value::as_mapping).unwrap();
+    for (name, old) in &retired {
+        let translation = translate(old).expect("a retired view translates");
+        let view = ViewSpec::parse(name, &Value::Mapping(translation.view)).expect("parses");
+        let expected = ViewSpec::parse(name, views.get(name).unwrap()).unwrap();
+        assert_eq!(view, expected, "{name}");
+        if let Some(filing) = translation.filing {
+            assert_eq!(
+                FilingSpec::parse(name, &Value::Mapping(filing)),
+                filing_from(&current).into_iter().find(|f| &f.name == name),
+                "{name}"
+            );
+        }
+    }
+}
 
-    let mut doc = Mapping::new();
-    doc.insert(
+/// A key names a field and nothing behind it: `date` is a field *named*
+/// `date`, which is a real thing a workspace may declare, and not a token
+/// meaning "the chain this program knows".
+#[test]
+fn a_field_named_date_is_an_ordinary_field() {
+    let mut meta = Mapping::new();
+    meta.insert(
         "date_of_document".into(),
         Value::String("2026-07-24".into()),
     );
+    let row = Row {
+        path: "a.md".into(),
+        id: None,
+        ancestors: Vec::new(),
+        meta: Value::Mapping(meta),
+    };
+    let keys = Evaluator::new()
+        .keys(&Expression::parse("date").unwrap(), &row)
+        .unwrap();
     assert!(
-        views[0].group.keys_of(&Value::Mapping(doc)).is_empty(),
+        keys.is_empty(),
         "it reads the field it names, and no chain behind it"
     );
 }

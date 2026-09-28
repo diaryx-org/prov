@@ -7,7 +7,6 @@ updated: 2026-09-17
 part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
-- '[A list under `equals` is read as its first element](/docs/tasks/equals-keeps-a-lists-first-element.md)'
 ---
 
 # Tasks

@@ -9,7 +9,7 @@
 //! than a `where:` idiom inside it.
 //!
 //! A wrong view is a wrong grouping you fix in the picker; a wrong export is a
-//! file in hands it was never meant for. A view with no `under:` covers the
+//! file in hands it was never meant for. A view with no `where:` covers the
 //! whole workspace, while a document that declares nothing is in **no**
 //! export — open-by-default against closed-by-default, and one primitive
 //! cannot hold both. And the gate value is written *in the document*, so it

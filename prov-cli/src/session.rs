@@ -167,7 +167,7 @@ fn warn_config(ctx: &Ctx) {
         );
     }
     // "Not taking effect" rather than "ignored": most of these *are* keys prov
-    // silently drops, but `views.<name>.nest` on a multi-valued field is read
+    // silently drops, but `filing.<name>.nest` on a multi-valued field is read
     // and simply cannot be acted on. One summary line covers both; `check` says
     // which it is.
     if let Some(first) = issues.first() {

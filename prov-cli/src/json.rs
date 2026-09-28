@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use prov::meta::Value;
-use prov::views::{Grain, Hit, Row, RowSet, Selection, Site, ViewSpec};
+use prov::views::{Failure, Hit, Row, RowSet, Selection, Site, ViewSpec};
 use prov::{Finding, LinkSite};
 
 /// A JSON value. Objects keep insertion order so the output is diffable.
@@ -374,6 +374,14 @@ pub fn finding(f: &Finding) -> J {
                     fields.push(("issue", s("nest_ref_not_declared")));
                     fields.push(("field", s(field)));
                 }
+                prov::ConfigIssueKind::BadExpression { message } => {
+                    fields.push(("issue", s("bad_expression")));
+                    fields.push(("message", s(message)));
+                }
+                prov::ConfigIssueKind::ViewRetired { replacement } => {
+                    fields.push(("issue", s("view_retired")));
+                    fields.push(("replacement", opt(replacement.clone())));
+                }
             }
         }
         Finding::ConfigSpecAhead { doc, declared } => {
@@ -545,23 +553,18 @@ pub fn meta(value: &Value) -> J {
 ///
 /// The same facts the text listing prints, each as its own key rather than
 /// assembled into a sentence: `label` resolved through
-/// [`ViewSpec::display_label`], the grouping chain as an array, and the grains
-/// in their `by:`/`nest:` display spelling. `filtered` is a flag for the same
-/// reason the listing line makes it one — a nested `where:` does not fit a
-/// listing, and what a reader needs from a list is that this view does not show
-/// everything it reaches.
+/// [`ViewSpec::display_label`], and the two expressions as written — `where`
+/// `null` for a view that covers every document.
 pub fn view(spec: &ViewSpec) -> J {
     J::Obj(vec![
         ("name", s(&spec.name)),
         ("label", J::Str(spec.display_label())),
+        ("icon", opt(spec.icon.clone())),
         (
-            "group",
-            J::Arr(spec.group.keys.iter().map(|k| s(k)).collect()),
+            "where",
+            opt(spec.filter.as_ref().map(|f| f.source().to_string())),
         ),
-        ("by", opt(spec.group.by.map(Grain::display))),
-        ("under", opt(spec.under.clone())),
-        ("filtered", J::Bool(spec.filter.is_some())),
-        ("nest", opt(spec.nest.map(prov::views::Nest::display))),
+        ("key", s(spec.key.source())),
     ])
 }
 
@@ -592,7 +595,26 @@ pub fn view_result(selection: &Selection, rows: &RowSet<'_>) -> J {
         ),
         ("documents", J::Int(selection.len() as i64)),
         ("rows", J::Int(rows.placements() as i64)),
+        ("failures", failures(&selection.failures, &rows.failures)),
     ])
+}
+
+/// The documents a view's expressions could not be evaluated on: path, which
+/// expression (`where` or `key`), and why. Always present, `[]` when none.
+pub fn failures(selecting: &[Failure], grouping: &[Failure]) -> J {
+    J::Arr(
+        selecting
+            .iter()
+            .chain(grouping)
+            .map(|f| {
+                J::Obj(vec![
+                    ("path", p(&f.path)),
+                    ("clause", s(&f.clause.to_string())),
+                    ("message", s(&f.message)),
+                ])
+            })
+            .collect(),
+    )
 }
 
 /// One row of an executed view.
@@ -601,33 +623,52 @@ pub fn view_result(selection: &Selection, rows: &RowSet<'_>) -> J {
 /// the text output drops the dash, but a parser reading a fixed set of keys
 /// should not have to branch on which keys arrived.
 fn view_row(row: &Row) -> J {
-    J::Obj(vec![
-        ("path", p(&row.path)),
-        ("title", opt(row.title().map(str::to_owned))),
-        ("meta", meta(&row.meta)),
-    ])
+    census_row(row)
 }
 
-/// One document of the `docs --json` census: a view row with the document's
-/// id as a column.
+/// One document of the census: path, title, id, ancestors and the whole
+/// metadata block — the row every view and `docs --json` share.
 ///
-/// The id is resolved by the caller, which has the index; this function only
-/// decides where it goes on the wire. `null` for a document without one, for
-/// the reason `title` is: a fixed set of keys, however the document is
-/// stored.
+/// `id` is the document's own `id` field where it carries one, the registry's
+/// answer otherwise, so the column reads the same under every `id_storage`.
+/// `null` for a document without one, for the reason `title` is: a fixed set
+/// of keys, however the document is stored. `ancestors` is everything above
+/// the document in the tree, root first, each `{path, title, id}` — what a
+/// view's `doc.ancestors` reads.
+pub fn census_row(row: &Row) -> J {
+    J::Obj(census_fields(row))
+}
+
+fn census_fields(row: &Row) -> Vec<(&'static str, J)> {
+    let ancestors = row
+        .ancestors
+        .iter()
+        .map(|a| {
+            J::Obj(vec![
+                ("path", p(&a.path)),
+                ("title", opt(a.title.clone())),
+                ("id", opt(a.id.clone())),
+            ])
+        })
+        .collect();
+    vec![
+        ("path", p(&row.path)),
+        ("title", opt(row.title().map(str::to_owned))),
+        ("id", opt(row.id.clone())),
+        ("ancestors", J::Arr(ancestors)),
+        ("meta", meta(&row.meta)),
+    ]
+}
+
+/// One document of the `docs --json` census, optionally with its body.
 ///
 /// `body` is three-valued on purpose. The outer `None` is "not asked for" —
 /// the key is absent, so a consumer of the plain `docs --json` sees the row it
 /// always saw. The inner `None` is "asked for, and this document has none",
 /// written `null` like an absent id; `Some("")` is a body with nothing in it,
 /// which is a different fact about the document and keeps its own spelling.
-pub fn doc_row(row: &Row, id: Option<String>, body: Option<Option<String>>) -> J {
-    let mut fields = vec![
-        ("path", p(&row.path)),
-        ("title", opt(row.title().map(str::to_owned))),
-        ("id", opt(id)),
-        ("meta", meta(&row.meta)),
-    ];
+pub fn doc_row(row: &Row, body: Option<Option<String>>) -> J {
+    let mut fields = census_fields(row);
     if let Some(body) = body {
         fields.push(("body", opt(body)));
     }

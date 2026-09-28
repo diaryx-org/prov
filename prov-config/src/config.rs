@@ -36,7 +36,7 @@ use prov_graph::identity::{Registration, Trigger};
 use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
-use prov_views::{ViewIssueKind, ViewSpec};
+use prov_views::{FilingIssueKind, FilingSpec, ViewIssueKind, ViewSpec};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because
 /// it is the one identity setting that changes what a link *resolves to* — a
@@ -195,8 +195,8 @@ pub struct FieldSpec {
     /// it.
     pub default: Option<Value>,
     /// The subtree this declaration governs, as a link to its index — by
-    /// path, by `id:`, or by title (`[[Tasks]]`), resolved exactly as a view's
-    /// `under:` is. `None` governs the whole workspace. A field may carry
+    /// path, by `id:`, or by title (`[[Tasks]]`), resolved exactly as a
+    /// filing entry's `under:` is. `None` governs the whole workspace. A field may carry
     /// several declarations, each scoped, so that `status` means one closed
     /// set of terms under `Tasks` and another under `Proposals`; where scopes
     /// nest, the deepest wins, and an unscoped declaration is the fallback.
@@ -398,7 +398,7 @@ pub struct WorkspaceConfig {
     pub fields: BTreeMap<String, Vec<FieldSpec>>,
     /// The views the workspace declares, in declaration order — the second way
     /// through the same documents the spine already holds ("the entries under
-    /// `Daily`, by month"). Empty means the workspace declares none, which is
+    /// `Daily`, by month"), each a query over the census. Empty means the workspace declares none, which is
     /// not the same as having none to offer: a frontend is free to derive a
     /// lens from a `fields` declaration, and a *declared* view is the workspace
     /// overriding that.
@@ -409,6 +409,11 @@ pub struct WorkspaceConfig {
     /// than each app namespacing its own block and agreeing by convention.
     /// Executing one is `prov-views`.
     pub views: Vec<ViewSpec>,
+    /// Where new records are filed, in declaration order — the half of the old
+    /// `views.<name>.nest` that writes, now a declaration of its own so a view
+    /// can be a query. Like a view, carried here so every tool reads the same
+    /// entries; acting on one is a frontend's, through `plan_route`.
+    pub filing: Vec<FilingSpec>,
     /// The exports the workspace declares, in declaration order — the named,
     /// closed-by-default sets that may *leave* it, each bounded by a gate and
     /// optionally arranged by one of [`views`](Self::views). Empty means
@@ -591,6 +596,7 @@ impl Default for WorkspaceConfig {
             relation_defs: BTreeMap::new(),
             fields: BTreeMap::new(),
             views: Vec::new(),
+            filing: Vec::new(),
             exports: Vec::new(),
             id_storage: IdStorage::Frontmatter,
             default_embed_format: fig::Format::Yaml,
@@ -1014,14 +1020,13 @@ impl WorkspaceConfig {
                 }
             }
         }
-        // View declarations: `views: { <name>: { group, by, under, nest, … } }`.
+        // View declarations: `views: { <name>: { where, key, … } }`.
         //
         // Merged per entry, exactly as `fields` is and for the same reason: a
         // vault config that declares one view must not wipe the ones the app's
         // defaults supplied. A later surface redeclaring a name replaces that
-        // view whole — a view is small and its keys interlock (`by` means
-        // nothing without `group`), so merging *within* one would produce
-        // hybrids no surface wrote.
+        // view whole — a condition and a key written for each other, merged
+        // with another surface's, would be a hybrid no surface wrote.
         if let Some(views) = meta.get(prov_views::VIEWS_KEY).and_then(Value::as_mapping) {
             for (name, value) in views {
                 let Some(spec) = ViewSpec::parse(name, value) else {
@@ -1030,6 +1035,19 @@ impl WorkspaceConfig {
                 match self.views.iter_mut().find(|v| v.name == spec.name) {
                     Some(existing) => *existing = spec,
                     None => self.views.push(spec),
+                }
+            }
+        }
+        // Filing entries: `filing: { <name>: { under, field, nest } }`, merged
+        // per entry and replaced whole, like views.
+        if let Some(entries) = meta.get(prov_views::FILING_KEY).and_then(Value::as_mapping) {
+            for (name, value) in entries {
+                let Some(spec) = FilingSpec::parse(name, value) else {
+                    continue;
+                };
+                match self.filing.iter_mut().find(|f| f.name == spec.name) {
+                    Some(existing) => *existing = spec,
+                    None => self.filing.push(spec),
                 }
             }
         }
@@ -1269,6 +1287,14 @@ impl WorkspaceConfig {
             map.insert(prov_views::VIEWS_KEY.into(), Value::Mapping(views));
         }
 
+        if !self.filing.is_empty() {
+            let mut entries = Mapping::new();
+            for spec in &self.filing {
+                entries.insert(spec.name.clone(), Value::Mapping(spec.to_mapping()));
+            }
+            map.insert(prov_views::FILING_KEY.into(), Value::Mapping(entries));
+        }
+
         if !self.exports.is_empty() {
             let mut exports = Mapping::new();
             for spec in &self.exports {
@@ -1362,15 +1388,15 @@ pub enum ConfigIssueKind {
     /// tree the spanning relation requires (DESIGN §3). `key` is `spanning`;
     /// `inverse` is the offending child→parent relation.
     SpanningNotSingleParent { inverse: String },
-    /// A view declares `nest:` but groups by a field the workspace declares
+    /// A filing entry declares `nest:` over a field the workspace declares
     /// multi-valued (`fields.<field>.type: seq`).
     ///
     /// Nesting files a record into the single-parent spanning relation, so a
     /// document carrying two values for `field` has two homes and nothing can
-    /// choose between them. The *grouping* is fine — one document under several
-    /// groups is what a view is for — so only the filing half is reported.
+    /// choose between them. A *view* grouping by the same field is fine — one
+    /// document under several groups is what a view is for.
     NestNotSingleValued { field: String },
-    /// A view declares `nest: ref` but groups by a field the workspace does
+    /// A filing entry declares `nest: ref` over a field the workspace does
     /// not declare `type: ref`.
     ///
     /// Filing by reference files a record under the document its own value
@@ -1378,9 +1404,19 @@ pub enum ConfigIssueKind {
     /// when its target moves — once the field is declared one. Until then it
     /// is a string that used to be a path: the filing works on the day it is
     /// written and breaks, silently, the day the shelf is moved. Reported for
-    /// every key in the grouping chain, since the chain files by whichever is
-    /// filled in.
+    /// the first key in the `field:` chain that is not, since the chain files
+    /// by whichever is filled in.
     NestRefNotDeclared { field: String },
+    /// A view's `where:` or `key:` is not an expression prov can run: it does
+    /// not parse, or it calls a function that does not exist. The view is not
+    /// read at all — a view with a broken condition must not become a view of
+    /// everything.
+    BadExpression { message: String },
+    /// A view is written in the retired form — `group:`, `by:`, `under:`,
+    /// `nest:`, or a `where:` mapping of predicates. It is not read at all.
+    /// `replacement` is the same view in the current form, as YAML to paste,
+    /// when there was enough to translate.
+    ViewRetired { replacement: Option<String> },
     /// `workspace_id` holds a name that cannot be written as the qualifier of an
     /// `id:<workspace>/<id>` reference — it contains `/`, `:` or whitespace, or
     /// is not a string at all. `apply` ignored it, so the workspace stayed
@@ -1421,6 +1457,7 @@ const TOP_KEYS: &[&str] = &[
     "spanning",
     "fields",
     "views",
+    "filing",
     "exports",
     "id_storage",
     "updated",
@@ -1603,7 +1640,8 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
             "references" => diagnose_reference_block(&mut issues, "references", value),
             "relations" => diagnose_relations(&mut issues, value),
             "fields" => diagnose_fields(&mut issues, value),
-            "views" => diagnose_views(&mut issues, value, map),
+            "views" => diagnose_views(&mut issues, value),
+            "filing" => diagnose_filing(&mut issues, value, map),
             "exports" => diagnose_exports(&mut issues, value, map),
             other => {
                 if let Some(suggestion) = nearest(other, TOP_KEYS) {
@@ -1951,49 +1989,36 @@ fn diagnose_field_declaration(
 /// the crate that executes one); this is the translation into config-issue
 /// vocabulary, plus the near-miss suggestion, which needs the edit distance
 /// every other config near-miss already uses.
-fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mapping) {
+fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
     let Some(map) = value.as_mapping() else {
         return block_shape_issue(issues, "views", value);
     };
     for (name, spec) in map {
         let prefix = format!("views.{name}");
-        diagnose_nest_is_fileable(issues, &prefix, spec, surface);
         for issue in prov_views::diagnose_view(name, spec) {
             let dotted = match issue.key.as_str() {
                 "" => prefix.clone(),
                 key => format!("{prefix}.{key}"),
             };
-            let expected = || issue.kind.expected().iter().map(|s| (*s).into()).collect();
-            match &issue.kind {
+            match issue.kind {
                 ViewIssueKind::NotAMapping => block_shape_issue(issues, &prefix, spec),
-                ViewIssueKind::NoGrouping => issues.push(ConfigIssue {
+                ViewIssueKind::NoKey => issues.push(ConfigIssue {
                     key: dotted,
                     kind: ConfigIssueKind::InvalidValue {
-                        value: spec
-                            .get("group")
-                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        value: "(absent)".to_string(),
                         expected: vec![
-                            "a field name, or a list of field names to try in order".into(),
+                            "an expression giving the group or groups each document goes under"
+                                .into(),
                         ],
                     },
                 }),
-                ViewIssueKind::BadGrain | ViewIssueKind::BadNest => issues.push(ConfigIssue {
-                    key: dotted.clone(),
-                    kind: ConfigIssueKind::InvalidValue {
-                        value: spec
-                            .get(&issue.key)
-                            .map_or_else(|| "(absent)".to_string(), value_summary),
-                        expected: expected(),
-                    },
-                }),
-                ViewIssueKind::NoCondition => issues.push(ConfigIssue {
+                ViewIssueKind::BadExpression { message } => issues.push(ConfigIssue {
                     key: dotted,
-                    kind: ConfigIssueKind::InvalidValue {
-                        value: spec
-                            .get("where")
-                            .map_or_else(|| "(absent)".to_string(), value_summary),
-                        expected: expected(),
-                    },
+                    kind: ConfigIssueKind::BadExpression { message },
+                }),
+                ViewIssueKind::Retired { replacement } => issues.push(ConfigIssue {
+                    key: dotted,
+                    kind: ConfigIssueKind::ViewRetired { replacement },
                 }),
                 // Unlike a stray *top-level* key — which may be a user-owned
                 // field prov never reads (DESIGN §2) — a stray key inside a
@@ -2009,20 +2034,65 @@ fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mappin
     }
 }
 
-/// Flag a `nest:` on a view that groups by a field the workspace declares
-/// **multi-valued** (`fields.<name>.type: seq`).
+/// Diagnose the `filing:` block — a mapping of entry name to where new
+/// records of that kind are filed.
+fn diagnose_filing(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mapping) {
+    let Some(map) = value.as_mapping() else {
+        return block_shape_issue(issues, "filing", value);
+    };
+    for (name, spec) in map {
+        let prefix = format!("filing.{name}");
+        diagnose_nest_is_fileable(issues, &prefix, spec, surface);
+        for issue in prov_views::diagnose_filing(name, spec) {
+            let dotted = match issue.key.as_str() {
+                "" => prefix.clone(),
+                key => format!("{prefix}.{key}"),
+            };
+            let expected = || issue.kind.expected().iter().map(|s| (*s).into()).collect();
+            match &issue.kind {
+                FilingIssueKind::NotAMapping => block_shape_issue(issues, &prefix, spec),
+                FilingIssueKind::NoField => issues.push(ConfigIssue {
+                    key: dotted,
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: "(absent)".to_string(),
+                        expected: vec![
+                            "a field name, or a list of field names to try in order".into(),
+                        ],
+                    },
+                }),
+                FilingIssueKind::BadNest => issues.push(ConfigIssue {
+                    key: dotted.clone(),
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: spec
+                            .get(&issue.key)
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        expected: expected(),
+                    },
+                }),
+                FilingIssueKind::UnknownKey => {
+                    if let Some(sug) = nearest(&issue.key, prov_views::FILING_KEYS) {
+                        issues.push(unknown(dotted, format!("{prefix}.{sug}")));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Flag a `nest:` on a filing entry that files by a field the workspace
+/// declares **multi-valued** (`fields.<name>.type: seq`).
 ///
 /// `nest` files a record into the spanning relation, which is single-parent, so
-/// a document with two values for the grouping field has two homes and no way
-/// to choose between them. Grouping by such a field is perfectly good — that is
-/// the whole point of a view — so this flags only the *filing* half.
+/// a document with two values for the field has two homes and no way to choose
+/// between them.
 ///
-/// Reported rather than left to bite later because `nest:` is a description a
-/// frontend acts on, so the failure surfaces at the moment someone creates a
-/// document, which is the worst time to discover it. `ViewSpec::nest_route`
-/// returns `None` for the same case at runtime, so the two agree.
+/// Reported rather than left to bite later because a filing entry is a
+/// description a frontend acts on, so the failure would surface at the moment
+/// someone creates a document, which is the worst time to discover it.
+/// `FilingSpec::route` returns `None` for the same case at runtime, so the two
+/// agree.
 ///
-/// Only fires when `fields` and `views` are declared in the **same config
+/// Only fires when `fields` and `filing` are declared in the **same config
 /// surface**: `diagnose` lints one surface at a time and cannot see the merged
 /// config, which is the same bound every other cross-key check here has.
 fn diagnose_nest_is_fileable(
@@ -2031,40 +2101,35 @@ fn diagnose_nest_is_fileable(
     spec: &Value,
     surface: &Mapping,
 ) {
-    if spec.get("nest").is_none() {
-        return;
-    }
     let Some(fields) = surface.get("fields").and_then(Value::as_mapping) else {
         return;
     };
-    let Some(view) = prov_views::ViewSpec::parse("", spec) else {
+    let Some(entry) = FilingSpec::parse("", spec) else {
         return;
+    };
+    let Some(nest) = entry.nest else {
+        return;
+    };
+    let declares = |decl: &Value, ty: FieldType| {
+        decl.get("type")
+            .and_then(Value::as_str)
+            .and_then(field_type_from_config_str)
+            == Some(ty)
+    };
+    let declared = |key: &str, ty: FieldType| match fields.get(key) {
+        Some(Value::Sequence(decls)) => decls.iter().any(|d| declares(d, ty)),
+        Some(decl) => declares(decl, ty),
+        None => false,
     };
     // Any key in the chain being multi-valued is enough: the chain picks
     // whichever is filled in, so a document could reach the `seq` one. And
     // any *declaration* of the key being multi-valued is enough, for the same
-    // reason — a scoped one governs some of the documents the view files.
-    let declares_seq = |decl: &Value| {
-        decl.get("type")
-            .and_then(Value::as_str)
-            .and_then(field_type_from_config_str)
-            == Some(FieldType::Seq)
-    };
-    let multi: Vec<&String> = view
-        .group
-        .keys
-        .iter()
-        .filter(|key| match fields.get(*key) {
-            Some(Value::Sequence(decls)) => decls.iter().any(declares_seq),
-            Some(decl) => declares_seq(decl),
-            None => false,
-        })
-        .collect();
-    if let Some(field) = multi.first() {
+    // reason — a scoped one governs some of the documents the entry files.
+    if let Some(field) = entry.field.iter().find(|k| declared(k, FieldType::Seq)) {
         issues.push(ConfigIssue {
             key: format!("{prefix}.nest"),
             kind: ConfigIssueKind::NestNotSingleValued {
-                field: (*field).clone(),
+                field: field.clone(),
             },
         });
     }
@@ -2072,27 +2137,16 @@ fn diagnose_nest_is_fileable(
     // the value is a link — and only rewrites it when the shelf moves — if the
     // field says `type: ref`. A key in the chain that does not is reported:
     // the filing would work until the first move, and then break without a
-    // word. Bounded to this surface like the check above, for the same reason.
-    if view.nest == Some(prov_views::Nest::Ref) {
-        let declares_ref = |decl: &Value| {
-            decl.get("type")
-                .and_then(Value::as_str)
-                .and_then(field_type_from_config_str)
-                == Some(FieldType::Ref)
-        };
-        let undeclared = view.group.keys.iter().find(|key| !match fields.get(*key) {
-            Some(Value::Sequence(decls)) => decls.iter().any(declares_ref),
-            Some(decl) => declares_ref(decl),
-            None => false,
+    // word.
+    if nest == prov_views::Nest::Ref
+        && let Some(field) = entry.field.iter().find(|k| !declared(k, FieldType::Ref))
+    {
+        issues.push(ConfigIssue {
+            key: format!("{prefix}.nest"),
+            kind: ConfigIssueKind::NestRefNotDeclared {
+                field: field.clone(),
+            },
         });
-        if let Some(field) = undeclared {
-            issues.push(ConfigIssue {
-                key: format!("{prefix}.nest"),
-                kind: ConfigIssueKind::NestRefNotDeclared {
-                    field: field.clone(),
-                },
-            });
-        }
     }
 }
 
@@ -2699,33 +2753,33 @@ mod tests {
                 ),
             ]),
             views: vec![
-                // A scoped, materializing view with a fallback chain — every
-                // optional key populated, so nothing survives the round trip by
-                // being absent at both ends.
+                // Every optional key populated, so nothing survives the round
+                // trip by being absent at both ends.
                 ViewSpec {
                     name: "daily".to_string(),
                     label: Some("Daily".to_string()),
                     icon: Some("calendar".to_string()),
-                    group: prov_views::Grouping {
-                        keys: vec!["date_of_document".to_string(), "created".to_string()],
-                        by: Some(prov_views::Grain::Month),
-                    },
-                    under: Some("[Daily](id:abc1234)".to_string()),
-                    // A condition too, so the round trip covers `where:`.
-                    filter: Some(prov_views::Condition::Not(Box::new(
-                        prov_views::Condition::Has("draft".to_string()),
-                    ))),
-                    nest: Some(prov_views::Nest::Grain(prov_views::Grain::Year)),
+                    filter: Some(prov_views::Expression::parse("!present(draft)").unwrap()),
+                    key: prov_views::Expression::parse("month(first(date_of_document, created))")
+                        .unwrap(),
                 },
                 // …and the minimal one, which must not gain keys on the way
                 // back.
-                ViewSpec {
-                    name: "who".to_string(),
+                ViewSpec::new("who", prov_views::Expression::parse("people").unwrap()),
+            ],
+            filing: vec![
+                FilingSpec {
+                    name: "daily".to_string(),
+                    label: Some("Daily entry".to_string()),
+                    under: Some("[Daily](id:abc1234)".to_string()),
+                    field: vec!["date_of_document".to_string(), "created".to_string()],
+                    nest: Some(prov_views::Nest::Grain(prov_views::Grain::Year)),
+                },
+                FilingSpec {
+                    name: "tasks".to_string(),
                     label: None,
-                    icon: None,
-                    group: prov_views::Grouping::field("people"),
-                    under: None,
-                    filter: None,
+                    under: Some("[[Tasks]]".to_string()),
+                    field: Vec::new(),
                     nest: None,
                 },
             ],
@@ -3398,8 +3452,8 @@ mod tests {
     #[test]
     fn views_apply_in_declaration_order() {
         let config = WorkspaceConfig::from_meta(&views_block(&[
-            ("daily", &[("group", str_value("created"))]),
-            ("who", &[("group", str_value("people"))]),
+            ("daily", &[("key", str_value("month(created)"))]),
+            ("who", &[("key", str_value("people"))]),
         ]));
         assert_eq!(
             config
@@ -3414,24 +3468,24 @@ mod tests {
     /// The same merge rule `fields` has, for the same reason: a vault config
     /// declaring one view must not wipe the ones an app's defaults supplied.
     /// Redeclaring a name replaces that view whole rather than merging into it —
-    /// `by` means nothing without `group`, so a key-wise merge would build a
-    /// view neither surface wrote.
+    /// a condition and a key written for each other, merged with another
+    /// surface's, would be a view neither surface wrote.
     #[test]
     fn a_later_surface_replaces_one_view_and_leaves_the_others() {
         let mut config = WorkspaceConfig::from_meta(&views_block(&[
             (
                 "daily",
                 &[
-                    ("group", str_value("created")),
-                    ("by", str_value("month")),
+                    ("key", str_value("month(created)")),
+                    ("where", str_value("!present(draft)")),
                     ("icon", str_value("calendar")),
                 ],
             ),
-            ("who", &[("group", str_value("people"))]),
+            ("who", &[("key", str_value("people"))]),
         ]));
         config.apply(&views_block(&[(
             "daily",
-            &[("group", str_value("date_of_document"))],
+            &[("key", str_value("date_of_document"))],
         )]));
 
         assert_eq!(
@@ -3444,44 +3498,45 @@ mod tests {
             "position is kept, and the untouched view survives"
         );
         let daily = &config.views[0];
-        assert_eq!(daily.group, prov_views::Grouping::field("date_of_document"));
-        assert_eq!(daily.group.by, None, "replaced whole, not merged key-wise");
+        assert_eq!(daily.key.source(), "date_of_document");
+        assert_eq!(daily.filter, None, "replaced whole, not merged key-wise");
         assert_eq!(daily.icon, None);
     }
 
     /// An entry that says nothing about grouping is not a view — and, unlike a
     /// silently dropped one, it is reported.
     #[test]
-    fn a_view_without_a_grouping_is_not_recorded_and_is_diagnosed() {
+    fn a_view_without_a_key_is_not_recorded_and_is_diagnosed() {
         let meta = views_block(&[("daily", &[("label", str_value("Daily"))])]);
         assert!(WorkspaceConfig::from_meta(&meta).views.is_empty());
 
         let issues = diagnose(&meta);
         assert_eq!(issues.len(), 1, "{issues:?}");
-        assert_eq!(issues[0].key, "views.daily.group");
+        assert_eq!(issues[0].key, "views.daily.key");
         assert!(matches!(
             &issues[0].kind,
             ConfigIssueKind::InvalidValue { value, .. } if value == "(absent)"
         ));
     }
 
-    /// `ViewSpec::parse` reads an unparseable grain as no grain — it will not
-    /// invent a cut the config did not ask for — so the view still works and
-    /// the linter is the only thing that ever says the config was wrong.
+    /// An expression that cannot run is reported where it was written, and
+    /// the view is not read: a broken condition must not become a view of
+    /// everything.
     #[test]
-    fn diagnose_flags_a_misspelled_grain_and_a_misspelled_view_key() {
-        let issues = diagnose(&views_block(&[(
+    fn diagnose_flags_a_bad_expression_and_a_misspelled_view_key() {
+        let meta = views_block(&[(
             "daily",
             &[
-                ("group", str_value("created")),
-                ("by", str_value("yearr")),
+                ("key", str_value("dya(created)")),
                 ("labl", str_value("Daily")),
             ],
-        )]));
+        )]);
+        assert!(WorkspaceConfig::from_meta(&meta).views.is_empty());
+        let issues = diagnose(&meta);
         assert!(
-            issues.iter().any(|i| i.key == "views.daily.by"
-                && matches!(&i.kind, ConfigIssueKind::InvalidValue { value, expected }
-                    if value == "yearr" && expected.iter().any(|e| e == "year"))),
+            issues.iter().any(|i| i.key == "views.daily.key"
+                && matches!(&i.kind, ConfigIssueKind::BadExpression { message }
+                    if message.contains("`dya`"))),
             "{issues:?}"
         );
         assert!(
@@ -3489,6 +3544,103 @@ mod tests {
                 && i.kind
                     == ConfigIssueKind::UnknownKey {
                         suggestion: "views.daily.label".into()
+                    }),
+            "{issues:?}"
+        );
+    }
+
+    /// A view in the retired form is one finding, carrying its replacement —
+    /// with `under:` rewritten against the anchor and `nest:` as a filing
+    /// entry.
+    #[test]
+    fn a_retired_view_is_reported_with_its_replacement() {
+        let meta = views_block(&[(
+            "daily",
+            &[
+                ("group", str_value("created")),
+                ("by", str_value("month")),
+                ("under", str_value("[[Daily]]")),
+                ("nest", str_value("year")),
+            ],
+        )]);
+        assert!(WorkspaceConfig::from_meta(&meta).views.is_empty());
+        let issues = diagnose(&meta);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].key, "views.daily");
+        let ConfigIssueKind::ViewRetired {
+            replacement: Some(yaml),
+        } = &issues[0].kind
+        else {
+            panic!("{issues:?}");
+        };
+        assert!(yaml.contains("key: \"month(created)\""), "{yaml}");
+        assert!(yaml.contains("filing:\n  daily:\n"), "{yaml}");
+    }
+
+    /// A `filing:` block, as a config surface writes it.
+    fn filing_block(entries: &[(&str, &[(&str, Value)])]) -> Value {
+        let mut filing = Mapping::new();
+        for (name, keys) in entries {
+            let mut entry = Mapping::new();
+            for (k, v) in *keys {
+                entry.insert((*k).into(), v.clone());
+            }
+            filing.insert((*name).into(), Value::Mapping(entry));
+        }
+        let mut top = Mapping::new();
+        top.insert("filing".into(), Value::Mapping(filing));
+        Value::Mapping(top)
+    }
+
+    #[test]
+    fn filing_applies_and_its_mistakes_are_diagnosed() {
+        let config = WorkspaceConfig::from_meta(&filing_block(&[
+            (
+                "daily",
+                &[
+                    ("under", str_value("[[Daily]]")),
+                    ("field", str_value("created")),
+                    ("nest", str_value("month")),
+                ],
+            ),
+            (
+                "bad",
+                &[
+                    ("field", str_value("created")),
+                    ("nest", str_value("yearr")),
+                ],
+            ),
+        ]));
+        assert_eq!(
+            config
+                .filing
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            ["daily"],
+            "an entry that would file somewhere other than it says is dropped"
+        );
+        let issues = diagnose(&filing_block(&[
+            (
+                "bad",
+                &[
+                    ("field", str_value("created")),
+                    ("nest", str_value("yearr")),
+                ],
+            ),
+            ("typo", &[("feild", str_value("created"))]),
+        ]));
+        assert!(
+            issues.iter().any(|i| i.key == "filing.bad.nest"
+                && matches!(&i.kind, ConfigIssueKind::InvalidValue { value, expected }
+                    if value == "yearr" && expected.iter().any(|e| e == "ref"))),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.key == "filing.typo.feild"
+                && i.kind
+                    == ConfigIssueKind::UnknownKey {
+                        suggestion: "filing.typo.field".into()
                     }),
             "{issues:?}"
         );
@@ -3616,7 +3768,7 @@ mod tests {
     #[test]
     fn diagnose_flags_an_export_arranged_by_an_undeclared_view() {
         let mut top = Mapping::new();
-        let Value::Mapping(views) = views_block(&[("daily", &[("group", str_value("created"))])])
+        let Value::Mapping(views) = views_block(&[("daily", &[("key", str_value("created"))])])
         else {
             unreachable!()
         };
@@ -3658,35 +3810,27 @@ mod tests {
     }
 
     /// `nest` files into the single-parent spine, so a document with two values
-    /// for the grouping field has two homes. Grouping by it is fine — only the
-    /// filing half is reported.
+    /// for the field has two homes.
     #[test]
     fn diagnose_flags_a_nest_on_a_multi_valued_field() {
-        let block = |view: &[(&str, Value)]| {
+        let block = |entry: &[(&str, Value)]| {
             let mut fields = Mapping::new();
             let mut people = Mapping::new();
             people.insert("type".into(), str_value("seq"));
             fields.insert("people".into(), Value::Mapping(people));
-
-            let mut views = Mapping::new();
-            let mut entry = Mapping::new();
-            for (k, v) in view {
-                entry.insert((*k).into(), v.clone());
-            }
-            views.insert("who".into(), Value::Mapping(entry));
-
-            let mut top = Mapping::new();
+            let Value::Mapping(mut top) = filing_block(&[("who", entry)]) else {
+                unreachable!()
+            };
             top.insert("fields".into(), Value::Mapping(fields));
-            top.insert("views".into(), Value::Mapping(views));
             Value::Mapping(top)
         };
 
         let issues = diagnose(&block(&[
-            ("group", str_value("people")),
+            ("field", str_value("people")),
             ("nest", str_value("initial")),
         ]));
         assert_eq!(issues.len(), 1, "{issues:?}");
-        assert_eq!(issues[0].key, "views.who.nest");
+        assert_eq!(issues[0].key, "filing.who.nest");
         assert_eq!(
             issues[0].kind,
             ConfigIssueKind::NestNotSingleValued {
@@ -3694,12 +3838,8 @@ mod tests {
             }
         );
 
-        // The same view without `nest:` is clean — one document under several
-        // groups is what a view is *for*.
-        assert!(
-            diagnose(&block(&[("group", str_value("people"))])).is_empty(),
-            "grouping by a multi-valued field is not the problem"
-        );
+        // An entry that files flat does not nest by the field at all.
+        assert!(diagnose(&block(&[("field", str_value("people"))])).is_empty());
     }
 
     /// `nest: ref` over a field not declared `type: ref` files by a string
@@ -3714,14 +3854,12 @@ mod tests {
                 on.insert("type".into(), str_value(ty));
                 fields.insert("written.on".into(), Value::Mapping(on));
             }
-            let mut entry = Mapping::new();
-            entry.insert("group".into(), chain);
-            entry.insert("nest".into(), str_value("ref"));
-            let mut views = Mapping::new();
-            views.insert("journal".into(), Value::Mapping(entry));
-            let mut top = Mapping::new();
+            let Value::Mapping(mut top) =
+                filing_block(&[("journal", &[("field", chain), ("nest", str_value("ref"))])])
+            else {
+                unreachable!()
+            };
             top.insert("fields".into(), Value::Mapping(fields));
-            top.insert("views".into(), Value::Mapping(views));
             Value::Mapping(top)
         };
 
@@ -3732,7 +3870,7 @@ mod tests {
 
         let issues = diagnose(&block(Some("str"), str_value("written.on")));
         assert_eq!(issues.len(), 1, "{issues:?}");
-        assert_eq!(issues[0].key, "views.journal.nest");
+        assert_eq!(issues[0].key, "filing.journal.nest");
         assert_eq!(
             issues[0].kind,
             ConfigIssueKind::NestRefNotDeclared {
@@ -3750,27 +3888,21 @@ mod tests {
                 field: "about".into()
             }
         );
-
-        // A field declared nowhere in this surface: the same finding — the
-        // declaration is what prov reads the link by, and there is none.
-        let issues = diagnose(&block(None, str_value("written.on")));
-        assert_eq!(issues.len(), 1, "{issues:?}");
     }
 
-    /// The bound worth knowing: `diagnose` lints one surface at a time, so the
-    /// cross-key check is silent when `fields` and `views` are declared apart.
+    /// Bounded to one surface, like every cross-key check here: the nest
+    /// check is silent when `fields` and `filing` are declared apart.
     #[test]
     fn the_nest_check_is_silent_across_two_config_surfaces() {
-        let mut views = Mapping::new();
-        let mut entry = Mapping::new();
-        entry.insert("group".into(), str_value("people"));
-        entry.insert("nest".into(), str_value("initial"));
-        views.insert("who".into(), Value::Mapping(entry));
-        let mut top = Mapping::new();
-        top.insert("views".into(), Value::Mapping(views));
-
+        let top = filing_block(&[(
+            "who",
+            &[
+                ("field", str_value("people")),
+                ("nest", str_value("initial")),
+            ],
+        )]);
         assert!(
-            diagnose(&Value::Mapping(top)).is_empty(),
+            diagnose(&top).is_empty(),
             "no `fields` in this surface to contradict it"
         );
     }

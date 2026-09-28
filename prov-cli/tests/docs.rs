@@ -204,7 +204,7 @@ fn body_column_is_prov_s_reading_of_the_prose_and_null_where_there_is_none() {
         "stderr should be silent under --json: {err}"
     );
     let rows: Vec<(String, Option<String>)> = out
-        .split("\"path\": \"")
+        .split("\n    \"path\": \"")
         .skip(1)
         .map(|chunk| {
             let path = chunk.split('"').next().unwrap().to_owned();

@@ -1,26 +1,22 @@
 //! What a `views:` block gets wrong, reported rather than dropped.
 //!
 //! [`ViewSpec::parse`](crate::ViewSpec::parse) is deliberately lossy: it
-//! returns `None` for an entry it cannot make a view of, so a malformed
-//! declaration cannot put a lens in a picker that groups nothing. This module
-//! is the other half — the same judgment, keeping the *reason*.
+//! returns `None` for an entry it cannot read whole, so a broken declaration
+//! cannot put a lens in a picker that shows the wrong thing. This module is the
+//! other half — the same judgment, keeping the *reason*.
 //!
 //! The two must agree, and the test at the bottom of this file is what holds
 //! them to it: every entry this reports as unusable is one `parse` drops, and
-//! every entry `parse` accepts is one this reports nothing fatal about. A
-//! linter that disagreed with the parser would report a clean config prov then
-//! ignored, which is the exact failure the config-issue machinery exists to
-//! prevent.
+//! every entry `parse` accepts is one this reports nothing fatal about.
 //!
 //! Near-miss suggestions for a misspelled key are *not* computed here: the edit
 //! distance lives in `prov-config` alongside every other config near-miss, and
-//! [`VIEW_KEYS`] is what this crate exports so it can be
-//! computed there. One copy of the rule, in the crate that already owns it.
+//! [`VIEW_KEYS`] is what this crate exports so it can be computed there.
 
 use prov_graph::meta::Value;
 
-use crate::filter::{CONDITION_KEYS, Condition};
-use crate::spec::{GRAINS, Grain, NESTS, Nest, VIEW_KEYS, ViewSpec};
+use crate::legacy;
+use crate::spec::{RETIRED_VIEW_KEYS, VIEW_KEYS, expression, is_retired};
 
 /// Something wrong with one `views.<name>` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,50 +32,40 @@ pub struct ViewIssue {
 /// The kinds of thing a `views.<name>` entry gets wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewIssueKind {
-    /// The entry is not a mapping — `daily: date` rather than `daily: {…}`.
+    /// The entry is not a mapping — `daily: created` rather than `daily: {…}`.
     NotAMapping,
-    /// No `group:`, or one that is empty or not a string/list of strings. The
-    /// one key a view cannot do without.
-    NoGrouping,
+    /// No `key:`. The one key a view cannot do without.
+    NoKey,
+    /// A `where:` or `key:` that does not parse, or calls a function that
+    /// does not exist. The message says which.
+    BadExpression {
+        /// Why, in a sentence.
+        message: String,
+    },
+    /// The entry is written in the retired form — `group:`, `by:`, `under:`,
+    /// `nest:`, or a `where:` mapping. Not read at all, rather than read
+    /// half-way, and reported with what replaces it.
+    Retired {
+        /// The replacement, as YAML to paste, when the entry has enough to
+        /// translate (see [`crate::legacy`]).
+        replacement: Option<String>,
+    },
     /// A key this format does not define. Reported so a `labl:` is caught;
     /// a near-miss suggestion is the caller's to add.
     UnknownKey,
-    /// A `by:` whose value is not a grain.
-    ///
-    /// Carries no rendering of the offending value: the key names it, and how a
-    /// value is summarized for a human is the caller's vocabulary, not this
-    /// crate's — the same division that leaves near-miss suggestions to
-    /// `prov-config`.
-    BadGrain,
-    /// A `nest:` whose value is neither a grain nor `ref`. Its own kind
-    /// because its own spellings: `ref` is a way to file and not a way to
-    /// read, so offering it for `by:` would be offering a word that key
-    /// refuses.
-    BadNest,
-    /// A `where:` that yields no condition — not a mapping, empty, or naming
-    /// only predicates this format does not define.
-    ///
-    /// Reported rather than treated as "no filter", because the two readings of
-    /// a broken `where:` are *select everything* and *select nothing*, and
-    /// picking either silently is how a typo publishes a workspace or hides
-    /// one.
-    NoCondition,
 }
 
 impl ViewIssueKind {
     /// Whether this issue means the entry is not a view at all — the ones
     /// [`ViewSpec::parse`](crate::ViewSpec::parse) drops.
     pub fn is_fatal(&self) -> bool {
-        matches!(self, ViewIssueKind::NotAMapping | ViewIssueKind::NoGrouping)
+        !matches!(self, ViewIssueKind::UnknownKey)
     }
 
     /// The spellings a diagnostic should offer for this issue, if any.
     pub fn expected(&self) -> &'static [&'static str] {
         match self {
             ViewIssueKind::UnknownKey => VIEW_KEYS,
-            ViewIssueKind::BadGrain => GRAINS,
-            ViewIssueKind::BadNest => NESTS,
-            ViewIssueKind::NoCondition => CONDITION_KEYS,
             _ => &[],
         }
     }
@@ -95,37 +81,37 @@ pub fn diagnose_view(name: &str, value: &Value) -> Vec<ViewIssue> {
     let Some(map) = value.as_mapping() else {
         return vec![issue("", ViewIssueKind::NotAMapping)];
     };
-    let mut issues = Vec::new();
-    if ViewSpec::parse(name, value).is_none() {
-        issues.push(issue("group", ViewIssueKind::NoGrouping));
+    if is_retired(map) {
+        let replacement = legacy::translate(value).map(|t| t.to_yaml(name));
+        return vec![issue("", ViewIssueKind::Retired { replacement })];
     }
-    for (key, value) in map {
-        match key.as_str() {
-            "label" | "icon" | "under" | "group" => {}
-            "where" => {
-                if Condition::parse(value).is_none() {
-                    issues.push(issue(key, ViewIssueKind::NoCondition));
-                }
+    let mut issues = Vec::new();
+    match map.get("key") {
+        None => issues.push(issue("key", ViewIssueKind::NoKey)),
+        Some(value) => {
+            if let Err(e) = expression(value) {
+                issues.push(issue(
+                    "key",
+                    ViewIssueKind::BadExpression {
+                        message: e.to_string(),
+                    },
+                ));
             }
-            "by" => {
-                // `ViewSpec::parse` reads an unparseable grain as *no grain* —
-                // it will not invent a cut the config did not ask for, and the
-                // view stays usable by grouping on the raw values. That is the
-                // right fallback and it is also completely silent, so this is
-                // the only place a `by: yearr` is ever heard from.
-                if Grain::parse(value).is_none() {
-                    issues.push(issue(key, ViewIssueKind::BadGrain));
-                }
-            }
-            "nest" => {
-                // The same silence: an unreadable `nest:` is read as *files
-                // flat*, and a frontend would file every new record at the
-                // anchor without a word.
-                if Nest::parse(value).is_none() {
-                    issues.push(issue(key, ViewIssueKind::BadNest));
-                }
-            }
-            _ => issues.push(issue(key, ViewIssueKind::UnknownKey)),
+        }
+    }
+    if let Some(value) = map.get("where")
+        && let Err(e) = expression(value)
+    {
+        issues.push(issue(
+            "where",
+            ViewIssueKind::BadExpression {
+                message: e.to_string(),
+            },
+        ));
+    }
+    for key in map.keys() {
+        if !VIEW_KEYS.contains(&key.as_str()) && !RETIRED_VIEW_KEYS.contains(&key.as_str()) {
+            issues.push(issue(key, ViewIssueKind::UnknownKey));
         }
     }
     issues
@@ -144,6 +130,7 @@ pub fn diagnose_views(views: &Value) -> Vec<ViewIssue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::ViewSpec;
     use prov_graph::meta::Mapping;
 
     fn view(pairs: &[(&str, &str)]) -> Value {
@@ -162,10 +149,8 @@ mod tests {
                 &view(&[
                     ("label", "Daily"),
                     ("icon", "calendar"),
-                    ("group", "created"),
-                    ("by", "month"),
-                    ("under", "[Daily](id:abc1234)"),
-                    ("nest", "year"),
+                    ("where", "!present(draft)"),
+                    ("key", "month(first(date_of_document, created))"),
                 ])
             )
             .is_empty()
@@ -180,95 +165,56 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_group_is_reported() {
+    fn a_missing_key_is_reported() {
         let issues = diagnose_view("daily", &view(&[("label", "Daily")]));
-        assert!(issues.iter().any(|i| i.kind == ViewIssueKind::NoGrouping));
+        assert_eq!(issues[0].kind, ViewIssueKind::NoKey);
     }
 
-    /// The failure the fallback would otherwise hide: `ViewSpec::parse` reads an
-    /// unparseable grain as no grain, so the view still works and nothing else
-    /// ever says the config was wrong.
     #[test]
-    fn a_misspelled_grain_is_reported_for_both_axes() {
-        for (key, kind, expected) in [
-            ("by", ViewIssueKind::BadGrain, GRAINS),
-            ("nest", ViewIssueKind::BadNest, NESTS),
-        ] {
-            let issues = diagnose_view("daily", &view(&[("group", "created"), (key, "yearr")]));
-            assert_eq!(
-                issues,
-                vec![ViewIssue {
-                    view: "daily".into(),
-                    key: key.into(),
-                    kind,
-                }]
-            );
-            assert_eq!(issues[0].kind.expected(), expected);
-        }
-    }
-
-    /// `ref` files and does not read: clean on `nest:`, a bad grain on `by:`.
-    #[test]
-    fn ref_is_a_nest_spelling_and_not_a_by_spelling() {
-        assert!(
-            diagnose_view(
-                "journal",
-                &view(&[("group", "written.on"), ("nest", "ref")])
-            )
-            .is_empty()
-        );
-        let issues = diagnose_view("journal", &view(&[("group", "written.on"), ("by", "ref")]));
+    fn an_expression_that_does_not_parse_or_names_no_function_is_reported() {
+        let issues = diagnose_view("daily", &view(&[("key", "dya(created)")]));
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].kind, ViewIssueKind::BadGrain);
-        assert!(!issues[0].kind.expected().contains(&"ref"));
+        assert_eq!(issues[0].key, "key");
+        let ViewIssueKind::BadExpression { message } = &issues[0].kind else {
+            panic!("{issues:?}");
+        };
+        assert!(message.contains("`dya`"), "{message}");
+
+        let issues = diagnose_view("daily", &view(&[("key", "status"), ("where", "status ==")]));
+        assert_eq!(issues[0].key, "where");
     }
 
-    /// A `where:` nobody can read has two possible silent readings — select
-    /// everything, or select nothing — and both are wrong. It is reported
-    /// instead.
     #[test]
-    fn a_where_that_yields_no_condition_is_reported() {
-        for broken in [
-            Value::String("audience == public".into()),
-            Value::Mapping(Mapping::new()),
-            view(&[("hasnt", "draft")]),
-        ] {
-            let mut entry = Mapping::new();
-            entry.insert("group".into(), Value::String("created".into()));
-            entry.insert("where".into(), broken.clone());
-            let issues = diagnose_view("daily", &Value::Mapping(entry));
-            assert_eq!(
-                issues,
-                vec![ViewIssue {
-                    view: "daily".into(),
-                    key: "where".into(),
-                    kind: ViewIssueKind::NoCondition,
-                }],
-                "for {broken:?}"
-            );
-            assert_eq!(issues[0].kind.expected(), CONDITION_KEYS);
-        }
-    }
-
-    /// …and a `where:` that reads is silent, including the combinators.
-    #[test]
-    fn a_readable_where_reports_nothing() {
-        let mut entry = Mapping::new();
-        entry.insert("group".into(), Value::String("created".into()));
-        entry.insert(
-            "where".into(),
-            Value::Mapping({
-                let mut w = Mapping::new();
-                w.insert("not".into(), view(&[("has", "draft")]));
-                w
-            }),
+    fn the_retired_form_is_reported_with_its_replacement() {
+        let issues = diagnose_view(
+            "daily",
+            &view(&[
+                ("group", "created"),
+                ("by", "month"),
+                ("under", "[[Daily]]"),
+            ]),
         );
-        assert!(diagnose_view("daily", &Value::Mapping(entry)).is_empty());
+        assert_eq!(
+            issues.len(),
+            1,
+            "one finding for the entry, not one per key"
+        );
+        let ViewIssueKind::Retired {
+            replacement: Some(yaml),
+        } = &issues[0].kind
+        else {
+            panic!("{issues:?}");
+        };
+        assert!(yaml.contains("key: \"month(created)\""), "{yaml}");
+        assert!(
+            yaml.contains("doc.ancestors.exists(a, a.title == 'Daily')"),
+            "{yaml}"
+        );
     }
 
     #[test]
     fn an_unknown_key_is_reported() {
-        let issues = diagnose_view("daily", &view(&[("group", "created"), ("labl", "Daily")]));
+        let issues = diagnose_view("daily", &view(&[("key", "created"), ("labl", "Daily")]));
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].key, "labl");
         assert_eq!(issues[0].kind, ViewIssueKind::UnknownKey);
@@ -283,10 +229,12 @@ mod tests {
             Value::String("created".into()),
             Value::Sequence(vec![]),
             view(&[("label", "Nameless")]),
-            view(&[("group", "  ")]),
+            view(&[("key", "  ")]),
+            view(&[("key", "created")]),
+            view(&[("key", "created"), ("where", "created ==")]),
+            view(&[("key", "created"), ("labl", "x")]),
             view(&[("group", "created")]),
-            view(&[("group", "created"), ("by", "yearr")]),
-            view(&[("group", "created"), ("labl", "x")]),
+            view(&[("key", "created"), ("under", "[[Daily]]")]),
         ];
         for case in cases {
             let parsed = ViewSpec::parse("daily", &case).is_some();

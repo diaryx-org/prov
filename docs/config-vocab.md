@@ -145,15 +145,18 @@ prov:
     daily:
       label: Daily
       icon: calendar          # a hint for a frontend; prov never interprets it
-      group: [date_of_document, created]  # field, or a chain (first non-empty wins)
-      by: month               # a grain — cut the value coarser (year/month/day/initial)
-      under: '[Daily](id:abc1234)'        # scope: the subtree below this index
-      where:                  # conditions a document in scope must also meet
-        not: { has: draft }
-      nest: year              # how deep a *new* entry is filed, independent of `by`
+      where: "doc.ancestors.exists(a, a.id == 'abc1234') && !present(draft)"
+      key: month(first(date_of_document, created))   # CEL — see "Views" below
     journal:
-      group: written.on       # a field path — a key inside a mapping, or `confirmed[].by`
+      key: field('written.on')                        # a field path, as `fields` writes one
+  filing:                     # where a *new* record goes — see "Filing" below
+    daily:
+      under: '[Daily](id:abc1234)'
+      field: [date_of_document, created]
+      nest: year              # how deep, independent of how a view reads
+    journal:
       under: '[Calendar](/Calendar/index.md)'
+      field: written.on
       nest: ref               # file under the document the value links to
   exports:                    # what may *leave* — see "Exports" below
     letters:
@@ -226,79 +229,122 @@ documents — "the entries under `Daily`, by month", "everything, by tag" — an
 the same document may appear under several groups, which is precisely what the
 spine cannot do.
 
+A view is two expressions in [CEL](https://github.com/google/cel-spec), the
+Common Expression Language, and a name a person can call it by:
+
 | key      | means                                                                 |
 | -------- | --------------------------------------------------------------------- |
-| `group`  | a field path, or a list of them tried in order (first non-empty wins) — `people`, `written.on`, `confirmed[].by`, as a `fields` declaration writes one. **Required** — an entry without one is not a view |
-| `by`     | a **grain** — cut the chosen value coarser before grouping (see below) |
-| `under`  | a link to an index — by path, by `id:`, or by title (`[[Tasks]]`); the view covers its whole spanning subtree. A title several documents carry is an error, not a union. Absent = the whole workspace |
-| `where`  | conditions a document in scope must also meet. Absent = everything scope reaches |
-| `nest`   | a grain — how deep a *new* entry is filed — or `ref`, to file under the document the value links to. Only grains that chain, and only single-valued fields |
+| `where`  | a condition a document must meet. Absent = every document the workspace reaches |
+| `key`    | the group, or list of groups, each document goes under. **Required** — an entry without one is not a view |
 | `label`  | what a person calls it (absent = the name, humanized)                 |
 | `icon`   | a glyph hint, uninterpreted                                           |
 
-#### `where:` — conditions
-
-Two predicates and three combinators, and deliberately no more:
-
-| key       | means                                                        |
-| --------- | ------------------------------------------------------------ |
-| `has`     | the field is present and carries a non-empty value; a list means all of them |
-| `equals`  | the field carries this value — any element of it, for a list. Compared as text |
-| `not`     | the inverse of the condition it wraps                        |
-| `any-of`  | at least one of a list of conditions                         |
-| `all-of`  | every one of a list of conditions                            |
-
-A mapping with several keys is an implicit **and**, which is the shape a real
-condition usually takes:
-
 ```yaml
-where:
-  has: audience
-  equals: { audience: public }
+views:
+  open-tasks:
+    label: Open tasks
+    where: >-
+      doc.ancestors.exists(a, a.title == 'Tasks')
+      && present(status) && !(status in ['done', 'dropped'])
+    key: status
+  activity:
+    key: "[day(created), day(updated)]"   # a document under every day it has a date for
 ```
 
-This stops well short of an expression language, on purpose. Formulas are the
-point of no return for a view format: a closed set of named predicates can grow
-one member at a time, each with a reason, and a grammar cannot be taken back
-once views are in the wild. The rule for adding a predicate is a concrete lens
-that cannot otherwise be said.
+CEL is not prov's. Its grammar, its operators (`==`, `in`, `&&`, `!`, `?:`),
+and its standard functions (`size`, `startsWith`, `matches`, `exists`, `map`,
+…) are fixed by its specification, which is the reason to embed one: a view is
+a way of *reading*, reading has no invariant, and a language that is
+deliberately not Turing complete and has no side effects can be as expressive
+as a view wants without being able to write or run forever. The reasoning is
+the [views-as-queries proposal](/docs/proposals/views-as-queries/proposal-views-as-queries-v1.md).
 
-Three cases resolve toward *saying so* rather than guessing, because each has
-two opposite silent readings. An empty or unreadable `where:` is not a filter —
-it is a `check` finding, since guessing would either publish a workspace or hide
-it. `any-of: []` matches nothing and `all-of: []` matches everything (vacuous
-truth both times, and the reading where an empty disjunction cannot publish by
-accident). And `has` means present *and non-empty*, since a field written blank
-has nothing to group or display.
+#### What an expression sees
 
-#### The rest
+- **Each field is a variable of its own name** — `status`, `created`,
+  `people`. A field the document does not carry is `null`, so `status ==
+  'done'` is false on a document without a status rather than an error. The
+  one place prov departs from plain CEL: `null` on the right of `in`, or as the
+  list `exists`/`all`/`map`/`filter` walk, is an empty list, so `'Ada' in
+  people` is false on a document that lists nobody.
+- **`doc` is the document itself**: `doc.path`, `doc.title`, `doc.id` (its own
+  `id` field, else the registry's, else `null`), `doc.meta` — the whole block,
+  for a key that is not an identifier (`doc.meta['date of birth']`) or a field
+  named `doc` — and **`doc.ancestors`**, every document above this one in the
+  spine from the root down, each `{path, title, id}`.
 
-Scope and conditions are separate keys because they fail differently: an anchor
-that names nothing is a **broken view** and errors, while a condition that
-matches nothing is an ordinary empty answer.
+#### prov's functions
 
-Three things are load-bearing, and each is a place an obvious shortcut is wrong.
+| function | gives |
+| --- | --- |
+| `present(x)` | whether `x` carries a value — not `null`, not blank, not a list of blanks |
+| `first(a, b, …)` | the first argument that is `present` — a fallback chain |
+| `field('a.b')` | every value at a field path, as text: `written.on` inside a mapping, `confirmed[].by` inside every item of a list; `[]` when the path reaches nothing |
+| `year(x)`, `month(x)`, `day(x)` | the keys a date cuts to, read as EDTF — see "Grains" |
+| `initial(x)`, `initial(x, n)` | the first letter, or `n` letters, upper-cased — the A–Z index |
 
-**There is no `date` grouping.** `group:` names fields and `by:` cuts values, so
-a date view is those two things pointed at date fields — the chain
-`[date_of_document, created]` above is a declaration *this workspace* makes, not
-a convention prov blesses. A workspace that files by `taken_on` writes that
-instead. A grain applies to a *value*, never to a declared type, so it needs no
-`fields.<name>.type` declaration to work; a value a grain cannot cut does not
-group, rather than grouping wrongly.
+A grain takes a value or a list, and gives a *list*, because a value can cut
+to no key (`banana`, `XXXX`), one, or several (`1918/1922` at year grain).
+`first` does not fall through a value that is present but uncuttable: falling
+through to `created` because `date_of_document` held something unparseable
+would file the document under a date it does not claim, and leaving it
+ungrouped shows the bad value instead.
+
+New functions are added by one rule — a concrete lens that cannot otherwise be
+said, not a shape that seems likely to be wanted. CEL's arithmetic and string
+functions are CEL's, and the embedding carries the `cel` crate's differences
+from the specification with it: `size()` of a string counts bytes, and the
+optional string extensions (`lowerAscii`, `split`) are not there.
+
+#### Keys, failures, and the ungrouped bucket
+
+A `key:` gives a value or a list; lists are flattened, each value is a group
+as its text, and a document is under each distinct group once. A document
+that gets no key at all — no date, or one no grain can cut — is in the
+**ungrouped** bucket, reported rather than dropped, because a view whose
+entries have all quietly stopped grouping is indistinguishable from an empty
+archive and the difference is the whole diagnosis.
+
+An expression can fail on one document and not another — `size(nickname)` on
+a document without one, a comparison between text and a number. Such a
+document is neither shown nor silently dropped: `prov views <name>` lists it
+on stderr with the reason, and `--json` under `failures`. An expression that
+does not parse, or calls a function neither CEL nor prov defines, is a
+`check` finding at `views.<name>.where` or `.key`, and the view is not read
+at all — a broken condition must not become a view of everything.
+
+#### There is no `date` grouping
+
+`month(first(date_of_document, created))` is a declaration *this workspace*
+makes, not a convention prov blesses. A workspace that files by `taken_on`
+writes that instead. A grain applies to a *value*, never to a declared type,
+so it needs no `fields.<name>.type` declaration to work.
+
+#### Scope is ancestry
+
+A view does not walk the spine. prov walks it once, for the census, and records
+each document's ancestors on its row; a view scoped to a subtree says so as a
+condition — `doc.ancestors.exists(a, a.title == 'Daily')`, or by id,
+`a.id == 'abc1234'`, which survives a retitle too. It survives a move and a
+rename for the reason a traversal did: the ancestry is recomputed from the
+spine on every run, never matched against a path prefix, so `path starts-with
+"Daily/"` and the index *titled* `2026` under `Trips/` are not what it
+matches. The anchor is not its own ancestor, so an index is what its records
+hang under, not one of them. What a condition cannot do that an anchor did is
+fail: `a.title == 'Taks'` matches nothing, without comment.
 
 #### Grains
 
 A grain is a **coarsening** — any many-to-one function from a value to a group
 key. The calendar is one family of them, not the subject:
 
-| `by:` / `nest:`  | groups                                       |
-| ---------------- | -------------------------------------------- |
-| `year`           | `2026-07-24` → `2026`, `1913~` → `1913`, `192X` → `192X` |
-| `month`          | `2026-07-24` → `2026-07`, `1943-05` → `1943-05` |
-| `day`            | `2026-07-24` → `2026-07-24`                  |
-| `initial`        | `Lovelace` → `L` — the A–Z index             |
-| `{ initial: 2 }` | `Lovelace` → `LO`                            |
+| function / `nest:`  | groups                                       |
+| ------------------- | -------------------------------------------- |
+| `year` | `2026-07-24` → `2026`, `1913~` → `1913`, `192X` → `192X` |
+| `month` | `2026-07-24` → `2026-07`, `1943-05` → `1943-05` |
+| `day` | `2026-07-24` → `2026-07-24`                  |
+| `initial` | `Lovelace` → `L` — the A–Z index             |
+| `initial(x, 2)` / `{ initial: 2 }` | `Lovelace` → `LO`                            |
 
 The date grains **validate** rather than slicing, so `banana` at year grain is
 not the group `bana` and `20264` is not the year `2026`. What they validate
@@ -335,24 +381,84 @@ obvious candidate and is deliberately absent: nobody has asked for one, and its
 keys would sort lexically as `0, 10, 100, 20`, needing group ordering to become
 grain-aware, which is the deferred `sort:` axis under another name.
 
+The reading engine is the `prov-views` crate, whose dependencies are prov's
+read core, the EDTF parser and the CEL interpreter, none of which can write to
+the workspace it reads. Running a view is two steps, and they are worth
+knowing apart: **select** answers *which documents does this view cover* and
+returns a flat, deduplicated set; **group** projects that into groups and is a
+pure function. So the count of documents a view covers and the count of rows it
+draws are different numbers — a document under two groups is one document in
+two places — and `prov views <name>` prints both. `prov views <name> --json`
+gives the same answer machine-readable, each row carrying that document's
+whole metadata block and its ancestors, so a consumer that replaces its own
+per-file loop with a view still has what the loop was reading; `prov views
+--json` lists the declarations the same way. `prov query '<where>' [--key
+'<key>']` runs an expression without declaring a view — the same census, the
+same evaluation — which is where a view is tried before it is written down.
+
+What every view narrows is the **census**: every document the spine reaches
+from the root, the root included, each once, in path order. `prov docs` prints
+it a line each, and `prov docs --json` prints it as the same rows a view
+returns — path, title, `id` (read from the document's `id` field where it
+carries one and from the registry otherwise, so the column reads the same
+under every `id_storage`), `ancestors`, and the metadata. It declares nothing,
+so there is nothing to misspell: a consumer that wants to build its own table
+over the workspace — a query engine, a shell pipeline — starts here. Reached,
+not present: a file in a directory nothing links into is not a row, for the
+same reason `check` does not report it (`prov_views::documents`).
+
+#### The retired form
+
+Views were once written with `group:` (a field or a first-non-empty chain),
+`by:` (a grain), `under:` (an anchor whose subtree the view walked), `nest:`,
+and a `where:` mapping of `has`/`equals`/`not`/`any-of`/`all-of`. None of
+those is read now. A view still written that way is a `check` finding that
+prints its replacement — `group: [a, b]` with `by: month` as `key:
+month(first(a, b))`, `under:` as the ancestry condition, `has: x` as
+`present(x)`, `equals: { x: v }` as `'v' in field('x')`, and `nest:` as a
+`filing:` entry of the same name.
+
+### Filing
+
+A view reads. A **filing** entry says where a frontend should *write* a new
+record — under which index, by which field, how deep:
+
+| key      | means                                                                 |
+| -------- | --------------------------------------------------------------------- |
+| `under`  | the index new records go below, as a link — by path, `id:` or title. Absent = the root |
+| `field`  | the field path, or a list tried in order, the record is filed by. Required with `nest` |
+| `nest`   | a grain — how deep, through indexes titled by the cut value — or `ref`, to file under the document the value links to. Absent = directly under `under` |
+| `label`  | what a person calls it                                                |
+
+Filing used to be a view's `nest:` key, and was split out because it is the
+half that writes. The spine is single-parent, so filing needs guarantees before
+anything runs that a way of reading never does, and a view carrying `nest:` had
+to live inside them. MoReq2010 §1.4.5 draws the same line between
+*classification* — how records become groups, a view — and *aggregation*, the
+index a record actually hangs under; keeping them apart is what keeps a change
+to how something reads from moving where tomorrow's entry lands.
+
+prov describes where a record files (`FilingSpec::route`), and a frontend
+files it: the route is index *titles* below `under`, exactly what prov's route
+addressing takes (`prov new --under "Daily/2026/2026-07" -p`), or the link the
+record carries.
+
 #### What `nest:` can and cannot file
 
-`nest:` takes the same grains, but not every grain and not every field, because
-it **writes**. Filing builds a hierarchy of index documents, so a grain may nest
-only if its coarser steps are *determined* by its finer ones — `2026-07-24` →
-`2026-07` → `2026`, `Ada` → `Ad` → `A`. Every grain above chains; an arbitrary
-sequence of coarsenings would not. An interval that spans several groups at
-the nesting grain has several homes, and is not filed, for the reason a
-document with two people is not.
+Filing builds a hierarchy of index documents, so a grain may nest only if its
+coarser steps are *determined* by its finer ones — `2026-07-24` → `2026-07` →
+`2026`, `Ada` → `Ad` → `A`. Every grain above chains; an arbitrary sequence of
+coarsenings would not. An interval that spans several groups at the nesting
+grain has several homes, and is not filed, for the reason a document with two
+people is not.
 
-The second limit is prov's spine, not taste. `nest:` files into the spanning
-relation, which is single-parent, so the grouping field must be **single-valued**
-for the document being filed. A document listing two people has two homes and
-nothing can choose between them — so `nest:` on a field declared `type: seq` is
-a `check` finding, and a document that turns out multi-valued at filing time
-simply has no route. Grouping by such a field stays perfectly good; one document
-under several groups is the whole point of a view. Only the filing half is
-constrained.
+The second limit is prov's spine, not taste: the field must be
+**single-valued** for the document being filed. A document listing two people
+has two homes and nothing can choose between them — so `nest:` over a field
+declared `type: seq` is a `check` finding, and a document that turns out
+multi-valued at filing time simply has no route. A view grouping by such a
+field stays perfectly good; one document under several groups is the whole
+point of a view.
 
 #### `nest: ref` — filing by reference
 
@@ -365,10 +471,10 @@ rest of the chain:
 fields:
   written.on:
     type: ref
-views:
+filing:
   journal:
-    group: written.on
     under: '[Calendar](/Calendar/index.md)'
+    field: written.on
     nest: ref
 ```
 
@@ -377,62 +483,19 @@ files under that day node, full stop. The day already sits under its month,
 which sits under its year, because that is the calendar index's own
 `contents` chain — so the chain condition above is met by construction, and
 prov does not know the target is a day. The same declaration files a note
-under a person, a place or a project, and prov cannot tell which. Order
-comes with it: a calendar index in spine order is already chronological, and
-a view nested by reference inherits that without a date being read anywhere.
+under a person, a place or a project, and prov cannot tell which.
 
 What it costs is that the shelf must exist. prov creates nothing here: a link
 to a document that is not there is the ordinary broken-link finding, and
-making the day node is the frontend's, which is where that opinion belongs.
-The value grains stay for a workspace that would rather not keep a node per
-day, or whose dates are `1913~` and `1918/1922` and have no node to point at.
+making the day node is the frontend's. The value grains stay for a workspace
+that would rather not keep a node per day, or whose dates are `1913~` and
+`1918/1922` and have no node to point at.
 
 The field must be declared `type: ref`. That is what makes the value a link
 — resolved, checked, rewritten when the shelf moves — rather than a string
 that used to be a path; a `nest: ref` over a field the same surface does not
 declare a `ref` is a `check` finding, because the filing would work on the
-day it was written and break, silently, the day the shelf was moved. `ref` is
-a way to file and not a way to read: `by: ref` is a bad grain.
-
-**`under:` is a traversal, not a path filter.** The scope is resolved by walking
-the spanning relation below the anchor, so it survives a rename, a move and a
-retitle — where `path starts-with "Daily/"` would not, and where matching an
-index *titled* `2026` finds the one under `Trips/` just as happily.
-
-**`nest:` is independent of `by:`.** Grouping is a reading decision and filing is
-a writing one; a picker that reads like a display setting must not silently
-change where tomorrow's entry lands. A view may group finer than it files.
-
-prov reads views and never acts on one — a view has no invariant, so no `check`
-finding can come from a wrong one, and `nest:` describes where a frontend should
-file a record rather than something prov goes and does. They live in the config
-so that every tool over the workspace reads the same lenses instead of each app
-keeping its own block. `prov views` lists them; `prov views <name>` executes one.
-
-The format and its engine are the `prov-views` crate, which depends only on
-prov's read core and so cannot write to the workspace it reads. Running a view
-is two steps, and they are worth knowing apart: **select** answers *which
-documents does this view cover* (scope, then conditions) and returns a flat,
-deduplicated set; **group** projects that into groups and is a pure function.
-So the count of documents a view covers and the count of rows it draws are
-different numbers — a document under two of a multi-valued field's groups is one
-document in two places — and `prov views <name>` prints both. `prov views <name>
---json` gives the same answer machine-readable, each row carrying that
-document's whole metadata block, so a consumer that replaces its own per-file
-loop with a view still has what the loop was reading; `prov views --json` lists
-the declarations the same way.
-
-What every view narrows is the **census**: every document the spine reaches
-from the root, the root included, each once, in path order. `prov docs` prints
-it a line each, and `prov docs --json` prints it as the same rows a view
-returns, with one addition — the document's `id` lifted out as a column of its
-own, read from the document's `id` field where it carries one and from the
-registry otherwise, so the column reads the same under every `id_storage`. It
-declares nothing, so there is nothing to misspell: a consumer that wants to
-build its own table over the workspace — a query engine, a shell pipeline —
-starts here rather than by declaring a view that says "everything". Reached,
-not present: a file in a directory nothing links into is not a row, for the
-same reason `check` does not report it (`prov_views::documents`).
+day it was written and break, silently, the day the shelf was moved.
 
 `prov docs --json --body` adds the prose: each row carries a `body` string,
 so the whole workspace comes out as text in one record set — for a search
@@ -465,7 +528,7 @@ only thing read.
 
 ### Exports
 
-Everything above reads open by default — a view with no `under:` covers the
+Everything above reads open by default — a view with no `where:` covers the
 whole workspace. An **export** is the boundary where that flips: a named,
 closed-by-default set of documents that may *leave* the workspace.
 
@@ -504,9 +567,11 @@ makes the entry unreadable, for the same reason a missing gate does.
 `view` optionally arranges what leaves, and it obeys a one-way valve: **an
 export's set is a subset of what its gate admits, whatever the view says**. A
 view may narrow the set; it can never put back a document the gate held out.
-An export naming an unknown or broken view is an error, never a fall-back to
-the gate's whole set — the view was written down as a bound on what leaves,
-and a bound nobody can apply must fail closed. (`diagnose` also flags the
+An export naming an unknown view — never declared, or one whose expressions
+do not parse and so is not read — is an error, never a fall-back to the gate's
+whole set: the view was written down as a bound on what leaves, and a bound
+nobody can apply must fail closed. For the same reason a document the view's
+condition cannot be evaluated on does not leave. (`diagnose` also flags the
 unknown-view typo at author time, when `views:` and `exports:` share a
 surface.)
 
@@ -601,8 +666,8 @@ fill in a new document, so a `default:` on one is carried and never written.
 ### Scoping a declaration
 
 A declaration governs the whole workspace unless it says `under:` — a link to
-an index, resolved exactly as a view's `under:` is (by path, by `id:`, or by
-title), and then it governs the files in that index's spanning subtree and no
+an index, resolved by path, by `id:`, or by title (as a filing entry's
+`under:` is), and then it governs the files in that index's spanning subtree and no
 others. A field may be declared several times, as a list, each entry scoped:
 `status` is one closed set of terms under `Tasks` and another under
 `Proposals`, opening as `open` in the one and `draft` in the other, and a
@@ -914,11 +979,13 @@ out. Where the spec says "the block is fenced by `---`, `;;;`, or ```` ```fig
 ````," the generated page says "every file here opens with a `---` line."
 
 Where the workspace declares [views](#views), the page lists them too — each
-one's label, the field chain and grain it groups by, the subtree `under:` scopes
-it to, and whether a `where:` leaves some of that scope out — because a
+one's label, what it groups by where that can be said in words (a field, a
+chain, a grain over either; anything else is called a rule and left in the
+settings), and whether a `where:` leaves some files out — because a
 containment tree is only one way through the files and a reader should be told
-what the others are. `nest:` and `icon:` are left out: one is a writing rule and
-the other a hint to a picker, and neither helps a person reading the directory.
+what the others are. `filing:` and `icon:` are left out: one is a writing rule
+and the other a hint to a picker, and neither helps a person reading the
+directory.
 
 It is derived from configuration and from what prov accepts on read — **never**
 from a scan of what the files contain. That one rule is why it is both

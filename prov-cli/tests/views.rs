@@ -2,10 +2,10 @@
 //!
 //! These drive the whole chain the library tests only see in pieces: a `views:`
 //! block written into a real root document, read back through `WorkspaceConfig`,
-//! executed against a real spanning tree on a real filesystem. Two of the three
-//! properties asserted here (scope excluding an out-of-subtree document that
-//! *would* have grouped, and a dead anchor exiting non-zero) are only observable
-//! from outside.
+//! executed against a real spanning tree on a real filesystem. Scope by
+//! ancestry excluding an out-of-subtree document that *would* have grouped, and
+//! a failing expression reported beside the answer, are only observable from
+//! outside.
 
 use std::path::Path;
 use std::process::Command;
@@ -37,10 +37,11 @@ fn write(dir: &Path, rel: &str, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
-/// A journal declaring two views: a scoped date chain and an unscoped field.
-/// `readme.md` carries a `created` stamp and is *not* under `Daily` — it is
-/// what makes the scoped view's scope observable.
-fn vault(tag: &str, under: &str) -> std::path::PathBuf {
+/// A journal declaring two views: a date chain scoped to `Daily` by ancestry,
+/// and an unscoped field. `readme.md` carries a `created` stamp and is *not*
+/// under `Daily` — it is what makes the scoped view's scope observable.
+/// `extra` is spliced into the `daily` entry.
+fn vault(tag: &str, extra: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("prov-views-cli-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -49,8 +50,9 @@ fn vault(tag: &str, under: &str) -> std::path::PathBuf {
         "index.md",
         &format!(
             "---\ntitle: Home\nprov:\n  views:\n    daily:\n      label: Daily\n      \
-             group: [date_of_document, created]\n      by: month\n      under: '{under}'\n    \
-             who:\n      group: people\ncontents:\n- daily.md\n- readme.md\n---\n"
+             where: doc.ancestors.exists(a, a.title == 'Daily')\n      \
+             key: month(first(date_of_document, created))\n{extra}    \
+             who:\n      key: people\ncontents:\n- daily.md\n- readme.md\n---\n"
         ),
     );
     write(
@@ -81,27 +83,34 @@ fn vault(tag: &str, under: &str) -> std::path::PathBuf {
     dir
 }
 
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("prov-views-cli-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 #[test]
 fn bare_views_lists_what_the_workspace_declares() {
-    let dir = vault("list", "[Daily](daily.md)");
+    let dir = vault("list", "");
     let (ok, out) = run(&dir, &["views"]);
     assert!(ok, "{out}");
     assert!(
-        out.contains("daily  Daily — group: date_of_document → created by month"),
+        out.contains(
+            "daily  Daily — key: month(first(date_of_document, created))  \
+             where: doc.ancestors.exists(a, a.title == 'Daily')"
+        ),
         "{out}"
     );
-    assert!(
-        out.contains("who  Who — group: people (whole workspace)"),
-        "{out}"
-    );
+    assert!(out.contains("who  Who — key: people\n"), "{out}");
 }
 
-/// The point of `under:`. `readme.md` carries `created: 2026-01-02` and would
-/// group happily — it is excluded because it is not in the subtree, which is
-/// what a lens over a whole vault cannot express.
+/// Scope is ancestry. `readme.md` carries `created: 2026-01-02` and would group
+/// happily — it is excluded because `Daily` is not above it, which is what a
+/// lens over a whole vault cannot express.
 #[test]
-fn a_scoped_view_groups_only_its_subtree() {
-    let dir = vault("scope", "[Daily](daily.md)");
+fn a_view_scoped_by_ancestry_groups_only_its_subtree() {
+    let dir = vault("scope", "");
     let (ok, out) = run(&dir, &["views", "daily"]);
     assert!(ok, "{out}");
     assert!(
@@ -125,7 +134,7 @@ fn a_scoped_view_groups_only_its_subtree() {
 /// joins, and one document files under both of its values.
 #[test]
 fn an_unscoped_view_covers_everything_and_repeats_multi_valued_rows() {
-    let dir = vault("who", "[Daily](daily.md)");
+    let dir = vault("who", "");
     let (ok, out) = run(&dir, &["views", "who"]);
     assert!(ok, "{out}");
     assert!(out.contains("Ada (2)"), "{out}");
@@ -136,86 +145,130 @@ fn an_unscoped_view_covers_everything_and_repeats_multi_valued_rows() {
     );
 }
 
-/// The count a reader is given is **documents**, not rows. `letter.md` is under
+/// The count a reader is given is **documents**, not rows. `07-24.md` is under
 /// both `Ada` and `Grace`; a total that counted it twice would have the view
 /// claiming more entries than the workspace holds.
 #[test]
 fn the_summary_counts_documents_separately_from_rows() {
-    let dir = vault("counts", "[Daily](daily.md)");
+    let dir = vault("counts", "");
     let (ok, out) = run(&dir, &["views", "who"]);
     assert!(ok, "{out}");
     assert!(out.contains("6 document(s), 7 row(s)"), "{out}");
 }
 
-/// `where:` narrows what scope reached — and a condition matching nothing is an
-/// ordinary empty answer, not the error a broken anchor is.
+/// The union the old `group:` chain could not say: a document under every day
+/// it has a date for.
 #[test]
-fn a_where_condition_narrows_a_view() {
-    let dir = vault("filter", "[Daily](daily.md)");
-    let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
-    std::fs::write(
-        dir.join("index.md"),
-        text.replace(
-            "      by: month\n",
-            "      by: month\n      where:\n        not:\n          has: draft\n",
-        ),
-    )
-    .unwrap();
-    // Mark one entry a draft; it should leave the view without leaving the vault.
-    let entry = dir.join("daily/07-24.md");
-    let marked = std::fs::read_to_string(&entry)
-        .unwrap()
-        .replace("date_of_document:", "draft: true\ndate_of_document:");
-    std::fs::write(&entry, marked).unwrap();
-
-    let (ok, out) = run(&dir, &["views", "daily"]);
+fn a_key_may_put_a_document_under_several_of_its_own_dates() {
+    let dir = scratch("union");
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  views:\n    activity:\n      \
+         key: '[day(created), day(updated)]'\ncontents:\n- a.md\n---\n",
+    );
+    write(
+        &dir,
+        "a.md",
+        "---\ntitle: A\npart_of: index.md\ncreated: 2026-09-01\nupdated: 2026-09-20T10:00:00Z\n---\n",
+    );
+    let (ok, out) = run(&dir, &["views", "activity"]);
     assert!(ok, "{out}");
     assert!(
-        !out.contains("07-24.md"),
-        "the draft is filtered out: {out}"
+        out.contains("2026-09-01 (1)\n  a.md — A") && out.contains("2026-09-20 (1)\n  a.md — A"),
+        "{out}"
     );
-    assert!(out.contains("2026-08 (1)"), "{out}");
-
-    // The listing flags that this view no longer shows everything it reaches.
-    let (_, out) = run(&dir, &["views"]);
-    assert!(out.contains("[filtered]"), "{out}");
 }
 
-/// A `where:` nobody can read is a config finding, not a silent "select
-/// everything" or "select nothing".
+/// A condition narrows the census, and one matching nothing is an ordinary
+/// empty answer.
 #[test]
-fn an_unreadable_where_is_reported_by_check() {
-    let dir = vault("badwhere", "[Daily](daily.md)");
+fn a_where_condition_narrows_a_view() {
+    let dir = scratch("filter");
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  views:\n    finished:\n      \
+         where: '!present(draft)'\n      key: title\ncontents:\n- a.md\n- b.md\n---\n",
+    );
+    write(
+        &dir,
+        "a.md",
+        "---\ntitle: A\npart_of: index.md\ndraft: true\n---\n",
+    );
+    write(&dir, "b.md", "---\ntitle: B\npart_of: index.md\n---\n");
+    let (ok, out) = run(&dir, &["views", "finished"]);
+    assert!(ok, "{out}");
+    assert!(!out.contains("a.md"), "the draft is filtered out: {out}");
+    assert!(out.contains("B (1)"), "{out}");
+}
+
+/// An expression that cannot run is a config finding — and the view is not
+/// read at all, rather than read as a view of everything.
+#[test]
+fn a_bad_expression_is_reported_by_check_and_the_view_is_not_read() {
+    let dir = vault("badwhere", "      icon: calendar\n");
     let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
     std::fs::write(
         dir.join("index.md"),
-        text.replace(
-            "      by: month\n",
-            "      by: month\n      where: audience == public\n",
-        ),
+        text.replace("key: month(first(", "key: mnth(first("),
     )
     .unwrap();
 
     let (_, out) = run(&dir, &["check"]);
     assert!(
-        out.contains("views.daily.where") && out.contains("has, equals"),
+        out.contains("views.daily.key") && out.contains("there is no function `mnth`"),
+        "{out}"
+    );
+    let (ok, out) = run(&dir, &["views", "daily"]);
+    assert!(!ok && out.contains("no view named `daily`"), "{out}");
+}
+
+/// A document the condition cannot be evaluated on is named, beside the
+/// answer — never silently shown or dropped.
+#[test]
+fn a_failing_expression_is_reported_per_document() {
+    let dir = scratch("failure");
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  views:\n    long:\n      \
+         where: size(nickname) > 3\n      key: title\ncontents:\n- a.md\n- b.md\n---\n",
+    );
+    write(
+        &dir,
+        "a.md",
+        "---\ntitle: A\npart_of: index.md\nnickname: Addie\n---\n",
+    );
+    write(&dir, "b.md", "---\ntitle: B\npart_of: index.md\n---\n");
+    let (ok, out, err) = run_split(&dir, &["views", "long"]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("A (1)"), "{out}");
+    assert!(
+        err.contains("could not be evaluated") && err.contains("b.md — where:"),
+        "{err}"
+    );
+
+    let (ok, out, err) = run_split(&dir, &["views", "long", "--json"]);
+    assert!(ok && err.is_empty(), "{err}");
+    assert!(
+        out.contains(
+            "\"failures\": [\n    {\n      \"path\": \"b.md\",\n      \"clause\": \"where\","
+        ),
         "{out}"
     );
 }
 
-/// The generalization end to end: the same `by:` key, no calendar involved.
-/// `hopper` lower-cased still lands under `H`, and `Ålesund` cuts by character
-/// rather than byte.
+/// The A–Z index end to end: `hopper` lower-cased still lands under `H`, and
+/// `Ålesund` cuts by character rather than byte.
 #[test]
-fn an_initial_grain_builds_an_a_to_z_index() {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-az-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn an_initial_key_builds_an_a_to_z_index() {
+    let dir = scratch("az");
     write(
         &dir,
         "index.md",
-        "---\ntitle: Home\nprov:\n  views:\n    surnames:\n      group: surname\n      \
-         by: initial\n      nest: { initial: 2 }\ncontents:\n- a.md\n- b.md\n- c.md\n---\n",
+        "---\ntitle: Home\nprov:\n  views:\n    surnames:\n      key: initial(surname)\n\
+         contents:\n- a.md\n- b.md\n- c.md\n---\n",
     );
     write(
         &dir,
@@ -241,27 +294,20 @@ fn an_initial_grain_builds_an_a_to_z_index() {
     );
     assert!(out.contains("L (1)"), "{out}");
     assert!(out.contains("Å (1)"), "cut by character, not byte: {out}");
-
-    // The listing reports the filing grain, since `nest` is the half that
-    // writes.
-    let (_, out) = run(&dir, &["views"]);
-    assert!(out.contains("by initial"), "{out}");
-    assert!(out.contains("files by initial 2"), "{out}");
 }
 
-/// `nest` on a multi-valued field is a finding, not a runtime surprise — the
-/// spine is single-parent, so a document with two values has two homes. The
-/// view still groups.
+/// Filing by a multi-valued field is a finding, not a runtime surprise — the
+/// spine is single-parent, so a document with two values has two homes. A
+/// view grouping by the same field is fine.
 #[test]
-fn nesting_by_a_multi_valued_field_is_reported() {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-nest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn filing_by_a_multi_valued_field_is_reported() {
+    let dir = scratch("nest");
     write(
         &dir,
         "index.md",
         "---\ntitle: Home\nprov:\n  fields:\n    people:\n      type: seq\n  views:\n    who:\n      \
-         group: people\n      nest: initial\ncontents:\n- a.md\n---\n",
+         key: people\n  filing:\n    who:\n      field: people\n      nest: initial\n\
+         contents:\n- a.md\n---\n",
     );
     write(
         &dir,
@@ -271,10 +317,9 @@ fn nesting_by_a_multi_valued_field_is_reported() {
 
     let (_, out) = run(&dir, &["check"]);
     assert!(
-        out.contains("views.who.nest") && out.contains("several homes"),
+        out.contains("filing.who.nest") && out.contains("several homes"),
         "{out}"
     );
-
     let (ok, out) = run(&dir, &["views", "who"]);
     assert!(ok, "the view still groups: {out}");
     assert!(
@@ -283,19 +328,17 @@ fn nesting_by_a_multi_valued_field_is_reported() {
     );
 }
 
-/// `nest: ref` files a record under the document its own field links to.
-/// The listing says so, the view groups by the link, and the field not being
-/// declared `type: ref` is a finding — the filing would break the day the
-/// shelf moved.
+/// Filing by reference wants the field declared a ref — the filing would
+/// otherwise break the day the shelf moved. A view grouping by the same path
+/// reads it through `field()`.
 #[test]
-fn nesting_by_reference_is_listed_grouped_and_checked() {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-ref-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn filing_by_reference_is_checked_and_a_view_reads_the_path() {
+    let dir = scratch("ref");
     let index = |declared: &str| {
         format!(
-            "---\ntitle: Home\nprov:\n  fields:\n    written.on:\n      type: {declared}\n  views:\n    journal:\n      \
-             group: written.on\n      nest: ref\ncontents:\n- calendar.md\n- a.md\n---\n"
+            "---\ntitle: Home\nprov:\n  fields:\n    written.on:\n      type: {declared}\n  views:\n    \
+             journal:\n      key: field('written.on')\n  filing:\n    journal:\n      \
+             field: written.on\n      nest: ref\ncontents:\n- calendar.md\n- a.md\n---\n"
         )
     };
     write(&dir, "index.md", &index("ref"));
@@ -316,16 +359,12 @@ fn nesting_by_reference_is_listed_grouped_and_checked() {
     );
 
     // Not `ok`: a fresh vault has no `about.md`, and that finding is not this
-    // test's. What matters is that the view itself is not one.
+    // test's. What matters is that the filing entry itself is not one.
     let (_, out) = run(&dir, &["check"]);
     assert!(
-        !out.contains("views.journal.nest"),
+        !out.contains("filing.journal.nest"),
         "declared a ref: clean\n{out}"
     );
-
-    let (ok, out) = run(&dir, &["views"]);
-    assert!(ok, "{out}");
-    assert!(out.contains("files by ref"), "{out}");
 
     let (ok, out) = run(&dir, &["views", "journal"]);
     assert!(ok, "{out}");
@@ -338,23 +377,45 @@ fn nesting_by_reference_is_listed_grouped_and_checked() {
     let (ok, out) = run(&dir, &["check"]);
     assert!(!ok, "{out}");
     assert!(
-        out.contains("views.journal.nest") && out.contains("not declared `type: ref`"),
+        out.contains("filing.journal.nest") && out.contains("not declared `type: ref`"),
         "{out}"
     );
 }
 
-/// An anchor that names nothing must not read as an archive with nothing in it.
+/// A view in the retired form is not read, and `check` prints what replaces
+/// it — the exact YAML, with the anchor as ancestry and `nest:` as filing.
 #[test]
-fn a_dead_anchor_fails_loudly_rather_than_printing_an_empty_view() {
-    let dir = vault("dead", "[Daily](gone.md)");
-    let (ok, out) = run(&dir, &["views", "daily"]);
-    assert!(!ok, "a broken view exits non-zero: {out}");
-    assert!(out.contains("no document exists there"), "{out}");
+fn a_retired_view_is_reported_with_its_replacement() {
+    let dir = scratch("retired");
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  views:\n    daily:\n      group: [date_of_document, created]\n      \
+         by: month\n      under: '[[Daily]]'\n      nest: year\ncontents:\n- daily.md\n---\n",
+    );
+    write(
+        &dir,
+        "daily.md",
+        "---\ntitle: Daily\npart_of: index.md\n---\n",
+    );
+    let (_, out) = run(&dir, &["check"]);
+    assert!(
+        out.contains("config `views.daily` is written with the retired view keys"),
+        "{out}"
+    );
+    assert!(
+        out.contains("key: \"month(first(date_of_document, created))\"")
+            && out.contains("where: \"doc.ancestors.exists(a, a.title == 'Daily')\"")
+            && out.contains("filing:\n      daily:\n        under: \"[[Daily]]\""),
+        "{out}"
+    );
+    let (_, out) = run(&dir, &["views"]);
+    assert!(out.contains("declares no views"), "{out}");
 }
 
 #[test]
 fn an_unknown_view_name_lists_the_ones_that_exist() {
-    let dir = vault("unknown", "[Daily](daily.md)");
+    let dir = vault("unknown", "");
     let (ok, out) = run(&dir, &["views", "nope"]);
     assert!(!ok, "{out}");
     assert!(
@@ -367,9 +428,7 @@ fn an_unknown_view_name_lists_the_ones_that_exist() {
 /// leaving the user unsure whether the command ran.
 #[test]
 fn a_workspace_with_no_views_says_so() {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-none-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("none");
     assert!(run(&dir, &["init", "--yes"]).0, "init");
 
     let (ok, out) = run(&dir, &["views"]);
@@ -377,34 +436,20 @@ fn a_workspace_with_no_views_says_so() {
     assert!(out.contains("declares no views"), "{out}");
 }
 
-/// A misspelled key inside a view is caught by the config linter — the whole
-/// reason the block was promoted out of an app's private namespace, where
-/// nothing would have looked at it.
+/// A misspelled key inside a view is caught by the config linter, with the
+/// near miss offered.
 #[test]
 fn a_misspelled_view_key_is_reported_by_check() {
-    let dir = vault("lint", "[Daily](daily.md)");
-    let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
-    std::fs::write(
-        dir.join("index.md"),
-        text.replace("      by: month", "      by: monthh\n      labl: Oops"),
-    )
-    .unwrap();
-
+    let dir = vault("lint", "      labl: Oops\n");
     let (_, out) = run(&dir, &["check"]);
-    assert!(
-        out.contains("views.daily.by") && out.contains("expected: year, month, day"),
-        "{out}"
-    );
     assert!(
         out.contains("views.daily.labl") && out.contains("views.daily.label"),
         "{out}"
     );
-
-    // …and the view still runs, grouping on the uncut values rather than on a
-    // grain nobody asked for.
+    // …and the view still runs: an unknown key is not a broken expression.
     let (ok, out) = run(&dir, &["views", "daily"]);
     assert!(ok, "{out}");
-    assert!(out.contains("2026-07-24 (1)"), "{out}");
+    assert!(out.contains("2026-07 (1)"), "{out}");
 }
 
 /// The whole reason for the flag: a consumer that was reading every file's
@@ -412,7 +457,7 @@ fn a_misspelled_view_key_is_reported_by_check() {
 /// in one call, so the loop it was carrying can go.
 #[test]
 fn an_executed_view_carries_each_row_s_whole_metadata() {
-    let dir = vault("json-rows", "[Daily](daily.md)");
+    let dir = vault("json-rows", "");
     let (ok, out, err) = run_split(&dir, &["views", "daily", "--json"]);
     assert!(ok, "{out}{err}");
     assert!(err.is_empty(), "nothing goes to stderr: {err}");
@@ -422,12 +467,17 @@ fn an_executed_view_carries_each_row_s_whole_metadata() {
         out.contains(
             "\"key\": \"2026-07\",\n      \"rows\": [\n        {\n          \
              \"path\": \"daily/07-24.md\",\n          \"title\": \"July 24\",\n          \
-             \"meta\": {\n"
+             \"id\": null,\n          \"ancestors\": [\n"
         ),
         "{out}"
     );
-    // The metadata is the document's own block, entire and in its order — not
-    // the fields the view happened to group on.
+    // Each row knows what is above it, root first.
+    assert!(
+        out.contains("\"path\": \"daily.md\",\n              \"title\": \"Daily\","),
+        "{out}"
+    );
+    // The metadata is the document's own block, entire — not the fields the
+    // view happened to group on.
     assert!(
         out.contains("\"date_of_document\": \"2026-07-24\"")
             && out.contains("\"people\": [\n              \"Ada\",\n              \"Grace\"\n"),
@@ -446,7 +496,7 @@ fn an_executed_view_carries_each_row_s_whole_metadata() {
 /// stopped grouping is otherwise indistinguishable from an empty archive.
 #[test]
 fn the_ungrouped_bucket_and_both_counts_survive_the_crossing() {
-    let dir = vault("json-counts", "[Daily](daily.md)");
+    let dir = vault("json-counts", "");
     let (ok, out, _) = run_split(&dir, &["views", "daily", "--json"]);
     assert!(ok, "{out}");
     assert!(
@@ -454,18 +504,19 @@ fn the_ungrouped_bucket_and_both_counts_survive_the_crossing() {
         "{out}"
     );
 
-    // The same two numbers the text summary keeps apart, kept apart here: the
-    // multi-valued view files one document under two people.
     let (ok, out, _) = run_split(&dir, &["views", "who", "--json"]);
     assert!(ok, "{out}");
-    assert!(out.contains("\"documents\": 6,\n  \"rows\": 7\n}"), "{out}");
+    assert!(
+        out.contains("\"documents\": 6,\n  \"rows\": 7,\n  \"failures\": []\n}"),
+        "{out}"
+    );
 }
 
 /// A document with no `title` gets `null` rather than a missing key: a parser
 /// reading a fixed set of keys should not have to branch on which arrived.
 #[test]
 fn a_row_without_a_title_says_null() {
-    let dir = vault("json-untitled", "[Daily](daily.md)");
+    let dir = vault("json-untitled", "");
     write(
         &dir,
         "daily/09-09.md",
@@ -484,27 +535,27 @@ fn a_row_without_a_title_says_null() {
 }
 
 /// The listing, as records: the same facts the line prints, each under its own
-/// key, with an absent axis spelled `null`.
+/// key, with an absent one spelled `null`.
 #[test]
 fn bare_views_json_lists_the_declarations_as_records() {
-    let dir = vault("json-list", "[Daily](daily.md)");
+    let dir = vault("json-list", "");
     let (ok, out, err) = run_split(&dir, &["views", "--json"]);
     assert!(ok, "{out}{err}");
     assert!(err.is_empty(), "nothing goes to stderr: {err}");
     assert!(
         out.contains(
-            "\"name\": \"daily\",\n    \"label\": \"Daily\",\n    \"group\": [\n      \
-             \"date_of_document\",\n      \"created\"\n    ],\n    \"by\": \"month\",\n    \
-             \"under\": \"[Daily](daily.md)\",\n    \"filtered\": false,\n    \"nest\": null"
+            "\"name\": \"daily\",\n    \"label\": \"Daily\",\n    \"icon\": null,\n    \
+             \"where\": \"doc.ancestors.exists(a, a.title == 'Daily')\",\n    \
+             \"key\": \"month(first(date_of_document, created))\""
         ),
         "{out}"
     );
-    // `who` declares neither a label nor a grain: the label is the humanized
-    // name, and the rest are null rather than absent.
+    // `who` declares neither a label nor a condition: the label is the
+    // humanized name, and the condition is null rather than absent.
     assert!(
         out.contains(
-            "\"name\": \"who\",\n    \"label\": \"Who\",\n    \"group\": [\n      \
-             \"people\"\n    ],\n    \"by\": null,\n    \"under\": null,"
+            "\"name\": \"who\",\n    \"label\": \"Who\",\n    \"icon\": null,\n    \
+             \"where\": null,\n    \"key\": \"people\""
         ),
         "{out}"
     );
@@ -512,13 +563,10 @@ fn bare_views_json_lists_the_declarations_as_records() {
 
 /// A workspace that declares none prints `[]`. The text form says so in a
 /// sentence, which is narration for a person; an empty array says the same
-/// thing to a program, so "declares nothing" and "printed nothing" stay
-/// distinguishable.
+/// thing to a program.
 #[test]
 fn a_workspace_with_no_views_prints_an_empty_json_array() {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-json-none-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("json-none");
     assert!(run(&dir, &["init", "--yes"]).0, "init");
 
     let (ok, out, _) = run_split(&dir, &["views", "--json"]);
@@ -526,40 +574,69 @@ fn a_workspace_with_no_views_prints_an_empty_json_array() {
     assert_eq!(out, "[]\n");
 }
 
-/// `--json` reports a view's shape, not its execution, so a `where:` shows up
-/// as the flag the listing line makes it — and the executed view is an ordinary
-/// empty-ish answer, not an error.
+/// `query` is a view nobody declared: the same census, the same expressions.
 #[test]
-fn the_json_listing_flags_a_filtered_view() {
-    let dir = vault("json-filter", "[Daily](daily.md)");
-    let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
-    std::fs::write(
-        dir.join("index.md"),
-        text.replace(
-            "      by: month\n",
-            "      by: month\n      where:\n        has: date_of_document\n",
-        ),
-    )
-    .unwrap();
-
-    let (ok, out, _) = run_split(&dir, &["views", "--json"]);
+fn query_answers_without_a_declared_view() {
+    let dir = vault("query", "");
+    // A flat list without `--key`.
+    let (ok, out) = run(&dir, &["query", "'Ada' in people"]);
     assert!(ok, "{out}");
-    assert!(out.contains("\"filtered\": true"), "{out}");
+    assert_eq!(out, "daily/07-24.md — July 24\nreadme.md — Readme\n");
+
+    // Grouped with one, exactly as the declared view groups.
+    let (ok, out) = run(
+        &dir,
+        &[
+            "query",
+            "doc.ancestors.exists(a, a.title == 'Daily')",
+            "--key",
+            "month(first(date_of_document, created))",
+        ],
+    );
+    let (_, declared) = run(&dir, &["views", "daily"]);
+    assert!(ok, "{out}");
+    assert_eq!(out, declared);
+
+    // A bad expression is refused before anything is read.
+    let (ok, out) = run(&dir, &["query", "status =="]);
+    assert!(!ok && out.contains("where:"), "{out}");
+
+    // JSON: the rows, and the failures beside them.
+    let (ok, out, err) = run_split(&dir, &["query", "present(people)", "--json"]);
+    assert!(ok && err.is_empty(), "{err}");
+    assert!(
+        out.starts_with("{\n  \"documents\": [\n    {\n      \"path\": \"daily/07-24.md\""),
+        "{out}"
+    );
+    assert!(out.ends_with("\"failures\": []\n}\n"), "{out}");
 }
 
-/// A broken view is still an error under `--json`: the failure modes do not
-/// change with the output format, or a script would read a dead anchor as an
-/// archive with nothing in it — which is the exact confusion the error exists
-/// to prevent.
+/// A view is judged whole, so `prov config` can build one a setting at a time
+/// once it has a key — and refuses a condition on a view that has none, naming
+/// the key it lacks.
 #[test]
-fn a_dead_anchor_still_fails_under_json() {
-    let dir = vault("json-dead", "[Daily](gone.md)");
-    let (ok, out, err) = run_split(&dir, &["views", "daily", "--json"]);
-    assert!(!ok, "{out}{err}");
-    assert!(out.is_empty(), "no half-written object on stdout: {out}");
-    assert!(err.contains("no document exists there"), "{err}");
+fn config_builds_a_view_one_setting_at_a_time() {
+    let dir = scratch("config");
+    assert!(run(&dir, &["init", "--yes"]).0, "init");
 
-    let (ok, out, err) = run_split(&dir, &["views", "nope", "--json"]);
-    assert!(!ok, "{out}{err}");
-    assert!(err.contains("no view named `nope`"), "{err}");
+    let (ok, out) = run(&dir, &["config", "views.open.where", "present(status)"]);
+    assert!(!ok && out.contains("views.open.key"), "{out}");
+
+    for (key, value) in [
+        ("views.open.key", "status"),
+        ("views.open.where", "present(status) && status != 'done'"),
+        ("views.open.label", "Open"),
+    ] {
+        let (ok, out) = run(&dir, &["config", key, value]);
+        assert!(ok, "{key}: {out}");
+    }
+    let (ok, out) = run(&dir, &["views"]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("open  Open — key: status  where: present(status) && status != 'done'"),
+        "{out}"
+    );
+
+    let (ok, out) = run(&dir, &["config", "views.open.key", "mnth(created)"]);
+    assert!(!ok && out.contains("no function `mnth`"), "{out}");
 }

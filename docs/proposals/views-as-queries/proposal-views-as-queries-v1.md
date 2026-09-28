@@ -2,19 +2,37 @@
 title: views as queries
 created: 2026-09-28
 updated: 2026-09-28
-status: accepted
+status: implemented
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Views as queries — CEL for reading, the spine left to filing
 
 ## Status
 
-**Accepted** (2026-09-28), and being implemented. This began the same day as
-a narrower draft, *grouping by every field, not the first*, which asked for a
-union form beside `group:`'s first-non-empty chain. Arguing where that form
-should stop turned into the question this document answers, and the union
-is now one expression in it. The earlier argument is summarized under *How
-this got here*, not kept as a separate document; nothing was built on it.
+**Implemented** (2026-09-28), on `main` and not yet released, in the commit
+that closes this document. Accepted the same day; it began as a narrower
+draft, *grouping by every field, not the first*, which asked for a union form
+beside `group:`'s first-non-empty chain, and arguing where that form should
+stop turned into the question this document answers. The union is now one
+expression, `[day(created), day(updated)]`. The body is left as argued; what
+the implementation settled beyond it:
+
+- **A fifth function, `field('a.b')`**, for a nested field path
+  (`written.on`, `confirmed[].by`). CEL's own `written.on` fails on a document
+  without `written`, and a retired `group: written.on` needed a translation
+  that means what it meant.
+- **`null` is an empty list to `in` and to a comprehension.** Without it,
+  `'Ada' in people` failed on every document that lists nobody, the commonest
+  question about a list field. This is the one place prov departs from plain
+  CEL. `size(null)` still fails, and is reported.
+- **`prov query [WHERE] [--key EXPR]`** runs an expression without declaring a
+  view, over the same census. It is where a view is tried before it is
+  written down, and what the walkthrough, [Querying your
+  files](/docs/querying.md), is built on.
+- **A filing entry may omit `nest:`**, to say only which index new records go
+  under, and carries a `label`.
+- **`prov config views.<name>.<key>` judges the entry whole**, so a view can be
+  built one setting at a time once it has a key.
 
 ## Summary
 

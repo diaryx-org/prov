@@ -95,7 +95,7 @@ use prov_graph::error::{Error, Result};
 use prov_graph::link::{Addressing, Notation, PathStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, RelationSet};
-use prov_views::{Grain, ViewSpec};
+use prov_views::{Grain, KeyShape, ViewSpec};
 
 /// The `Workspace` methods that decide when to call [`generate`], where the
 /// result goes, and whether it differs from what is already on disk. Kept out
@@ -787,11 +787,10 @@ fn fields_section(config: &WorkspaceConfig) -> Option<String> {
 /// common case: a view is something a workspace says about itself, and most
 /// say nothing.
 ///
-/// Two of a view's keys are deliberately not on the page. `nest` says where a
-/// *new* record should be filed, which is a rule for someone writing into the
-/// directory rather than reading it, and this page is written for the reader.
-/// `icon` is a hint to a frontend's picker and means nothing to a person
-/// holding the files.
+/// `icon` is deliberately not on the page: it is a hint to a frontend's
+/// picker and means nothing to a person holding the files. Nor is `filing:`,
+/// which says where a *new* record should go — a rule for someone writing
+/// into the directory, and this page is written for the reader.
 fn views_section(config: &WorkspaceConfig) -> Option<String> {
     if config.views.is_empty() {
         return None;
@@ -824,61 +823,69 @@ fn views_section(config: &WorkspaceConfig) -> Option<String> {
                 // given, which is the best a reader can be offered.
                 view.display_label(),
                 grouped_by_text(view),
-                match &view.under {
-                    Some(under) => format!(
-                        "what is filed under {}, however deep",
-                        code(&link_target_text(under))
-                    ),
-                    None => "every file here".to_string(),
-                },
                 // The condition is flagged, not rendered — the same call
-                // `prov views` makes for the same reason. A nested `where:`
+                // `prov views` makes for the same reason. An expression
                 // written out in a table cell is a formula a reader has to
                 // evaluate, and what they actually need to know is that this
-                // grouping is not showing them everything it reaches.
+                // grouping is not showing them every file.
                 if view.filter.is_some() { "no" } else { "yes" }.to_string(),
             ]
         })
         .collect();
     s.push_str(&table(
-        &[
-            "what it is called",
-            "grouped by",
-            "covers",
-            "shows everything it covers",
-        ],
+        &["what it is called", "grouped by", "shows every file"],
         &rows,
     ));
 
     if config.views.iter().any(|v| v.filter.is_some()) {
         s.push('\n');
         s.push_str(&para(
-            "Where that last column says no, a further condition is set on the \
-             grouping — a value a file has to carry, or one it must not — and \
-             files in range that do not meet it are left out. The condition \
-             itself is written in this directory's settings rather than \
-             repeated here; the files it hides are still ordinary files, \
-             reachable the way everything else here is.",
+            "Where that last column says no, a condition is set on the \
+             grouping — a value a file has to carry, one it must not, or a \
+             place in the arrangement above it has to be filed under — and \
+             files that do not meet it are left out. The condition itself is \
+             written in this directory's settings rather than repeated here; \
+             the files it hides are still ordinary files, reachable the way \
+             everything else here is.",
         ));
     }
 
     Some(s)
 }
 
-/// What a view's `group` and `by` say, as a sentence fragment for the table.
+/// What a view's `key:` says, as a sentence fragment for the table.
 ///
-/// The chain is stated as a chain rather than reduced to its first key: which
+/// A chain is stated as a chain rather than reduced to its first field: which
 /// field a given file was grouped on is a fact about that file, and this page
-/// is never allowed to look at one.
+/// is never allowed to look at one. A key in a shape that has no plain
+/// description is said to be a rule, and left in the settings.
 fn grouped_by_text(view: &ViewSpec) -> String {
-    let keys: Vec<String> = view.group.keys.iter().map(|k| code(k)).collect();
-    let field = match keys.as_slice() {
-        [one] => format!("what the file says under {one}"),
-        _ => format!("the first of {} the file fills in", join_list(&keys)),
-    };
-    match view.group.by {
-        Some(grain) => format!("{field}, {}", grain_text(grain)),
-        None => field,
+    shape_text(&view.key.key_shape()).unwrap_or_else(|| {
+        "a rule, written in this directory's settings, over what the file says".to_string()
+    })
+}
+
+fn shape_text(shape: &KeyShape) -> Option<String> {
+    match shape {
+        KeyShape::Field(name) => Some(format!("what the file says under {}", code(name))),
+        KeyShape::First(shapes) => {
+            let names: Option<Vec<String>> = shapes
+                .iter()
+                .map(|s| match s {
+                    KeyShape::Field(name) => Some(code(name)),
+                    _ => None,
+                })
+                .collect();
+            let names = names?;
+            Some(match names.as_slice() {
+                [one] => format!("what the file says under {one}"),
+                _ => format!("the first of {} the file fills in", join_list(&names)),
+            })
+        }
+        KeyShape::Cut(grain, inner) => {
+            Some(format!("{}, {}", shape_text(inner)?, grain_text(*grain)))
+        }
+        KeyShape::Other => None,
     }
 }
 
@@ -1814,7 +1821,7 @@ mod tests {
     use super::*;
     use crate::config::{FieldSpec, OpenClosed, RelationDef};
     use prov_graph::relation::Cardinality;
-    use prov_views::{Condition, Grouping};
+    use prov_views::Expression;
     use std::collections::BTreeMap;
 
     fn def(card: Cardinality, inverse: &str, means: &str) -> RelationDef {
@@ -2325,25 +2332,22 @@ mod tests {
                 name: "daily".into(),
                 label: Some("Daily entries".into()),
                 icon: Some("calendar".into()),
-                group: Grouping {
-                    keys: vec!["date_of_document".into(), "created".into()],
-                    by: Some(Grain::Month),
-                },
-                under: Some("[Daily](/Daily/daily_index.md)".into()),
                 filter: None,
-                nest: Some(prov_views::Nest::Grain(Grain::Month)),
+                key: Expression::parse("month(first(date_of_document, created))").unwrap(),
             },
             ViewSpec {
                 name: "open_tasks".into(),
                 label: Some("Open tasks".into()),
                 icon: None,
-                group: Grouping::field("status"),
-                under: None,
-                filter: Some(Condition::Not(Box::new(Condition::Equals {
-                    field: "status".into(),
-                    value: "done".into(),
-                }))),
-                nest: None,
+                filter: Some(Expression::parse("status != 'done'").unwrap()),
+                key: Expression::parse("status").unwrap(),
+            },
+            ViewSpec {
+                name: "activity".into(),
+                label: Some("Activity".into()),
+                icon: None,
+                filter: None,
+                key: Expression::parse("[day(created), day(updated)]").unwrap(),
             },
         ];
         (config, ctx)
@@ -2383,19 +2387,17 @@ mod tests {
             "{section}"
         );
 
-        // Scope: the anchor as the file it names, and the whole directory when
-        // there is no anchor.
+        // A key with no plain description is called a rule, not transcribed.
         assert!(
-            flat.contains("what is filed under `/Daily/daily_index.md`, however deep"),
+            flat.contains("a rule, written in this directory's settings"),
             "{section}"
         );
-        assert!(flat.contains("every file here"), "{section}");
 
         let rows = rows_under(
             &page,
-            "| what it is called | grouped by | covers | shows everything it covers |",
+            "| what it is called | grouped by | shows every file |",
         );
-        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows.len(), 3, "{rows:?}");
         assert!(rows[0].ends_with("| yes |"), "{rows:?}");
         assert!(rows[1].ends_with("| no |"), "{rows:?}");
         assert!(flat.contains("Where that last column says no"), "{section}");
@@ -2403,8 +2405,8 @@ mod tests {
 
     #[test]
     fn the_views_section_leaves_out_what_is_not_a_reading_instruction() {
-        // `nest:` is where a *new* record is filed and `icon:` is a hint to a
-        // picker. Neither helps the person this page is written for, and both
+        // `icon:` is a hint to a picker, and filing is where a *new* record
+        // goes. Neither helps the person this page is written for, and both
         // would be read as claims about the files in front of them.
         let (config, ctx) = views_workspace();
         let section = views_section_of(&render(&config, &ctx));

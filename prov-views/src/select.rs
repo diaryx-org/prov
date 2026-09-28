@@ -1,58 +1,51 @@
-//! Selecting the documents a view covers: scope, then conditions.
+//! Selecting the documents a view covers: the census, then its condition.
 //!
-//! This is the half that touches the workspace. It answers one question — *which
-//! documents does this view cover?* — and answers it as a flat, deduplicated set
-//! in path order. How those documents become groups is [`group`](fn@crate::group), which
-//! is a pure function over what this returns.
+//! This is the half that touches the workspace. It answers one question —
+//! *which documents does this view cover?* — and answers it as a flat,
+//! deduplicated set in path order. How those documents become groups is
+//! [`group`](fn@crate::group), which never goes back to disk.
 //!
-//! The split is what makes a [`Selection`] worth having as a value: one
-//! selection can be grouped several ways, and every grouping question is
-//! testable without a filesystem.
+//! # The census carries the spine as data
 //!
-//! # Scope is a traversal, not a path filter
-//!
-//! A view's [`under`](ViewSpec::under) is resolved by walking the **spanning
-//! relation** below the anchor it names, never by matching a path prefix or a
-//! title. That is the difference between a view and a saved search: `path
-//! starts-with "Daily/"` breaks the moment someone renames the folder, and
-//! matching every index *titled* `2026` finds the one under `Trips/` just as
-//! happily as the one under `Daily/`. A traversal survives a rename, a move and
-//! a retitle, because it follows the same declarations that make the workspace
-//! a workspace.
-//!
-//! The anchor itself is any link the workspace can resolve: a path
-//! (`[Daily](/daily.md)`), an id (`[Daily](id:abc1234)`), or a title
-//! (`[[Daily]]`). A title anchor names *one* index — several documents so
-//! titled is an error, not a union — which is what keeps this a traversal from
-//! a chosen node rather than a search. It is what lets a stencil declare a view
-//! before the index exists at any path: the workspace that applies it makes an
-//! index called `Daily` wherever it likes, and the view finds it.
-//!
-//! The scope is the whole subtree below the anchor, not its direct children —
-//! see the inheritance note in [`crate::spec`].
+//! [`documents`] walks the spanning relation from the root once and records,
+//! on every row, the document's registry id and its **ancestors** — every
+//! document above it, root first. A view's `where:` reads them like any other
+//! field (`doc.ancestors.exists(a, a.title == 'Daily')`), which is how a view
+//! is scoped to a subtree without knowing the workspace has a shape. It
+//! survives a rename, a move and a retitle-by-id for the reason the old
+//! `under:` did: the ancestry is recomputed from the spine on every run, never
+//! matched against a path prefix.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use prov_graph::fs::ReadStorage;
-use prov_graph::graph::{Graph, NodeKind, Target, TreeOptions};
+use prov_graph::graph::{Graph, NodeKind, TreeOptions};
 use prov_graph::index::IdIndex;
-use prov_graph::link::Link;
 use prov_graph::meta::Value;
-use prov_graph::title::{self, TitleIndex};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::expr::Evaluator;
 use crate::spec::ViewSpec;
 
-/// One document a view covers.
+/// One document of the census.
 ///
-/// Carries the document's whole metadata block, which is what lets grouping and
-/// filtering be pure functions over a selection rather than passes that have to
-/// go back to disk.
+/// Carries the document's whole metadata block and its place in the spine,
+/// which is what lets conditions and grouping be pure functions over a
+/// selection rather than passes that go back to disk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     /// Workspace-relative, normalized path — join it onto the root with
     /// [`Graph::fs_path`] before reading.
     pub path: PathBuf,
+    /// The document's id: its own `id` field where it carries one, the
+    /// registry's answer otherwise, so the column reads the same under every
+    /// `id_storage`.
+    pub id: Option<String>,
+    /// Every document above this one in the spine, from the root down to its
+    /// parent. Empty for the root.
+    pub ancestors: Vec<Ancestor>,
     /// The document's parsed metadata block.
     pub meta: Value,
 }
@@ -64,19 +57,66 @@ impl Row {
     }
 }
 
-/// The documents a view covers: in scope, past its conditions, deduplicated,
-/// ordered by path.
+/// A document above a row in the spine — `doc.ancestors` in an expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ancestor {
+    /// Workspace-relative path.
+    pub path: PathBuf,
+    /// Its `title`, when it declares one.
+    pub title: Option<String>,
+    /// Its id, by the same rule as [`Row::id`].
+    pub id: Option<String>,
+}
+
+/// Which of a view's expressions failed on a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clause {
+    /// The `where:` condition.
+    Where,
+    /// The `key:`.
+    Key,
+}
+
+impl fmt::Display for Clause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Clause::Where => "where",
+            Clause::Key => "key",
+        })
+    }
+}
+
+/// A document an expression could not be evaluated on.
 ///
-/// Each document appears **once**, however many groups it will later fall into.
-/// That is the difference between this and a [`RowSet`](crate::RowSet), and it
-/// is why "how many documents does this view cover" is a question only this type
-/// can answer.
+/// Reported beside the result rather than guessed at: a document whose
+/// condition failed is neither shown (which could show what the condition
+/// meant to hide) nor silently dropped (which is how a broken view gets read
+/// as an empty one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    /// The document.
+    pub path: PathBuf,
+    /// Which expression failed.
+    pub clause: Clause,
+    /// Why, in a sentence.
+    pub message: String,
+}
+
+/// The documents a view covers: past its condition, deduplicated, ordered by
+/// path.
+///
+/// Each document appears **once**, however many groups it will later fall
+/// into. That is the difference between this and a [`RowSet`](crate::RowSet),
+/// and it is why "how many documents does this view cover" is a question only
+/// this type can answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Selection {
     /// The name of the view that produced this.
     pub view: String,
     /// The documents, ordered by path.
     pub rows: Vec<Row>,
+    /// The documents the condition could not be evaluated on, in path order.
+    pub failures: Vec<Failure>,
 }
 
 impl Selection {
@@ -91,37 +131,56 @@ impl Selection {
     }
 }
 
-/// Select the documents `spec` covers, walking from `root_doc`.
+/// Select the documents `spec` covers: the census from `root_doc`, narrowed by
+/// its `where:`.
 ///
-/// `root_doc` is the workspace's root document: the spanning start for a view
-/// that declares no anchor, and the document an `under:` link resolves relative
-/// to. It is deliberately *not* the config surface the view was declared in — a
-/// view is a property of the workspace, so moving the config document that
-/// carries it must not change what it points at.
-///
-/// A view whose anchor names nothing is an [`Error::AnchorUnresolved`], not an
-/// empty result. Those two states look identical to a reader and mean opposite
-/// things: one is an archive with nothing in it yet, the other is a
-/// misconfigured lens, and swallowing the second is how a broken view gets read
-/// as an empty one for a year.
+/// `root_doc` is the workspace's root document. It is deliberately *not* the
+/// config surface the view was declared in — a view is a property of the
+/// workspace, so moving the config document that carries it must not change
+/// what it covers.
 pub async fn select<FS: ReadStorage, Ix: IdIndex>(
     graph: &Graph<FS, Ix>,
     spec: &ViewSpec,
     root_doc: impl AsRef<Path>,
 ) -> Result<Selection> {
-    select_with(graph, spec, root_doc, None).await
+    let rows = documents(graph, root_doc).await?;
+    Ok(narrow(&spec.name, spec, rows))
+}
+
+/// [`select`] over rows already read — for a caller that holds the census and
+/// runs several views over it.
+pub fn narrow(view: &str, spec: &ViewSpec, rows: Vec<Row>) -> Selection {
+    let mut selection = Selection {
+        view: view.to_string(),
+        rows: Vec::with_capacity(rows.len()),
+        failures: Vec::new(),
+    };
+    let Some(condition) = &spec.filter else {
+        selection.rows = rows;
+        return selection;
+    };
+    let evaluator = Evaluator::new();
+    for row in rows {
+        match evaluator.test(condition, &row) {
+            Ok(true) => selection.rows.push(row),
+            Ok(false) => {}
+            Err(message) => selection.failures.push(Failure {
+                path: row.path,
+                clause: Clause::Where,
+                message,
+            }),
+        }
+    }
+    selection
 }
 
 /// Every document the workspace reaches from `root_doc` — the root included —
-/// each once, with its metadata, in path order.
+/// each once, with its metadata, its id and its ancestors, in path order.
 ///
-/// This is the census a view *narrows*: the same walk [`select`] makes for a
-/// view with no `under:` and no `where:`, offered without a [`ViewSpec`]
+/// This is the census every view narrows, offered without a [`ViewSpec`]
 /// because the question needs none. A consumer building its own index over a
 /// workspace — a query engine, a search table, a shell pipeline — wants the
-/// whole reached set with the metadata attached, and asking it to declare a
-/// view that says "everything" first would be ceremony for a lens with no
-/// glass in it.
+/// whole reached set with the metadata attached.
 ///
 /// Reached, not present: a file in a directory nothing links into is not a
 /// row, for the same reason `check` does not report it. The spine decides what
@@ -131,6 +190,10 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
     root_doc: impl AsRef<Path>,
 ) -> Result<Vec<Row>> {
     let _scope = graph.read_scope();
+    // A dead spanning link has nothing to show — no title, no children, no
+    // file — so it is dropped rather than materialized as a `Missing` node
+    // this pass would then have to filter out. `check` is where a broken link
+    // is a finding; the census is not a validator.
     let tree = graph
         .tree_with(
             root_doc.as_ref(),
@@ -139,198 +202,74 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
             },
         )
         .await?;
-    rows_of(graph, &tree, false).await
-}
 
-/// [`select`], with a title index for a nominal anchor (`under: '[[Daily]]'`).
-///
-/// Without one, a title anchor is resolved through an index this function
-/// builds itself, scoped to what the workspace reaches from `root_doc` — one
-/// scan, only when the anchor is title-shaped, and never for a path or an id.
-/// What that scan cannot know is which directories are the workspace's own
-/// parked bookkeeping (a retired history store, a recycle bin's items), so a
-/// caller that does know — `prov`'s `Workspace` — passes an index built with
-/// them excluded, and a title kept only inside one cannot make an anchor
-/// ambiguous.
-pub async fn select_with<FS: ReadStorage, Ix: IdIndex>(
-    graph: &Graph<FS, Ix>,
-    spec: &ViewSpec,
-    root_doc: impl AsRef<Path>,
-    titles: Option<&TitleIndex>,
-) -> Result<Selection> {
-    let root_doc = root_doc.as_ref();
-    // One scope for the whole selection: the spanning walk reads every document
-    // in scope, and so does the metadata pass immediately after. Without this
-    // they are two reads of every file for one view.
-    let _scope = graph.read_scope();
-
-    let anchor = match &spec.under {
-        Some(under) => resolve_anchor(graph, spec, root_doc, under, titles).await?,
-        None => root_doc.to_path_buf(),
-    };
-
-    // A dead spanning link has nothing to show in a view — no title, no
-    // children, no file — so it is dropped rather than materialized as a
-    // `Missing` node this pass would then have to filter out. `check` is where
-    // a broken link is a finding; a view is not a validator.
-    let tree = graph
-        .tree_with(
-            &anchor,
-            TreeOptions {
-                ignore_missing: true,
-            },
-        )
-        .await?;
-
-    // Resolving is not the same as arriving. A path anchor always *resolves* —
-    // a path is a path — so `Daily/gone.md` gets this far and then walks to
-    // nothing, which is the empty-vs-broken confusion again, one step later.
-    // The walk's own verdict on the anchor node is what settles it.
-    if spec.under.is_some()
-        && let Some(why) = unreached(&tree.kind)
-    {
-        return Err(Error::AnchorUnresolved {
-            view: spec.name.clone(),
-            under: spec.under.clone().unwrap_or_default(),
-            why,
-        });
-    }
-
-    let mut rows = rows_of(graph, &tree, spec.under.is_some()).await?;
-    if let Some(condition) = &spec.filter {
-        rows.retain(|row| condition.matches(&row.meta));
-    }
-
-    Ok(Selection {
-        view: spec.name.clone(),
-        rows,
-    })
-}
-
-/// The readable documents of a walked spanning tree, each once, in path order,
-/// with their metadata read.
-///
-/// Shared by [`select_with`] and [`documents`] so that a view and the census it
-/// narrows cannot disagree about which files are documents. `skip_root` is
-/// [`collect`]'s: dropped for a scoped view, kept otherwise.
-async fn rows_of<FS: ReadStorage, Ix: IdIndex>(
-    graph: &Graph<FS, Ix>,
-    tree: &prov_graph::graph::Node,
-    skip_root: bool,
-) -> Result<Vec<Row>> {
-    let mut scope: Vec<PathBuf> = Vec::new();
-    collect(tree, skip_root, &mut scope);
+    let mut reached: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    collect(&tree, &mut Vec::new(), &mut reached);
     // A spanning tree reaches each document once, so this only matters for a
     // workspace that has already broken the single-parent invariant — where a
-    // view listing a document twice would be a second, confusing symptom of a
-    // fault `check` already reports properly.
-    scope.sort();
-    scope.dedup();
+    // census listing a document twice would be a second, confusing symptom of
+    // a fault `check` already reports properly. The first place it was
+    // reached is the one it keeps.
+    reached.sort_by(|a, b| a.0.cmp(&b.0));
+    reached.dedup_by(|a, b| a.0 == b.0);
 
-    let mut rows = Vec::with_capacity(scope.len());
-    for path in scope {
-        let doc = graph.document(&path).await?;
+    let mut metas: HashMap<PathBuf, Value> = HashMap::with_capacity(reached.len());
+    for (path, _) in &reached {
+        let doc = graph.document(path).await?;
+        metas.insert(path.clone(), doc.meta);
+    }
+    let id_of = |path: &Path, meta: &Value| {
+        meta.get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| graph.index().id_for_path(path).map(|id| id.0))
+    };
+    let ancestor = |path: &PathBuf| {
+        let meta = metas.get(path);
+        Ancestor {
+            path: path.clone(),
+            title: meta
+                .and_then(|m| m.get("title"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            id: meta.and_then(|m| id_of(path, m)),
+        }
+    };
+
+    let mut rows = Vec::with_capacity(reached.len());
+    for (path, above) in &reached {
+        let meta = metas.get(path).cloned().unwrap_or(Value::Null);
         rows.push(Row {
-            path,
-            meta: doc.meta,
+            path: path.clone(),
+            id: id_of(path, &meta),
+            ancestors: above.iter().map(ancestor).collect(),
+            meta,
         });
     }
     Ok(rows)
 }
 
-/// Whether `link` addresses a document by name rather than by path or id — the
-/// one case resolving needs a title index.
-fn is_nominal(link: &Link) -> bool {
-    !link.is_external()
-        && !link.is_same_document()
-        && link.id_ref().is_none()
-        && title::is_alias_shaped(link.addressed_target())
-}
-
-/// The path a view's `under:` link names, or why it does not name one.
-async fn resolve_anchor<FS: ReadStorage, Ix: IdIndex>(
-    graph: &Graph<FS, Ix>,
-    spec: &ViewSpec,
-    root_doc: &Path,
-    under: &str,
-    titles: Option<&TitleIndex>,
-) -> Result<PathBuf> {
-    let unresolved = |why: &str| Error::AnchorUnresolved {
-        view: spec.name.clone(),
-        under: under.to_string(),
-        why: why.to_string(),
-    };
-    let link = Link::parse(under);
-    // A title index costs a scan, so it is built only for an anchor that needs
-    // one and that the caller did not already provide.
-    let scanned;
-    let titles = match titles {
-        Some(titles) => Some(titles),
-        None if is_nominal(&link) => {
-            scanned = graph.title_index_scoped(root_doc, &[]).await?;
-            Some(&scanned)
-        }
-        None => None,
-    };
-    match graph.resolve_link_with(root_doc, &link, titles) {
-        Target::Path(path) => Ok(path),
-        Target::UnresolvedId(id) => Err(unresolved(&format!(
-            "no document is registered under the id `{}`",
-            id.0
-        ))),
-        Target::AmbiguousAlias(name) => Err(unresolved(&format!(
-            "several documents are titled `{name}`, so the anchor names no one of them"
-        ))),
-        Target::External => Err(unresolved(
-            "an anchor must name a document in this workspace, and this is a URL",
-        )),
-        Target::SameDocument => Err(unresolved(
-            "an anchor must name a document, and this names only a place inside one",
-        )),
-        Target::Foreign { workspace, .. } => Err(unresolved(&format!(
-            "the anchor names a document in the workspace `{workspace}`, which prov cannot see from here"
-        ))),
-    }
-}
-
-/// Why a walk did not arrive at a readable document, or `None` when it did.
+/// Flatten the readable documents of a spanning tree into `out`, each with
+/// the paths of the documents above it.
 ///
-/// The remaining [`NodeKind`]s cannot occur at the root of a walk — a cycle
-/// needs a trail behind it, and the id/alias/foreign kinds are how a *link*
-/// failed, which [`resolve_anchor`] has already had its say about — but they
-/// are spelled out rather than swept into a wildcard, so a new node kind
-/// arrives here as a compile error instead of as a silently empty view.
-fn unreached(kind: &NodeKind) -> Option<String> {
-    match kind {
-        NodeKind::Doc => None,
-        NodeKind::Missing => Some("no document exists there".to_string()),
-        NodeKind::Unreadable(why) => Some(format!("that document could not be read: {why}")),
-        NodeKind::Cycle => Some("that document contains itself".to_string()),
-        NodeKind::UnresolvedId(id) => Some(format!("no document is registered under `{}`", id.0)),
-        NodeKind::AmbiguousAlias(name) => Some(format!("several documents are titled `{name}`")),
-        NodeKind::Foreign { workspace, .. } => Some(format!(
-            "it names a document in the workspace `{workspace}`, which prov cannot see from here"
-        )),
+/// Every other [`NodeKind`] is skipped — a cycle marker, an unreadable file,
+/// an unresolved id and a foreign leaf are all things `check` reports on and a
+/// census has no row for. Their children are not walked either: a node that
+/// did not arrive has none.
+fn collect(
+    node: &prov_graph::graph::Node,
+    above: &mut Vec<PathBuf>,
+    out: &mut Vec<(PathBuf, Vec<PathBuf>)>,
+) {
+    if !matches!(node.kind, NodeKind::Doc) {
+        return;
     }
-}
-
-/// Flatten the readable documents of a spanning tree into `out`.
-///
-/// `skip_root` drops the anchor itself: an index is what a scoped view's
-/// records hang *under*, not one of them. An unscoped view keeps its start,
-/// because there the start is the workspace root and there is nothing it would
-/// be an index *of*.
-///
-/// Every other [`NodeKind`] is skipped — a cycle marker, an unreadable file, an
-/// unresolved id and a foreign leaf are all things `check` reports on and a
-/// view has no row for.
-fn collect(node: &prov_graph::graph::Node, skip_root: bool, out: &mut Vec<PathBuf>) {
-    if !skip_root && matches!(node.kind, NodeKind::Doc) {
-        out.push(node.path.clone());
-    }
+    out.push((node.path.clone(), above.clone()));
+    above.push(node.path.clone());
     for child in &node.children {
-        collect(child, false, out);
+        collect(child, above, out);
     }
+    above.pop();
 }
 
 // These tests use YAML frontmatter fixtures, so they run under the `yaml`
@@ -338,8 +277,7 @@ fn collect(node: &prov_graph::graph::Node, skip_root: bool, out: &mut Vec<PathBu
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
-    use crate::filter::Condition;
-    use crate::spec::Grouping;
+    use crate::expr::Expression;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
     use prov_graph::graph::ReadSettings;
@@ -368,7 +306,7 @@ mod tests {
         write(
             &dir,
             "daily.md",
-            "---\ntitle: Daily\npart_of: index.md\ncontents:\n- daily/2026.md\n---\n",
+            "---\ntitle: Daily\nid: dly0001\npart_of: index.md\ncontents:\n- daily/2026.md\n---\n",
         );
         write(
             &dir,
@@ -392,18 +330,13 @@ mod tests {
         Graph::new(StdFs, dir, NoIndex, ReadSettings::default())
     }
 
-    fn spec(under: Option<&str>, filter: Option<Condition>) -> ViewSpec {
+    fn spec(filter: Option<&str>) -> ViewSpec {
         ViewSpec {
-            name: "daily".into(),
-            label: None,
-            icon: None,
-            group: Grouping {
-                keys: vec!["date_of_document".into(), "created".into()],
-                by: None,
-            },
-            under: under.map(str::to_string),
-            filter,
-            nest: None,
+            filter: filter.map(|f| Expression::parse(f).expect(f)),
+            ..ViewSpec::new(
+                "daily",
+                Expression::parse("month(first(date_of_document, created))").unwrap(),
+            )
         }
     }
 
@@ -415,89 +348,14 @@ mod tests {
             .collect()
     }
 
-    /// An anchor by title resolves to the one index so titled, wherever it
-    /// sits — in either link notation — and the walk from there is the same
-    /// walk a path anchor gives. Two indexes with the title are a refusal with
-    /// the reason in it, and a title nothing carries reads as missing, like a
-    /// dead path.
+    /// The census is the whole workspace, root included, in `Path` order —
+    /// which compares **component-wise**, not by bytes: the component `daily`
+    /// sorts before `daily.md`, so the directory's contents precede the file
+    /// beside it. Spelled out because it reads like a bug otherwise.
     #[test]
-    fn an_anchor_may_name_its_index_by_title() {
-        let dir = journal("title-anchor");
-        for under in ["[[Daily]]", "[Daily](Daily)"] {
-            let selection = block_on(select(&graph(&dir), &spec(Some(under), None), "index.md"))
-                .unwrap_or_else(|e| panic!("{under}: {e}"));
-            assert_eq!(
-                paths(&selection),
-                ["daily/07-24.md", "daily/08-01.md", "daily/2026.md"],
-                "{under}"
-            );
-        }
-        // The file stem is a name too, as it is for any nominal link.
-        let selection = block_on(select(
-            &graph(&dir),
-            &spec(Some("[[2026]]"), None),
-            "index.md",
-        ))
-        .unwrap();
-        assert_eq!(paths(&selection), ["daily/07-24.md", "daily/08-01.md"]);
-
-        let err = block_on(select(
-            &graph(&dir),
-            &spec(Some("[[Nowhere]]"), None),
-            "index.md",
-        ))
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("no document exists there"), "{err}");
-
-        write(
-            &dir,
-            "trips.md",
-            "---\ntitle: Daily\npart_of: index.md\n---\n",
-        );
-        let err = block_on(select(
-            &graph(&dir),
-            &spec(Some("[[Daily]]"), None),
-            "index.md",
-        ))
-        .unwrap_err()
-        .to_string();
-        assert!(
-            err.contains("several documents are titled `Daily`"),
-            "{err}"
-        );
-    }
-
-    /// The whole point of `under:`: the README carries a `created` date and is
-    /// still not selected, because it is not under `Daily`. And the anchor
-    /// itself is what the records hang under, not one of them.
-    #[test]
-    fn an_anchor_scopes_the_selection_to_its_subtree_and_excludes_itself() {
-        let dir = journal("scope");
-        let selection = block_on(select(
-            &graph(&dir),
-            &spec(Some("daily.md"), None),
-            "index.md",
-        ))
-        .expect("a selection");
-        assert_eq!(
-            paths(&selection),
-            ["daily/07-24.md", "daily/08-01.md", "daily/2026.md"]
-        );
-    }
-
-    /// Without an anchor the view is the whole workspace — the difference the
-    /// previous test isolated, in the other direction.
-    ///
-    /// The order is `Path`'s, which compares **component-wise**, not by bytes:
-    /// the component `daily` sorts before `daily.md`, so the directory's
-    /// contents precede the file beside it. Spelled out because it reads like a
-    /// bug otherwise.
-    #[test]
-    fn an_unscoped_view_covers_the_whole_workspace() {
+    fn a_view_without_a_condition_covers_the_whole_workspace() {
         let dir = journal("unscoped");
-        let selection =
-            block_on(select(&graph(&dir), &spec(None, None), "index.md")).expect("a selection");
+        let selection = block_on(select(&graph(&dir), &spec(None), "index.md")).unwrap();
         assert_eq!(
             paths(&selection),
             [
@@ -511,9 +369,53 @@ mod tests {
         );
     }
 
-    /// Scope follows the spanning links, so moving the whole subtree to a new
-    /// directory changes nothing. A `path starts-with "Daily/"` filter would
-    /// have returned an empty selection here.
+    /// Each row knows what is above it, root first, with titles and ids.
+    #[test]
+    fn rows_carry_their_ancestors_and_ids() {
+        let dir = journal("ancestors");
+        let rows = block_on(documents(&graph(&dir), "index.md")).unwrap();
+        let entry = rows
+            .iter()
+            .find(|r| r.path.ends_with("07-24.md"))
+            .expect("the entry");
+        let titles: Vec<_> = entry
+            .ancestors
+            .iter()
+            .map(|a| a.title.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(titles, ["Home", "Daily", "2026"]);
+        assert_eq!(entry.ancestors[1].id.as_deref(), Some("dly0001"));
+        let daily = rows.iter().find(|r| r.path.ends_with("daily.md")).unwrap();
+        assert_eq!(daily.id.as_deref(), Some("dly0001"));
+        let root = rows.iter().find(|r| r.path.ends_with("index.md")).unwrap();
+        assert!(root.ancestors.is_empty());
+    }
+
+    /// Scope is a condition on ancestry: the README carries a `created` date
+    /// and is still not selected, because it is not under `Daily`. The index
+    /// itself is not its own ancestor, so it is not one of its records.
+    #[test]
+    fn ancestry_scopes_a_view_to_a_subtree() {
+        let dir = journal("scope");
+        let by_title = spec(Some("doc.ancestors.exists(a, a.title == 'Daily')"));
+        let selection = block_on(select(&graph(&dir), &by_title, "index.md")).unwrap();
+        assert_eq!(
+            paths(&selection),
+            ["daily/07-24.md", "daily/08-01.md", "daily/2026.md"]
+        );
+        let by_id = spec(Some("doc.ancestors.exists(a, a.id == 'dly0001')"));
+        assert_eq!(
+            block_on(select(&graph(&dir), &by_id, "index.md")).unwrap(),
+            Selection {
+                view: "daily".into(),
+                ..selection
+            }
+        );
+    }
+
+    /// The ancestry follows the spanning links, so moving the whole subtree to
+    /// a new directory changes nothing. A `path starts-with "daily/"` filter
+    /// would have returned an empty selection here.
     #[test]
     fn scope_survives_moving_the_subtree() {
         let dir = journal("moved");
@@ -528,41 +430,62 @@ mod tests {
             "archive/2026.md",
             "---\ntitle: '2026'\npart_of: ../daily.md\ncontents:\n- 07-24.md\n- 08-01.md\n---\n",
         );
-
         let selection = block_on(select(
             &graph(&dir),
-            &spec(Some("daily.md"), None),
+            &spec(Some("doc.ancestors.exists(a, a.title == 'Daily')")),
             "index.md",
         ))
-        .expect("a selection");
+        .unwrap();
         assert_eq!(
             paths(&selection),
             ["archive/07-24.md", "archive/08-01.md", "archive/2026.md"]
         );
     }
 
-    /// `where:` narrows what scope reached — and, unlike a broken anchor,
-    /// matching nothing is an ordinary answer rather than an error.
+    /// A condition narrows the census, and matching nothing is an ordinary
+    /// answer rather than an error.
     #[test]
-    fn a_where_condition_narrows_the_selection() {
+    fn a_condition_narrows_the_selection() {
         let dir = journal("filter");
-        let no_drafts = Condition::Not(Box::new(Condition::Has("draft".into())));
         let selection = block_on(select(
             &graph(&dir),
-            &spec(Some("daily.md"), Some(no_drafts)),
+            &spec(Some(
+                "doc.ancestors.exists(a, a.title == 'Daily') && !present(draft)",
+            )),
             "index.md",
         ))
-        .expect("a selection");
+        .unwrap();
         assert_eq!(paths(&selection), ["daily/08-01.md", "daily/2026.md"]);
 
-        let matches_nothing = Condition::Has("nonexistent".into());
         let empty = block_on(select(
             &graph(&dir),
-            &spec(Some("daily.md"), Some(matches_nothing)),
+            &spec(Some("present(nonexistent)")),
             "index.md",
         ))
-        .expect("an empty selection is not an error");
+        .unwrap();
         assert!(empty.is_empty());
+        assert!(empty.failures.is_empty());
+    }
+
+    /// A condition that cannot be evaluated on a document names it, and the
+    /// document is neither shown nor silently dropped.
+    #[test]
+    fn a_condition_that_fails_is_reported_per_document() {
+        let dir = journal("failure");
+        let selection = block_on(select(
+            &graph(&dir),
+            &spec(Some("size(created) > 4")),
+            "index.md",
+        ))
+        .unwrap();
+        assert_eq!(paths(&selection), ["daily/08-01.md", "readme.md"]);
+        assert_eq!(selection.failures.len(), 4);
+        assert!(
+            selection
+                .failures
+                .iter()
+                .all(|f| f.clause == Clause::Where && f.message.contains("present()"))
+        );
     }
 
     /// Rows carry their metadata, which is what lets grouping be a pure
@@ -570,9 +493,8 @@ mod tests {
     #[test]
     fn rows_carry_metadata_so_grouping_needs_no_second_read() {
         let dir = journal("meta");
-        let spec = spec(Some("daily.md"), None);
-        let selection = block_on(select(&graph(&dir), &spec, "index.md")).expect("a selection");
-
+        let spec = spec(Some("doc.ancestors.exists(a, a.title == 'Daily')"));
+        let selection = block_on(select(&graph(&dir), &spec, "index.md")).unwrap();
         let entry = selection
             .rows
             .iter()
@@ -581,34 +503,10 @@ mod tests {
         assert_eq!(entry.title(), Some("July 24"));
 
         // No graph, no filesystem, no async.
-        let rows = crate::group(&selection, &spec.group);
+        let rows = crate::group(&selection, &spec.key);
         assert_eq!(rows.len(), 3, "documents, not placements");
         assert_eq!(rows.groups.len(), 2);
-    }
-
-    /// An anchor that names nothing is an error, not an empty result. The two
-    /// look identical to a reader and mean opposite things.
-    #[test]
-    fn an_unresolvable_anchor_is_an_error_not_an_empty_selection() {
-        let dir = journal("dead-anchor");
-        // A path anchor always *resolves* — a path is a path — so this one is
-        // only caught by the walk failing to arrive.
-        let by_path = spec(Some("[Gone](nowhere.md)"), None);
-        let err = block_on(select(&graph(&dir), &by_path, "index.md")).unwrap_err();
-        let Error::AnchorUnresolved { under, why, .. } = &err else {
-            panic!("got {err:?}");
-        };
-        assert_eq!(under, "[Gone](nowhere.md)");
-        assert_eq!(why, "no document exists there");
-
-        let by_id = spec(Some("[Gone](id:abcd123)"), None);
-        let err = block_on(select(&graph(&dir), &by_id, "index.md")).unwrap_err();
-        let Error::AnchorUnresolved { view, under, .. } = &err else {
-            panic!("got {err:?}");
-        };
-        assert_eq!(view, "daily");
-        assert_eq!(under, "[Gone](id:abcd123)");
-        assert!(err.to_string().contains("is registered under the id"));
+        assert_eq!(rows.ungrouped.len(), 1, "the year index carries no date");
     }
 
     /// Selecting twice over an unchanged workspace produces the identical set —
@@ -616,7 +514,7 @@ mod tests {
     #[test]
     fn selection_is_deterministic() {
         let dir = journal("stable");
-        let spec = spec(Some("daily.md"), None);
+        let spec = spec(Some("doc.ancestors.exists(a, a.title == 'Daily')"));
         let g = graph(&dir);
         let first = block_on(select(&g, &spec, "index.md")).unwrap();
         let second = block_on(select(&g, &spec, "index.md")).unwrap();

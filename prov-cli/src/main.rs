@@ -122,6 +122,11 @@ fn main() -> ExitCode {
             session::resolve_target(&file).and_then(|f| doc::cmd_unset(&f, &key))
         }
         Command::Views { name, json } => views::cmd_views(name.as_deref(), json),
+        Command::Query {
+            condition,
+            key,
+            json,
+        } => views::cmd_query(condition.as_deref(), key.as_deref(), json),
         Command::Docs { json, body } => views::cmd_docs(json, body),
         Command::Search { words, limit, json } => views::cmd_search(&words, limit, json),
         Command::Exports { name } => views::cmd_exports(name.as_deref()),

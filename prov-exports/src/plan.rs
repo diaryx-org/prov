@@ -43,7 +43,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use prov_graph::fs::ReadStorage;
-use prov_graph::graph::{Graph, NodeKind, TreeOptions};
+use prov_graph::graph::Graph;
 use prov_graph::index::IdIndex;
 use prov_views::{Row, ViewSpec};
 
@@ -211,50 +211,21 @@ pub async fn plan<FS: ReadStorage, Ix: IdIndex>(
         None => None,
     };
 
-    let tree = graph
-        .tree_with(
-            root_doc,
-            TreeOptions {
-                ignore_missing: true,
-            },
-        )
-        .await?;
-    let mut reachable: Vec<PathBuf> = Vec::new();
-    collect(&tree, &mut reachable);
-    reachable.sort();
-    reachable.dedup();
+    // The census every view narrows, so the export and its view cannot
+    // disagree about which files are documents.
+    let rows = prov_views::documents(graph, root_doc).await?;
 
-    let mut rows = Vec::with_capacity(reachable.len());
-    for path in reachable {
-        let doc = graph.document(&path).await?;
-        rows.push(Row {
-            path,
-            meta: doc.meta,
-        });
-    }
-
-    let view_scope = match view {
-        Some(view) => {
-            let selection = prov_views::select(graph, view, root_doc).await?;
-            Some(selection.rows.into_iter().map(|r| r.path).collect())
-        }
-        None => None,
-    };
+    // A document the view's condition could not be evaluated on is not in the
+    // view's scope, so it does not leave: an export fails closed.
+    let view_scope = view.map(|view| {
+        prov_views::narrow(&view.name, view, rows.clone())
+            .rows
+            .into_iter()
+            .map(|r| r.path)
+            .collect()
+    });
 
     Ok(compose(spec, &rows, view_scope.as_ref()))
-}
-
-/// Flatten the readable documents of a spanning tree into `out`. Every other
-/// [`NodeKind`] is skipped — a cycle marker, an unreadable file and an
-/// unresolved id are all things `check` reports on, and an export must not
-/// let leave what it cannot read.
-fn collect(node: &prov_graph::graph::Node, out: &mut Vec<PathBuf>) {
-    if matches!(node.kind, NodeKind::Doc) {
-        out.push(node.path.clone());
-    }
-    for child in &node.children {
-        collect(child, out);
-    }
 }
 
 #[cfg(test)]
@@ -286,6 +257,8 @@ mod tests {
         }
         Row {
             path: PathBuf::from(path),
+            id: None,
+            ancestors: Vec::new(),
             meta: Value::Mapping(meta),
         }
     }
@@ -539,7 +512,7 @@ mod fs_tests {
     use prov_graph::fs::StdFs;
     use prov_graph::graph::ReadSettings;
     use prov_graph::index::NoIndex;
-    use prov_views::Grouping;
+    use prov_views::Expression;
 
     use prov_testkit::write;
     fn tempdir(tag: &str) -> PathBuf {
@@ -599,13 +572,10 @@ mod fs_tests {
 
     fn daily_view() -> ViewSpec {
         ViewSpec {
-            name: "daily".into(),
-            label: None,
-            icon: None,
-            group: Grouping::field("title"),
-            under: Some("daily.md".into()),
-            filter: None,
-            nest: None,
+            filter: Some(
+                Expression::parse("doc.ancestors.exists(a, a.path == 'daily.md')").unwrap(),
+            ),
+            ..ViewSpec::new("daily", Expression::parse("title").unwrap())
         }
     }
 
@@ -677,21 +647,22 @@ mod fs_tests {
         assert_eq!(view, "dialy");
     }
 
-    /// A named view whose anchor resolves to nothing is equally an error —
-    /// passed through from `prov-views`, never softened to "no view".
+    /// A view whose condition cannot be evaluated on a document does not
+    /// let that document leave: the failure is outside the view's scope, and
+    /// an export fails closed.
     #[test]
-    fn a_broken_view_is_an_error_not_a_fallback() {
+    fn a_failing_view_condition_keeps_the_document_in() {
         let dir = journal("broken-view");
         let mut view = daily_view();
-        view.under = Some("[Gone](nowhere.md)".into());
-        let err = block_on(plan(
+        view.filter = Some(Expression::parse("size(nothing) > 0").unwrap());
+        let plan = block_on(plan(
             &graph(&dir),
             &export(Some("daily")),
             &[view],
             "index.md",
         ))
-        .unwrap_err();
-        assert!(matches!(err, Error::View(_)), "got {err:?}");
+        .expect("a plan");
+        assert!(plan.entries.is_empty(), "{:?}", plan.entries);
     }
 
     /// End to end through a real file: a `draft: true` beside the gate value

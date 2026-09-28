@@ -1,519 +1,70 @@
 //! The view format: what a workspace declares under `views.<name>`.
 //!
-//! # Why a view is not a field declaration
-//!
-//! A declared field (`fields.<name>`) already makes a lens: the workspace says
-//! it files things by `people`, so a frontend groups by `people`. That covers a
-//! lens whose groups *are* one field's values, over the whole corpus.
-//!
-//! It cannot express the four things a real archive needs. **Scope**: a lens
-//! over every file in the workspace buries the entries among the notes, drafts
-//! and READMEs that happen to carry the same field. **Grain**: "by year" is a
-//! rule about how a value becomes a group, and a field declaration has nowhere
-//! to put it. **Fallback**: the value worth grouping on is often the first of
-//! several fields that is filled in. **Conditions**: not everything in scope
-//! belongs in every lens (see [`crate::filter`]).
-//!
-//! So a view is its own declaration:
+//! A view is two expressions — which documents, and which group each goes
+//! under — with a name a person can call it by:
 //!
 //! ```yaml
 //! views:
 //!   daily:
 //!     label: Daily
 //!     icon: calendar
-//!     group: [date_of_document, created, updated]
-//!     by: month
-//!     under: '[Daily](/Daily/daily_index.md)'
-//!     where:
-//!       not: { has: draft }
-//!     nest: month
+//!     where: "doc.ancestors.exists(a, a.title == 'Daily') && !present(draft)"
+//!     key: month(first(date_of_document, created))
 //! ```
+//!
+//! Both are [CEL](crate::expr), over the document's fields and the document
+//! itself. `where:` is optional — without it a view covers every document the
+//! workspace reaches — and `key:` is not, because a view is a way of grouping.
+//!
+//! # Why a view is not a field declaration
+//!
+//! A declared field (`fields.<name>`) already makes a lens: the workspace says
+//! it files things by `people`, so a frontend groups by `people`. That covers a
+//! lens whose groups *are* one field's values, over the whole corpus. A view
+//! is what a real archive needs beyond that: a narrower set of documents, a
+//! value cut to a year or a first letter, the first of several fields that is
+//! filled in, or a union of several.
 //!
 //! # There is no `date` grouping
 //!
-//! An earlier form of this format spelled the above `group: date`, a token that
-//! meant "the date chain" — and the chain itself (`date_of_document` →
-//! `created` → `updated`) was hardcoded in whichever program was reading. Three
-//! field names no workspace had agreed to, blessed by the tool.
+//! An earlier form of this format spelled a date view `group: date`, a token
+//! that meant "the date chain" — and the chain itself (`date_of_document` →
+//! `created` → `updated`) was hardcoded in whichever program was reading.
+//! Here the chain is `first(date_of_document, created, updated)`, a
+//! declaration a workspace writes, and nothing in this crate knows the word
+//! "date". The date functions cut a value, not a declared type.
 //!
-//! Here [`Grouping`] is one shape: an ordered list of field keys, first
-//! non-empty wins, optionally [cut](Grain) at a grain. A date view is that
-//! shape with date fields in it, and nothing in this crate knows the word
-//! "date" — the chain above is a *declaration a workspace writes*, which is
-//! what makes it reviewable, diffable, and different for a workspace that files
-//! by `taken_on` or `received`.
+//! # A view does not know the spine
 //!
-//! A [`Grain`] is not a calendar either — it is any coarsening (see
-//! [`Grain::cuts`]), and the date grains are one family beside
-//! [`Initial`](Grain::Initial)'s A–Z index. It applies to a *value*, never to a
-//! declared type, so it works on the `2026-07-24` that YAML hands back as a
-//! string without this crate resolving the workspace's `fields.<name>.type`
-//! declarations. The date grains read that value as EDTF (see [`crate::date`]),
-//! so an archive's `1943-05`, `1913~`, `192X` and `1918/1922` all file. A
-//! value the grain cannot cut does not group at all, rather than grouping
-//! wrongly.
+//! A view used to carry `under:`, a link whose subtree it walked. That made the
+//! view the one reader that knew the workspace has a shape. Now prov walks the
+//! spine once, for the census ([`crate::documents`]), and hands each document
+//! its ancestors as data — `doc.ancestors` — so scope is a condition like any
+//! other and survives a move or a rename because the ancestry is recomputed on
+//! every run.
 //!
-//! # Classification is not aggregation
+//! # A view does not file
 //!
-//! The remaining shape is [MoReq2010]'s, not an invention. ISO 15489 calls
-//! *classification* the identification of a record by the context that produced
-//! it; MoReq2010 §1.4.5 separates that from *aggregation*, "the activity of
-//! assembling related records together", which "may be based on any
-//! organisational requirement or criteria, not business context alone". It
-//! permits conjoining the two into one hierarchy and warns what happens when
-//! you do: schemes hybridize, and naturally occurring aggregations get split
-//! apart to fit the classification.
-//!
-//! That maps onto this struct exactly:
-//!
-//! - [`Grouping`] is classification — how records become groups.
-//! - [`ViewSpec::under`] is aggregation — the index the records actually hang
-//!   under, resolved through the spanning relation rather than by matching a
-//!   path or a title, so it survives a rename, a move and a retitle.
-//! - [`ViewSpec::nest`] is the *deliberate* seam between them. It is not
-//!   derived from [`Grouping::by`], because a lens must never become a reason
-//!   to move a file: changing how a view groups is a reading decision, and it
-//!   would be a poor bargain if a picker that reads like a display setting
-//!   silently changed where tomorrow's entry lands.
-//!
-//! # Filing by reference
-//!
-//! A grain computes the shelf from the value: `2026-07-24` becomes the index
-//! titled `2026` and the one titled `2026-07` inside it, and the crate has to
-//! know what a year is to do it. The other way to say where a record files is
-//! for the record to *link to the shelf* and for the shelf's own place in the
-//! spine to be the chain:
-//!
-//! ```yaml
-//! fields:
-//!   written.on:
-//!     type: ref
-//! views:
-//!   journal:
-//!     group: written.on
-//!     under: '[Calendar](/Calendar/index.md)'
-//!     nest: ref
-//! ```
-//!
-//! `nest: ref` ([`Nest::Ref`]) files the record under the document its
-//! grouping value links to, and nothing else. The day node already sits under
-//! its month, which sits under its year, because that is the calendar index's
-//! own `contents` chain — so the chain condition a grain has to prove is
-//! satisfied by construction, and this crate does not know that the target is
-//! a day. The same declaration files a note under a person, a place or a
-//! project. What it costs is that the shelf must exist: a link to a document
-//! that is not there is the ordinary broken-link finding, not a shelf prov
-//! makes. The value grains stay for a workspace that would rather not keep a
-//! node per day.
-//!
-//! The field should be declared `type: ref`, so that a move of the shelf
-//! rewrites every record that files under it — that is what makes the link a
-//! link rather than a string that used to be a path (`prov-config` reports a
-//! `nest: ref` over a field that is not).
-//!
-//! # Inheritance and override
-//!
-//! `under:` is inherited: a view covers the whole subtree below its anchor, not
-//! just the anchor's direct children. This is MoReq2010 §201.2.3 — a class
-//! applied at a root aggregation "is inherited as the default classification
-//! for all descendants". §201.2.4 then allows a class applied directly to a
-//! child to break that chain, which is what keeps aggregations from having to
-//! be homogeneous. That override is a document-level concern and is not part of
-//! this struct; the scope walk in [`select`](fn@crate::select) is the inheritance half.
-//!
-//! [MoReq2010]: https://moreq.info/files/moreq2010_vol1_v1_1_en.pdf
+//! Where a *new* record goes is [`crate::filing`]'s, a declaration of its own.
+//! Filing writes into the single-parent spine and needs guarantees before
+//! anything runs; reading has no invariant, and keeping the two apart is what
+//! lets a view be a query.
 
-use prov_graph::field::{FieldPath, values_at};
 use prov_graph::meta::{Mapping, Value};
 
-use crate::filter::Condition;
+use crate::expr::{Expression, ExpressionError};
 
 /// The config block views are declared in — a top-level axis, so every prov
 /// tool reads the same views rather than each app namespacing its own.
 pub const VIEWS_KEY: &str = "views";
 
 /// The keys valid inside one `views.<name>` entry.
-pub const VIEW_KEYS: &[&str] = &["label", "icon", "group", "by", "under", "nest", "where"];
+pub const VIEW_KEYS: &[&str] = &["label", "icon", "where", "key"];
 
-/// A **coarsening**: how finely a value is cut into groups.
-///
-/// Not a date vocabulary. A grain is any many-to-one function from a value to
-/// group keys, and the calendar grains are one family of them — `year` is
-/// "the year this date names", and [`Initial`](Self::Initial) is "the first
-/// *n* characters" with no such condition. What makes something a grain is
-/// the two properties below, not what it is about.
-///
-/// # Two properties, and what each one licenses
-///
-/// - [`cuts`](Self::cuts) — value → keys. This is all [`by`](Grouping::by)
-///   needs, because grouping is a *reading* operation with no invariant to
-///   keep. Usually one key; an interval (`1918/1922`) is under every year it
-///   spans, which is what makes it *keys*.
-/// - [`chain`](Self::chain) — the coarser grains this one refines, coarsest
-///   first. This is what [`nest`](ViewSpec::nest) needs, and it is a strictly
-///   stronger requirement: nesting builds a hierarchy of index documents, so
-///   each level's key must be determined by the finer level's
-///   (`2026-07-24` → `2026-07` → `2026`, `Ada` → `Ad` → `A`). A coarsening
-///   with no such chain can group but cannot nest.
-///
-/// The second constraint is prov's, not taste. `nest` files a record into the
-/// **spanning relation**, which is single-parent, so a nest chain must also be
-/// *single-valued* per document — see [`ViewSpec::nest_route`], which returns
-/// `None` rather than guessing which of a multi-valued field's values a
-/// document should be filed under.
-///
-/// # Adding a grain
-///
-/// The rule is the one [`crate::filter`] uses for predicates: a **concrete lens
-/// that cannot otherwise be said**, not a shape that seems likely to be wanted.
-/// `initial` earns its place as the A–Z index every list of names and places
-/// eventually wants. A numeric `bucket` (ratings by tens) is the obvious next
-/// one and is deliberately *not* here: nobody has asked for it, and it would
-/// arrive with a problem the calendar grains do not have — its keys sort
-/// lexically as `0, 10, 100, 20`, so it needs group ordering to become
-/// grain-aware, which is really the deferred `sort:` axis wearing a disguise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Grain {
-    /// `2026` — the default, and what a lifetime of entries wants.
-    #[default]
-    Year,
-    /// `2026-07`.
-    Month,
-    /// `2026-07-25`.
-    Day,
-    /// The first *n* characters, upper-cased — the A–Z index.
-    ///
-    /// Upper-casing is a deliberate normalization rather than a faithful cut:
-    /// an alphabetical index that files `ada` apart from `Ada` is not an index.
-    /// It is the same kind of choice a date cut makes when it reports `2026`
-    /// for a value that says `2026-07-24`; a group key describes a bucket, not
-    /// a value that appears in the data.
-    Initial(usize),
-}
-
-/// The grain spellings that are a bare word — what a near-miss diagnostic
-/// offers. [`Grain::Initial`] also takes a parameterized form
-/// (`{ initial: 2 }`) that is not a spelling to suggest.
-pub const GRAINS: &[&str] = &["year", "month", "day", "initial"];
-
-/// The `nest:` spellings that are a bare word: every grain's, and `ref`.
-pub const NESTS: &[&str] = &["year", "month", "day", "initial", "ref"];
-
-impl Grain {
-    /// The config spelling, when this grain has a bare-word one.
-    ///
-    /// `None` for a parameterized grain that is not at its default — write
-    /// [`to_value`](Self::to_value) instead, which always round-trips.
-    pub fn as_config_str(self) -> Option<&'static str> {
-        Some(match self {
-            Grain::Year => "year",
-            Grain::Month => "month",
-            Grain::Day => "day",
-            Grain::Initial(1) => "initial",
-            Grain::Initial(_) => return None,
-        })
-    }
-
-    /// Parse a bare-word config spelling. Unknown text is **not** silently
-    /// defaulted — a `by: yearr` that quietly grouped by year would look
-    /// applied and be wrong, which is the failure a config linter exists to
-    /// prevent.
-    pub fn from_config_str(text: &str) -> Option<Self> {
-        match text.trim() {
-            "year" => Some(Grain::Year),
-            "month" => Some(Grain::Month),
-            "day" => Some(Grain::Day),
-            // The bare word is the useful case; `{ initial: n }` says the rest.
-            "initial" => Some(Grain::Initial(1)),
-            _ => None,
-        }
-    }
-
-    /// Read a `by:`/`nest:` value: a bare word, or a one-key mapping naming a
-    /// parameterized grain (`{ initial: 2 }`).
-    ///
-    /// A parameter of zero is rejected rather than clamped: `{ initial: 0 }`
-    /// would put every document in one group called "", which is a view that
-    /// has stopped being one.
-    pub fn parse(value: &Value) -> Option<Self> {
-        match value {
-            Value::String(text) => Grain::from_config_str(text),
-            Value::Mapping(map) => match map.iter().next() {
-                Some((key, arg)) if map.len() == 1 && key == "initial" => {
-                    let n = match arg {
-                        Value::Int(n) => *n,
-                        Value::String(s) => s.trim().parse().ok()?,
-                        _ => return None,
-                    };
-                    (n > 0).then_some(Grain::Initial(n as usize))
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// The value this grain writes back as — a bare word where it has one, a
-    /// one-key mapping otherwise.
-    pub fn to_value(self) -> Value {
-        match self.as_config_str() {
-            Some(word) => Value::String(word.into()),
-            None => {
-                let Grain::Initial(n) = self else {
-                    unreachable!("every non-parameterized grain has a bare spelling")
-                };
-                let mut map = Mapping::new();
-                map.insert("initial".into(), Value::Int(n as i64));
-                Value::Mapping(map)
-            }
-        }
-    }
-
-    /// How this grain reads in a listing (`month`, `initial 2`).
-    pub fn display(self) -> String {
-        match self {
-            Grain::Initial(n) if n > 1 => format!("initial {n}"),
-            other => other.as_config_str().unwrap_or("initial").to_string(),
-        }
-    }
-
-    /// The grains to nest through to reach `self`, coarsest first.
-    ///
-    /// Filing at month grain means a year index and then a month index inside
-    /// it: a month index that is not inside its year is not where anyone looks
-    /// for it. The alphabetical case is the same shape — filing at `initial 2`
-    /// means an `A` index holding an `Ad` index.
-    ///
-    /// Each step must be *determined* by the one after it, which is what makes
-    /// the hierarchy well defined. That is why this is a property of the grain
-    /// rather than something a caller can assemble: an arbitrary sequence of
-    /// coarsenings is not a nest.
-    pub fn chain(self) -> Vec<Grain> {
-        match self {
-            Grain::Year => vec![Grain::Year],
-            Grain::Month => vec![Grain::Year, Grain::Month],
-            Grain::Day => vec![Grain::Year, Grain::Month, Grain::Day],
-            Grain::Initial(n) => (1..=n).map(Grain::Initial).collect(),
-        }
-    }
-
-    /// Every group key `value` falls under at this grain — empty when the
-    /// value does not reach it.
-    ///
-    /// The calendar grains *validate* rather than taking a blind prefix, which
-    /// is what keeps `by:` usable on a view whose field is only usually a date:
-    /// `banana` cut to a year would otherwise group under `bana`, a group key
-    /// that looks like data. A value this rejects falls to the ungrouped
-    /// bucket, where it is visible as something that did not sort.
-    ///
-    /// What they validate *as* is EDTF, so `1913~` is the group `1913`, `192X`
-    /// is a group of its own, `1918/1922` is five groups, and `XXXX` is none
-    /// — the rules are in [`crate::date`]. An RFC 3339 instant
-    /// (`2026-07-24T07:32:00Z` — what a machine-maintained `updated` field
-    /// carries) cuts exactly like the plain date it starts with.
-    ///
-    /// The group keys are spelled so that an ISO date's lexical order is its
-    /// calendar order, so the group order falls out of the string with no
-    /// calendar arithmetic and no time zone to get wrong. (Years before 0000
-    /// sort backwards among themselves; nothing files there yet.)
-    pub fn cuts(self, value: &str) -> Vec<String> {
-        let text = value.trim();
-        if let Grain::Initial(n) = self {
-            // By *character*, not byte: a name may begin with any of them, and
-            // slicing `Ålesund` at byte 1 is a panic. A value shorter than the
-            // cut is taken whole rather than rejected — `Bo` under a two-letter
-            // index belongs at `BO`, and there is no coarser truth to wait for.
-            let cut: String = text.chars().take(n).flat_map(char::to_uppercase).collect();
-            return if cut.is_empty() {
-                Vec::new()
-            } else {
-                vec![cut]
-            };
-        }
-        crate::date::keys(text, self)
-    }
-
-    /// The one group key `value` falls under at this grain, or `None` when it
-    /// falls under none — or under several.
-    ///
-    /// The single-valued half of [`cuts`](Self::cuts), for the caller that
-    /// needs one answer: filing. An interval has several homes at a grain it
-    /// spans, and [`ViewSpec::nest_route`] must not pick one, for the reason
-    /// it does not pick between two people.
-    pub fn cut(self, value: &str) -> Option<String> {
-        let mut keys = self.cuts(value);
-        (keys.len() == 1).then(|| keys.remove(0))
-    }
-}
-
-/// How a view **files** a new record — the `nest:` value.
-///
-/// Two shapes, and the difference is who knows where the shelf is. A
-/// [`Grain`] computes it from the value, so the crate must know what a year
-/// or an initial is. [`Ref`](Self::Ref) reads it off the record: the value is
-/// a link, and the record files under the document it links to, whose place
-/// in the spine is the whole chain. See the module docs, *Filing by
-/// reference*.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Nest {
-    /// File under an index at this grain, the coarser indexes above it —
-    /// `["2026", "2026-07"]` for a month.
-    Grain(Grain),
-    /// File under the document the grouping value links to.
-    Ref,
-}
-
-impl Nest {
-    /// Read a `nest:` value: a grain's spelling, or the word `ref`.
-    pub fn parse(value: &Value) -> Option<Self> {
-        if let Some(text) = value.as_str()
-            && text.trim() == "ref"
-        {
-            return Some(Nest::Ref);
-        }
-        Grain::parse(value).map(Nest::Grain)
-    }
-
-    /// The value this writes back as.
-    pub fn to_value(self) -> Value {
-        match self {
-            Nest::Grain(grain) => grain.to_value(),
-            Nest::Ref => Value::String("ref".into()),
-        }
-    }
-
-    /// How this reads in a listing (`month`, `initial 2`, `ref`).
-    pub fn display(self) -> String {
-        match self {
-            Nest::Grain(grain) => grain.display(),
-            Nest::Ref => "ref".to_string(),
-        }
-    }
-
-    /// The grain, when this nest is one.
-    pub fn grain(self) -> Option<Grain> {
-        match self {
-            Nest::Grain(grain) => Some(grain),
-            Nest::Ref => None,
-        }
-    }
-}
-
-/// Where a record files under a view — what [`ViewSpec::nest_route`] answers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NestRoute {
-    /// The index *titles* to file under, coarsest first, below the view's
-    /// [`under`](ViewSpec::under) — `["2026", "2026-07"]` — which is exactly
-    /// what prov's route addressing takes, so a frontend hands them to
-    /// `plan_route` and never assembles a path. An index that does not exist
-    /// yet is the frontend's to create.
-    Titles(Vec<String>),
-    /// The link the record's own grouping field carries, as written. The
-    /// record files under whatever it resolves to — by path, by `id:`, or by
-    /// title, the way a view's anchor resolves — and the frontend resolves it
-    /// from where the record will live, since a relative link is relative to
-    /// its document. Nothing is created: a link to no document is a broken
-    /// link, not a shelf.
-    Link(String),
-}
-
-/// What a view sorts records by — MoReq2010's *classification*.
-///
-/// One shape, not a set of blessed kinds: an ordered chain of field keys, and
-/// an optional grain to cut the chosen value at. See the module docs for why
-/// there is no `date` variant.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Grouping {
-    /// The field paths to read, in order — the first that carries a value
-    /// wins, and supplies *all* of that view's group keys for the document.
-    /// Each is a path as a `fields` declaration writes one (`people`,
-    /// `written.on`, `confirmed[].by`), so a view groups by a key inside a
-    /// mapping or inside every item of a list, not only by a top-level key.
-    /// Guaranteed non-empty by [`ViewSpec::parse`].
-    pub keys: Vec<String>,
-    /// The grain the chosen value is cut at, or `None` to group on the value
-    /// itself.
-    pub by: Option<Grain>,
-}
-
-impl Grouping {
-    /// A view grouped on one field's raw values.
-    pub fn field(key: impl Into<String>) -> Self {
-        Grouping {
-            keys: vec![key.into()],
-            by: None,
-        }
-    }
-
-    /// The group keys `meta` falls under — empty when no field in the chain
-    /// carries a usable value, which is the ungrouped bucket.
-    ///
-    /// A sequence-valued field yields one key per element, so a letter about
-    /// two people appears under both. That is the whole point of a view: the
-    /// same document reached several ways, with retrieval decoupled from the
-    /// single containment spine.
-    ///
-    /// The chain stops at the first key that is *present and non-empty*, and
-    /// its values are used even if the grain rejects all of them. Falling
-    /// through to `created` because `date_of_document` held something
-    /// unparseable would silently file the document under a date it does not
-    /// claim; leaving it ungrouped shows the bad value instead.
-    pub fn keys_of(&self, meta: &Value) -> Vec<String> {
-        for key in &self.keys {
-            // A path, not a key: `written.on` reaches into a mapping and
-            // `confirmed[].by` into every item of a list, each value it lands
-            // on contributing its scalars. A plain key reaches its one value,
-            // as before.
-            let raw: Vec<String> = values_at(meta, &FieldPath::parse(key))
-                .into_iter()
-                .flat_map(|(_, value)| scalar_texts(value))
-                .collect();
-            if raw.is_empty() {
-                continue;
-            }
-            return match self.by {
-                Some(grain) => raw.iter().flat_map(|t| grain.cuts(t)).collect(),
-                None => raw,
-            };
-        }
-        Vec::new()
-    }
-
-    /// The `group:` value this writes back as: a bare string for a single key,
-    /// a list for a chain, so a one-field view reads as the small thing it is.
-    fn to_value(&self) -> Value {
-        match self.keys.as_slice() {
-            [only] => Value::String(only.clone()),
-            many => Value::Sequence(many.iter().cloned().map(Value::String).collect()),
-        }
-    }
-}
-
-/// The trimmed, non-empty text of a scalar, or of every scalar in a sequence.
-///
-/// A view groups on what a value *says*, so the numeric and boolean cases are
-/// rendered rather than skipped — a `rating: 5` groups under `5`. A mapping has
-/// no single text and is not groupable; a nested sequence is not flattened,
-/// because a list of lists is a shape no frontmatter field means to declare.
-pub(crate) fn scalar_texts(value: &Value) -> Vec<String> {
-    match value {
-        Value::Sequence(items) => items.iter().filter_map(scalar_text).collect(),
-        other => scalar_text(other).into_iter().collect(),
-    }
-}
-
-/// One scalar's trimmed text, or `None` for a null, an empty string, or a
-/// composite.
-fn scalar_text(value: &Value) -> Option<String> {
-    let text = match value {
-        Value::String(s) => s.trim().to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null | Value::Sequence(_) | Value::Mapping(_) => return None,
-    };
-    (!text.is_empty()).then_some(text)
-}
+/// The keys an earlier form of the format used, which a view no longer
+/// reads. An entry carrying any is diagnosed with its replacement (see
+/// [`crate::legacy`]) rather than read half-way.
+pub const RETIRED_VIEW_KEYS: &[&str] = &["group", "by", "under", "nest"];
 
 /// One view a workspace declares for itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,53 +77,52 @@ pub struct ViewSpec {
     /// A glyph hint for a frontend's lens picker. Uninterpreted here: what a
     /// `calendar` looks like is the frontend's business.
     pub icon: Option<String>,
-    /// Classification — how records become groups.
-    pub group: Grouping,
-    /// Aggregation — the index this view's records hang under, as a link
-    /// (`'[Daily](id:abc1234)'`). `None` scopes the view to the whole
-    /// workspace.
-    pub under: Option<String>,
-    /// The `where:` conditions a document in scope must also meet. `None`
-    /// takes everything scope reaches.
+    /// The `where:` condition a document must meet, or `None` for every
+    /// document the workspace reaches.
     ///
     /// Named `filter` because `where` is a Rust keyword; the config spelling is
     /// `where`, which is what a reader of the format sees.
-    ///
-    /// Separate from [`under`](Self::under) because the two fail differently:
-    /// an anchor that names nothing is a broken view, while a condition that
-    /// matches nothing is an ordinary empty answer.
-    pub filter: Option<Condition>,
-    /// Materialization: when set, filing a new record through this view nests
-    /// it — under an index at a grain below [`under`](Self::under), creating
-    /// the index if the calendar has turned, or under the document the
-    /// record's grouping value links to ([`Nest::Ref`]). `None` files flat.
-    ///
-    /// Independent of [`Grouping::by`] on purpose — see the module docs.
-    pub nest: Option<Nest>,
+    pub filter: Option<Expression>,
+    /// The `key:` expression — the group or groups each document goes under.
+    pub key: Expression,
 }
 
 impl ViewSpec {
+    /// A view grouping every document by `key`, with no condition.
+    pub fn new(name: impl Into<String>, key: Expression) -> Self {
+        ViewSpec {
+            name: name.into(),
+            label: None,
+            icon: None,
+            filter: None,
+            key,
+        }
+    }
+
     /// Read one `views.<name>` entry.
     ///
-    /// Returns `None` when the entry is not a mapping or names no groupable
-    /// field — an entry that does not say what it groups by is not a view, and
-    /// recording it as one would put a lens in the picker that groups nothing.
-    /// [`crate::diagnose_view`] is the half that says *why*, so a malformed
-    /// entry is reported rather than merely dropped.
+    /// `None` when the entry is not a mapping, has no `key:`, carries an
+    /// expression that does not parse, or is written in the retired form. A
+    /// view with a broken `where:` must not become a view of *everything*, and
+    /// one with a broken `key:` has nothing to group by, so an entry that
+    /// cannot be read whole is not read at all — and [`crate::diagnose_view`]
+    /// is the half that says why.
     pub fn parse(name: &str, value: &Value) -> Option<Self> {
         let map = value.as_mapping()?;
-        let keys = group_keys(map.get("group"))?;
+        if is_retired(map) {
+            return None;
+        }
+        let key = expression(map.get("key")?).ok()?;
+        let filter = match map.get("where") {
+            Some(value) => Some(expression(value).ok()?),
+            None => None,
+        };
         Some(ViewSpec {
             name: name.to_string(),
             label: non_empty(map.get("label")),
             icon: non_empty(map.get("icon")),
-            group: Grouping {
-                keys,
-                by: map.get("by").and_then(Grain::parse),
-            },
-            under: non_empty(map.get("under")),
-            filter: map.get("where").and_then(Condition::parse),
-            nest: map.get("nest").and_then(Nest::parse),
+            filter,
+            key,
         })
     }
 
@@ -587,86 +137,11 @@ impl ViewSpec {
         if let Some(icon) = &self.icon {
             map.insert("icon".into(), Value::String(icon.clone()));
         }
-        map.insert("group".into(), self.group.to_value());
-        if let Some(by) = self.group.by {
-            map.insert("by".into(), by.to_value());
-        }
-        if let Some(under) = &self.under {
-            map.insert("under".into(), Value::String(under.clone()));
-        }
         if let Some(filter) = &self.filter {
-            map.insert("where".into(), filter.to_value());
+            map.insert("where".into(), Value::String(filter.source().to_string()));
         }
-        if let Some(nest) = self.nest {
-            map.insert("nest".into(), nest.to_value());
-        }
+        map.insert("key".into(), Value::String(self.key.source().to_string()));
         map
-    }
-
-    /// The link a record nests under when this view files by reference —
-    /// `None` when it does not, when the grouping chain carries no value, or
-    /// when it carries several. The single-valued half of
-    /// [`nest_route`](Self::nest_route), for a caller that only files by
-    /// reference; the route is the general answer.
-    pub fn nest_link(&self, meta: &Value) -> Option<String> {
-        match self.nest_route(meta)? {
-            NestRoute::Link(link) => Some(link),
-            NestRoute::Titles(_) => None,
-        }
-    }
-
-    /// Where a new record nests under this view — or `None` when the view
-    /// does not nest, or `meta` cannot be filed.
-    ///
-    /// For a date view at month grain this is the titles `["2026",
-    /// "2026-07"]`; for an alphabetical one at `initial 2`, `["A", "AD"]`.
-    /// Those are *titles*, which is exactly what prov's route addressing takes
-    /// (`prov new --under "Daily/2026/2026-07" -p`), so a frontend that
-    /// materializes a view hands this straight to `plan_route` and never
-    /// assembles a path itself. For a view that files by reference it is the
-    /// [link](NestRoute::Link) the record carries, and the frontend files under
-    /// what that resolves to.
-    ///
-    /// `None` in three cases, all of which mean *this record has no single home
-    /// under this view* rather than *nowhere*:
-    ///
-    /// - the view declares no [`nest`](Self::nest);
-    /// - no field in the grouping chain carries a usable value, so there is
-    ///   nothing to file by;
-    /// - the value is **multi-valued**. This is the constraint prov's spanning
-    ///   relation imposes: a document with two people cannot hang under two
-    ///   parents, and picking one would be inventing an answer the workspace
-    ///   did not give. Such a view groups perfectly well — it just cannot be
-    ///   materialized, which is why `nest` on a multi-valued field is a config
-    ///   finding rather than a runtime surprise. A record linking to two
-    ///   shelves is the same case in the reference shape.
-    pub fn nest_route(&self, meta: &Value) -> Option<NestRoute> {
-        let nest = self.nest?;
-        // Read the chain *uncut*: `by:` is how this view reads, and reading must
-        // not decide where a file lands (the whole point of keeping the two
-        // keys apart). The value is then cut at each nesting grain instead.
-        let raw = Grouping {
-            keys: self.group.keys.clone(),
-            by: None,
-        };
-        let values = raw.keys_of(meta);
-        let [value] = values.as_slice() else {
-            return None;
-        };
-        let grain = match nest {
-            // The value *is* the route: the record says where it files, and
-            // the shelf's own place in the spine is the rest of the chain.
-            Nest::Ref => return Some(NestRoute::Link(value.clone())),
-            Nest::Grain(grain) => grain,
-        };
-        let route: Vec<String> = grain
-            .chain()
-            .into_iter()
-            .filter_map(|step| step.cut(value))
-            .collect();
-        // A partial chain would file a July entry under `2026` and call it
-        // done, which is a different place from the one the view describes.
-        (route.len() == grain.chain().len()).then_some(NestRoute::Titles(route))
     }
 
     /// What a person calls this view: its label, else its name humanized
@@ -679,22 +154,25 @@ impl ViewSpec {
     }
 }
 
-/// The field-key chain a `group:` value names — a bare string, or a list.
-///
-/// `None` when the value is absent, is neither of those shapes, or names no
-/// non-empty key. Empty entries are dropped rather than carried, so
-/// `group: [people, '']` is the one-key chain it plainly means.
-fn group_keys(value: Option<&Value>) -> Option<Vec<String>> {
-    let keys: Vec<String> = match value? {
-        Value::String(s) => s
-            .trim()
-            .is_empty()
-            .then(Vec::new)
-            .unwrap_or_else(|| vec![s.trim().to_string()]),
-        Value::Sequence(items) => items.iter().filter_map(|v| non_empty(Some(v))).collect(),
-        _ => return None,
-    };
-    (!keys.is_empty()).then_some(keys)
+/// An expression from a config value, which must be text.
+pub(crate) fn expression(value: &Value) -> Result<Expression, ExpressionError> {
+    match value {
+        Value::String(source) => Expression::parse(source),
+        // A bare `key: 5` or `where: true` is YAML being helpful; the
+        // expression it spells is the same text.
+        Value::Int(i) => Expression::parse(&i.to_string()),
+        Value::Bool(b) => Expression::parse(&b.to_string()),
+        _ => Err(ExpressionError::Syntax(
+            "an expression is written as text".to_string(),
+        )),
+    }
+}
+
+/// Whether an entry is written in the retired form: any of its keys, or a
+/// `where:` that is a mapping of predicates rather than an expression.
+pub(crate) fn is_retired(map: &Mapping) -> bool {
+    RETIRED_VIEW_KEYS.iter().any(|k| map.contains_key(*k))
+        || matches!(map.get("where"), Some(Value::Mapping(_)))
 }
 
 /// A trimmed non-empty string from a config value, or `None`.
@@ -745,565 +223,71 @@ mod tests {
         Value::Mapping(map)
     }
 
-    fn text(pairs: &[(&str, &str)]) -> Value {
-        let owned: Vec<(&str, Value)> = pairs
-            .iter()
-            .map(|(k, v)| (*k, Value::String((*v).to_string())))
-            .collect();
-        mapping(&owned)
-    }
-
-    fn text_value(s: &str) -> Value {
+    fn text(s: &str) -> Value {
         Value::String(s.to_string())
     }
 
-    fn seq(items: &[&str]) -> Value {
-        Value::Sequence(items.iter().map(|s| Value::String((*s).into())).collect())
-    }
-
-    /// The un-blessing, stated as a test: `date` is not a token. A view that
-    /// says `group: date` groups on a *field called `date`* like any other, so
-    /// nothing in this crate has to know the word.
     #[test]
-    fn date_is_a_field_name_not_a_grouping_kind() {
-        let spec = ViewSpec::parse("daily", &text(&[("group", "date")])).expect("a view");
-        assert_eq!(spec.group, Grouping::field("date"));
-
-        let mut doc = Mapping::new();
-        doc.insert("date".into(), Value::String("2026-07-24".into()));
-        assert_eq!(spec.group.keys_of(&Value::Mapping(doc)), ["2026-07-24"]);
-    }
-
-    #[test]
-    fn a_chain_takes_the_first_field_that_carries_a_value() {
+    fn a_view_is_a_key_and_an_optional_condition() {
         let spec = ViewSpec::parse(
-            "daily",
+            "open",
             &mapping(&[
-                ("group", seq(&["date_of_document", "created", "updated"])),
-                ("by", Value::String("month".into())),
+                ("label", text("Open tasks")),
+                ("where", text("present(status) && status != 'done'")),
+                ("key", text("status")),
             ]),
         )
         .expect("a view");
-
-        let mut doc = Mapping::new();
-        doc.insert("created".into(), Value::String("2026-07-24".into()));
-        doc.insert("updated".into(), Value::String("2020-01-01".into()));
+        assert_eq!(spec.display_label(), "Open tasks");
+        assert_eq!(spec.key.source(), "status");
         assert_eq!(
-            spec.group.keys_of(&Value::Mapping(doc)),
-            ["2026-07"],
-            "created wins over updated; the grain cuts it"
+            spec.filter.as_ref().map(Expression::source),
+            Some("present(status) && status != 'done'")
         );
     }
 
-    /// A present-but-unparseable value does not fall through to the next field
-    /// in the chain. Filing the document under `created` because
-    /// `date_of_document` held junk would assert a date the document never
-    /// claimed.
     #[test]
-    fn a_bad_value_does_not_fall_through_to_the_next_key() {
-        let spec = ViewSpec::parse(
-            "daily",
-            &mapping(&[
-                ("group", seq(&["date_of_document", "created"])),
-                ("by", Value::String("year".into())),
-            ]),
-        )
-        .expect("a view");
-
-        let mut doc = Mapping::new();
-        doc.insert("date_of_document".into(), Value::String("banana".into()));
-        doc.insert("created".into(), Value::String("2026-07-24".into()));
-        assert!(spec.group.keys_of(&Value::Mapping(doc)).is_empty());
-    }
-
-    /// One document, several groups — the property that makes a view different
-    /// from the spine.
-    #[test]
-    fn a_sequence_field_puts_one_document_in_several_groups() {
-        let spec = ViewSpec::parse("who", &text(&[("group", "people")])).expect("a view");
-        let mut doc = Mapping::new();
-        doc.insert("people".into(), seq(&["Ada", "Grace"]));
-        assert_eq!(spec.group.keys_of(&Value::Mapping(doc)), ["Ada", "Grace"]);
-    }
-
-    #[test]
-    fn a_document_with_nothing_in_the_chain_is_ungrouped() {
-        let spec = ViewSpec::parse("daily", &text(&[("group", "created")])).expect("a view");
+    fn an_entry_that_cannot_be_read_whole_is_not_read() {
+        // No key: nothing to group by.
+        assert!(ViewSpec::parse("v", &mapping(&[("where", text("true"))])).is_none());
+        // A broken condition must not become a view of everything.
         assert!(
-            spec.group
-                .keys_of(&Value::Mapping(Mapping::new()))
-                .is_empty()
+            ViewSpec::parse(
+                "v",
+                &mapping(&[("key", text("status")), ("where", text("status =="))])
+            )
+            .is_none()
         );
-        let mut blank = Mapping::new();
-        blank.insert("created".into(), Value::String("   ".into()));
-        assert!(spec.group.keys_of(&Value::Mapping(blank)).is_empty());
-    }
-
-    #[test]
-    fn a_grain_cuts_an_iso_date_and_an_rfc3339_instant_alike() {
-        assert_eq!(Grain::Year.cut("2026-07-24"), Some("2026".into()));
-        assert_eq!(Grain::Month.cut("2026-07-24"), Some("2026-07".into()));
-        assert_eq!(Grain::Day.cut("2026-07-24"), Some("2026-07-24".into()));
-        assert_eq!(
-            Grain::Month.cut("2026-07-24T07:32:00Z"),
-            Some("2026-07".into())
+        // The retired form is diagnosed with its replacement, never read half-way.
+        assert!(ViewSpec::parse("v", &mapping(&[("group", text("status"))])).is_none());
+        assert!(
+            ViewSpec::parse(
+                "v",
+                &mapping(&[
+                    ("key", text("status")),
+                    ("where", mapping(&[("has", text("status"))]))
+                ])
+            )
+            .is_none()
         );
-        assert_eq!(Grain::Year.cut("  2026-07-24  "), Some("2026".into()));
-    }
-
-    /// The generalization, stated as a test: a grain is any coarsening, and the
-    /// A–Z index is one — same `by:` key, same `cut`, no calendar involved.
-    #[test]
-    fn an_initial_grain_cuts_the_alphabet_the_way_a_date_grain_cuts_a_year() {
-        assert_eq!(Grain::Initial(1).cut("Ada Lovelace"), Some("A".into()));
-        assert_eq!(Grain::Initial(2).cut("Ada Lovelace"), Some("AD".into()));
-        // Upper-cased on purpose: an index that files `ada` apart from `Ada` is
-        // not an index.
-        assert_eq!(Grain::Initial(1).cut("ada"), Some("A".into()));
-        // Shorter than the cut is taken whole — there is no coarser truth to
-        // wait for, unlike a half-written date.
-        assert_eq!(Grain::Initial(3).cut("Bo"), Some("BO".into()));
-        assert_eq!(Grain::Initial(1).cut("   "), None);
-    }
-
-    /// Cutting by character rather than byte: slicing a multi-byte name at
-    /// byte 1 would panic, and `Å` is one letter.
-    #[test]
-    fn an_initial_grain_cuts_characters_not_bytes() {
-        assert_eq!(Grain::Initial(1).cut("Ålesund"), Some("Å".into()));
-        assert_eq!(Grain::Initial(2).cut("Øland"), Some("ØL".into()));
-        assert_eq!(Grain::Initial(1).cut("東京"), Some("東".into()));
-    }
-
-    /// `chain` is what `nest` needs, and it generalizes with the grain: each
-    /// step must be determined by the one after it.
-    #[test]
-    fn every_grain_chains_coarsest_first() {
-        assert_eq!(Grain::Day.chain(), [Grain::Year, Grain::Month, Grain::Day]);
-        assert_eq!(Grain::Year.chain(), [Grain::Year]);
-        assert_eq!(
-            Grain::Initial(3).chain(),
-            [Grain::Initial(1), Grain::Initial(2), Grain::Initial(3)]
-        );
-    }
-
-    #[test]
-    fn a_parameterized_grain_parses_and_round_trips() {
-        let mut map = Mapping::new();
-        map.insert("initial".into(), Value::Int(2));
-        let parsed = Grain::parse(&Value::Mapping(map)).expect("a grain");
-        assert_eq!(parsed, Grain::Initial(2));
-        assert_eq!(Grain::parse(&parsed.to_value()), Some(parsed));
-
-        // The bare word is the one-character case, and writes back bare.
-        assert_eq!(
-            Grain::parse(&text_value("initial")),
-            Some(Grain::Initial(1))
-        );
-        assert_eq!(Grain::Initial(1).to_value(), text_value("initial"));
-        assert_eq!(Grain::parse(&text_value("month")), Some(Grain::Month));
-    }
-
-    /// A zero-width cut puts every document in one group called "", which is a
-    /// view that has stopped being one. Rejected rather than clamped, so the
-    /// linter reports it instead of it silently working.
-    #[test]
-    fn a_grain_with_a_useless_parameter_does_not_parse() {
-        let mut zero = Mapping::new();
-        zero.insert("initial".into(), Value::Int(0));
-        assert_eq!(Grain::parse(&Value::Mapping(zero)), None);
-
-        let mut unknown = Mapping::new();
-        unknown.insert("bucket".into(), Value::Int(10));
-        assert_eq!(Grain::parse(&Value::Mapping(unknown)), None);
-
-        let mut two = Mapping::new();
-        two.insert("initial".into(), Value::Int(1));
-        two.insert("month".into(), Value::Int(1));
-        assert_eq!(Grain::parse(&Value::Mapping(two)), None);
-    }
-
-    /// The reason the cut validates instead of slicing: `banana` must not
-    /// become the group `bana`, and `20264` must not become the year `2026`.
-    #[test]
-    fn a_grain_rejects_what_is_not_a_date_at_that_grain() {
-        assert_eq!(Grain::Year.cut("banana"), None);
-        assert_eq!(Grain::Year.cut("20264"), None);
-        assert_eq!(Grain::Day.cut("2026-07"), None);
-        assert_eq!(Grain::Month.cut("2026/07"), None);
-        assert_eq!(Grain::Month.cut(""), None);
-    }
-
-    /// The archive's dates, read at a grain — the rules are `date`'s; this is
-    /// the view seeing them. `1913~` stands beside `1913`, and an interval is
-    /// under every year it spans.
-    #[test]
-    fn a_grain_reads_edtf() {
-        assert_eq!(Grain::Year.cut("1913~"), Some("1913".into()));
-        assert_eq!(Grain::Year.cut("192X"), Some("192X".into()));
-        assert_eq!(Grain::Month.cut("1943-05"), Some("1943-05".into()));
-        assert_eq!(Grain::Day.cut("1943-05"), None);
-        assert_eq!(Grain::Year.cut("XXXX"), None);
-        assert_eq!(Grain::Year.cuts("1918/1920"), ["1918", "1919", "1920"]);
-        assert_eq!(
-            Grain::Year.cut("1918/1920"),
-            None,
-            "several homes is not one home"
-        );
-        let sel_by_year = Grouping {
-            keys: vec!["date_of_document".into()],
-            by: Some(Grain::Year),
-        };
-        let mut doc = Mapping::new();
-        doc.insert("date_of_document".into(), Value::String("../1920".into()));
-        assert_eq!(sel_by_year.keys_of(&Value::Mapping(doc)), ["1920"]);
-    }
-
-    /// The load-bearing separation: `by:` is classification, `nest:` is
-    /// aggregation, and reading one does not set the other. A view that grouped
-    /// by month would otherwise start filing next month's entry somewhere new.
-    #[test]
-    fn grain_does_not_imply_nesting() {
-        let spec = ViewSpec::parse("daily", &text(&[("group", "created"), ("by", "month")]))
-            .expect("a view");
-        assert_eq!(spec.group.by, Some(Grain::Month));
-        assert_eq!(spec.nest, None);
-
-        let materialized = ViewSpec::parse(
-            "daily",
-            &text(&[("group", "created"), ("by", "month"), ("nest", "year")]),
-        )
-        .expect("a view");
-        assert_eq!(
-            materialized.nest,
-            Some(Nest::Grain(Grain::Year)),
-            "a view may group finer than it files"
-        );
-    }
-
-    #[test]
-    fn an_entry_without_a_grouping_is_not_a_view() {
-        assert!(ViewSpec::parse("x", &text(&[("label", "Nameless")])).is_none());
-        assert!(ViewSpec::parse("x", &text(&[("group", "  ")])).is_none());
-        assert!(ViewSpec::parse("x", &mapping(&[("group", seq(&[]))])).is_none());
-        assert!(ViewSpec::parse("x", &Value::String("created".into())).is_none());
-    }
-
-    /// A view that nests hands a frontend the index *titles* to file under —
-    /// which is exactly what prov's route addressing takes, so nothing
-    /// assembles a path.
-    #[test]
-    fn nest_route_gives_the_index_titles_to_file_under() {
-        let spec = ViewSpec::parse(
-            "daily",
-            &text(&[("group", "created"), ("by", "day"), ("nest", "month")]),
-        )
-        .expect("a view");
-
-        let mut doc = Mapping::new();
-        doc.insert("created".into(), Value::String("2026-07-24".into()));
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(doc)),
-            Some(NestRoute::Titles(vec![
-                "2026".to_string(),
-                "2026-07".to_string()
-            ])),
-            "a month nest is a year index holding a month index"
-        );
-    }
-
-    /// The alphabetical case is the same machinery — the generalization, seen
-    /// from the filing side rather than the reading side.
-    #[test]
-    fn nest_route_generalizes_past_dates() {
-        let mut entry = Mapping::new();
-        entry.insert("group".into(), Value::String("surname".into()));
-        entry.insert("nest".into(), {
-            let mut g = Mapping::new();
-            g.insert("initial".into(), Value::Int(2));
-            Value::Mapping(g)
-        });
-        let spec = ViewSpec::parse("people", &Value::Mapping(entry)).expect("a view");
-
-        let mut doc = Mapping::new();
-        doc.insert("surname".into(), Value::String("Lovelace".into()));
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(doc)),
-            Some(NestRoute::Titles(vec!["L".to_string(), "LO".to_string()]))
-        );
-    }
-
-    /// The constraint prov's spine imposes: a document with two people cannot
-    /// hang under two parents, so it has no single home and this says so rather
-    /// than picking one.
-    #[test]
-    fn a_multi_valued_document_has_no_nest_route() {
-        let spec = ViewSpec::parse("who", &text(&[("group", "people"), ("nest", "initial")]))
-            .expect("a view");
-
-        let mut one = Mapping::new();
-        one.insert("people".into(), Value::String("Ada".into()));
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(one)),
-            Some(NestRoute::Titles(vec!["A".to_string()])),
-            "one value files fine"
-        );
-
-        let mut two = Mapping::new();
-        two.insert("people".into(), seq(&["Ada", "Grace"]));
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(two)),
-            None,
-            "two values are two homes, and prov's spine allows one"
-        );
-    }
-
-    /// An interval is the same shape one value at a time: `1918/1922` is
-    /// under five years and so has no single home, while `1913~` has one.
-    #[test]
-    fn an_interval_has_no_nest_route_where_it_spans() {
-        let spec = ViewSpec::parse(
-            "daily",
-            &text(&[("group", "date_of_document"), ("nest", "year")]),
-        )
-        .expect("a view");
-
-        let mut about = Mapping::new();
-        about.insert("date_of_document".into(), Value::String("1913~".into()));
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(about)),
-            Some(NestRoute::Titles(vec!["1913".to_string()]))
-        );
-
-        let mut between = Mapping::new();
-        between.insert("date_of_document".into(), Value::String("1918/1922".into()));
-        assert_eq!(spec.nest_route(&Value::Mapping(between)), None);
-    }
-
-    /// Reading must not decide where a file lands: a view that groups by year
-    /// still nests by month if that is what it says, and the route is cut from
-    /// the *uncut* value.
-    #[test]
-    fn nest_route_ignores_how_the_view_reads() {
-        let spec = ViewSpec::parse(
-            "daily",
-            &text(&[("group", "created"), ("by", "year"), ("nest", "month")]),
-        )
-        .expect("a view");
-
-        let mut doc = Mapping::new();
-        doc.insert("created".into(), Value::String("2026-07-24".into()));
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(doc)),
-            Some(NestRoute::Titles(vec![
-                "2026".to_string(),
-                "2026-07".to_string()
-            ])),
-            "grouped by year, filed by month — `by` never reaches the route"
-        );
-    }
-
-    #[test]
-    fn a_view_that_does_not_nest_or_cannot_file_has_no_route() {
-        let no_nest = ViewSpec::parse("daily", &text(&[("group", "created")])).expect("a view");
-        assert_eq!(no_nest.nest_route(&Value::Mapping(Mapping::new())), None);
-
-        let nests = ViewSpec::parse("daily", &text(&[("group", "created"), ("nest", "month")]))
-            .expect("a view");
-        assert_eq!(
-            nests.nest_route(&Value::Mapping(Mapping::new())),
-            None,
-            "nothing to file by"
-        );
-
-        // A value that reaches the year but not the month files nowhere rather
-        // than landing in `2026` and calling it done.
-        let mut partial = Mapping::new();
-        partial.insert("created".into(), Value::String("2026".into()));
-        assert_eq!(nests.nest_route(&Value::Mapping(partial)), None);
     }
 
     #[test]
     fn a_view_round_trips_through_its_mapping() {
-        for group in [
-            Grouping {
-                keys: vec!["created".into()],
-                by: Some(Grain::Month),
-            },
-            Grouping {
-                keys: vec!["date_of_document".into(), "created".into()],
-                by: Some(Grain::Day),
-            },
-            Grouping::field("people"),
-        ] {
-            let spec = ViewSpec {
-                name: "daily".into(),
-                label: Some("Daily".into()),
-                icon: Some("calendar".into()),
-                group,
-                under: Some("[Daily](id:abc1234)".into()),
-                filter: Some(Condition::Not(Box::new(Condition::Has("draft".into())))),
-                nest: Some(Nest::Grain(Grain::Year)),
-            };
-            let back =
-                ViewSpec::parse("daily", &Value::Mapping(spec.to_mapping())).expect("a view");
-            assert_eq!(back, spec);
-        }
-    }
-
-    /// A one-key chain writes back as a bare string, not a one-element list.
-    #[test]
-    fn a_single_key_group_serializes_unwrapped() {
-        let spec = ViewSpec {
-            name: "who".into(),
-            label: None,
-            icon: None,
-            group: Grouping::field("people"),
-            under: None,
-            filter: None,
-            nest: None,
-        };
-        assert_eq!(
-            spec.to_mapping().get("group"),
-            Some(&Value::String("people".into()))
-        );
+        let value = mapping(&[
+            ("label", text("Daily")),
+            ("icon", text("calendar")),
+            ("where", text("!present(draft)")),
+            ("key", text("month(first(date_of_document, created))")),
+        ]);
+        let spec = ViewSpec::parse("daily", &value).expect("a view");
+        let back = ViewSpec::parse("daily", &Value::Mapping(spec.to_mapping()));
+        assert_eq!(back, Some(spec));
     }
 
     #[test]
-    fn views_read_in_declaration_order() {
-        let mut views = Mapping::new();
-        views.insert("daily".into(), text(&[("group", "created")]));
-        views.insert("who".into(), text(&[("group", "people")]));
-        let mut config = Mapping::new();
-        config.insert(VIEWS_KEY.into(), Value::Mapping(views));
-
-        let specs = views_from(&config);
-        assert_eq!(
-            specs.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
-            ["daily", "who"]
-        );
-    }
-
-    #[test]
-    fn a_label_falls_back_to_the_humanized_name() {
-        let spec = ViewSpec::parse("daily_entries", &text(&[("group", "created")])).expect("view");
-        assert_eq!(spec.display_label(), "Daily entries");
-    }
-
-    #[test]
-    fn a_non_string_scalar_groups_under_its_text() {
-        let spec = ViewSpec::parse("stars", &text(&[("group", "rating")])).expect("a view");
-        let mut doc = Mapping::new();
-        doc.insert("rating".into(), Value::Int(5));
-        assert_eq!(spec.group.keys_of(&Value::Mapping(doc)), ["5"]);
-    }
-
-    /// A grouping key is a field path, as a declaration's is: `written.on`
-    /// reaches into a mapping, `confirmed[].by` into every item of a list.
-    #[test]
-    fn a_grouping_key_is_a_field_path() {
-        let nested = ViewSpec::parse("journal", &text(&[("group", "written.on")])).expect("a view");
-        let mut doc = Mapping::new();
-        doc.insert(
-            "written".into(),
-            text(&[("on", "/Calendar/2026/09/17.md"), ("at", "09:12")]),
-        );
-        assert_eq!(
-            nested.group.keys_of(&Value::Mapping(doc)),
-            ["/Calendar/2026/09/17.md"]
-        );
-
-        let each = ViewSpec::parse("who", &text(&[("group", "confirmed[].by")])).expect("a view");
-        let mut doc = Mapping::new();
-        doc.insert(
-            "confirmed".into(),
-            Value::Sequence(vec![text(&[("by", "Ada")]), text(&[("by", "Grace")])]),
-        );
-        assert_eq!(each.group.keys_of(&Value::Mapping(doc)), ["Ada", "Grace"]);
-    }
-
-    /// The generalization of `nest` past grains: the record links to its
-    /// shelf, and the route is that link. Nothing here knows the target is a
-    /// day, which is the point.
-    #[test]
-    fn nest_ref_files_under_what_the_record_links_to() {
-        let spec = ViewSpec::parse(
-            "journal",
-            &text(&[("group", "written.on"), ("nest", "ref")]),
-        )
-        .expect("a view");
-        assert_eq!(spec.nest, Some(Nest::Ref));
-
-        let mut doc = Mapping::new();
-        doc.insert(
-            "written".into(),
-            text(&[("on", "[17](/Calendar/2026/09/17.md)"), ("at", "09:12")]),
-        );
-        assert_eq!(
-            spec.nest_route(&Value::Mapping(doc.clone())),
-            Some(NestRoute::Link("[17](/Calendar/2026/09/17.md)".into())),
-            "the link as written — resolving it is the frontend's, from where the record lives"
-        );
-        assert_eq!(
-            spec.nest_link(&Value::Mapping(doc)),
-            Some("[17](/Calendar/2026/09/17.md)".into())
-        );
-
-        // Two shelves is two homes, exactly as two people is.
-        let mut two = Mapping::new();
-        two.insert("written".into(), {
-            let mut m = Mapping::new();
-            m.insert("on".into(), seq(&["/a.md", "/b.md"]));
-            Value::Mapping(m)
-        });
-        assert_eq!(spec.nest_route(&Value::Mapping(two)), None);
-
-        // Nothing linked, nothing filed.
-        assert_eq!(spec.nest_route(&Value::Mapping(Mapping::new())), None);
-    }
-
-    /// `ref` is a way to file, not a way to read: `by:` takes grains only, and
-    /// a grain view never answers with a link.
-    #[test]
-    fn ref_is_a_nest_and_not_a_grain() {
-        assert_eq!(Grain::parse(&text_value("ref")), None);
-        assert_eq!(Nest::parse(&text_value("ref")), Some(Nest::Ref));
-        assert_eq!(Nest::parse(&text_value(" ref ")), Some(Nest::Ref));
-        assert_eq!(
-            Nest::parse(&text_value("month")),
-            Some(Nest::Grain(Grain::Month))
-        );
-        assert_eq!(Nest::parse(&text_value("reff")), None);
-        assert_eq!(Nest::Ref.grain(), None);
-
-        let by_ref = ViewSpec::parse("x", &text(&[("group", "written.on"), ("by", "ref")]))
-            .expect("still a view");
-        assert_eq!(
-            by_ref.group.by, None,
-            "an unreadable `by:` is no grain, as before"
-        );
-
-        let grained = ViewSpec::parse("daily", &text(&[("group", "created"), ("nest", "month")]))
-            .expect("a view");
-        let mut doc = Mapping::new();
-        doc.insert("created".into(), Value::String("2026-07-24".into()));
-        assert_eq!(grained.nest_link(&Value::Mapping(doc)), None);
-    }
-
-    #[test]
-    fn nest_ref_round_trips_through_its_mapping() {
-        let spec = ViewSpec::parse(
-            "journal",
-            &text(&[("group", "written.on"), ("nest", "ref")]),
-        )
-        .expect("a view");
-        let written = spec.to_mapping();
-        assert_eq!(written.get("nest"), Some(&Value::String("ref".into())));
-        assert_eq!(
-            ViewSpec::parse("journal", &Value::Mapping(written)),
-            Some(spec.clone())
-        );
-        assert_eq!(Nest::Ref.display(), "ref");
-        assert_eq!(Nest::Grain(Grain::Initial(2)).display(), "initial 2");
+    fn humanize_turns_a_key_into_a_label() {
+        assert_eq!(humanize("daily_entries"), "Daily entries");
+        assert_eq!(humanize("open-tasks"), "Open tasks");
     }
 }

@@ -245,7 +245,7 @@ a `ref` declaration that also says `under:` is a config issue
 See [path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md).
 
 A declaration governs the whole workspace unless it names an index with
-`under:` — a link resolved as a view's anchor is (by path, `id:`, or title) —
+`under:` — a link resolved by path, `id:`, or title, as a filing entry's is —
 and then it governs that index's spanning subtree and nothing else. A field
 may be declared several times, as a list, each entry scoped: `status` is one
 closed set of terms under `Tasks` and another under `Proposals`, and a document

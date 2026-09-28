@@ -1,12 +1,20 @@
 ---
 title: A list under `equals` is read as its first element
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 created: 2026-09-22T19:15:52.148645Z
-status: open
+status: done
+updated: 2026-09-28
 description: '`where: { equals: { status: [done, dropped] } }` parses as `equals: { status: done }` — the rest of the list is dropped without a finding, so a view that meant any of the terms silently matches one'
 ---
 
 # A list under `equals` is read as its first element
+
+**Done** (2026-09-28), by [views as queries](/docs/proposals/views-as-queries/proposal-views-as-queries-v1.md):
+`where:` is a CEL expression now, and `status in ['done', 'dropped']` reads a
+list on the value side as *any of these* by CEL's own definition of `in`. A
+`where:` still written as a mapping of predicates is a config finding that
+prints its replacement, so nothing is dropped in silence. The body is left as
+it was filed.
 
 **Repro.** A workspace carrying the `tasks` preset as it stood before
 2026-09-22, whose `open-tasks` view said:

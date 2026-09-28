@@ -49,34 +49,18 @@ pub(crate) fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
             return Ok(ExitCode::SUCCESS);
         }
         for view in views {
-            let scope = match &view.under {
-                Some(under) => format!(" under {under}"),
-                None => " (whole workspace)".to_string(),
-            };
-            let by = match view.group.by {
-                Some(grain) => format!(" by {}", grain.display()),
-                None => String::new(),
-            };
-            // The condition is flagged, not rendered: a nested `where:` does
-            // not fit a listing line, and what a reader needs from a list is
-            // that this view does not show everything it reaches.
-            let filtered = if view.filter.is_some() {
-                " [filtered]"
-            } else {
-                ""
-            };
-            // Shown because `nest` is the half that *writes*: which lens files
-            // a new record, and how deep, is worth seeing without opening the
-            // config.
-            let nest = match view.nest {
-                Some(nest) => format!(", files by {}", nest.display()),
+            // The expressions in full: each is one line, and what a view
+            // selects and how it groups is exactly what a reader of the
+            // listing came to find out.
+            let condition = match &view.filter {
+                Some(filter) => format!("  where: {filter}"),
                 None => String::new(),
             };
             println!(
-                "{}  {} — group: {}{by}{scope}{filtered}{nest}",
+                "{}  {} — key: {}{condition}",
                 view.name,
                 view.display_label(),
-                view.group.keys.join(" → "),
+                view.key,
             );
         }
         return Ok(ExitCode::SUCCESS);
@@ -97,10 +81,68 @@ pub(crate) fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
 
     let ws = workspace(&ctx)?;
     let selection = block_on(ws.select_view(&ctx.root_doc, view))?;
-    let rows = prov::views::group(&selection, &view.group);
+    print_grouped(&selection, &view.key, as_json);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `prov query [WHERE] [--key EXPR]` — a view nobody declared.
+///
+/// The same evaluation `views NAME` runs, over the same census, so a query that
+/// reads right here can be pasted into `views:` and read the same. Without
+/// `--key` it is a flat list, one document a line, which is the shape a
+/// question like "which of these are drafts" wants.
+pub(crate) fn cmd_query(condition: Option<&str>, key: Option<&str>, as_json: bool) -> CmdResult {
+    let parse = |what: &str, source: &str| {
+        prov::views::Expression::parse(source).map_err(|e| format!("{what}: {e}"))
+    };
+    let filter = condition.map(|c| parse("where", c)).transpose()?;
+    let key = key.map(|k| parse("key", k)).transpose()?;
+    let session = Session::open()?;
+    let graph = session.ws.graph();
+    let rows = block_on(prov::views::documents(graph, &session.ctx.root_doc))?;
+    // A spec to narrow by; its key is only read when one was given.
+    let spec = prov::views::ViewSpec {
+        filter,
+        ..prov::views::ViewSpec::new(
+            "query",
+            key.clone()
+                .unwrap_or_else(|| prov::views::Expression::parse("null").expect("a literal")),
+        )
+    };
+    let selection = prov::views::narrow("query", &spec, rows);
+    match &key {
+        Some(key) => print_grouped(&selection, key, as_json),
+        None if as_json => {
+            let records = selection.rows.iter().map(json::census_row).collect();
+            print!(
+                "{}",
+                json::J::Obj(vec![
+                    ("documents", json::J::Arr(records)),
+                    ("failures", json::failures(&selection.failures, &[])),
+                ])
+                .render()
+            );
+        }
+        None => {
+            for row in &selection.rows {
+                match row.title() {
+                    Some(title) => println!("{} — {title}", row.path.display()),
+                    None => println!("{}", row.path.display()),
+                }
+            }
+            report_failures(&selection.failures, &[]);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Group a selection and print it — the half `views NAME` and `query --key`
+/// share.
+fn print_grouped(selection: &prov::views::Selection, key: &prov::views::Expression, as_json: bool) {
+    let rows = prov::views::group(selection, key);
     if as_json {
-        print!("{}", json::view_result(&selection, &rows).render());
-        return Ok(ExitCode::SUCCESS);
+        print!("{}", json::view_result(selection, &rows).render());
+        return;
     }
     for group in &rows.groups {
         println!("{} ({})", group.key, group.rows.len());
@@ -117,15 +159,32 @@ pub(crate) fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
             print_view_row(row);
         }
     }
-    // The document count, not the row count: a document under two of a
-    // multi-valued field's groups is one document in two places, and a total
-    // that counted it twice would claim the view covers more than the
-    // workspace holds.
+    // The document count, not the row count: a document under two groups is
+    // one document in two places, and a total that counted it twice would
+    // claim the view covers more than the workspace holds.
     match selection.len() {
-        0 => println!("no documents in scope"),
+        0 => println!("no documents match"),
         n => println!("\n{n} document(s), {} row(s)", rows.placements()),
     }
-    Ok(ExitCode::SUCCESS)
+    report_failures(&selection.failures, &rows.failures);
+}
+
+/// The documents an expression could not be evaluated on, on stderr — beside
+/// the answer, never instead of it, and never silently.
+fn report_failures(selecting: &[prov::views::Failure], grouping: &[prov::views::Failure]) {
+    let count = selecting.len() + grouping.len();
+    if count == 0 {
+        return;
+    }
+    eprintln!("prov: {count} document(s) could not be evaluated, and are not shown:");
+    for failure in selecting.iter().chain(grouping) {
+        eprintln!(
+            "  {} — {}: {}",
+            failure.path.display(),
+            failure.clause,
+            failure.message
+        );
+    }
 }
 
 /// One row of a view: `  path — title`.
@@ -166,18 +225,12 @@ pub(crate) fn cmd_docs(as_json: bool, with_body: bool) -> CmdResult {
     if as_json {
         let mut records = Vec::with_capacity(rows.len());
         for row in &rows {
-            let id = row
-                .meta
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .or_else(|| session.ws.index().id_for_path(&row.path).map(|id| id.0));
             let body = if with_body {
                 Some(block_on(body_of_row(graph, &row.path))?)
             } else {
                 None
             };
-            records.push(json::doc_row(row, id, body));
+            records.push(json::doc_row(row, body));
         }
         print!("{}", json::J::Arr(records).render());
         return Ok(ExitCode::SUCCESS);

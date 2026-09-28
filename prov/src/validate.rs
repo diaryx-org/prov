@@ -964,7 +964,7 @@ impl fmt::Display for Finding {
                 ),
                 crate::config::ConfigIssueKind::NestNotSingleValued { field } => write!(
                     f,
-                    "{}: config `{}` nests by `{field}`, which is declared `type: seq` — a document with several values has several homes, and containment allows one (the view still groups; drop `nest`)",
+                    "{}: config `{}` nests by `{field}`, which is declared `type: seq` — a document with several values has several homes, and containment allows one (file by a single-valued field, or drop `nest`)",
                     doc.display(),
                     issue.key,
                 ),
@@ -980,6 +980,27 @@ impl fmt::Display for Finding {
                     doc.display(),
                     issue.key,
                 ),
+                crate::config::ConfigIssueKind::BadExpression { message } => write!(
+                    f,
+                    "{}: config `{}` is not an expression prov can run — {message} (the view is not read until it is)",
+                    doc.display(),
+                    issue.key,
+                ),
+                crate::config::ConfigIssueKind::ViewRetired { replacement } => match replacement {
+                    Some(yaml) => write!(
+                        f,
+                        "{}: config `{}` is written with the retired view keys (`group`, `by`, `under`, `nest`, or a `where:` mapping) and is not read — it now reads:\n{}",
+                        doc.display(),
+                        issue.key,
+                        indent(yaml),
+                    ),
+                    None => write!(
+                        f,
+                        "{}: config `{}` is written with the retired view keys (`group`, `by`, `under`, `nest`, or a `where:` mapping) and is not read — write it as `where:` and `key:` expressions",
+                        doc.display(),
+                        issue.key,
+                    ),
+                },
             },
             Finding::ConfigSpecAhead { doc, declared } => write!(
                 f,
@@ -4027,4 +4048,12 @@ mod tests {
         // And two clean runs agree on everything.
         assert_eq!(CheckDiff::between(&[], &[]), CheckDiff::default());
     }
+}
+
+/// A block of YAML indented to sit under a finding's line.
+fn indent(yaml: &str) -> String {
+    yaml.lines()
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

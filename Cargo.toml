@@ -88,6 +88,7 @@ moid = "1"
 # `edtf-normalize` is the repair: a deterministic reading of date prose
 # (`May 1943` → `1943-05`, `c. 1913` → `1913~`) that reports ambiguity rather
 # than guessing, which is what a `check` remedy is allowed to be.
+cel = "0.14"
 edtf-core = "1.2"
 edtf-normalize = "1.2"
 

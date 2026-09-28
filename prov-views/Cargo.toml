@@ -19,6 +19,10 @@ prov-graph = { workspace = true, default-features = false }
 # What a calendar grain reads a value through — see `src/date.rs`. Pure and
 # dependency-free, so the guarantee above holds: nothing here can write.
 edtf-core.workspace = true
+# What a view's `where:` and `key:` are written in — see `src/expr.rs`. An
+# interpreter for a language that is not Turing complete and has no side
+# effects, so the guarantee above holds: an expression cannot write.
+cel.workspace = true
 # What `search` folds text through — see `src/search.rs`. Pure and
 # dependency-free, so the guarantee above still holds.
 unicode-normalization.workspace = true

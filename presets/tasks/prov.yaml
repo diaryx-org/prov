@@ -1,6 +1,6 @@
 # The `tasks` preset: deferred work kept as documents, with a `status` a tool
 # can read. Apply it with `prov presets ./presets/tasks --write` (or `prov init
-# --preset ./presets/tasks`), then make the indexes the views hang under —
+# --preset ./presets/tasks`), then make the indexes the views look under —
 # `prov new Tasks --in <root>`, `prov new Proposals --in <root>`, at any path,
 # since everything here names them by title — and `prov new "<title>" --in
 # tasks.md` opens a task as `status: open`, `--in proposals.md` a proposal as
@@ -27,24 +27,19 @@ fields:
 views:
   open-tasks:
     label: Open tasks
-    group: status
-    under: '[[Tasks]]'
-    # `has` first: an index filed under `Tasks` — the `Closed tasks` shelf a
-    # closed task moves to — says no status, and is not an open task.
-    where:
-      has: status
-      # One `equals` per term: a list under `equals` is read as its first
-      # element alone, which left `dropped` tasks in this view.
-      not:
-        any-of:
-          - equals: { status: done }
-          - equals: { status: dropped }
+    # `present(status)` first: an index filed under `Tasks` — the `Closed
+    # tasks` shelf a closed task moves to — says no status, and is not an open
+    # task.
+    where: >-
+      doc.ancestors.exists(a, a.title == 'Tasks')
+      && present(status) && !(status in ['done', 'dropped'])
+    key: status
   proposals:
     label: Proposals
-    group: status
-    under: '[[Proposals]]'
-    where: { has: status }
+    where: >-
+      doc.ancestors.exists(a, a.title == 'Proposals') && present(status)
+    key: status
   work:
     label: All work
-    group: status
-    where: { has: status }
+    where: present(status)
+    key: status

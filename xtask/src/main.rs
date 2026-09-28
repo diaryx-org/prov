@@ -75,10 +75,10 @@ const JOBS: &[Job] = &[
     },
     Job {
         id: "docs",
-        name: "Getting-started transcript",
+        name: "Guide transcripts",
         components: "",
         builds: true,
-        about: "replay docs/getting-started.md against a real binary",
+        about: "replay docs/getting-started.md and docs/querying.md against a real binary",
         run: docs,
     },
     Job {
@@ -124,8 +124,8 @@ fn test(sh: &Sh) -> Result<()> {
     sh.cargo(&["test", "--workspace"])
 }
 
-/// The getting-started guide's command transcript, executed against a freshly
-/// built binary so the docs can never drift from the CLI.
+/// The guides' command transcripts — getting started, and querying — executed
+/// against a freshly built binary so the docs can never drift from the CLI.
 ///
 /// The runner stays in shell: it replays the guide's `console` blocks as one
 /// continuous session, which is what a reader following along actually
@@ -133,7 +133,8 @@ fn test(sh: &Sh) -> Result<()> {
 /// the guide.
 fn docs(sh: &Sh) -> Result<()> {
     sh.cargo(&["build", "-p", "prov-cli"])?;
-    sh.run("ci/check-getting-started.sh", &[])
+    sh.run("ci/check-getting-started.sh", &[])?;
+    sh.run("ci/check-getting-started.sh", &["docs/querying.md"])
 }
 
 /// Workspace feature unification means `cargo check --workspace` can pass even

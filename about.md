@@ -1,6 +1,6 @@
 ---
 title: How this workspace is organized
-generated_by: prov 0.13.0
+generated_by: prov 0.15.5
 ---
 
 # How this workspace is organized
@@ -127,17 +127,18 @@ none of them is a second copy of anything: a document can turn up under
 several groups, or under none, and still sit in the one place the
 arrangement above gives it.
 
-| what it is called | grouped by | covers | shows everything it covers |
-| --- | --- | --- | --- |
-| Open tasks | what the file says under `status` | what is filed under `Tasks`, however deep | no |
-| Proposals | what the file says under `status` | what is filed under `Proposals`, however deep | no |
-| All work | what the file says under `status` | every file here | no |
+| what it is called | grouped by | shows every file |
+| --- | --- | --- |
+| Open tasks | what the file says under `status` | no |
+| Proposals | what the file says under `status` | no |
+| All work | what the file says under `status` | no |
 
-Where that last column says no, a further condition is set on the grouping
-— a value a file has to carry, or one it must not — and files in range
-that do not meet it are left out. The condition itself is written in this
-directory's settings rather than repeated here; the files it hides are
-still ordinary files, reachable the way everything else here is.
+Where that last column says no, a condition is set on the grouping — a
+value a file has to carry, one it must not, or a place in the arrangement
+above it has to be filed under — and files that do not meet it are left
+out. The condition itself is written in this directory's settings rather
+than repeated here; the files it hides are still ordinary files, reachable
+the way everything else here is.
 
 ## Files that are not part of the tree
 

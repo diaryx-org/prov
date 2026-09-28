@@ -18,28 +18,26 @@
 //!   daily:
 //!     label: Daily
 //!     icon: calendar
-//!     group: [date_of_document, created, updated]
-//!     by: month
-//!     under: '[Daily](/Daily/daily_index.md)'
-//!     where:
-//!       not: { has: draft }
-//!     nest: month
+//!     where: "doc.ancestors.exists(a, a.title == 'Daily') && !present(draft)"
+//!     key: month(first(date_of_document, created, updated))
 //! ```
 //!
-//! ## Nothing here knows which field is the date
+//! ## A view is a query
 //!
-//! This crate has no `date` grouping and no built-in field chain. `group:` is
-//! an ordered list of field keys and `by:` is a **coarsening** —
-//! `year`/`month`/`day` cut a date value (read as EDTF, so an archive's
-//! `1913~` and `1918/1922` file — see [`date`]), `initial` cuts the first
-//! letters for an A–Z index, and both are the same kind of thing. So the three field names
-//! in the example above are a *declaration the workspace makes*, not a
-//! convention this crate blesses. A workspace that files by `taken_on` writes
-//! that instead, and every prov tool reading the same `views:` block agrees,
-//! rather than each one hardcoding a chain and hoping.
+//! `where:` and `key:` are [CEL](expr) expressions over each document's
+//! fields and the document itself (`doc`). prov adds a handful of functions
+//! that carry its own decisions — `year`/`month`/`day` cut a value read as
+//! EDTF (so an archive's `1913~` and `1918/1922` file, see [`date`]),
+//! `initial` cuts an A–Z index, `first` is a fallback chain, `present` asks
+//! whether a field is filled in — and nothing in this crate knows which field
+//! is the date: the three names in the example above are a *declaration the
+//! workspace makes*.
 //!
-//! The reasoning, and the MoReq2010 classification/aggregation split the format
-//! follows, are in [`spec`].
+//! A view does not know the spine. The census ([`documents`]) records each
+//! document's ancestors, and a view scopes itself by reading them. Where a
+//! *new* record goes is not a view's either: that is [`filing`], a
+//! declaration of its own, because filing writes into the single-parent spine
+//! and needs guarantees reading does not.
 //!
 //! ## What this crate does not do
 //!
@@ -52,8 +50,10 @@
 //! paired, ids registered, links resolvable, fixity honest — and a view is not
 //! that: a wrong view shows the wrong rows and you edit the file. That is why
 //! this is a crate beside prov rather than a feature inside it, and why
-//! [`ViewSpec::nest`] is a *description* of where a frontend should file a new
-//! record rather than something this crate goes and does.
+//! [`FilingSpec::route`] is a *description* of where a frontend should file a
+//! new record rather than something this crate goes and does. Its expression
+//! evaluator, CEL, cannot write either: an expression has no side effects and
+//! always finishes.
 //!
 //! **It does not render.** A [`RowSet`] is data. Which glyph `icon: calendar`
 //! draws, and what the [ungrouped](RowSet::ungrouped) bucket is called, are
@@ -61,8 +61,9 @@
 //!
 //! ## Two halves: select, then group
 //!
-//! [`select`](fn@select) answers *which documents does this view cover?* — scope, then
-//! conditions — and returns a flat, deduplicated [`Selection`] in path order.
+//! [`select`](fn@select) answers *which documents does this view cover?* — the
+//! census, then the condition — and returns a flat, deduplicated
+//! [`Selection`] in path order.
 //! [`group`](fn@group) projects that into a [`RowSet`], and is a **pure function**: no
 //! I/O, no workspace, nothing to mock.
 //!
@@ -81,7 +82,7 @@
 //! let selection = block_on(prov_views::select(&graph, &spec, "index.md"))?;
 //! println!("{} documents", selection.len());
 //!
-//! let rows = prov_views::group(&selection, &spec.group);
+//! let rows = prov_views::group(&selection, &spec.key);
 //! for group in &rows.groups {
 //!     println!("{} ({})", group.key, group.rows.len());
 //! }
@@ -91,20 +92,27 @@
 
 pub mod date;
 pub mod error;
-pub mod filter;
+pub mod expr;
+pub mod filing;
+pub mod grain;
 pub mod group;
+pub mod legacy;
 pub mod lint;
+mod scalar;
 pub mod search;
 pub mod select;
 pub mod spec;
 
 pub use error::{Error, Result};
-pub use filter::{CONDITION_KEYS, Condition};
+pub use expr::{Evaluator, Expression, ExpressionError, FUNCTIONS, KeyShape};
+pub use filing::{
+    FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, NESTS, Nest, NestRoute,
+    diagnose_filing, filing_from,
+};
+pub use grain::{GRAINS, Grain};
 pub use group::{Group, RowSet, group};
+pub use legacy::{Translation, translate};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};
 pub use search::{Corpus, Excluded, Hit, IndexedDoc, Passage, Query, Site, corpus, fold, search};
-pub use select::{Row, Selection, documents, select, select_with};
-pub use spec::{
-    GRAINS, Grain, Grouping, NESTS, Nest, NestRoute, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize,
-    views_from,
-};
+pub use select::{Ancestor, Clause, Failure, Row, Selection, documents, narrow, select};
+pub use spec::{RETIRED_VIEW_KEYS, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize, views_from};

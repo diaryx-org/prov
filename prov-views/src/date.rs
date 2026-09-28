@@ -68,7 +68,7 @@
 
 use edtf_core::{Date, Edtf, Interval, IntervalEndpoint, ParseError, YearKind};
 
-use crate::spec::Grain;
+use crate::grain::Grain;
 
 /// Parse a `type: date` value: an EDTF expression, or an RFC 3339 instant
 /// read as the date it starts with.

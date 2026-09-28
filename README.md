@@ -7,6 +7,7 @@ contents:
 - '[Design](docs/DESIGN.md)'
 - '[Spec](/docs/spec.md)'
 - '[Getting Started](docs/getting-started.md)'
+- '[Querying your files](/docs/querying.md)'
 - '[Config Vocab](/docs/config-vocab.md)'
 - '[Init Adoption](/docs/init-adoption.md)'
 - '[Next Steps](/docs/next-steps.md)'

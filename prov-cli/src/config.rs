@@ -32,6 +32,35 @@ fn lookup_dotted<'a>(map: &'a Mapping, dotted: &str) -> Option<&'a Value> {
 /// Build the nested probe a dotted `config <key> <value>` implies, so `diagnose`
 /// validates `references.notation=wikilink` as the nested shape it understands
 /// rather than reading `references.notation` as one unknown top-level key.
+/// The probe for a key inside one entry of a named-entry block — `views`,
+/// `filing`, `exports` — built from the entry as the config already declares
+/// it, with the new value set in.
+///
+/// Such an entry is judged whole: a view with a `where:` and no `key:` is not
+/// a view, so a one-key probe of `views.open.where` would refuse every
+/// condition set on a view that already has its key. The entry the probe
+/// carries is the one the write will produce.
+fn entry_probe(effective: &Mapping, dotted: &str, value: &Value) -> Option<Value> {
+    let mut parts = dotted.splitn(3, '.');
+    let (block, name, rest) = (parts.next()?, parts.next()?, parts.next()?);
+    if !matches!(block, "views" | "filing" | "exports") {
+        return None;
+    }
+    let mut entry = effective
+        .get(block)
+        .and_then(Value::as_mapping)
+        .and_then(|entries| entries.get(name))
+        .and_then(Value::as_mapping)
+        .cloned()
+        .unwrap_or_default();
+    prov::meta::insert_path(&mut entry, rest, value.clone());
+    let mut entries = Mapping::new();
+    entries.insert(name.to_string(), Value::Mapping(entry));
+    let mut top = Mapping::new();
+    top.insert(block.to_string(), Value::Mapping(entries));
+    Some(Value::Mapping(top))
+}
+
 fn nest_probe(dotted: &str, value: Value) -> Value {
     let mut node = value;
     for key in dotted.rsplit('.') {
@@ -379,8 +408,13 @@ pub(crate) fn cmd_config(
             // shared diagnostic over a one-key probe keeps set-time and check-time
             // judgments identical. A truly novel key (resembling no axis) is left
             // to pass — it may be a user field or a forward-compatible key.
-            let probe = nest_probe(key, inferred.clone());
+            let probe = entry_probe(&ctx.config.to_mapping(), key, &inferred)
+                .unwrap_or_else(|| nest_probe(key, inferred.clone()));
             if let Some(issue) = prov::diagnose(&probe).into_iter().next() {
+                // The key the finding is about, which for an entry judged whole
+                // may be a sibling of the one being set (`views.x.key`, when
+                // setting `views.x.where` on a view that has none yet).
+                let at = issue.key;
                 match issue.kind {
                     prov::ConfigIssueKind::UnknownKey { suggestion } => {
                         eprintln!(
@@ -389,7 +423,7 @@ pub(crate) fn cmd_config(
                     }
                     prov::ConfigIssueKind::InvalidValue { value, expected } => {
                         eprintln!(
-                            "prov: `{value}` is not a valid {key} (expected: {})",
+                            "prov: `{value}` is not a valid {at} (expected: {})",
                             expected.join(", ")
                         );
                     }
@@ -425,6 +459,14 @@ pub(crate) fn cmd_config(
                     prov::ConfigIssueKind::NestRefNotDeclared { field } => {
                         eprintln!(
                             "prov: cannot file by reference through `{field}` — it is not declared `type: ref`, so a move of the shelf would not rewrite it"
+                        );
+                    }
+                    prov::ConfigIssueKind::BadExpression { message } => {
+                        eprintln!("prov: {at} is not an expression prov can run — {message}");
+                    }
+                    prov::ConfigIssueKind::ViewRetired { .. } => {
+                        eprintln!(
+                            "prov: this view is written with the retired keys — `prov check` prints its replacement"
                         );
                     }
                 }

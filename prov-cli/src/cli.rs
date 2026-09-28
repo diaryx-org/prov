@@ -244,9 +244,11 @@ pub(crate) enum Command {
     /// List the views this workspace declares, or execute one.
     ///
     /// A view is the second way through the same documents the containment tree
-    /// already holds — "the entries under Daily, by month". With no NAME, print
-    /// what the workspace declares; with one, print its groups and the
-    /// documents under each. `--json` gives either as machine-readable records.
+    /// already holds — "the entries under Daily, by month": a `where:`
+    /// condition and a `key:`, each a CEL expression. With no NAME, print what
+    /// the workspace declares; with one, print its groups and the documents
+    /// under each. `--json` gives either as machine-readable records. To try a
+    /// query without declaring it, see `prov query`.
     Views {
         /// The view to execute (default: list every declared view).
         #[arg(value_name = "NAME")]
@@ -262,26 +264,51 @@ pub(crate) enum Command {
         /// "the view found nothing" and "the command printed nothing" stay
         /// distinguishable.
         ///
-        /// Nothing is written to stderr in this mode, and an error is still an
-        /// error: an anchor that names nothing exits non-zero with its message
-        /// on stderr rather than printing an empty view.
+        /// A document the view's expressions could not be evaluated on is
+        /// listed under `failures` with the reason, rather than on stderr.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask a question of the workspace without declaring a view: which
+    /// documents meet a condition, optionally grouped.
+    ///
+    /// WHERE and `--key` are CEL expressions, exactly as a view's `where:` and
+    /// `key:` are written: each field of a document is a variable of its own
+    /// name (`status == 'open'`), a field it lacks is `null`, and `doc` is the
+    /// document itself — `doc.path`, `doc.title`, `doc.id`, `doc.meta`, and
+    /// `doc.ancestors`, everything above it in the tree. prov adds `present`,
+    /// `first`, `field`, `year`, `month`, `day` and `initial`. With no WHERE,
+    /// every document; with no `--key`, a flat list.
+    ///
+    ///   prov query "present(draft)"
+    ///   prov query "doc.ancestors.exists(a, a.title == 'Tasks')" --key status
+    ///   prov query --key "year(created)"
+    Query {
+        /// The condition a document must meet (default: every document).
+        #[arg(value_name = "WHERE")]
+        condition: Option<String>,
+        /// Group the documents by this expression, as a view's `key:` does.
+        #[arg(long, value_name = "EXPR")]
+        key: Option<String>,
+        /// Print JSON: with `--key`, the record `views NAME --json` prints;
+        /// without, the rows `docs --json` prints, plus the failures.
         #[arg(long)]
         json: bool,
     },
     /// List every document the workspace reaches — the root included — one
     /// per line, in path order.
     ///
-    /// The census a view narrows: what `views` would select with no `under:`
-    /// and no `where:`, without declaring a view to ask. Reached, not present —
+    /// The census a view narrows: what `views` would select with no `where:`,
+    /// without declaring a view to ask. Reached, not present —
     /// a file in a directory nothing links into is not listed, for the same
     /// reason `check` does not report it. `--json` gives the same rows as
     /// records, which is the surface for a query engine or a shell pipeline
     /// that wants to build its own table over the workspace.
     Docs {
         /// Print to stdout as JSON instead of a line each: one array, one
-        /// object per document, each carrying its path, its title, its id, and
-        /// its **whole metadata block** — the same row a view returns, plus
-        /// the id as a column of its own. The id is the document's however the
+        /// object per document, each carrying its path, its title, its id, its
+        /// ancestors, and its **whole metadata block** — the same row a view
+        /// returns. The id is the document's however the
         /// workspace stores it (its own `id` field, or the registry), so a
         /// consumer joining on it need not know which. `null` where a
         /// document has none.
