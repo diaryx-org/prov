@@ -17,6 +17,7 @@ contents:
 - '[path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md)'
 - '[nest by reference](/docs/proposals/nest-by-ref/proposal-nest-by-ref-v1.md)'
 - '[term states, following views, and shelves](/docs/proposals/term-states/proposal-term-states-v1.md)'
+- '[grouping by every field, not the first](/docs/proposals/group-union/proposal-group-union-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a
