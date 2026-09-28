@@ -64,7 +64,7 @@ fig = { version = "5", default-features = false, features = ["serde", "derive", 
 # vocabulary a `fields.<name>.type` declaration is spelled in — so that prov, a
 # schema-aware frontend, and (later) a view engine all name field types
 # identically instead of agreeing by convention.
-fig-schema = { version = "0.3.0" }
+fig-schema = { version = "0.4.0" }
 indexmap = { version = "2.0", features = ["serde"] }
 thiserror = "2.0"
 
