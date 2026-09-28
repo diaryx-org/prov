@@ -32,6 +32,29 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.15.5 — 2026-09-28
+
+### Breaking
+
+- **deps** — move to fig 5 ([`2ccef1e`](https://github.com/diaryx-org/prov/commit/2ccef1ec56a2d3f4ee391e45fc345ceba06b5058))
+
+### Changed
+
+- **check** — derive the reachable set once per check, not once per pass ([`2cc29e8`](https://github.com/diaryx-org/prov/commit/2cc29e83e48145849ac5b5ab536bf74ee1806e38))
+- **fixity** — hash manifests and attachment payloads on every core ([`af36ead`](https://github.com/diaryx-org/prov/commit/af36eada58519d277fed5a67cf3a1d8c8521b5a6))
+
+### Behavioural changes
+
+- the `prov` CLI's `manifest --verify`, `manifest --update`, `attach --manifest` and `check` now hash on all cores, using rayon's default pool size (override with RAYON_NUM_THREADS), and hold up to 256 MiB of file bytes in memory while hashing. Library users see no change unless they enable `parallel`.
+
+- prov now requires `fig = "5"` and a fig-schema built on
+it. A consumer still pinned to fig 4.x resolves two copies of fig — refused
+outright, since fig-sys links the one native library; move the consumer's
+own pin to 5 alongside. `prov_graph`'s `MetaCarrier::Fenced` and
+`embed_style_of` carry fig 5's `EmbedType`, so a consumer matching on them
+uses the new variant names.
+
+
 ## v0.15.4 — 2026-09-24
 
 ### Added
