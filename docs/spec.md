@@ -66,6 +66,14 @@ prov workspace:
    `spec` is an integer naming which version of these rules applies. A higher
    number than you know means you may still traverse structure (rules 4–5 are
    stable) but should treat unknown policy keys as opaque.
+
+   **`spec` stays `1` until after prov 1.0.0.** Before then the vocabulary is
+   still being shaped, and an incompatible change to it is recorded where
+   prov's other breaking changes are — a `!` commit and the changelog — not in
+   this number, so `spec: 1` on a pre-1.0 workspace names the vocabulary of
+   the prov that wrote it rather than one fixed set of rules. From 1.0.0 on,
+   the number is the promise: an incompatible reshape of the vocabulary bumps
+   it, and nothing else does.
 4. **Read `relations` + `spanning`** — resolved across both homes as in rule 3.
    These declare the graph vocabulary (§2). The default vocabulary —
    `contents`/`part_of` containment, spanning `contents`, and the three overlay

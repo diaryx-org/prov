@@ -101,7 +101,7 @@ prov:                         # policy namespace (description home)
 
 ```yaml
 prov:
-  spec: 1                     # vocabulary version marker (integer)
+  spec: 1                     # vocabulary version marker (integer) — held at 1 until after prov 1.0.0
 
   # ── description: how the workspace is written ──
   content_format: djot        # markdown | djot | html   (body grammar)

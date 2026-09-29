@@ -46,7 +46,9 @@ pub use prov_graph::identity::IdStorage;
 
 /// The config-vocabulary version stamped as `spec` and recognized on read — a
 /// marker so a foreign tool (or a future prov) knows which vocabulary it is
-/// looking at. Bumped only on an incompatible reshape.
+/// looking at. Held at `1` until after prov 1.0.0 — a pre-1.0 reshape is a
+/// `!` commit, not a bump — and from then bumped only on an incompatible
+/// reshape. See the spec, rule 3.
 pub const SPEC_VERSION: i64 = 1;
 
 /// The root-frontmatter key under which workspace policy is nested. A root
