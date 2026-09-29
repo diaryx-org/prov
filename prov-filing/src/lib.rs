@@ -49,12 +49,14 @@
 //! be declared `type: ref`, so that a move of the shelf rewrites every record
 //! that files under it (`prov-config` reports it when it is not).
 //!
-//! # prov describes; the frontend files
+//! # This crate describes; `prov` files
 //!
 //! [`FilingSpec::route`] returns index *titles* or a link, which is exactly
 //! what prov's route addressing takes. Nothing here creates a file: this crate
-//! cannot write, and a filing entry has no invariant of its own until a
-//! frontend acts on it.
+//! cannot write. `prov`'s `Workspace::file` is where a route is acted on — the
+//! anchor resolved, each index found by the period it carries or made, the
+//! container returned — so a frontend asks it rather than walking the route
+//! itself.
 //!
 //! [MoReq2010]: https://moreq.info/files/moreq2010_vol1_v1_1_en.pdf
 
@@ -231,7 +233,9 @@ impl FilingSpec {
     ///
     /// `None` when no field in the chain carries a usable value, when the
     /// grain cannot cut it all the way down, or when the value is
-    /// **multi-valued**. That last is the constraint prov's spanning relation
+    /// **multi-valued**. (`prov`'s `Workspace::file`, which has to put a real
+    /// record somewhere, files the first two as deep as the value reaches —
+    /// under the anchor when that is nowhere — and refuses the third.) That last is the constraint prov's spanning relation
     /// imposes: a document with two people cannot hang under two parents,
     /// and picking one would be inventing an answer the workspace did not
     /// give. A record linking to two shelves is the same case.

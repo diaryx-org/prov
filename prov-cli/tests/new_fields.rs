@@ -259,3 +259,67 @@ fn local_day() -> String {
     let out = Command::new("date").arg("+%F").output().expect("date");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
+
+/// `new --filing` puts a document where the workspace's filing entry says:
+/// through the year and month its value names, made on first use and found
+/// after, with `--dry-run` naming what would be made.
+#[test]
+fn new_files_through_a_filing_entry() {
+    let dir = workspace("filing");
+    ok(&dir, &["new", "Daily", "--in", "index.md"]);
+    let config = read(&dir, "prov.yaml")
+        + "filing:\n  daily:\n    under: '[[Daily]]'\n    field: [date_of_document, created]\n    nest: month\n";
+    std::fs::write(dir.join("prov.yaml"), config).unwrap();
+    ok(&dir, &["about"]);
+
+    let (_, err) = ok(
+        &dir,
+        &[
+            "new",
+            "Tuesday",
+            "--filing",
+            "daily",
+            "--set",
+            "date_of_document=2025-03-04",
+            "--dry-run",
+        ],
+    );
+    assert!(
+        err.contains("would create") && err.contains("2025-03"),
+        "{err}"
+    );
+    assert!(!dir.join("2025").exists(), "a dry run writes nothing");
+
+    let (out, _) = ok(
+        &dir,
+        &[
+            "new",
+            "Tuesday",
+            "--filing",
+            "daily",
+            "--set",
+            "date_of_document=2025-03-04",
+        ],
+    );
+    assert_eq!(out.trim(), "2025/03/tuesday.md");
+    let (out, err) = ok(
+        &dir,
+        &[
+            "new",
+            "Friday",
+            "--filing",
+            "daily",
+            "--set",
+            "date_of_document=2025-03-07",
+        ],
+    );
+    assert_eq!(out.trim(), "2025/03/friday.md");
+    assert!(
+        !err.contains("created 2025/03/index.md"),
+        "found, not made again: {err}"
+    );
+    ok(&dir, &["check"]);
+
+    let (ok_, _, err) = run(&dir, &["new", "X", "--filing", "nope"]);
+    assert!(!ok_ && err.contains("declared: daily"), "{err}");
+}

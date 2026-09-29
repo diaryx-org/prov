@@ -38,7 +38,9 @@
 //! The module is split by *what a reader is after*: one file per verb, each an
 //! `impl Workspace` block.
 //!
-//! - `create` — a new document authored under a parent, in the parent's shape.
+//! - `create` — a new document authored under a parent, in the parent's shape;
+//!   `file` — the index chain a filing entry says a new record belongs under,
+//!   found or made, returning the container.
 //! - `adopt`, `reparent` — an *existing* document linked under a parent:
 //!   additively (`adopt`), or in place of the parent it already claims
 //!   (`reparent`); `reorder` — a parent's children put in a given order, the
@@ -75,6 +77,7 @@ mod convert;
 mod create;
 pub(crate) mod delete;
 mod duplicate;
+mod file;
 pub(crate) mod maintain;
 mod move_tree;
 mod rename;
@@ -87,6 +90,7 @@ pub(crate) mod tombstone;
 
 pub use create::Created;
 pub use delete::Diagnosis;
+pub use file::{Filed, FilingPlan, PlannedIndex};
 pub use reorder::Reordered;
 pub use reparent::Reparented;
 pub use save::ContentState;

@@ -266,10 +266,11 @@ pub mod views {
 /// Where a new record goes — the `filing:` config axis, and the route a
 /// frontend files a record by.
 ///
-/// Re-exported at prov's own path for the same reasons [`views`] is. prov
-/// itself never files a record on its own: a route is a description, and a
-/// frontend acts on it through route addressing.
+/// Re-exported at prov's own path for the same reasons [`views`] is. A route
+/// is a description; [`Workspace::file`](crate::Workspace::file) is where it
+/// is acted on — the index chain found or made, the container returned.
 pub mod filing {
+    pub use crate::mutate::{Filed, FilingPlan, PlannedIndex};
     pub use prov_filing::{
         FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, NESTS, Nest, NestRoute,
         chain_values, diagnose_filing, filing_from,
@@ -309,7 +310,9 @@ pub use identity::{
 pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use journal::{Recovered, recover, recover_kept_in};
 pub use manifest::{ManifestStatus, ManifestUpdate};
-pub use mutate::{ContentState, Created, Diagnosis, Reordered, Reparented};
+pub use mutate::{
+    ContentState, Created, Diagnosis, Filed, FilingPlan, PlannedIndex, Reordered, Reparented,
+};
 pub use prov_exports::ExportSpec;
 pub use prov_views::ViewSpec;
 pub use provenance::{Actor, Confirmation, Confirmations, Generated, Tier};

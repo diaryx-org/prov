@@ -464,9 +464,26 @@ to how something reads from moving where tomorrow's entry lands.
 
 prov describes where a record files (`FilingSpec::route`, in the
 `prov-filing` crate, which shares grains with views through `prov-grain` and
-does not depend on the view engine), and a frontend files it: the route is index *titles* below `under`, exactly what prov's route
-addressing takes (`prov new --under "Daily/2026/2026-07" -p`), or the link the
-record carries.
+does not depend on the view engine): index *titles* below `under`, or the link
+the record carries. And it files one: `prov new "Tuesday" --filing daily`
+(`Workspace::file` in the library) resolves the anchor, walks the indexes the
+route names, makes the ones that are missing as one change set, and puts the
+document in the last. The value it is filed by is the one the new document
+opens with — its creation stamp, or a `--set date_of_document=…`.
+
+Each index is found by the period it carries before the title it shows: the
+July index is the child of the year whose own value, read through the entry's
+`field:` chain, is `2026-07` — whether its author titled it `July`, `2026-07
+index` or `07`. A child that carries no value is matched by title, the way a
+route is. An index `--filing` makes is titled with the period and, for a
+calendar grain, carries it in the head of the field chain
+(`date_of_document: 2026-07`, a month-precision date), so the next filing finds
+it the same way; it gets a directory of its own named for the period's last
+part (`2026/07/index.md`, beside `06/`). A value that reaches only part of the
+grain files as deep as it reaches — `2026-08` under a `day` entry lands in
+August — and a document with no value for the field files directly under the
+anchor, in no period: an undated scan imported today is not from today.
+`--dry-run` shows what would be made.
 
 #### What `nest:` can and cannot file
 

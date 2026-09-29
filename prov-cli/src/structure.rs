@@ -100,6 +100,80 @@ fn resolve_placement(
     Ok(Some(terminal))
 }
 
+/// Where `new --filing <name>` puts the document: the container the
+/// workspace's filing entry names for it, found or made
+/// ([`Workspace::file`](prov::Workspace::file)).
+///
+/// The value it is filed by is the one the document is about to open with —
+/// its creation stamp and every `--set` — since that is what the entry's
+/// field chain will read off it afterwards. A field's starting value is not
+/// part of it: which declaration governs, and so what it starts with, depends
+/// on the container, which is what is being decided.
+fn file_placement(
+    session: &mut Session,
+    filing: &str,
+    sets: &[(String, Value)],
+    now: &prov::Now,
+    dry_run: bool,
+) -> Result<Option<PathBuf>, AnyError> {
+    let Some(spec) = session
+        .ctx
+        .config
+        .filing
+        .iter()
+        .find(|spec| spec.name == filing)
+        .cloned()
+    else {
+        let declared: Vec<&str> = session
+            .ctx
+            .config
+            .filing
+            .iter()
+            .map(|spec| spec.name.as_str())
+            .collect();
+        return Err(match declared.as_slice() {
+            [] => format!("no filing entry named `{filing}` — this workspace declares none"),
+            names => format!(
+                "no filing entry named `{filing}` (declared: {})",
+                names.join(", ")
+            ),
+        }
+        .into());
+    };
+    let mut meta = Mapping::new();
+    if let Some((created, value)) = session.ctx.config.stamp_value(prov::Stamp::Create, now) {
+        meta.insert(created.to_string(), Value::String(value));
+    }
+    for (key, value) in sets {
+        prov::meta::insert_path(&mut meta, key, value.clone());
+    }
+    let plan = block_on(
+        session
+            .ws
+            .plan_file(&session.ctx.root_doc, &spec, &Value::Mapping(meta)),
+    )?;
+    if dry_run {
+        eprintln!("filing {filing:?} under {}", plan.anchor.display());
+        for index in &plan.create {
+            eprintln!(
+                "  would create {} ({:?})",
+                index.path.display(),
+                index.title
+            );
+        }
+        eprintln!("  files in {}", plan.parent.display());
+        return Ok(None);
+    }
+    let filed = block_on(session.ws.apply_file(&plan, &Mapping::new()))?;
+    for (made, index) in filed.created.iter().zip(&plan.create) {
+        eprintln!("created {} ({:?})", made.display(), index.title);
+    }
+    if !filed.created.is_empty() {
+        session.commit()?;
+    }
+    Ok(Some(filed.parent))
+}
+
 /// Print a route plan without applying it: what resolved, what is missing, and
 /// where the missing nodes would land. Shared by `--dry-run` and the error a
 /// missing route raises without `-p`, so the two describe the plan identically.
@@ -133,6 +207,7 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     let NewArgs {
         title,
         in_target,
+        filing,
         parents,
         layout,
         dry_run,
@@ -140,7 +215,7 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
         ext,
         set,
     } = args;
-    let (title, in_target, layout) = (title.as_str(), in_target.as_str(), Layout::from(layout));
+    let (title, layout) = (title.as_str(), Layout::from(layout));
     let (as_path, ext, set) = (as_path.as_deref(), ext.as_deref(), set.as_slice());
     // Parsed before anything is written, so a malformed `--set` refuses the
     // command rather than leaving a document created without it.
@@ -159,8 +234,17 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     // tree from the root, and (with `-p`) creates what it doesn't find. Either way
     // the rest of this function is unchanged — a route is just another way to
     // *name* a parent, never a different kind of creation.
-    let Some(parent_rel) = resolve_placement(&mut session, in_target, parents, layout, dry_run)?
-    else {
+    // One reading of the clock for the whole command, so the document is
+    // filed by the same instant it is stamped with.
+    let now = crate::clock::now();
+    let placed = match (in_target.as_deref(), filing.as_deref()) {
+        (Some(target), _) => resolve_placement(&mut session, target, parents, layout, dry_run)?,
+        (None, Some(filing)) => file_placement(&mut session, filing, &sets, &now, dry_run)?,
+        (None, None) => {
+            return Err("name a parent with --in, or a filing entry with --filing".into());
+        }
+    };
+    let Some(parent_rel) = placed else {
         return Ok(ExitCode::SUCCESS);
     };
 
@@ -220,7 +304,7 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     }
     // (The session is the one opened above — reusing it keeps any IDs a route
     // just minted in the same in-memory index this create registers into.)
-    let opening = opening_fields(&session.ctx, &session.ws, &parent_rel, sets)?;
+    let opening = opening_fields(&session.ctx, &session.ws, &parent_rel, sets, &now)?;
     let created = block_on(
         session
             .ws
@@ -286,12 +370,10 @@ fn opening_fields(
     ws: &Workspace<StdFs, Minter, FileIndex>,
     parent: &Path,
     sets: Vec<(String, Value)>,
+    now: &prov::Now,
 ) -> Result<Mapping, AnyError> {
     let mut fields = Mapping::new();
-    if let Some((created, value)) = ctx
-        .config
-        .stamp_value(prov::Stamp::Create, &crate::clock::now())
-    {
+    if let Some((created, value)) = ctx.config.stamp_value(prov::Stamp::Create, now) {
         fields.insert(created.to_string(), Value::String(value));
     }
     for (name, value) in block_on(ws.defaults_for_child(&ctx.root_doc, &ctx.config, parent))? {

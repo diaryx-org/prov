@@ -1098,14 +1098,28 @@ pub(crate) struct NewArgs {
     /// The parent document that gains a spanning link to the new one: a path
     /// (`daily.md`), a title route (`@Daily/2026/07`), or an id
     /// (`id:fpk38j`). A route's missing segments are an error unless `-p`.
-    #[arg(long = "in", short = 'i', value_name = "TARGET")]
-    pub(crate) in_target: String,
+    #[arg(
+        long = "in",
+        short = 'i',
+        value_name = "TARGET",
+        required_unless_present = "filing",
+        conflicts_with = "filing"
+    )]
+    pub(crate) in_target: Option<String>,
+    /// File the new document the way the workspace's `filing.<NAME>` entry
+    /// says, instead of naming a parent: under the entry's anchor, through
+    /// the index for each level of its grain — found by the period it carries,
+    /// made when missing — cut from the new document's own value for the
+    /// entry's field (its `created` stamp, or a `--set`).
+    #[arg(long, value_name = "NAME")]
+    pub(crate) filing: Option<String>,
     /// `mkdir -p` for containment — idempotent creation. Creates any missing
     /// route segments (when `--in` is a route), *and* treats an
     /// already-existing leaf (a same-titled child) as a no-op instead of an
     /// error. Safe to re-run — a daily-note cron can call the same command
     /// every day. A path held by a *different*-titled document still errors.
-    #[arg(long = "parents", short = 'p', requires = "in_target")]
+    /// (`--filing` makes the indexes it needs without being asked.)
+    #[arg(long = "parents", short = 'p')]
     pub(crate) parents: bool,
     /// Where `-p` writes the nodes it creates: `nested` (a directory per
     /// segment, `daily/2026/index.md`) or `flat` (all beside the start,
@@ -1113,8 +1127,9 @@ pub(crate) struct NewArgs {
     /// either way (default: nested).
     #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
     pub(crate) layout: LayoutArg,
-    /// Print what `--in` resolves to and what `-p` would create, then stop.
-    #[arg(long, requires = "in_target")]
+    /// Print what `--in` or `--filing` resolves to and what would be
+    /// created, then stop.
+    #[arg(long)]
     pub(crate) dry_run: bool,
     /// Use this exact workspace path instead of a title-derived name (the
     /// title is still taken from the positional). Wins over `--ext`.

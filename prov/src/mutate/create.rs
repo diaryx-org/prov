@@ -114,11 +114,41 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         title_override: Option<&str>,
         fields: &Mapping,
     ) -> Result<Created> {
+        // Everything the staging touches can register an id, so the change set
+        // (and with it the index checkpoint that unwinds those registrations)
+        // opens before it.
+        let mut cs = self.change();
+        let created = self
+            .stage_create(&mut cs, path, parent, title_override, fields)
+            .await?;
+        self.commit(cs).await?;
+        Ok(created)
+    }
+
+    /// [`create_titled`](Self::create_titled)'s edits, staged into `cs`
+    /// rather than landed — so a caller making a chain of documents, each the
+    /// parent of the next, lands the whole chain as one change set.
+    ///
+    /// The parent is read from `cs` when the set already writes it (a node
+    /// made earlier in the same chain), and from disk otherwise; the path the
+    /// child takes must be free in both. `cs` must have come from
+    /// [`change`](Self::change), and is the caller's to commit.
+    pub(crate) async fn stage_create(
+        &mut self,
+        cs: &mut fs_transaction::ChangeSet,
+        path: &Path,
+        parent: &Path,
+        title_override: Option<&str>,
+        fields: &Mapping,
+    ) -> Result<Created> {
         let path = link::normalize(path);
         let parent = link::normalize(parent);
         let (spanning, inverse) = self.spanning_pair()?;
 
-        let (parent_text, parent_doc) = self.load(&parent).await?;
+        // A parent this set is making has no file yet to read, and no file for
+        // an id link to register by path — it was registered when it was made.
+        let parent_on_disk = cs.staged(&parent).is_none();
+        let (parent_text, parent_doc) = self.load_staged(cs, &parent).await?;
 
         // The child's shape follows the parent's. `node` is always the
         // *structural* document — the file registered, linked by the parent's
@@ -153,7 +183,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // Refuse if either file (the node, or a separated body) already exists.
         for existing in std::iter::once(&node).chain(body.iter()) {
-            if self.exists(existing).await? {
+            if cs.staged(existing).is_some() || self.exists(existing).await? {
                 return Err(Error::AlreadyExists(existing.to_path_buf()));
             }
         }
@@ -172,17 +202,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .and_then(prov_graph::title::title_text)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
-        // Everything below can touch the index — authoring an id-form link
-        // registers its target — so the change set (and with it the index
-        // checkpoint that unwinds those registrations) opens here, before the
-        // first of them, not down at the writes.
-        let mut cs = self.change();
-
         // The child's inverse link back to the parent, authored in the `inverse`
-        // relation's style (going "up"). The parent exists, so an id link
-        // registers it by path.
+        // relation's style (going "up"). A parent on disk is registered by path
+        // when the link is an id link; one this set is making already was.
         let up = self
-            .authored_target(&inverse, &node, &parent, &parent_title, true)
+            .authored_target(&inverse, &node, &parent, &parent_title, parent_on_disk)
             .await?;
         // The parent's spanning entry for the child, authored in the `spanning`
         // relation's style (going "down"). The node is not on disk yet, so
@@ -280,8 +304,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             cs.write(body_path, Vec::new());
         }
         cs.write(&parent, parent_out);
-
-        self.commit(cs).await?;
         Ok(Created { node, body })
     }
 }

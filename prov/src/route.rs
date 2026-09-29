@@ -316,7 +316,12 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// Flat layout skips the directory check: it creates no directory, so its
     /// neighbours are the parent's own siblings and finding nodes there is
     /// expected, not evidence of anything.
-    async fn assert_vacant(&self, path: &Path, segment: &str, layout: Layout) -> Result<()> {
+    pub(crate) async fn assert_vacant(
+        &self,
+        path: &Path,
+        segment: &str,
+        layout: Layout,
+    ) -> Result<()> {
         if self.exists(path).await? {
             // The occupant is usually the node the segment *meant*, sitting under
             // a title the route did not spell — a month index titled "2026-08"
@@ -408,7 +413,7 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// Refuse a parent whose grammar makes folder-note synthesis lie — a
     /// separated pair or a bare whole-file node. Mirrors the same refusal in
     /// [`plan_mirror`](Self::plan_mirror), for the same reason.
-    async fn assert_combined(&self, parent: &Path) -> Result<()> {
+    pub(crate) async fn assert_combined(&self, parent: &Path) -> Result<()> {
         let (_, doc) = self.load(parent).await?;
         if doc.content_attr().is_some() || matches!(doc.carrier, Some(MetaCarrier::WholeFile(_))) {
             return Err(Error::Structure(format!(
