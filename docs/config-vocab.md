@@ -127,8 +127,7 @@ prov:
     audience:
       type: str               # what the value *is* — see "Field types" below
       values: closed          # open (folksonomy) | closed (must be a known term)
-      vocabulary: '[Audiences](/vocab/audiences.yaml)'   # pointer to the term store
-      reify: true             # each term is its own node (backlinks, prose, stable id)
+      vocabulary: '[Audiences](/vocab/audiences.md)'   # pointer to the term store — its shape says which kind
       default: friends        # what a new document opens with — see "Field types" below
     created:
       type: date              # a type alone is a complete declaration
@@ -699,13 +698,19 @@ the deeper wins; an unscoped declaration in the same list is the fallback. A
 scope whose anchor names nothing governs nothing, and `check` reports it as
 it reports a view anchored on nothing.
 
-`reify:` says which *shape* the pointer's target takes, and only the default
-(`false`) is a whole-file store: a flat vocabulary is machinery holding a
-`terms:` mapping, while a reified one is an ordinary content index node whose
-spanning children are the terms — real documents with a `part_of`, a prose body
-and backlinks (Spec §3, §4). Membership is checked identically either way; what
-changes is where a term's payload lives, and that `check` neither demands a
-config carrier of a reified store nor offers to widen one mechanically.
+A `vocabulary:` pointer names one of two shapes of store, and the store says
+which. A **flat** vocabulary is machinery: a whole-file document carrying the
+`vocabulary:` marker and a `terms:` mapping. A **reified** one is any other
+document — an ordinary content index node whose spanning children are the
+terms, real documents with a `part_of`, a prose body and backlinks (Spec §3,
+§4). Membership is checked identically either way; what changes is where a
+term's payload lives, and that `check` neither demands a config carrier of a
+reified store nor offers to widen one mechanically.
+
+A declaration used to say the shape as well, with `reify: true`. It is no
+longer read: the store cannot be wrong about its own shape, and a declaration
+that disagreed with it loaded no terms, which on a closed field made every
+value in the workspace unknown. A `reify:` key still written is ignored.
 
 The type vocabulary is [`fig-schema`](https://crates.io/crates/fig-schema)'s, not
 one prov invents, so prov, a metadata editor, and a view engine all name types
@@ -848,7 +853,7 @@ silently ignore:
 Beyond the two config surfaces, `check` also validates the workspace's **stores**
 and **controlled fields** (see [Spec](/docs/spec.md)): a `MalformedStore` finding
 for a registry/deletions/*flat*-vocabulary pointer that resolves to a markdown
-document rather than a whole-file config document (a `reify: true` vocabulary is
+document rather than a whole-file config document (a reified vocabulary is
 content, so the rule does not reach it); `UnknownTerm` for a closed-field value
 that is not a known term; `TermNearMiss` for an open-field value that closely
 resembles one; and `MalformedDate` for a `type: date` value that is neither a

@@ -916,9 +916,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// terms, so this deliberately does not go through
     /// [`require_whole_file`](prov_graph::document::require_whole_file): the store
     /// is content, usually markdown-with-frontmatter, and that is the whole point
-    /// of reifying. Any `vocabulary:` marker on the index node is ignored — what
-    /// makes this a vocabulary is `reify: true` in the field declaration, not
-    /// anything the target says about itself.
+    /// of reifying. [`vocabulary_shape`](Self::vocabulary_shape) is what decides
+    /// that a pointer's target is one of these.
     ///
     /// `None` when the pointer does not resolve, or when the field declares no
     /// vocabulary at all.
@@ -1056,11 +1055,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         Ok(Some(terms))
     }
 
-    /// The vocabulary governing `field`, loaded the way its declaration says to —
-    /// [`load_reified_vocabulary`](Self::load_reified_vocabulary) under `reify:
-    /// true`, [`load_vocabulary`](Self::load_vocabulary) otherwise. `None` for a
-    /// type-only field: a field that names no vocabulary has nothing to be a
-    /// member of.
+    /// The vocabulary governing `field`, loaded the way its store is shaped —
+    /// [`load_reified_vocabulary`](Self::load_reified_vocabulary) for an index
+    /// of term documents, [`load_vocabulary`](Self::load_vocabulary) for a
+    /// `terms:` store (see [`vocabulary_shape`](Self::vocabulary_shape)). `None`
+    /// for a type-only field: a field that names no vocabulary has nothing to
+    /// be a member of.
     ///
     /// The single place the two forms are told apart, so a caller holding a
     /// [`FieldSpec`](crate::config::FieldSpec) never re-derives the choice.
@@ -1073,11 +1073,62 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let Some(pointer) = spec.vocabulary.as_deref() else {
             return Ok(None);
         };
-        if spec.reify {
-            self.load_reified_vocabulary(root_doc, field, spec).await
-        } else {
-            self.load_vocabulary(root_doc, pointer).await
+        match self.vocabulary_shape(root_doc, pointer).await? {
+            Some(VocabularyShape::Reified) => {
+                self.load_reified_vocabulary(root_doc, field, spec).await
+            }
+            Some(VocabularyShape::Flat) | None => self.load_vocabulary(root_doc, pointer).await,
         }
+    }
+
+    /// Which kind of store a `fields` vocabulary pointer names, read off the
+    /// store itself: a document carrying the `vocabulary:` marker is a
+    /// [`Flat`](VocabularyShape::Flat) store of `terms:` rows, and any other
+    /// document is a [`Reified`](VocabularyShape::Reified) index whose
+    /// spanning children are the terms.
+    ///
+    /// The declaration used to say this too, as `reify: true`, and the two
+    /// could disagree: a flat store read as reified loads no terms, which on
+    /// a closed field makes every value in the workspace unknown. The store is
+    /// the one that cannot be wrong about its own shape, so it is the one
+    /// asked. `None` when the pointer resolves to nothing readable — the
+    /// loaders and `check` report that in their own terms.
+    pub async fn vocabulary_shape(
+        &self,
+        root_doc: &Path,
+        pointer: &str,
+    ) -> Result<Option<VocabularyShape>> {
+        let Some(path) = self.vocabulary_path(root_doc, pointer) else {
+            return Ok(None);
+        };
+        let Ok((_, doc)) = self.load(&path).await else {
+            return Ok(None);
+        };
+        Ok(Some(if doc.meta.get("vocabulary").is_some() {
+            VocabularyShape::Flat
+        } else {
+            VocabularyShape::Reified
+        }))
+    }
+
+    /// The vocabulary pointers among `config`'s field declarations whose
+    /// stores are reified, as written — what a caller holding only the config
+    /// (the `about.md` generator) needs to know to describe them.
+    pub async fn reified_vocabularies(
+        &self,
+        root_doc: &Path,
+        config: &crate::config::WorkspaceConfig,
+    ) -> Result<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        for (_, spec) in config.field_declarations() {
+            if let Some(pointer) = spec.vocabulary.as_deref()
+                && !out.contains(pointer)
+                && self.vocabulary_shape(root_doc, pointer).await? == Some(VocabularyShape::Reified)
+            {
+                out.insert(pointer.to_string());
+            }
+        }
+        Ok(out)
     }
 
     /// Resolve the first target of `relation` declared on `root_doc` to a
@@ -1953,6 +2004,18 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     }
 }
 
+/// The two shapes a `fields` vocabulary store takes. See
+/// [`Workspace::vocabulary_shape`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VocabularyShape {
+    /// A whole-file store carrying the `vocabulary:` marker and a `terms:`
+    /// mapping — machinery, one row per term.
+    Flat,
+    /// An ordinary index document whose spanning children are the terms —
+    /// content, each term a document with a body, backlinks and an id.
+    Reified,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2229,7 +2292,6 @@ mod reified_vocabulary_tests {
             ty: None,
             values,
             vocabulary: Some("vocab/index.md".into()),
-            reify: true,
             default: None,
             under: None,
         }
@@ -2387,6 +2449,39 @@ mod reified_vocabulary_tests {
         assert_eq!(path("nobody"), None);
     }
 
+    /// The store says which kind it is. The same declaration, pointed at an
+    /// index of term documents and then at a `terms:` store carrying the
+    /// `vocabulary:` marker, loads each the way it is shaped — and a pointer at
+    /// nothing has no shape.
+    #[test]
+    fn a_vocabulary_is_loaded_the_way_its_store_is_shaped() {
+        let dir = a_vocabulary_of_audiences("shape");
+        write(
+            &dir,
+            "vocab/flat.yaml",
+            "title: Audiences\nvocabulary:\n  field: audience\n  values: closed\nterms:\n  everyone: {}\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let root = Path::new("index.md");
+        let shape = |pointer: &str| block_on(ws.vocabulary_shape(root, pointer)).unwrap();
+        assert_eq!(shape("vocab/index.md"), Some(VocabularyShape::Reified));
+        assert_eq!(shape("vocab/flat.yaml"), Some(VocabularyShape::Flat));
+        assert_eq!(shape("vocab/nowhere.md"), None);
+
+        let load = |pointer: &str| {
+            let spec = FieldSpec {
+                vocabulary: Some(pointer.into()),
+                ..spec(OpenClosed::Closed)
+            };
+            block_on(ws.load_field_vocabulary(root, "audience", &spec))
+                .unwrap()
+                .expect("a vocabulary")
+        };
+        assert!(load("vocab/index.md").accepts("friends"));
+        let flat = load("vocab/flat.yaml");
+        assert!(flat.accepts("everyone") && !flat.accepts("friends"));
+    }
+
     /// A field declaring no vocabulary has nothing to load, and a pointer at
     /// nothing resolves to nothing — neither is an error to raise here.
     #[test]
@@ -2397,7 +2492,6 @@ mod reified_vocabulary_tests {
             ty: None,
             values: OpenClosed::Closed,
             vocabulary: None,
-            reify: true,
             default: None,
             under: None,
         };

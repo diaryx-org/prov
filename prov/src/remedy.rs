@@ -1315,10 +1315,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Some(store) = self.vocabulary_path(&root, pointer) else {
             return Ok(None);
         };
+        let reified = self.vocabulary_shape(&root, pointer).await?
+            == Some(crate::workspace::VocabularyShape::Reified);
         Ok(self
             .load_field_vocabulary(&root, field, spec)
             .await?
-            .map(|vocab| (store, vocab, spec.reify)))
+            .map(|vocab| (store, vocab, reified)))
     }
 
     /// A config issue's key, qualified from the *document's* root rather than the
@@ -2177,7 +2179,7 @@ mod tests {
         write(
             &dir,
             "prov.yaml",
-            "spec: 1\nfields:\n  status:\n    values: closed\n    vocabulary: /vocab/index.md\n    reify: true\n",
+            "spec: 1\nfields:\n  status:\n    values: closed\n    vocabulary: /vocab/index.md\n",
         );
         write(
             &dir,

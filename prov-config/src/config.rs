@@ -185,10 +185,6 @@ pub struct FieldSpec {
     /// terms — resolved like the `registry`/`config` pointers (DESIGN §6). `None`
     /// for a field that declares a type but no controlled vocabulary.
     pub vocabulary: Option<String>,
-    /// Whether each term is reified as its own node (rich: backlinks, a prose
-    /// body, stable id) rather than a bare key in a flat registry. A hint to
-    /// tooling; prov validates membership either way.
-    pub reify: bool,
     /// The value a **new** document opens with in this field, if the
     /// declaration names one — `status: open` on a task the moment it is
     /// made. Written by `create` and never read back: it is a starting
@@ -968,7 +964,7 @@ impl WorkspaceConfig {
             }
         }
         // Field declarations: `fields: { <field>: <decl> | [<decl>, …] }`,
-        // each `<decl>` a mapping of `{ type, values, vocabulary, reify,
+        // each `<decl>` a mapping of `{ type, values, vocabulary,
         // default, under }`. A bare mapping is one declaration for the whole
         // workspace; a sequence is several, each scoped by `under`.
         if let Some(fields) = meta.get("fields").and_then(Value::as_mapping) {
@@ -1002,7 +998,6 @@ impl WorkspaceConfig {
                         .and_then(Value::as_str)
                         .and_then(OpenClosed::from_config_str)
                         .unwrap_or_default();
-                    let reify = spec.get("reify").and_then(Value::as_bool).unwrap_or(false);
                     let under = spec
                         .get("under")
                         .and_then(Value::as_str)
@@ -1013,7 +1008,6 @@ impl WorkspaceConfig {
                         ty,
                         values,
                         vocabulary,
-                        reify,
                         default,
                         under,
                     });
@@ -1265,9 +1259,6 @@ impl WorkspaceConfig {
                             );
                             entry.insert("vocabulary".into(), Value::String(vocabulary.clone()));
                         }
-                        if spec.reify {
-                            entry.insert("reify".into(), Value::Bool(true));
-                        }
                         if let Some(default) = &spec.default {
                             entry.insert("default".into(), default.clone());
                         }
@@ -1488,7 +1479,7 @@ const REFERENCE_KEYS: &[&str] = &["notation", "path_style", "target", "label"];
 /// (`means` is free-form and never near-miss-matched, like `updated`).
 const RELATION_DEF_KEYS: &[&str] = &["cardinality", "inverse", "means"];
 /// Keys inside each `fields.<name>` entry.
-const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "reify", "default", "under"];
+const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "default", "under"];
 
 /// If `meta` declares a `spec` newer than [`SPEC_VERSION`] — the version this
 /// build understands — the declared version. The signal that prov may be
@@ -1886,7 +1877,7 @@ fn diagnose_relation_entry(issues: &mut Vec<ConfigIssue>, name: &str, value: &Va
 }
 
 /// Diagnose the `fields:` block — a mapping of frontmatter field name to a field
-/// declaration (`type` / `values` / `vocabulary` / `reify` / `default` /
+/// declaration (`type` / `values` / `vocabulary` / `default` /
 /// `under`), or to a sequence of them, each scoped by `under`.
 fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
     let Some(map) = value.as_mapping() else {
@@ -1945,7 +1936,6 @@ fn diagnose_field_declaration(
                         });
                     }
                 }
-                "reify" => bool_axis(issues, &dotted, v),
                 // Any value: the starting value of a field is whatever the
                 // field holds, and a `seq` field's is a list. Whether it is a
                 // term of a closed vocabulary is `check`'s question, asked of
@@ -2737,7 +2727,6 @@ mod tests {
                         ty: Some(FieldType::Str),
                         values: OpenClosed::Closed,
                         vocabulary: Some("[Audiences](/vocab/audiences.yaml)".to_string()),
-                        reify: true,
                         // A starting value, carried as the value it is rather
                         // than as text, so a `default: 3` round-trips as an int.
                         default: Some(Value::String("friends".to_string())),
@@ -2752,7 +2741,6 @@ mod tests {
                         ty: Some(FieldType::Extended(ExtKind::LocalDate)),
                         values: OpenClosed::default(),
                         vocabulary: None,
-                        reify: false,
                         default: None,
                         under: None,
                     }],
@@ -3426,7 +3414,7 @@ mod tests {
     #[test]
     fn a_field_declaring_neither_type_nor_vocabulary_is_not_recorded() {
         let mut empty = Mapping::new();
-        empty.insert("reify".into(), Value::Bool(true));
+        empty.insert("values".into(), Value::String("closed".into()));
         let mut fields = Mapping::new();
         fields.insert("mystery".into(), Value::Mapping(empty));
         let mut top = Mapping::new();

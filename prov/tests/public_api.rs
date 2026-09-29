@@ -105,10 +105,15 @@ fn a_reified_vocabulary_is_loadable_and_its_terms_are_reachable_as_nodes() {
         ty: None,
         values: OpenClosed::Closed,
         vocabulary: Some("vocab/index.md".into()),
-        reify: true,
         default: None,
         under: None,
     };
+    // Nothing in the declaration says which kind of store this is: the store
+    // does, by carrying no `vocabulary:` marker.
+    assert_eq!(
+        block_on(ws.vocabulary_shape(Path::new("index.md"), "vocab/index.md")).expect("shape"),
+        Some(prov::VocabularyShape::Reified)
+    );
     let vocab: Vocabulary =
         block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &spec))
             .expect("load")

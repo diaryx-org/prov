@@ -84,6 +84,7 @@
 //! be reviewed by reading it. twig's Markdown serializer preserves source line
 //! wrapping, so nothing is given up by writing the prose as prose.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -131,6 +132,11 @@ pub struct AboutContext {
     pub deletions_doc: Option<PathBuf>,
     /// The history-store index the root points at, if any.
     pub history_doc: Option<PathBuf>,
+    /// The `fields` vocabulary pointers, as written, whose stores are
+    /// reified — an index of term documents rather than a `terms:` store
+    /// ([`Workspace::reified_vocabularies`](crate::Workspace::reified_vocabularies)).
+    /// The store says which it is, so the caller asks it and passes the answer.
+    pub reified: BTreeSet<String>,
     /// The generating tool's version, for the byline (`"0.3.2"`).
     pub version: String,
 }
@@ -181,7 +187,7 @@ fn markdown_body(config: &WorkspaceConfig, relations: &RelationSet, ctx: &AboutC
         Some(metadata_block_section(config, relations)),
         Some(reference_section(config, relations)),
         Some(relations_section(config, relations, ctx)),
-        fields_section(config),
+        fields_section(config, ctx),
         views_section(config),
         machinery_section(config, relations, ctx),
         history_section(ctx),
@@ -698,7 +704,7 @@ fn relations_section(
 
 /// Controlled-vocabulary fields — omitted entirely when the workspace declares
 /// none, which is the common case.
-fn fields_section(config: &WorkspaceConfig) -> Option<String> {
+fn fields_section(config: &WorkspaceConfig, ctx: &AboutContext) -> Option<String> {
     let controlled: Vec<(&str, &crate::config::FieldSpec)> = config
         .field_declarations()
         .filter(|(_, spec)| spec.vocabulary.is_some())
@@ -772,7 +778,11 @@ fn fields_section(config: &WorkspaceConfig) -> Option<String> {
              an error rather than a new category.",
         ));
     }
-    if controlled.iter().any(|(_, s)| s.reify) {
+    if controlled.iter().any(|(_, s)| {
+        s.vocabulary
+            .as_deref()
+            .is_some_and(|p| ctx.reified.contains(p))
+    }) {
         s.push('\n');
         s.push_str(&para(
             "Where the list is itself a document in this directory, each \
@@ -943,10 +953,10 @@ fn machinery_section(
         // A reified vocabulary is not machinery: its list is an index node in
         // the tree and its terms are documents, so the spine does reach it —
         // this section's opening sentence would be false of it.
-        if spec.reify {
-            continue;
-        }
         if let Some(vocab) = &spec.vocabulary {
+            if ctx.reified.contains(vocab) {
+                continue;
+            }
             // A scoped declaration says where it holds, since a reader who
             // finds two lists for one field needs to know which is whose.
             let place = match &spec.under {
@@ -1978,7 +1988,6 @@ mod tests {
                     ty: None,
                     values: OpenClosed::Closed,
                     vocabulary: Some("[Audiences](/vocab/audiences.yaml)".into()),
-                    reify: true,
                     default: None,
                     under: None,
                 }],
@@ -1992,6 +2001,7 @@ mod tests {
         };
         let bespoke_ctx = AboutContext {
             history_doc: Some("history/index.yaml".into()),
+            reified: BTreeSet::from(["[Audiences](/vocab/audiences.yaml)".to_string()]),
             ..ctx.clone()
         };
         let bespoke_page = render(&bespoke, &bespoke_ctx);
@@ -2183,7 +2193,9 @@ mod tests {
         // reified one is an index node *in* the tree, so filing it under "files
         // that are not part of the tree" would tell the reader the opposite of
         // what reifying arranged.
-        let (mut config, ctx) = default_workspace();
+        let (mut config, mut ctx) = default_workspace();
+        ctx.reified
+            .insert("[Audiences](/vocab/audiences.md)".to_string());
         config.fields = BTreeMap::from([
             (
                 "tags".into(),
@@ -2191,7 +2203,6 @@ mod tests {
                     ty: None,
                     values: OpenClosed::Open,
                     vocabulary: Some("[Tags](/vocab/tags.yaml)".into()),
-                    reify: false,
                     default: None,
                     under: None,
                 }],
@@ -2202,7 +2213,6 @@ mod tests {
                     ty: None,
                     values: OpenClosed::Closed,
                     vocabulary: Some("[Audiences](/vocab/audiences.md)".into()),
-                    reify: true,
                     default: None,
                     under: None,
                 }],

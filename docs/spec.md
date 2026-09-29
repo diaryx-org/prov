@@ -192,8 +192,7 @@ prov:
       vocabulary: '[Tags](/vocab/tags.yaml)'
     audience:
       values: closed          # every value must be a known term (privacy-critical)
-      vocabulary: '[Audiences](/vocab/audiences.yaml)'
-      reify: true             # each term is its own node (backlinks, prose, stable id)
+      vocabulary: '[Audiences](/vocab/audiences.md)'   # an index whose children are the terms
 ```
 
 `check` then verifies every value of that field over the reachable document set
@@ -291,10 +290,14 @@ terms:
 prov reasons about the term *keys*, each term's `id`, and `retired`; every other
 key (`means`, `gate`) is tier-3 payload it transports untouched — which is how a
 diaryx audience hangs gate/theme config off a term prov still validates
-membership in. A **reified** vocabulary (`reify: true`) is instead an index node
-whose `contents` are term nodes — ordinary *content* containment, so each term is a
+membership in. A **reified** vocabulary is instead an index node whose
+`contents` are term nodes — ordinary *content* containment, so each term is a
 real node (with `part_of`, a prose body, and backlinks); only the *flat* form is a
-whole-file machinery store.
+whole-file machinery store. Which of the two a pointer names is read off the
+target, never declared: a document carrying the `vocabulary:` marker is a flat
+store, and any other document is a reified index. The declaration used to say
+it too (`reify: true`), and a declaration that disagreed with its store loaded no
+terms at all; the key is no longer read.
 
 ## 4. Link target kinds
 
@@ -312,7 +315,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **A directory of opaque payloads** | the `manifest` field (exclusive with `content`) | *not nodes* — one node stands for the whole set through a manifest store listing every opaque file under a directory it claims completely, each row optionally hashed; the node hashes the manifest. Not in the graph, not orphan-checked, never parsed. See [Manifests](/docs/manifests.md) |
 | **Controlled term** | a `fields` value | resolved by term *key* against the field's vocabulary, checked (§3) — not traversed, and no more traversed when the terms are nodes (below) than when they are rows |
 | **Path-valued field** | a `fields` value under `type: ref` | *not a new kind* — whichever of the kinds above or below the value spells (a content node, an external URL, a locator), reached through a field prov was told holds one (§3). One-way: censused, checked, rewritten on move, orphan-checked as a target; **no inverse, never spanning** |
-| **Reified vocabulary** | a `fields` `vocabulary` pointer under `reify: true` — the index node, and its spanning children as terms | *ordinary content*: in the graph; two-way (inverse maintained); ID-able, and the term node's own id **is** the term's; rewritten on move; orphan-checked. Reached twice over — down the spanning tree like any node, and through the `fields` pointer, which is configuration naming content rather than a pointer to machinery |
+| **Reified vocabulary** | a `fields` `vocabulary` pointer at a document with no `vocabulary:` marker — the index node, and its spanning children as terms | *ordinary content*: in the graph; two-way (inverse maintained); ID-able, and the term node's own id **is** the term's; rewritten on move; orphan-checked. Reached twice over — down the spanning tree like any node, and through the `fields` pointer, which is configuration naming content rather than a pointer to machinery |
 | **Generated prose** | a one-way pointer relation (`about`) | plaintext in the workspace's *content* format; reached from the root only; **no inverse, no `part_of`, no id, not in the spanning tree, not orphan-checked**; rewritten **whole** by prov and never merged; a pure function of configuration, therefore **discardable** — deleting it loses nothing |
 | **External** | a URL | recognized by syntax, never resolved or validated |
 | **A place inside a document** | a `#locator` suffix on any target | *not a target of its own* — the document part resolves normally; the locator is carried, never resolved or validated, and preserved across moves |

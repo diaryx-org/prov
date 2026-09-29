@@ -317,5 +317,7 @@ pub use remedy::{Fix, Remedy, RemedyKind, Warrant};
 pub use route::{Layout, RoutePlan};
 pub use validate::{CheckDiff, Finding, Severity};
 pub use vocabulary::{Term, Vocabulary};
-pub use workspace::{Ignore, IgnoreList, Reason, Settings, Workspace, WorkspaceBuilder};
+pub use workspace::{
+    Ignore, IgnoreList, Reason, Settings, VocabularyShape, Workspace, WorkspaceBuilder,
+};
 pub use writable::{REGISTRY_STEM, RegistryBootstrap, WorkspaceRoot, ensure_registry};

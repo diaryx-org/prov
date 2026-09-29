@@ -244,10 +244,9 @@ pub(crate) fn machinery(
     stores.extend(ctx.registry.iter().cloned());
     stores.extend(block_on(ws.deletions_path(&ctx.root_doc))?);
     for (_, spec) in ctx.config.field_declarations() {
-        if spec.reify {
-            continue;
-        }
         if let Some(pointer) = &spec.vocabulary
+            && block_on(ws.vocabulary_shape(&ctx.root_doc, pointer))?
+                != Some(prov::VocabularyShape::Reified)
             && let Some(p) = ws.vocabulary_path(&ctx.root_doc, pointer)
         {
             stores.push(p);

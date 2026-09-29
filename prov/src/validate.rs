@@ -1456,10 +1456,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // markdown it is supposed to be. What it gets in exchange is the thing
             // a machinery store deliberately gives up: its terms are in the
             // reachable set, inverse-checked and orphan-checked like any content.
-            if spec.reify {
-                continue;
-            }
             if let Some(pointer) = &spec.vocabulary
+                && self.vocabulary_shape(start, pointer).await?
+                    != Some(crate::workspace::VocabularyShape::Reified)
                 && let Some(p) = self.vocabulary_path(start, pointer)
             {
                 stores.push(("vocabulary", p));
@@ -3084,7 +3083,7 @@ mod tests {
                  title: Root\n\
                  contents:\n- note.md\n- vocab/index.md\n\
                  prov:\n  fields:\n    audience:\n      values: {values}\n      \
-                 vocabulary: vocab/index.md\n      reify: true\n\
+                 vocabulary: vocab/index.md\n\
                  ---\n"
             ),
         );

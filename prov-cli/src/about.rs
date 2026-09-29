@@ -31,6 +31,7 @@ pub(crate) fn about_context(ctx: &Ctx) -> Result<prov::AboutContext, AnyError> {
         registry_doc: block_on(probe.registry_path(&ctx.root_doc))?,
         deletions_doc: block_on(probe.deletions_path(&ctx.root_doc))?,
         history_doc: block_on(probe.history_path(&ctx.root_doc))?,
+        reified: block_on(probe.reified_vocabularies(&ctx.root_doc, &ctx.config))?,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
