@@ -692,7 +692,7 @@ fn census_fields(row: &Row) -> Vec<(&'static str, J)> {
         .collect();
     vec![
         ("path", p(&row.path)),
-        ("title", opt(row.title().map(str::to_owned))),
+        ("title", opt(row.title())),
         ("id", opt(row.id.clone())),
         ("ancestors", J::Arr(ancestors)),
         ("meta", meta(&row.meta)),

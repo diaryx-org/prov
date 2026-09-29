@@ -1023,8 +1023,13 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             let Some(key) = child
                 .meta
                 .get("term")
-                .and_then(Value::as_str)
-                .or_else(|| child.meta.get("title").and_then(Value::as_str))
+                .and_then(prov_graph::title::title_text)
+                .or_else(|| {
+                    child
+                        .meta
+                        .get("title")
+                        .and_then(prov_graph::title::title_text)
+                })
             else {
                 continue;
             };
@@ -1056,7 +1061,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             };
-            terms.insert(key.to_string(), (path, term));
+            terms.insert(key, (path, term));
         }
         Ok(Some(terms))
     }

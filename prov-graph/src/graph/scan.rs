@@ -83,11 +83,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
                 index.insert(stem, rel.clone());
             }
-            if let Ok((_, doc)) = self.load(&rel).await {
-                let meta = fig::Value::from(&doc.meta);
-                if let Some(title) = meta.get("title").and_then(fig::Value::as_str) {
-                    index.insert(title, rel.clone());
-                }
+            if let Ok((_, doc)) = self.load(&rel).await
+                && let Some(title) = doc.meta.get("title").and_then(crate::title::title_text)
+            {
+                index.insert(&title, rel.clone());
             }
         }
         Ok(index)
@@ -396,11 +395,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                         index.insert(stem, rel.clone());
                     }
                     // …and by the declared `title` when the document parses.
-                    if let Ok((_, doc)) = self.load(&rel).await {
-                        let meta = fig::Value::from(&doc.meta);
-                        if let Some(title) = meta.get("title").and_then(fig::Value::as_str) {
-                            index.insert(title, rel.clone());
-                        }
+                    if let Ok((_, doc)) = self.load(&rel).await
+                        && let Some(title) =
+                            doc.meta.get("title").and_then(crate::title::title_text)
+                    {
+                        index.insert(&title, rel.clone());
                     }
                 }
             }

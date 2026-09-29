@@ -420,8 +420,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             if let Some(stem) = current.file_stem().and_then(|s| s.to_str()) {
                 names.push(stem.to_string());
             }
-            if let Some(title) = doc.meta.get("title").and_then(Value::as_str) {
-                names.push(title.to_string());
+            if let Some(title) = doc.meta.get("title").and_then(title::title_text) {
+                names.push(title);
             }
             let up = inverse.as_deref().and_then(|inverse| {
                 let raw = doc

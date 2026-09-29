@@ -1471,10 +1471,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Err(e) => return Err(e),
         };
         let doc = prov_graph::document::Document::parse(path, &text)?;
-        Ok(fig::Value::from(&doc.meta)
+        Ok(doc
+            .meta
             .get("title")
-            .and_then(fig::Value::as_str)
-            .map(str::to_owned))
+            .and_then(prov_graph::title::title_text))
     }
 
     /// Verify every **record store** the workspace reaches — the id registry, the

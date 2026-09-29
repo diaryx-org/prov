@@ -808,8 +808,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 let title = parent_doc
                     .meta
                     .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
+                    .and_then(prov_graph::title::title_text)
                     .unwrap_or_else(|| link::path_to_title(parent));
                 Ok(vec![Remedy::new(
                     RemedyKind::Link,

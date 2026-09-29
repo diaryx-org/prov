@@ -315,8 +315,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let parent_title = parent_doc
             .meta
             .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+            .and_then(prov_graph::title::title_text)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
         // Opens before the first id-authoring call below, so the index

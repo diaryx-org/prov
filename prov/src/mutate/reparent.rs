@@ -159,18 +159,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // state this verb exists to finish, not a no-op to report success for.
         let already_up = old_parent.as_ref() == Some(&parent);
 
-        let child_meta = fig::Value::from(&child_doc.meta);
-        let child_title = child_meta
+        let child_title = child_doc
+            .meta
             .get("title")
-            .and_then(fig::Value::as_str)
-            .map(str::to_owned)
+            .and_then(prov_graph::title::title_text)
             .unwrap_or_else(|| link::path_to_title(&child));
         let (parent_text, parent_doc) = self.load(&parent).await?;
         let parent_meta = fig::Value::from(&parent_doc.meta);
-        let parent_title = parent_meta
+        let parent_title = parent_doc
+            .meta
             .get("title")
-            .and_then(fig::Value::as_str)
-            .map(str::to_owned)
+            .and_then(prov_graph::title::title_text)
             .unwrap_or_else(|| link::path_to_title(&parent));
         let already_down =
             self.relations().children(&parent_meta).iter().any(|t| {

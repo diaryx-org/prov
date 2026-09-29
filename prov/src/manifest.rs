@@ -366,8 +366,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let title = manifest_parsed
             .meta
             .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+            .and_then(prov_graph::title::title_text)
             .unwrap_or_else(|| link::path_to_title(&manifest_doc));
         let format = self.default_embed_format();
         let new_text = prov_graph::meta::serialize_mapping(&fresh.to_mapping(&title), format)?;
@@ -460,8 +459,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let parent_title = parent_doc
             .meta
             .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+            .and_then(prov_graph::title::title_text)
             .unwrap_or_else(|| link::path_to_title(&parent));
 
         // The manifest's `root`: the covered directory as seen from the manifest

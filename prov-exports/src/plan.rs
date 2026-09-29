@@ -170,7 +170,7 @@ pub fn compose(
     let mut held = Vec::new();
     let mut withheld = Vec::new();
     for row in rows {
-        let title = row.title().map(str::to_string);
+        let title = row.title();
         match spec.gate.declared_in(&row.meta) {
             Some(declared) if declared.iter().any(|v| v == spec.gate.value.trim()) => {
                 let doc = ExportDoc {

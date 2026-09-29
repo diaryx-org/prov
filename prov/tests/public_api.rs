@@ -588,3 +588,41 @@ fn the_rules_a_frontend_used_to_copy_are_reachable() {
         Some(PathBuf::from("2026.md"))
     );
 }
+
+/// YAML reads `title: 2026` as an int. Every reader of a title reads it as
+/// the title "2026" — the tree, the title index behind `[[…]]`, a view's row.
+#[test]
+fn a_numeric_title_is_a_title_everywhere() {
+    let root = tmp("numeric-title");
+    std::fs::write(
+        root.join("index.md"),
+        "---\ntitle: Home\ncontents:\n- year.md\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("year.md"),
+        "---\ntitle: 2026\npart_of: index.md\n---\n",
+    )
+    .unwrap();
+    let ws = Workspace::builder(StdFs)
+        .root(&root)
+        .relations(RelationSet::diaryx())
+        .build();
+
+    let tree = block_on(ws.tree("index.md")).unwrap();
+    assert_eq!(tree.children[0].title.as_deref(), Some("2026"));
+
+    let mut titles = None;
+    assert_eq!(
+        block_on(ws.anchor_path(Path::new("index.md"), "[[2026]]", &mut titles)).unwrap(),
+        Ok(PathBuf::from("year.md")),
+        "found by title, not by its file name"
+    );
+
+    let rows = block_on(prov::views::documents(ws.graph(), Path::new("index.md"))).unwrap();
+    let year = rows
+        .iter()
+        .find(|r| r.path == Path::new("year.md"))
+        .unwrap();
+    assert_eq!(year.title().as_deref(), Some("2026"));
+}

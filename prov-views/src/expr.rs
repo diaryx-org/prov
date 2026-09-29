@@ -473,7 +473,7 @@ fn doc_value(row: &Row) -> cel::Value {
         .collect();
     map_value(vec![
         ("path", text(&row.path.to_string_lossy())),
-        ("title", opt(row.title())),
+        ("title", opt(row.title().as_deref())),
         ("id", opt(row.id.as_deref())),
         ("meta", to_cel(&row.meta)),
         ("ancestors", cel::Value::List(Arc::new(ancestors))),

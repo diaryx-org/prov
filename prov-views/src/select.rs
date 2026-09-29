@@ -51,9 +51,13 @@ pub struct Row {
 }
 
 impl Row {
-    /// The document's `title`, when it declares one.
-    pub fn title(&self) -> Option<&str> {
-        self.meta.get("title").and_then(Value::as_str)
+    /// The document's `title`, when it declares one — as text, so a
+    /// hand-written `title: 2026` is the title "2026" rather than none
+    /// ([`title_text`](prov_graph::title::title_text)).
+    pub fn title(&self) -> Option<String> {
+        self.meta
+            .get("title")
+            .and_then(prov_graph::title::title_text)
     }
 }
 
@@ -230,8 +234,7 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
             path: path.clone(),
             title: meta
                 .and_then(|m| m.get("title"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+                .and_then(prov_graph::title::title_text),
             id: meta.and_then(|m| id_of(path, m)),
         }
     };
@@ -500,7 +503,7 @@ mod tests {
             .iter()
             .find(|r| r.path.ends_with("07-24.md"))
             .expect("the entry");
-        assert_eq!(entry.title(), Some("July 24"));
+        assert_eq!(entry.title().as_deref(), Some("July 24"));
 
         // No graph, no filesystem, no async.
         let rows = crate::group(&selection, &spec.key);

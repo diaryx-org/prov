@@ -561,10 +561,7 @@ pub async fn corpus<FS: ReadStorage, Ix: IdIndex>(
         } else {
             None
         };
-        let title = row
-            .title()
-            .map(str::to_owned)
-            .unwrap_or_else(|| stem_title(&row.path));
+        let title = row.title().unwrap_or_else(|| stem_title(&row.path));
         docs.push(IndexedDoc::new(
             row.path,
             title,

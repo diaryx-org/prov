@@ -204,8 +204,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 title: doc
                     .meta
                     .get("title")
-                    .and_then(prov_graph::meta::Value::as_str)
-                    .map(str::to_owned)
+                    .and_then(prov_graph::title::title_text)
                     .unwrap_or_else(|| link::path_to_title(&path)),
                 id: id.clone(),
                 from: path.clone(),

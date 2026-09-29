@@ -228,10 +228,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 }
             };
             let meta = fig::Value::from(&doc.meta);
-            let title = meta
-                .get("title")
-                .and_then(fig::Value::as_str)
-                .map(str::to_owned);
+            let title = doc.meta.get("title").and_then(crate::title::title_text);
 
             trail.push(path.clone());
             let mut children = Vec::new();

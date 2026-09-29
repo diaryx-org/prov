@@ -61,7 +61,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 source.display()
             )));
         }
-        let meta = fig::Value::from(&doc.meta);
         let (spanning, inverse) = self.spanning_pair()?;
 
         // A separated node carries its prose/payload in a sibling file; the copy
@@ -97,10 +96,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut cs = self.change();
         let parent_write = if let Some(parent) = &parent {
             let (parent_text, parent_doc) = self.load(parent).await?;
-            let copy_title = meta
+            let copy_title = doc
+                .meta
                 .get("title")
-                .and_then(fig::Value::as_str)
-                .map(str::to_owned)
+                .and_then(prov_graph::title::title_text)
                 .unwrap_or_else(|| link::path_to_title(&dest));
             let down = self
                 .authored_target(&spanning, parent, &dest, &copy_title, false)
