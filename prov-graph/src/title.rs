@@ -80,6 +80,31 @@ impl TitleIndex {
     }
 }
 
+/// A title as *text*, whatever scalar type the metadata format guessed it into.
+///
+/// YAML types unquoted scalars: a hand-written year index (`title: 2026`)
+/// parses as [`Value::Int`](crate::meta::Value::Int), not a string, so
+/// [`as_str`](crate::meta::Value::as_str) alone reads it as untitled — and a
+/// route segment `2026`, a title anchor `[[2026]]`, or a filing chain looking
+/// for the year's index then misses the one document that says it is `2026`.
+/// The scalar's *type* is an accident of the serialization; a person who wrote
+/// `title: 2026` means the title "2026". prov's own writes quote it, so this is
+/// about meeting existing workspaces where they are.
+///
+/// Every reader that compares or shows a title goes through here. A
+/// non-scalar (a sequence, a mapping, null) is not a title. The text is not
+/// trimmed: a title is matched exactly, as addressing is.
+pub fn title_text(value: &crate::meta::Value) -> Option<String> {
+    use crate::meta::Value;
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Int(i) => Some(i.to_string()),
+        Value::Float(f) => Some(f.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Null | Value::Sequence(_) | Value::Mapping(_) => None,
+    }
+}
+
 /// Whether `target` is shaped like a nominal reference — a single bare name,
 /// with no path separator and no file extension (`My File`, `intro`), as
 /// opposed to a path (`notes/a.md`, `README.md`) or a scheme'd id. Only such

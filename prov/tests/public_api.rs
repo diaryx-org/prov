@@ -512,3 +512,79 @@ fn a_journal_kept_outside_the_tree_is_written_and_recovered_through_the_public_a
         prov::Recovered::Nothing
     );
 }
+
+// ───────────────────── what consumers used to copy ──────────────────────────
+
+/// Each of these was re-implemented in a consumer because prov kept it
+/// private. Reaching them from outside, and getting prov's answers, is the
+/// claim: a copy is no longer needed.
+#[test]
+fn the_rules_a_frontend_used_to_copy_are_reachable() {
+    // Root-shaped names, before anything is read.
+    assert!(prov::discovery::can_be_root(Path::new("Adam's Archive.md")));
+    assert!(prov::discovery::can_be_root(Path::new("index.yaml")));
+    assert!(!prov::discovery::can_be_root(Path::new("registry.yaml")));
+
+    // The folder-note rule: index, then readme, whatever the case.
+    let files = [PathBuf::from("a/notes.md"), PathBuf::from("a/README.md")];
+    assert_eq!(
+        prov::intake::existing_node(&files),
+        Some(PathBuf::from("a/README.md"))
+    );
+
+    // A numeric title is a title.
+    assert_eq!(
+        prov::title::title_text(&prov::Value::Int(2026)).as_deref(),
+        Some("2026")
+    );
+
+    // The id minter, by construction rather than by agreement.
+    let minter = prov::identity::canonical_minter();
+    let id = minter.mint_seeded(&mut prov::identity::moid::SeededRng::new(7));
+    assert!(prov::identity::verify(&id));
+
+    // A vocabulary loaded by the store's own shape, and an anchor resolved
+    // with a reason when it names nothing.
+    let root = tmp("copied");
+    std::fs::write(
+        root.join("index.md"),
+        "---\ntitle: Home\nconfig: prov.yaml\ncontents:\n- tags.yaml\n- '2026.md'\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("prov.yaml"),
+        "fields:\n  tag:\n    values: closed\n    vocabulary: tags.yaml\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("tags.yaml"),
+        "vocabulary:\n  field: tag\n  values: closed\npart_of: index.md\nterms:\n  red:\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("2026.md"),
+        "---\ntitle: 2026\npart_of: index.md\n---\n",
+    )
+    .unwrap();
+    let ws = Workspace::builder(StdFs)
+        .root(&root)
+        .relations(RelationSet::diaryx())
+        .build();
+    let config = block_on(ws.effective_config(Path::new("index.md"))).unwrap();
+    let spec = config.field("tag").unwrap();
+    let vocab = block_on(ws.load_field_vocabulary(Path::new("index.md"), "tag", spec))
+        .unwrap()
+        .expect("a vocabulary");
+    assert!(vocab.accepts("red"));
+
+    let mut titles = None;
+    let found = block_on(ws.anchor_path(Path::new("index.md"), "[[2026]]", &mut titles)).unwrap();
+    assert_eq!(found, Ok(PathBuf::from("2026.md")));
+    let missing =
+        block_on(ws.resolve_anchor(Path::new("index.md"), "[[Nowhere]]", &mut titles)).unwrap();
+    assert!(missing.is_err());
+    assert_eq!(
+        block_on(ws.child_titled(Path::new("index.md"), "2026")).unwrap(),
+        Some(PathBuf::from("2026.md"))
+    );
+}

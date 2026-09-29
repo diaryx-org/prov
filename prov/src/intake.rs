@@ -101,8 +101,13 @@ pub struct PlanOutcome {
 /// The directory node for a set of files: an `index`-stemmed document wins, then
 /// a `readme`-stemmed one; `None` when the directory has neither (a folder-note
 /// must be synthesized). Mirrors the CLI's `pick_root_candidate` at directory
-/// scope.
-fn existing_node(files: &[PathBuf]) -> Option<PathBuf> {
+/// scope. The stem is matched without regard to case, so `README.md` counts.
+///
+/// Public because this is the rule a mirror import picks each directory's node
+/// by, and a frontend offering the same import — or explaining which file of a
+/// folder it will treat as the folder — should ask it rather than restate it.
+/// `files` is one directory's files; nothing is read.
+pub fn existing_node(files: &[PathBuf]) -> Option<PathBuf> {
     let stem_is = |p: &Path, want: &str| {
         p.file_stem()
             .and_then(|s| s.to_str())

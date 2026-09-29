@@ -199,44 +199,27 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     }
 
     /// The document an anchor names — a scoped `fields` declaration's
-    /// `under:`, or a view's `under('…')` — resolved against the tree below
-    /// `root_doc` as any link is: a path, an `id:`, or a title, which must
-    /// name exactly one document. The subtree comes back with it, since the
-    /// one caller that wants members wants them from here.
+    /// `under:`, a filing entry's `under:`, or a view's `under('…')` —
+    /// resolved against the tree below `root_doc` as any link is: a path, an
+    /// `id:`, or a title, which must name exactly one document. The subtree
+    /// comes back with it, since the one caller that wants members wants them
+    /// from here; [`anchor_path`](Self::anchor_path) is the same answer
+    /// without the walk.
     ///
     /// `Ok(Err(why))` is an anchor that names nothing prov could walk to, in a
-    /// sentence a user can act on. `titles` is built on the first name-shaped
-    /// anchor and reused, since it costs a scan.
-    pub(crate) async fn resolve_anchor(
+    /// sentence a user can act on — what `check` reports for a scope or a view
+    /// anchored on nothing, and what a frontend can show beside the view.
+    /// `titles` is built on the first name-shaped anchor and reused, since it
+    /// costs a scan: a caller resolving several anchors passes the same one.
+    pub async fn resolve_anchor(
         &self,
         root_doc: &Path,
         under: &str,
         titles: &mut Option<TitleIndex>,
     ) -> Result<std::result::Result<prov_graph::graph::Node, String>> {
-        let link = Link::parse(under);
-        let nominal = !link.is_external()
-            && !link.is_same_document()
-            && link.id_ref().is_none()
-            && title::is_alias_shaped(link.addressed_target());
-        if nominal && titles.is_none() {
-            *titles = Some(self.title_index_scoped(root_doc).await?);
-        }
-        let anchor = match self.resolve_link_with(root_doc, &link, titles.as_ref()) {
-            Target::Path(path) => path,
-            Target::UnresolvedId(id) => {
-                return Ok(Err(format!(
-                    "no document is registered under the id `{}`",
-                    id.0
-                )));
-            }
-            Target::AmbiguousAlias(name) => {
-                return Ok(Err(format!("several documents are titled `{name}`")));
-            }
-            Target::External | Target::SameDocument | Target::Foreign { .. } => {
-                return Ok(Err(
-                    "an anchor must name a document in this workspace".to_string()
-                ));
-            }
+        let anchor = match self.anchor_target(root_doc, under, titles).await? {
+            Ok(anchor) => anchor,
+            Err(why) => return Ok(Err(why)),
         };
         let tree = self
             .graph
@@ -248,11 +231,68 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             )
             .await?;
         if !matches!(tree.kind, NodeKind::Doc) {
-            return Ok(Err("no document exists there".to_string()));
+            return Ok(Err(NO_DOCUMENT.to_string()));
         }
         Ok(Ok(tree))
     }
+
+    /// The path of the document an anchor names, resolved exactly as
+    /// [`resolve_anchor`](Self::resolve_anchor) resolves it but without
+    /// walking the subtree below it — a read of the one document, to know it
+    /// is there. What a caller that needs the anchor and not its members asks:
+    /// where a filing entry's records go, or whether a view's anchor still
+    /// names anything.
+    pub async fn anchor_path(
+        &self,
+        root_doc: &Path,
+        under: &str,
+        titles: &mut Option<TitleIndex>,
+    ) -> Result<std::result::Result<PathBuf, String>> {
+        let anchor = match self.anchor_target(root_doc, under, titles).await? {
+            Ok(anchor) => anchor,
+            Err(why) => return Ok(Err(why)),
+        };
+        Ok(match self.load(&anchor).await {
+            Ok(_) => Ok(anchor),
+            Err(_) => Err(NO_DOCUMENT.to_string()),
+        })
+    }
+
+    /// The link half of anchor resolution: where the anchor points, or why it
+    /// points nowhere in this workspace.
+    async fn anchor_target(
+        &self,
+        root_doc: &Path,
+        under: &str,
+        titles: &mut Option<TitleIndex>,
+    ) -> Result<std::result::Result<PathBuf, String>> {
+        let link = Link::parse(under);
+        let nominal = !link.is_external()
+            && !link.is_same_document()
+            && link.id_ref().is_none()
+            && title::is_alias_shaped(link.addressed_target());
+        if nominal && titles.is_none() {
+            *titles = Some(self.title_index_scoped(root_doc).await?);
+        }
+        Ok(
+            match self.resolve_link_with(root_doc, &link, titles.as_ref()) {
+                Target::Path(path) => Ok(path),
+                Target::UnresolvedId(id) => {
+                    Err(format!("no document is registered under the id `{}`", id.0))
+                }
+                Target::AmbiguousAlias(name) => {
+                    Err(format!("several documents are titled `{name}`"))
+                }
+                Target::External | Target::SameDocument | Target::Foreign { .. } => {
+                    Err("an anchor must name a document in this workspace".to_string())
+                }
+            },
+        )
+    }
 }
+
+/// Why an anchor that resolved to a path names nothing.
+const NO_DOCUMENT: &str = "no document exists there";
 
 /// One document on the way up from a parent to the root, with the names a
 /// title anchor could match it by — its `title`, and its file stem, the two

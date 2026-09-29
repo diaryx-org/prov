@@ -109,26 +109,7 @@ impl RoutePlan {
     }
 }
 
-/// A title as *text*, whatever scalar type the metadata format guessed it into.
-///
-/// This exists because YAML types unquoted scalars: a hand-written year index
-/// (`title: 2026`) parses as [`Value::Int`], not [`Value::String`], so
-/// [`Value::as_str`] alone would fail to match the route segment `2026` — the
-/// exact case routes are for. The scalar's *type* here is an accident of the
-/// serialization; a user who wrote `title: 2026` means the title "2026". (Note
-/// prov's own writes quote it, so this is about meeting existing workspaces
-/// where they are — not about our round-trip.)
-///
-/// A non-scalar (a sequence, a mapping, null) is not a title and matches nothing.
-fn title_text(value: &Value) -> Option<String> {
-    match value {
-        Value::String(s) => Some(s.clone()),
-        Value::Int(i) => Some(i.to_string()),
-        Value::Float(f) => Some(f.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Null | Value::Sequence(_) | Value::Mapping(_) => None,
-    }
-}
+use prov_graph::title::title_text;
 
 /// The on-disk path for a synthesized node: `slug(segment)` beside `parent`
 /// (flat) or `slug(segment)/index` under `parent`'s directory (nested), in the
@@ -179,7 +160,10 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// [`spanning_children`](Workspace::spanning_children), which is where the
     /// bounded descent and the resilience to a broken sibling now live — this
     /// was their first caller, and they were never specific to titles.
-    async fn child_titled(&self, parent: &Path, segment: &str) -> Result<Option<PathBuf>> {
+    ///
+    /// The title is read as [`title_text`], so a hand-written `title: 2026`
+    /// is found by the segment `2026`.
+    pub async fn child_titled(&self, parent: &Path, segment: &str) -> Result<Option<PathBuf>> {
         let mut matches: Vec<PathBuf> = Vec::new();
         for (path, child) in self.spanning_children(parent).await? {
             if child.meta.get("title").and_then(title_text).as_deref() == Some(segment) {

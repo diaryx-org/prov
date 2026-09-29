@@ -46,6 +46,10 @@ use std::path::Path;
 use moid::Alphabet;
 use moid::SeededRng;
 
+/// The minting crate, at the version prov links — for naming
+/// [`canonical_minter`]'s type and its errors.
+pub use moid;
+
 /// A stable, opaque document identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Id(pub String);
@@ -75,9 +79,7 @@ pub const BLADE_LEN: usize = BLADE_RANDOM_LEN + 1;
 /// and a matching trailing check character. This is what catches a typo'd
 /// `prov:` link before it dangles silently.
 pub fn verify(id: &str) -> bool {
-    moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
-        .validate(id)
-        .is_ok()
+    canonical_minter().validate(id).is_ok()
 }
 
 /// Where a document's stable ID is persisted — the identity-storage axis
@@ -135,7 +137,16 @@ impl IdStorage {
     }
 }
 
-fn canonical_minter() -> moid::Minter {
+/// The [`moid::Minter`] every prov id is minted and verified by: the NOID
+/// extended-digit alphabet, [`BLADE_RANDOM_LEN`] random characters, and a
+/// check character — [`verify`] is its `validate`.
+///
+/// Public for a consumer whose own identifiers must *be* prov ids — an ARK
+/// whose file blade is the document's id — so it validates and mints with the
+/// same configuration by construction rather than by keeping a copy that
+/// agrees. [`moid`] is re-exported beside it, so the type named here is the one
+/// prov links.
+pub fn canonical_minter() -> moid::Minter {
     moid::Minter::new(Alphabet::noid_xdigit(), BLADE_RANDOM_LEN)
 }
 

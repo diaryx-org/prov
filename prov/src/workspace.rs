@@ -1069,8 +1069,13 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// be a member of.
     ///
     /// The single place the two forms are told apart, so a caller holding a
-    /// [`FieldSpec`](crate::config::FieldSpec) never re-derives the choice.
-    pub(crate) async fn load_field_vocabulary(
+    /// [`FieldSpec`](crate::config::FieldSpec) never re-derives the choice —
+    /// which is why it is public: a frontend that branched on the shape itself
+    /// would be keeping a second copy of the rule. For the declaration that
+    /// governs a particular document, ask
+    /// [`FieldScopes::spec_for`](crate::workspace::FieldScopes::spec_for)
+    /// first.
+    pub async fn load_field_vocabulary(
         &self,
         root_doc: &Path,
         field: &str,

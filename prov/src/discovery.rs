@@ -200,7 +200,12 @@ async fn root_candidate_name<FS: Storage>(fs: &FS, path: &Path) -> Option<String
 /// only under the conventional `index`/`readme` stem — otherwise a stray
 /// `.json`/`.yaml` config file, which is a mapping at its root and declares no
 /// `part_of`, would masquerade as a root.
-fn can_be_root(path: &Path) -> bool {
+///
+/// Public for a frontend that has to judge a name before there is anything to
+/// read — a file picker offering "open this as a workspace", say — so it asks
+/// the rule discovery applies rather than keeping a copy of it. The name is
+/// only half the test; the other half reads the document.
+pub fn can_be_root(path: &Path) -> bool {
     let is_content_ext = ContentFormat::from_extension(path).is_some();
     let is_meta_ext = document::whole_file_format(path).is_some();
     if is_content_ext {
