@@ -358,12 +358,7 @@ pub(crate) fn cmd_exports(name: Option<&str>) -> CmdResult {
     };
 
     let ws = workspace(&ctx)?;
-    let plan = block_on(prov::exports::plan(
-        ws.graph(),
-        export,
-        &ctx.config.views,
-        &ctx.root_doc,
-    ))?;
+    let plan = block_on(ws.export_plan(&ctx.root_doc, export, &ctx.config.views))?;
 
     for doc in &plan.entries {
         match &doc.title {

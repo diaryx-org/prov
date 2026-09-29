@@ -48,6 +48,7 @@ use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
 
 mod fields;
+mod holds;
 mod ignore;
 pub(crate) mod inbound;
 
@@ -1047,6 +1048,11 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 retired: child
                     .meta
                     .get("retired")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                holds: child
+                    .meta
+                    .get("holds")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             };

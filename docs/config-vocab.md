@@ -579,6 +579,27 @@ shape, and the audit property survives it — two named fields on the one
 document, no list in the config to consult. A `hold` that does not name a field
 makes the entry unreadable, for the same reason a missing gate does.
 
+A hold field with a vocabulary holds by *term* as well. A term that declares
+`holds: true` — a `terms:` row in a flat store, or a key on the term's own
+document in a reified one — keeps back every document carrying it, as the
+literal `true` does:
+
+```yaml
+# vocab/proposal-statuses.yaml
+terms:
+  draft:    { means: "still being argued", holds: true }
+  accepted: { means: "argued and agreed" }
+```
+
+With `hold: status`, a `status: draft` proposal waits and `status: accepted`
+leaves. Which states are unfinished is said once, on the terms, rather than in
+every export as a list, and the audit is still read off the document — its
+`status`, and the vocabulary that already defines what that status means. The
+vocabulary is the one governing *that* document (see "Scoping a
+declaration"), so `draft` can hold under `Proposals` and mean nothing of the
+kind under `Tasks`. A retired term still holds: retiring says a value is no
+longer for new content, not that what carries it is ready.
+
 `view` optionally arranges what leaves, and it obeys a one-way valve: **an
 export's set is a subset of what its gate admits, whatever the view says**. A
 view may narrow the set; it can never put back a document the gate held out.

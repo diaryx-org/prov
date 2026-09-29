@@ -3,7 +3,7 @@ vocabulary:
   field: status
   values: closed
 terms:
-  draft:       { means: "still being argued" }
+  draft:       { means: "still being argued", holds: true }   # an export that holds on `status` keeps it home
   accepted:    { means: "argued and agreed, not yet built" }
   implemented: { means: "built; the Status section names the release" }
   deferred:    { means: "agreed in principle, not scheduled" }

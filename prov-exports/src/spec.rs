@@ -74,6 +74,12 @@
 //! *"does this document leave?"* is still answerable from two named fields on
 //! that one document, with no list in the config to consult.
 //!
+//! A hold field with a vocabulary holds by *term* as well: `hold: status`
+//! keeps back a `status: draft` document when the vocabulary governing it
+//! marks `draft` with `holds: true`. [`holds`](ExportSpec::holds) judges only
+//! the literal `true`, since the vocabulary is the workspace's to read; the
+//! plan takes the term half as a [`TermHolds`](crate::TermHolds).
+//!
 //! The hold narrows and never widens, like a view: a document the gate holds
 //! back is withheld whatever its hold field says. And it fails closed like the
 //! gate: a `hold` that does not name a field is an unreadable export, not an

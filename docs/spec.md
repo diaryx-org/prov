@@ -285,9 +285,12 @@ terms:
     gate: circle:friends      # ← arbitrary payload: carried, never read (tier 3)
   archived_2024:
     retired: true             # known but no longer valid; never silently reissued
+  embargoed:
+    holds: true               # an export holding on this field keeps its documents home
 ```
 
-prov reasons about the term *keys*, each term's `id`, and `retired`; every other
+prov reasons about the term *keys*, each term's `id`, `retired`, and `holds`
+(read only by an export whose `hold` names this field); every other
 key (`means`, `gate`) is tier-3 payload it transports untouched — which is how a
 diaryx audience hangs gate/theme config off a term prov still validates
 membership in. A **reified** vocabulary is instead an index node whose

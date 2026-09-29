@@ -10,8 +10,9 @@
 //! A vocabulary lives in a **whole-file config document** (the whole-file store
 //! rule, DESIGN §5): a self-describing node — `title`, `part_of` back toward the
 //! root — declaring `vocabulary: { field, values }` and a `terms:` mapping. prov
-//! reasons about the term *keys*, each term's stable `id`, and whether it is
-//! `retired`; everything else in a term entry is tier-3 payload prov carries but
+//! reasons about the term *keys*, each term's stable `id`, whether it is
+//! `retired`, and whether it `holds` a document back from an export that
+//! holds on its field; everything else in a term entry is tier-3 payload prov carries but
 //! never reads (a diaryx audience's gate/theme).
 
 use std::collections::BTreeMap;
@@ -20,8 +21,8 @@ use crate::OpenClosed;
 use prov_graph::identity::Id;
 use prov_graph::meta::Value;
 
-/// A single term in a vocabulary. prov reads only the three fields here; any
-/// other keys on the term entry are carried, not interpreted.
+/// A single term in a vocabulary. prov reads only the fields here; any other
+/// keys on the term entry are carried, not interpreted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Term {
     /// The term's stable opaque id, if it has been minted — what lets a term's
@@ -33,6 +34,13 @@ pub struct Term {
     /// diagnosable and its id is never reissued, the tombstone idea of §10) but no
     /// longer a valid value for new content.
     pub retired: bool,
+    /// Whether a document carrying this term waits: an export whose `hold`
+    /// names this vocabulary's field holds back a document the gate admits
+    /// when its value is a term that `holds: true`, as it does one declaring
+    /// the literal `true`. So a `status: draft` proposal stays home while
+    /// `status: accepted` leaves, and which states are unfinished is said once,
+    /// on the terms, rather than in every export.
+    pub holds: bool,
 }
 
 /// A parsed controlled vocabulary — the term set for one field.
@@ -77,12 +85,14 @@ impl Vocabulary {
                             .get("retired")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
+                        holds: entry.get("holds").and_then(Value::as_bool).unwrap_or(false),
                     },
                     // A bare `term:` (null/scalar value) is a live term with no metadata.
                     None => Term {
                         id: None,
                         means: None,
                         retired: false,
+                        holds: false,
                     },
                 };
                 terms.insert(name.clone(), term);
@@ -103,6 +113,14 @@ impl Vocabulary {
     /// Whether `value` names a *retired* term — known but no longer valid.
     pub fn is_retired(&self, value: &str) -> bool {
         self.terms.get(value).is_some_and(|t| t.retired)
+    }
+
+    /// Whether `value` names a term that holds a document back — see
+    /// [`Term::holds`]. A retired term still holds: retirement says a value is
+    /// no longer for new content, not that the documents already carrying it
+    /// are ready to leave.
+    pub fn holds(&self, value: &str) -> bool {
+        self.terms.get(value).is_some_and(|t| t.holds)
     }
 
     /// The live (non-retired) term names — the candidate set for near-miss
@@ -140,6 +158,21 @@ mod tests {
         assert!(v.accepts("friends"));
         assert!(!v.accepts("colleagues"));
         assert_eq!(v.terms["friends"].id, Some(Id("aud_k9fp".into())));
+    }
+
+    #[test]
+    fn a_term_holds_only_when_it_says_so() {
+        let v = vocab(
+            "vocabulary:\n  field: status\n  values: closed\n\
+             terms:\n  draft:\n    holds: true\n  accepted: {}\n  old:\n    holds: true\n    retired: true\n",
+        );
+        assert!(v.holds("draft"));
+        assert!(!v.holds("accepted"));
+        assert!(
+            v.holds("old"),
+            "retiring a term does not release what carries it"
+        );
+        assert!(!v.holds("unknown"));
     }
 
     #[test]

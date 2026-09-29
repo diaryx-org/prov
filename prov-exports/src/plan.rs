@@ -23,6 +23,15 @@
 //! have scoped out is reported as held — the document's own word about
 //! itself outranks the workspace's arrangement of it.
 //!
+//! A hold field's value can also hold by being a term that says so
+//! (`status: draft`, where the status vocabulary's `draft` term declares
+//! `holds: true`). Which vocabulary governs a document is a question about
+//! the workspace's tree and its stores, which this crate cannot read, so the
+//! caller answers it as a [`TermHolds`] — and must, because a plan that never
+//! asked would let every draft leave. The argument is required for that
+//! reason: [`TermHolds::none`] is a statement a caller makes, not a default it
+//! falls into.
+//!
 //! The valve also fails **closed**: a view that cannot be executed is an
 //! error ([`Error::View`](crate::Error)), never a fall-back to the gate's
 //! whole set, and an unreadable export declaration is not an export at all
@@ -49,6 +58,44 @@ use prov_views::{Row, ViewSpec};
 
 use crate::error::{Error, Result};
 use crate::spec::ExportSpec;
+
+/// The documents whose hold-field value is a term that holds them back —
+/// the half of the hold a vocabulary answers. See the module docs.
+///
+/// Built by whoever can read the workspace's vocabularies (prov's
+/// `Workspace::term_holds`), and only ever *added* to what the literal `true`
+/// holds: a document this names is held, and one it does not name is judged
+/// by its hold field alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TermHolds {
+    docs: HashSet<PathBuf>,
+}
+
+impl TermHolds {
+    /// No document is held by a term: the export's hold field holds by the
+    /// literal `true` alone. Right for an export with no hold, or a hold field
+    /// with no vocabulary.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Hold each of `docs`, workspace-relative.
+    pub fn from_docs(docs: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            docs: docs.into_iter().collect(),
+        }
+    }
+
+    /// Whether `doc` is held by the term it carries.
+    pub fn contains(&self, doc: &Path) -> bool {
+        self.docs.contains(doc)
+    }
+
+    /// Whether no document is held by a term.
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty()
+    }
+}
 
 /// One document an export lets leave.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,12 +157,14 @@ pub struct ExportPlan {
 ///
 /// `rows` is every reachable document with its metadata, in path order.
 /// `view_scope` is `None` for an export that names no view, `Some(paths)` for
-/// the executed view's selection. Read the body: `entries` is seeded from
+/// the executed view's selection. `term_holds` names the documents a term
+/// holds back (see [`TermHolds`]). Read the body: `entries` is seeded from
 /// what the gate admits and only ever `retain`ed — see the module docs.
 pub fn compose(
     spec: &ExportSpec,
     rows: &[Row],
     view_scope: Option<&HashSet<PathBuf>>,
+    term_holds: &TermHolds,
 ) -> ExportPlan {
     let mut entries = Vec::new();
     let mut held = Vec::new();
@@ -133,7 +182,8 @@ pub fn compose(
                 // already admitted: it can move a document from `entries` to
                 // `held`, and nothing can move one the other way. A withheld
                 // document's hold field is never read.
-                if spec.holds(&row.meta) {
+                if spec.holds(&row.meta) || (spec.hold.is_some() && term_holds.contains(&row.path))
+                {
                     held.push(doc);
                 } else {
                     entries.push(doc);
@@ -188,6 +238,7 @@ pub async fn plan<FS: ReadStorage, Ix: IdIndex>(
     spec: &ExportSpec,
     views: &[ViewSpec],
     root_doc: impl AsRef<Path>,
+    term_holds: &TermHolds,
 ) -> Result<ExportPlan> {
     let root_doc = root_doc.as_ref();
     // One scope for the whole plan: the reachability walk, the metadata pass,
@@ -225,7 +276,7 @@ pub async fn plan<FS: ReadStorage, Ix: IdIndex>(
             .collect()
     });
 
-    Ok(compose(spec, &rows, view_scope.as_ref()))
+    Ok(compose(spec, &rows, view_scope.as_ref(), term_holds))
 }
 
 #[cfg(test)]
@@ -281,7 +332,12 @@ mod tests {
             row("trip.md", Some(&["family", "friends"])),
             row("secret.md", None),
         ];
-        let plan = compose(&spec("letters", "family", None), &rows, None);
+        let plan = compose(
+            &spec("letters", "family", None),
+            &rows,
+            None,
+            &TermHolds::none(),
+        );
 
         assert_eq!(entry_paths(&plan), ["index.md", "trip.md"]);
         assert!(plan.outside_view.is_empty());
@@ -304,6 +360,7 @@ mod tests {
             &spec("letters", "family", Some("daily")),
             &rows,
             Some(&in_scope),
+            &TermHolds::none(),
         );
 
         assert_eq!(
@@ -333,6 +390,7 @@ mod tests {
             &spec("letters", "family", Some("all")),
             &rows,
             Some(&everything),
+            &TermHolds::none(),
         );
 
         assert_eq!(entry_paths(&plan), ["a.md"]);
@@ -360,7 +418,12 @@ mod tests {
     #[test]
     fn withheld_distinguishes_undeclared_from_otherwise_declared() {
         let rows = [row("private.md", None), row("work.md", Some(&["internal"]))];
-        let plan = compose(&spec("letters", "family", None), &rows, None);
+        let plan = compose(
+            &spec("letters", "family", None),
+            &rows,
+            None,
+            &TermHolds::none(),
+        );
 
         assert!(plan.entries.is_empty());
         assert_eq!(plan.withheld[0].declared, None);
@@ -379,6 +442,7 @@ mod tests {
             &spec("letters", "family", Some("none")),
             &rows,
             Some(&scope(&[])),
+            &TermHolds::none(),
         );
         assert!(plan.entries.is_empty());
         assert_eq!(plan.outside_view, vec![PathBuf::from("a.md")]);
@@ -389,7 +453,12 @@ mod tests {
     #[test]
     fn entries_carry_their_declared_values() {
         let rows = [row("trip.md", Some(&["family", "friends"]))];
-        let plan = compose(&spec("letters", "family", None), &rows, None);
+        let plan = compose(
+            &spec("letters", "family", None),
+            &rows,
+            None,
+            &TermHolds::none(),
+        );
         assert_eq!(plan.entries[0].declared, ["family", "friends"]);
     }
 
@@ -419,7 +488,7 @@ mod tests {
             row("index.md", Some(&["family"])),
             row_with("draft.md", Some(&["family", "friends"]), Value::Bool(true)),
         ];
-        let plan = compose(&held_spec(None), &rows, None);
+        let plan = compose(&held_spec(None), &rows, None, &TermHolds::none());
 
         assert_eq!(entry_paths(&plan), ["index.md"]);
         assert_eq!(plan.held.len(), 1);
@@ -444,7 +513,7 @@ mod tests {
             (Value::Sequence(vec![Value::Bool(true)]), false),
         ] {
             let rows = [row_with("a.md", Some(&["family"]), value.clone())];
-            let plan = compose(&held_spec(None), &rows, None);
+            let plan = compose(&held_spec(None), &rows, None, &TermHolds::none());
             assert_eq!(plan.entries.len() == 1, leaves, "for {value:?}");
             assert_eq!(plan.held.len() == 1, !leaves, "for {value:?}");
         }
@@ -461,11 +530,16 @@ mod tests {
             row_with("other-draft.md", Some(&["internal"]), Value::Bool(true)),
         ];
 
-        let unheld = compose(&spec("letters", "family", None), &rows, None);
+        let unheld = compose(
+            &spec("letters", "family", None),
+            &rows,
+            None,
+            &TermHolds::none(),
+        );
         assert_eq!(entry_paths(&unheld), ["draft.md"], "no hold, nothing held");
         assert!(unheld.held.is_empty());
 
-        let held = compose(&held_spec(None), &rows, None);
+        let held = compose(&held_spec(None), &rows, None, &TermHolds::none());
         assert!(held.entries.is_empty());
         assert_eq!(held.held.len(), 1, "only the admitted draft is held");
         assert_eq!(
@@ -493,6 +567,7 @@ mod tests {
             &held_spec(Some("daily")),
             &rows,
             Some(&scope(&["daily/monday.md"])),
+            &TermHolds::none(),
         );
 
         assert_eq!(entry_paths(&plan), ["daily/monday.md"]);
@@ -592,7 +667,14 @@ mod fs_tests {
     #[test]
     fn an_unarranged_export_walks_the_whole_workspace() {
         let dir = journal("whole");
-        let plan = block_on(plan(&graph(&dir), &export(None), &[], "index.md")).expect("a plan");
+        let plan = block_on(plan(
+            &graph(&dir),
+            &export(None),
+            &[],
+            "index.md",
+            &TermHolds::none(),
+        ))
+        .expect("a plan");
         assert_eq!(
             entry_paths(&plan),
             ["daily/07-24.md", "daily.md", "note.md"]
@@ -613,6 +695,7 @@ mod fs_tests {
             &export(Some("daily")),
             &[daily_view()],
             "index.md",
+            &TermHolds::none(),
         ))
         .expect("a plan");
 
@@ -638,6 +721,7 @@ mod fs_tests {
             &export(Some("dialy")),
             &[daily_view()],
             "index.md",
+            &TermHolds::none(),
         ))
         .unwrap_err();
         let Error::ViewUnknown { export, view } = &err else {
@@ -660,6 +744,7 @@ mod fs_tests {
             &export(Some("daily")),
             &[view],
             "index.md",
+            &TermHolds::none(),
         ))
         .expect("a plan");
         assert!(plan.entries.is_empty(), "{:?}", plan.entries);
@@ -687,7 +772,8 @@ mod fs_tests {
             hold: Some("draft".into()),
             ..export(None)
         };
-        let plan = block_on(plan(&g, &holding, &[], "index.md")).expect("a plan");
+        let plan =
+            block_on(plan(&g, &holding, &[], "index.md", &TermHolds::none())).expect("a plan");
         assert_eq!(
             entry_paths(&plan),
             ["daily/07-24.md", "daily.md", "note.md"]
@@ -701,7 +787,14 @@ mod fs_tests {
             "the hold moved nothing into withheld"
         );
 
-        let unheld = block_on(super::plan(&g, &export(None), &[], "index.md")).expect("a plan");
+        let unheld = block_on(super::plan(
+            &g,
+            &export(None),
+            &[],
+            "index.md",
+            &TermHolds::none(),
+        ))
+        .expect("a plan");
         assert!(unheld.held.is_empty());
         assert!(entry_paths(&unheld).contains(&"wip.md".to_string()));
     }
@@ -714,8 +807,8 @@ mod fs_tests {
         let g = graph(&dir);
         let views = [daily_view()];
         let spec = export(Some("daily"));
-        let first = block_on(plan(&g, &spec, &views, "index.md")).unwrap();
-        let second = block_on(plan(&g, &spec, &views, "index.md")).unwrap();
+        let first = block_on(plan(&g, &spec, &views, "index.md", &TermHolds::none())).unwrap();
+        let second = block_on(plan(&g, &spec, &views, "index.md", &TermHolds::none())).unwrap();
         assert_eq!(first, second);
     }
 }

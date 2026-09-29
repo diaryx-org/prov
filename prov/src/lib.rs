@@ -292,7 +292,7 @@ pub mod grain {
 pub mod exports {
     pub use prov_exports::{
         EXPORT_KEYS, EXPORTS_KEY, Error, ExportDoc, ExportIssue, ExportIssueKind, ExportPlan,
-        ExportSpec, GATE_KEYS, Gate, HOLD_VALUE, Withheld, compose, diagnose_export,
+        ExportSpec, GATE_KEYS, Gate, HOLD_VALUE, TermHolds, Withheld, compose, diagnose_export,
         diagnose_exports, exports_from, plan,
     };
 }
