@@ -202,14 +202,19 @@ impl Confirmation {
     /// Whether the document has changed since this confirmation was made,
     /// given the document's current `updated` instant and `content_hash`.
     ///
-    /// Stale when the stamp is newer than `at` — a plain string comparison,
-    /// sound because both are fixed-width RFC 3339 UTC — or when the entry
+    /// Stale when the stamp is a later instant than `at`, or when the entry
     /// named a digest and the document no longer records that one. A document
     /// with no stamp has nothing saying it changed, and an entry that named no
     /// digest has nothing to compare.
+    ///
+    /// The two are compared as instants, not as text: prov writes both with
+    /// and without fractional seconds (`…:00Z`, `…:00.000000Z`), and `Z` sorts
+    /// after `.`, so a text comparison put a later edit first. A value that
+    /// is not RFC 3339 — written by hand, or by another tool — falls back to
+    /// the text comparison it always had.
     pub fn is_stale(&self, updated: Option<&str>, content_hash: Option<&str>) -> bool {
         if let Some(updated) = updated
-            && updated > self.at.as_str()
+            && later(updated, &self.at)
         {
             return true;
         }
@@ -303,12 +308,102 @@ impl Confirmations {
     }
 }
 
+/// Whether instant `a` is later than instant `b`, both RFC 3339.
+fn later(a: &str, b: &str) -> bool {
+    match (instant(a), instant(b)) {
+        (Some(a), Some(b)) => a > b,
+        _ => a.trim() > b.trim(),
+    }
+}
+
+/// An RFC 3339 date-time as (seconds since the Unix epoch, nanoseconds), its
+/// offset applied — `2026-09-28T14:03:00Z`, `2026-09-28T16:03:00.5+02:00`.
+/// `None` for anything else.
+fn instant(text: &str) -> Option<(i64, u32)> {
+    let text = text.trim();
+    let b = text.as_bytes();
+    let digits = |from: usize, len: usize| -> Option<i64> {
+        let part = text.get(from..from + len)?;
+        part.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') {
+        return None;
+    }
+    if b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (year, month, day) = (digits(0, 4)?, digits(5, 2)?, digits(8, 2)?);
+    let (hour, minute, second) = (digits(11, 2)?, digits(14, 2)?, digits(17, 2)?);
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    let mut at = 19;
+    let mut nanos: u32 = 0;
+    if b.get(at) == Some(&b'.') {
+        at += 1;
+        let start = at;
+        while b.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        let frac = &text[start..at];
+        if frac.is_empty() {
+            return None;
+        }
+        let padded: String = frac.chars().chain(std::iter::repeat('0')).take(9).collect();
+        nanos = padded.parse().ok()?;
+    }
+    let offset = match b.get(at)? {
+        b'Z' | b'z' if at + 1 == b.len() => 0,
+        sign @ (b'+' | b'-') if at + 6 == b.len() && b[at + 3] == b':' => {
+            let minutes = digits(at + 1, 2)? * 60 + digits(at + 4, 2)?;
+            if *sign == b'+' { minutes } else { -minutes }
+        }
+        _ => return None,
+    };
+    // Days from the civil calendar to 1970-01-01 (Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second - offset * 60;
+    Some((seconds, nanos))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn meta(yaml: &str) -> Value {
         Value::Mapping(crate::meta::parse_mapping(yaml, fig::Format::Yaml).unwrap())
+    }
+
+    #[test]
+    fn stamps_compare_as_instants_whatever_their_spelling() {
+        // Fractional seconds sort before `Z` as text; as instants the later
+        // edit is later.
+        assert!(later("2026-09-02T00:00:00.5Z", "2026-09-02T00:00:00Z"));
+        assert!(!later(
+            "2026-09-02T00:00:00Z",
+            "2026-09-02T00:00:00.000000Z"
+        ));
+        // An offset is applied: 16:00+02:00 is 14:00Z.
+        assert!(!later("2026-09-02T16:00:00+02:00", "2026-09-02T14:00:00Z"));
+        assert!(later("2026-09-02T16:00:01+02:00", "2026-09-02T14:00:00Z"));
+        assert_eq!(instant("1970-01-01T00:00:00Z"), Some((0, 0)));
+        assert_eq!(instant("2000-03-01T00:00:00Z"), Some((951_868_800, 0)));
+        // Not RFC 3339: the old text comparison, not a panic.
+        assert_eq!(instant("yesterday"), None);
+        assert!(later("b", "a"));
     }
 
     #[test]
