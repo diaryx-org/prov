@@ -268,8 +268,21 @@ impl FilingSpec {
     }
 }
 
-/// The values of the first field in `chain` that carries any.
-fn chain_values(meta: &Value, chain: &[String]) -> Vec<String> {
+/// The values of the first field in `chain` that carries any — how a filing
+/// entry reads the value it files a record by, and so how a record is *dated*
+/// (or initialled, or shelved) in that entry's terms.
+///
+/// Each key is a [field path](prov_graph::field::FieldPath) (`written.on`,
+/// `sources[].date`), and each value it reaches is read as trimmed scalar text
+/// ([`scalar_texts`]): a list gives each item, an empty string or null gives
+/// nothing, so a blank `date_of_document:` falls through to `created`. The
+/// result is empty when no key carries anything, and has more than one entry
+/// when the first that does is multi-valued — which [`FilingSpec::route`]
+/// declines to file.
+///
+/// Public so a frontend reading "the date this page files under" reads it the
+/// way filing does rather than re-walking the chain.
+pub fn chain_values(meta: &Value, chain: &[String]) -> Vec<String> {
     for key in chain {
         let raw: Vec<String> = values_at(meta, &FieldPath::parse(key))
             .into_iter()
@@ -416,6 +429,17 @@ mod tests {
             ]),
         )
         .expect("an entry")
+    }
+
+    #[test]
+    fn the_chain_reads_the_first_field_that_says_anything() {
+        let chain = ["date_of_document".to_string(), "created".to_string()];
+        let meta = mapping(&[
+            ("date_of_document", text("  ")),
+            ("created", text("2026-07-24")),
+        ]);
+        assert_eq!(chain_values(&meta, &chain), ["2026-07-24"]);
+        assert!(chain_values(&mapping(&[]), &chain).is_empty());
     }
 
     #[test]

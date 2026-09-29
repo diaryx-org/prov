@@ -272,14 +272,14 @@ pub mod views {
 pub mod filing {
     pub use prov_filing::{
         FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, NESTS, Nest, NestRoute,
-        diagnose_filing, filing_from,
+        chain_values, diagnose_filing, filing_from,
     };
 }
 /// Grains — how a value is cut into groups, and the chain of coarser cuts a
 /// filing nests through. Shared by [`views`] and [`filing`], and by `check`,
 /// which judges a `type: date` value by the same EDTF reading ([`grain::date`]).
 pub mod grain {
-    pub use prov_grain::{GRAINS, Grain, date};
+    pub use prov_grain::{GRAINS, Grain, date, scalar_text, scalar_texts};
 }
 /// Named, closed-by-default document sets that may leave the workspace — the
 /// `exports:` config axis, and the plan that composes a gate with a view.
