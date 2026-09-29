@@ -6,7 +6,7 @@ resolver = "2"
 members = ["prov-graph", "prov-store", "prov-grain", "prov-views", "prov-filing", "prov-exports", "prov-config", "prov", "prov-cli", "prov-testkit", "xtask"]
 
 [workspace.package]
-version = "0.15.5"
+version = "0.16.0"
 edition = "2024"
 # Minimum supported Rust version. Edition 2024 needs 1.85, but the crate also uses
 # `if let … && let …` let-chains in stable positions, stabilized in 1.88 — so 1.88
@@ -110,11 +110,11 @@ rayon = "1.12"
 unicode-normalization = "0.1"
 
 # Internal crate.
-prov = { path = "prov", version = "0.15.5" }
+prov = { path = "prov", version = "0.16.0" }
 # Read-only graph and storage ports, identity policy, and content fixity.
-prov-graph = { path = "prov-graph", version = "0.15.5", default-features = false }
+prov-graph = { path = "prov-graph", version = "0.16.0", default-features = false }
 # The write halves of those ports: `Storage`, the metadata editor, the ID registries.
-prov-store = { path = "prov-store", version = "0.15.5", default-features = false }
+prov-store = { path = "prov-store", version = "0.16.0", default-features = false }
 # Crash-atomic staged filesystem changes and write-ahead recovery, and the
 # filesystem port everything here is generic over. Lifted out of this workspace
 # and published on its own, because none of it knows what a document is: it
@@ -130,14 +130,14 @@ prov-testkit = { path = "prov-testkit" }
 # Grains: how a value is cut into groups, and the chain a nest builds. Shared
 # by the reading side (views) and the writing side (filing), so neither
 # depends on the other.
-prov-grain = { path = "prov-grain", version = "0.15.5", default-features = false }
+prov-grain = { path = "prov-grain", version = "0.16.0", default-features = false }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
-prov-views = { path = "prov-views", version = "0.15.5", default-features = false }
+prov-views = { path = "prov-views", version = "0.16.0", default-features = false }
 # Where a new record goes: the `filing:` axis, split out of views because it is
 # the half that writes into the spine. Describes a route; files nothing.
-prov-filing = { path = "prov-filing", version = "0.15.5", default-features = false }
+prov-filing = { path = "prov-filing", version = "0.16.0", default-features = false }
 # Gated egress sets: a view composed with a gate, judged as an export plan.
-prov-exports = { path = "prov-exports", version = "0.15.5", default-features = false }
+prov-exports = { path = "prov-exports", version = "0.16.0", default-features = false }
 # Workspace configuration policy, codecs, diagnostics, and vocabularies.
-prov-config = { path = "prov-config", version = "0.15.5", default-features = false }
+prov-config = { path = "prov-config", version = "0.16.0", default-features = false }

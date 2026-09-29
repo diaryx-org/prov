@@ -32,6 +32,63 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.16.0 — 2026-09-28
+
+### Breaking
+
+- **deps** — move to fs-transaction 0.4 ([`d128ed8`](https://github.com/diaryx-org/prov/commit/d128ed8934c7ddb88a58d2f35a3383323aeff045))
+- **views** — views are CEL queries, and filing is its own axis ([`3ab3473`](https://github.com/diaryx-org/prov/commit/3ab347385347c0da20d0fffb1ee3323ec9d0bd38))
+- filing and grains leave prov-views for crates of their own ([`ac610f4`](https://github.com/diaryx-org/prov/commit/ac610f47360cae3394cddd3c86fb1daccee67c3f))
+- **views** — under() scopes a view as a fields declaration is scoped ([`e28daa9`](https://github.com/diaryx-org/prov/commit/e28daa9347924498b7c8e7c7aae1514d130b88b9))
+- **config** — a vocabulary's store says whether it is reified ([`ca99ba6`](https://github.com/diaryx-org/prov/commit/ca99ba6ed0f4c17f867f1986d8aed8cbcb1975b9))
+- **exports** — a vocabulary term can hold a document back ([`6953dfd`](https://github.com/diaryx-org/prov/commit/6953dfd65316285b574c9e057a506411ecd29f0c))
+- **config** — a field declares its own stamp ([`cee829b`](https://github.com/diaryx-org/prov/commit/cee829b450c596d4bad5c3e053e06e26fb28688c))
+
+### Fixed
+
+- **provenance** — judge a confirmation stale by instant, not by text ([`d706e59`](https://github.com/diaryx-org/prov/commit/d706e5916cf04f7adbe2ac1e76f36ea8966c7532))
+
+### Behavioural changes
+
+- a journaled change set that swaps or chains renames, renames away from a path it later uses, renames onto a path it earlier used, copies from a path it changes, or renames a symbolic link now fails with Error::Unreplayable before writing anything.
+
+- a set that removes files or renames over them leaves .name.fstx-aside-N siblings on disk while it applies, and costs one more durable directory flush when it lands.
+
+- a rolled-back set restores removed and displaced files with their original permissions instead of the default mode.
+
+- an ordered batch's files and directories are flushed as Pushed requests with one barrier per tier, so a crash may leave several of an interrupted tier's new files torn rather than at most one.
+
+- a workspace whose views use `group:`/`by:`/`under:`/`nest:` or a `where:` mapping has those views dropped until they are rewritten; `prov check` prints each replacement.
+
+- `NestNotSingleValued` and `NestRefNotDeclared` are reported at `filing.<name>.nest` instead of `views.<name>.nest`.
+
+- a document a view's expression cannot be evaluated on is listed under `failures` (on stderr for text output, in the JSON for `--json`) and is not shown; an export's view that fails on a document keeps that document from leaving.
+
+- `prov views --json` lists `icon`, `where` and `key` in place of `group`, `by`, `under`, `filtered` and `nest`; executed views and `prov docs --json` rows carry `id` and `ancestors`, and an executed view carries `failures`.
+
+- an executed view with nothing selected prints "no documents match" rather than "no documents in scope".
+
+- `prov config views.<name>.<key> <value>` judges the whole entry, so a view can be built one key at a time once it has a `key:`.
+
+- `prov check` reports `view_scope_unresolved`, an error, for a view whose literal `under('…')` names no document or a title several documents share.
+
+- `prov_views::translate` writes a retired `under:` anchor as `under('<anchor>')` rather than a `doc.ancestors.exists(…)` condition.
+
+- a `reify:` key in a field declaration is ignored, with no finding.
+
+- a vocabulary pointer at a document without the `vocabulary:` marker is loaded as a reified index, so its field's values are checked for membership even where the declaration never said `reify: true`.
+
+- a flat store declared `reify: true` now loads its terms instead of none.
+
+- under an export whose `hold` names a field with a vocabulary, a document whose value is a term declaring `holds: true` is held rather than exported.
+
+- a confirmation whose `at` and the document's edit stamp differ in fractional-second width or UTC offset is judged stale by which instant is later, where it was judged by string order.
+
+- a workspace whose config still says `updated: <field>` or `created: <field>` stamps nothing until it declares `fields.<field>.stamp: edit` or `create`; no finding reports the old keys.
+
+- `prov init` writes `fields.created.stamp: create` and `fields.updated.stamp: edit` where it wrote `created: created` and `updated: updated`.
+
+
 ## v0.15.5 — 2026-09-28
 
 ### Breaking
