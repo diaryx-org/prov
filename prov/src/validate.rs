@@ -561,6 +561,20 @@ pub enum Finding {
         under: String,
         why: String,
     },
+    /// A view whose `under('…')` names no document, or names several: the
+    /// view reads as if the index had no members, which is indistinguishable
+    /// from an index with none. Resolved exactly as a scoped `fields`
+    /// declaration's anchor is, so the two cannot disagree about which region
+    /// `under('Tasks')` means. Filed against the config surface that declares
+    /// the view. Diagnosis-only, for the reason [`FieldScopeUnresolved`] is.
+    ///
+    /// [`FieldScopeUnresolved`]: Finding::FieldScopeUnresolved
+    ViewScopeUnresolved {
+        doc: PathBuf,
+        view: String,
+        under: String,
+        why: String,
+    },
     /// A node declares both `content` and `manifest` — a sidecar for one payload
     /// and for a whole directory at once. The two are mutually exclusive: a node
     /// stands for one set of bytes or for a set of files, and every pass that
@@ -699,6 +713,7 @@ impl Finding {
             Finding::AboutStale { path, .. } => path,
             Finding::ConfirmationStale { doc, .. } => doc,
             Finding::FieldScopeUnresolved { doc, .. } => doc,
+            Finding::ViewScopeUnresolved { doc, .. } => doc,
             Finding::ManifestDrift { node, .. } => node,
             // The one corrupted file, not the node covering ten thousand.
             Finding::ManifestMismatch { path, .. } => path,
@@ -754,6 +769,7 @@ impl Finding {
             | Finding::MalformedDate { .. }
             | Finding::AboutStale { .. }
             | Finding::FieldScopeUnresolved { .. }
+            | Finding::ViewScopeUnresolved { .. }
             | Finding::ManifestConflict { .. }
             | Finding::ManifestMalformed { .. }
             | Finding::ManifestDrift { .. }
@@ -797,6 +813,7 @@ impl Finding {
             Finding::AboutStale { .. } => "about_stale",
             Finding::ConfirmationStale { .. } => "confirmation_stale",
             Finding::FieldScopeUnresolved { .. } => "field_scope_unresolved",
+            Finding::ViewScopeUnresolved { .. } => "view_scope_unresolved",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
             Finding::ManifestDrift { .. } => "manifest_drift",
@@ -1141,6 +1158,16 @@ impl fmt::Display for Finding {
                 "{}: `fields.{field}` is declared under `{under}`, but {why} — the declaration governs nothing until that index exists",
                 doc.display()
             ),
+            Finding::ViewScopeUnresolved {
+                doc,
+                view,
+                under,
+                why,
+            } => write!(
+                f,
+                "{}: `views.{view}` reads `under('{under}')`, but {why} — the view covers nothing under it until that index exists",
+                doc.display()
+            ),
             Finding::ManifestConflict { doc } => write!(
                 f,
                 "{}: declares both content and manifest — a node covers one payload or a directory, not both",
@@ -1300,6 +1327,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         findings.extend(self.store_findings(start).await?);
         findings.extend(self.deletions_findings(start).await?);
         findings.extend(self.vocabulary_findings(start, &documents).await?);
+        findings.extend(self.view_scope_findings(start).await?);
         findings.extend(self.date_findings(start, &documents).await?);
         findings.extend(self.stale_label_findings(&census).await?);
         findings.extend(self.confirmation_findings(&documents).await?);
@@ -1477,6 +1505,51 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             relation,
             log,
         }])
+    }
+
+    /// Report every view whose `under('…')` anchor names no document, or
+    /// several — see [`Finding::ViewScopeUnresolved`]. Only a literal anchor
+    /// is checked; one computed per document (`under(doc.title)`) has nothing
+    /// to resolve until it runs.
+    async fn view_scope_findings(&self, start: &Path) -> Result<Vec<Finding>> {
+        let config = self.effective_config(start).await?;
+        let mut findings = Vec::new();
+        let mut titles = None;
+        let mut surface: Option<PathBuf> = None;
+        for view in &config.views {
+            let mut anchors = view
+                .filter
+                .as_ref()
+                .map(prov_views::Expression::anchors)
+                .unwrap_or_default();
+            for anchor in view.key.anchors() {
+                if !anchors.contains(&anchor) {
+                    anchors.push(anchor);
+                }
+            }
+            for under in anchors {
+                let Err(why) = self.resolve_anchor(start, &under, &mut titles).await? else {
+                    continue;
+                };
+                let doc = match &surface {
+                    Some(doc) => doc.clone(),
+                    None => surface
+                        .insert(
+                            self.config_path(start)
+                                .await?
+                                .unwrap_or_else(|| link::normalize(start)),
+                        )
+                        .clone(),
+                };
+                findings.push(Finding::ViewScopeUnresolved {
+                    doc,
+                    view: view.name.clone(),
+                    under,
+                    why,
+                });
+            }
+        }
+        Ok(findings)
     }
 
     /// Check every controlled `fields` value against its vocabulary over the
@@ -3350,6 +3423,67 @@ mod tests {
         let ws = Workspace::builder(StdFs).root(&dir).build();
         let findings = block_on(ws.check("index.md")).unwrap();
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn check_reports_a_view_anchored_on_nothing_or_on_a_shared_title() {
+        // `under('Tasks')` resolves as a scoped `fields` anchor does: one
+        // document, by title, stem, id or path. A misspelling reads as an
+        // empty view and two indexes titled alike as a view of both, so each
+        // is named rather than left to look like an answer.
+        let dir = tempdir("view-anchor-check");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\ncontents:\n- tasks.md\n- notes/a.md\n- notes/b.md\n---\n",
+        );
+        write(
+            &dir,
+            "tasks.md",
+            "---\ntitle: Tasks\npart_of: index.md\n---\n",
+        );
+        write(
+            &dir,
+            "notes/a.md",
+            "---\ntitle: Notes\npart_of: ../index.md\n---\n",
+        );
+        write(
+            &dir,
+            "notes/b.md",
+            "---\ntitle: Notes\npart_of: ../index.md\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "title: prov config\nviews:\n  ok:\n    where: under('[[Tasks]]') && under('/tasks.md') || under('tasks')\n    key: status\n  typo:\n    where: under('Taks')\n    key: status\n  shared:\n    where: present(x)\n    key: \"under('Notes') ? 'n' : 'o'\"\n",
+        );
+
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let scopes: Vec<(&str, &str, &str)> = findings
+            .iter()
+            .filter_map(|f| match f {
+                Finding::ViewScopeUnresolved {
+                    view, under, why, ..
+                } => Some((view.as_str(), under.as_str(), why.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            scopes,
+            [
+                ("typo", "Taks", "no document exists there"),
+                ("shared", "Notes", "several documents are titled `Notes`"),
+            ],
+            "{findings:?}"
+        );
+        assert_eq!(
+            findings
+                .iter()
+                .find(|f| matches!(f, Finding::ViewScopeUnresolved { .. }))
+                .map(|f| f.kind()),
+            Some("view_scope_unresolved")
+        );
     }
 
     #[test]

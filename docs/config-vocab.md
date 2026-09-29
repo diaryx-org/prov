@@ -145,7 +145,7 @@ prov:
     daily:
       label: Daily
       icon: calendar          # a hint for a frontend; prov never interprets it
-      where: "doc.ancestors.exists(a, a.id == 'abc1234') && !present(draft)"
+      where: "under('[Daily](id:abc1234)') && !present(draft)"
       key: month(first(date_of_document, created))   # CEL — see "Views" below
     journal:
       key: field('written.on')                        # a field path, as `fields` writes one
@@ -244,8 +244,7 @@ views:
   open-tasks:
     label: Open tasks
     where: >-
-      doc.ancestors.exists(a, a.title == 'Tasks')
-      && present(status) && !(status in ['done', 'dropped'])
+      under('Tasks') && present(status) && !(status in ['done', 'dropped'])
     key: status
   activity:
     key: "[day(created), day(updated)]"   # a document under every day it has a date for
@@ -280,6 +279,7 @@ the [views-as-queries proposal](/docs/proposals/views-as-queries/proposal-views-
 | `present(x)` | whether `x` carries a value — not `null`, not blank, not a list of blanks |
 | `first(a, b, …)` | the first argument that is `present` — a fallback chain |
 | `field('a.b')` | every value at a field path, as text: `written.on` inside a mapping, `confirmed[].by` inside every item of a list; `[]` when the path reaches nothing |
+| `under('Tasks')` | whether the document is below that one in the spine — see "Scope is ancestry" |
 | `year(x)`, `month(x)`, `day(x)` | the keys a date cuts to, read as EDTF — see "Grains" |
 | `initial(x)`, `initial(x, n)` | the first letter, or `n` letters, upper-cased — the A–Z index |
 
@@ -324,14 +324,25 @@ so it needs no `fields.<name>.type` declaration to work.
 
 A view does not walk the spine. prov walks it once, for the census, and records
 each document's ancestors on its row; a view scoped to a subtree says so as a
-condition — `doc.ancestors.exists(a, a.title == 'Daily')`, or by id,
-`a.id == 'abc1234'`, which survives a retitle too. It survives a move and a
-rename for the reason a traversal did: the ancestry is recomputed from the
-spine on every run, never matched against a path prefix, so `path starts-with
-"Daily/"` and the index *titled* `2026` under `Trips/` are not what it
-matches. The anchor is not its own ancestor, so an index is what its records
-hang under, not one of them. What a condition cannot do that an anchor did is
-fail: `a.title == 'Taks'` matches nothing, without comment.
+condition — `under('Daily')`. The anchor is written as a scoped `fields`
+declaration's `under:` is, and read the same way: a bare name or `[[Daily]]`
+by title or file stem, `[Daily](id:abc1234)` by id, which survives a retitle
+too, and `/Daily/index.md` by path. So `fields.status` under `[[Tasks]]` and a
+view `under('Tasks')` mean one region of the tree, however the index is
+named. It survives a move and a rename for the reason a traversal did: the
+ancestry is recomputed from the spine on every run, never matched against a
+path prefix, so `path starts-with "Daily/"` and the index *titled* `2026`
+under `Trips/` are not what it matches. The anchor is not its own ancestor, so
+an index is what its records hang under, not one of them.
+
+A condition on its own cannot tell an anchor that names nothing from an index
+with no members — `under('Taks')` is simply false everywhere — so `check`
+resolves every literal anchor a view names against the workspace, as it does a
+`fields` scope, and reports one that names no document or several as
+`view_scope_unresolved`. An anchor computed per document (`under(doc.title)`)
+has nothing to resolve until it runs, and is not checked. `doc.ancestors`
+stays for what `under` does not say: `doc.ancestors.size() == 1`, or an
+ancestor matched by something other than its identity.
 
 #### Grains
 

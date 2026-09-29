@@ -38,6 +38,7 @@
 //! | function | gives |
 //! |---|---|
 //! | `present(x)` | whether `x` carries a non-empty value |
+//! | `under('[[Tasks]]')` | whether the document is below that one in the spine |
 //! | `first(a, b, …)` | the first argument that is `present` |
 //! | `field('a.b')` | every value at a field path, as text — `written.on`, `confirmed[].by` |
 //! | `year(x)`, `month(x)`, `day(x)` | the keys a date cuts to, read as EDTF |
@@ -46,6 +47,11 @@
 //! Each grain takes a value or a list and returns a list, because a value can
 //! cut to no key (`banana`, `XXXX`), one, or several (`1918/1922` at year
 //! grain). The rules are [`Grain::cuts`]'.
+//!
+//! `under` takes an anchor in the grammar a `fields` declaration's `under:`
+//! does — `'[[Tasks]]'` or `'Tasks'` by title or file stem,
+//! `'[Daily](id:abc1234)'` by id, `'/Calendar/index.md'` by path — so the one
+//! region of the tree is written the one way in both places. See [`Anchor`].
 //!
 //! A function is added here by the rule prov's grains and predicates were
 //! always added by: a concrete way of reading the workspace that cannot
@@ -63,14 +69,16 @@ use cel::extractors::Arguments;
 use cel::objects::{Key, Map};
 use cel::{Context, ExecutionError, FunctionContext, IdedExpr, Program, ResolveResult};
 use prov_graph::field::{FieldPath, values_at};
+use prov_graph::link::Link;
 use prov_graph::meta::{Mapping, Value};
+use prov_graph::title;
 
 use crate::select::Row;
 use prov_grain::{Grain, scalar_texts};
 
 /// prov's functions — the only names an expression may call beyond CEL's own.
 pub const FUNCTIONS: &[&str] = &[
-    "present", "first", "field", "year", "month", "day", "initial",
+    "present", "first", "field", "under", "year", "month", "day", "initial",
 ];
 
 /// CEL's standard functions, as the `cel` crate implements them.
@@ -192,6 +200,27 @@ impl Expression {
         names.sort();
         names.dedup();
         names
+    }
+
+    /// Every anchor the expression names by `under('…')` with a literal, as
+    /// written, in source order and deduplicated — what `check` resolves
+    /// against the workspace, since the evaluator only ever sees one document's
+    /// ancestors and so cannot tell an anchor that names nothing from one that
+    /// is simply not above this document.
+    pub fn anchors(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        visit(self.program.expression(), &mut |expr| {
+            if let Expr::Call(call) = &expr.expr
+                && call.target.is_none()
+                && call.func_name == "under"
+                && let [arg] = call.args.as_slice()
+                && let Expr::Literal(LiteralValue::String(anchor)) = &arg.expr
+                && !out.iter().any(|a| a == anchor.inner())
+            {
+                out.push(anchor.inner().to_string());
+            }
+        });
+        out
     }
 
     /// What this expression does, when it is one of the shapes a person could
@@ -334,6 +363,7 @@ impl Evaluator {
         root.add_function("present", present);
         root.add_function("first", first);
         root.add_function("field", field);
+        root.add_function("under", under);
         root.add_function("year", |value: cel::Value| cut(Grain::Year, &value));
         root.add_function("month", |value: cel::Value| cut(Grain::Month, &value));
         root.add_function("day", |value: cel::Value| cut(Grain::Day, &value));
@@ -667,6 +697,141 @@ fn field(ftx: &FunctionContext, path: Arc<String>) -> ResolveResult {
     Ok(strings(found))
 }
 
+/// `under(anchor)`: some document above this one in the spine is `anchor`.
+///
+/// The document itself is not under its own anchor — an index is what records
+/// hang under, not one of them — which is the rule a scoped `fields`
+/// declaration keeps, and what keeps the `Tasks` index out of a view of tasks.
+fn under(ftx: &FunctionContext, anchor: Arc<String>) -> ResolveResult {
+    let anchor = Anchor::parse(&anchor).map_err(|why| ftx.error(why))?;
+    let Some(doc) = ftx.ptx.get_variable("doc") else {
+        return Ok(cel::Value::Bool(false));
+    };
+    let doc: cel::Value = doc.as_ref().try_into()?;
+    let entry = |map: &Map, key: &str| match map.map.get(&Key::String(Arc::new(key.into()))) {
+        Some(cel::Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let cel::Value::Map(doc) = &doc else {
+        return Ok(cel::Value::Bool(false));
+    };
+    let Some(cel::Value::List(ancestors)) = doc.map.get(&Key::String(Arc::new("ancestors".into())))
+    else {
+        return Ok(cel::Value::Bool(false));
+    };
+    Ok(cel::Value::Bool(ancestors.iter().any(|a| match a {
+        cel::Value::Map(a) => entry(a, "path").is_some_and(|path| {
+            anchor.names(
+                &path,
+                entry(a, "title").as_deref().map(String::as_str),
+                entry(a, "id").as_deref().map(String::as_str),
+            )
+        }),
+        _ => false,
+    })))
+}
+
+/// The document an `under(…)` names, read from the anchor as written.
+///
+/// The grammar is a link's, and the reading is the one a scoped `fields`
+/// declaration's `under:` gets: an `id:` target by id, a bare name (`Tasks`,
+/// `[[Tasks]]`) by `title` or file stem — the two names the title index
+/// registers a document under — and anything path-shaped by its
+/// workspace-relative path. What it cannot do alone is say that a name is
+/// *ambiguous*: it sees one document's ancestors at a time. That is `check`'s,
+/// through [`Expression::anchors`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Anchor {
+    /// `id:abc1234`.
+    Id(String),
+    /// A title or a file stem.
+    Name(String),
+    /// A workspace-relative path.
+    Path(String),
+}
+
+impl Anchor {
+    /// Read an anchor, or say in a sentence why it cannot name a document here.
+    pub fn parse(under: &str) -> Result<Self, &'static str> {
+        let link = Link::parse(under.trim());
+        let target = link.addressed_target();
+        if link.is_external() || link.is_same_document() || link.foreign_target().is_some() {
+            return Err("an anchor must name a document in this workspace");
+        }
+        if target.is_empty() {
+            return Err("the anchor is empty");
+        }
+        if let Some(id) = link.id_target() {
+            return Ok(Anchor::Id(id.0));
+        }
+        if title::is_alias_shaped(target) {
+            return Ok(Anchor::Name(target.to_string()));
+        }
+        Ok(Anchor::Path(
+            target
+                .trim_start_matches("./")
+                .trim_start_matches('/')
+                .to_string(),
+        ))
+    }
+
+    /// Whether the document at `path`, titled `title`, with id `id`, is the
+    /// one this anchor names.
+    pub fn names(&self, path: &str, title: Option<&str>, id: Option<&str>) -> bool {
+        match self {
+            Anchor::Id(want) => id == Some(want.as_str()),
+            Anchor::Name(name) => {
+                title.is_some_and(|t| t.trim() == name)
+                    || std::path::Path::new(path)
+                        .file_stem()
+                        .is_some_and(|stem| stem == name.as_str())
+            }
+            Anchor::Path(want) => path == want,
+        }
+    }
+}
+
+/// Call `f` on every node of `expr`, parents first.
+fn visit(expr: &IdedExpr, f: &mut dyn FnMut(&IdedExpr)) {
+    f(expr);
+    match &expr.expr {
+        Expr::Call(call) => {
+            if let Some(target) = call.target.as_deref() {
+                visit(target, f);
+            }
+            for arg in &call.args {
+                visit(arg, f);
+            }
+        }
+        Expr::Comprehension(comp) => {
+            for part in [
+                &comp.iter_range,
+                &comp.accu_init,
+                &comp.loop_cond,
+                &comp.loop_step,
+                &comp.result,
+            ] {
+                visit(part, f);
+            }
+        }
+        Expr::List(list) => list.elements.iter().for_each(|e| visit(e, f)),
+        Expr::Map(cel::common::ast::MapExpr { entries })
+        | Expr::Struct(cel::common::ast::StructExpr { entries, .. }) => {
+            for entry in entries {
+                match &entry.expr {
+                    cel::common::ast::EntryExpr::MapEntry(e) => {
+                        visit(&e.key, f);
+                        visit(&e.value, f);
+                    }
+                    cel::common::ast::EntryExpr::StructField(field) => visit(&field.value, f),
+                }
+            }
+        }
+        Expr::Select(select) => visit(&select.operand, f),
+        _ => {}
+    }
+}
+
 /// `year(x)` and its siblings: every key the texts of `x` cut to.
 fn cut(grain: Grain, value: &cel::Value) -> ResolveResult {
     Ok(strings(
@@ -879,6 +1044,41 @@ mod tests {
             test("doc.ancestors.exists(a, a.title == 'Proposals')", &r),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn under_reads_an_anchor_the_way_a_fields_scope_does() {
+        let r = row(&[("title", text("Fix it"))]);
+        // By title, bare or as a wikilink; by file stem; by id; by path.
+        assert_eq!(test("under('Tasks')", &r), Ok(true));
+        assert_eq!(test("under('[[Tasks]]')", &r), Ok(true));
+        assert_eq!(test("under('tasks')", &r), Ok(true));
+        assert_eq!(test("under('[Tasks](id:tsk0001)')", &r), Ok(true));
+        assert_eq!(test("under('/tasks/tasks.md')", &r), Ok(true));
+        assert_eq!(test("under('[Tasks](tasks/tasks.md)')", &r), Ok(true));
+        assert_eq!(test("under('Proposals')", &r), Ok(false));
+        assert_eq!(test("under('id:zzz9999')", &r), Ok(false));
+        // A document is not under itself.
+        assert_eq!(test("under('Fix it')", &r), Ok(false));
+        assert_eq!(test("under('fix')", &r), Ok(false));
+    }
+
+    #[test]
+    fn under_refuses_an_anchor_outside_the_workspace() {
+        let r = row(&[]);
+        assert!(test("under('https://example.com/tasks')", &r).is_err());
+        assert!(test("under('id:fig/abc1234')", &r).is_err());
+        assert!(test("under('')", &r).is_err());
+    }
+
+    #[test]
+    fn anchors_lists_every_literal_under_once() {
+        let e = Expression::parse(
+            "under('Tasks') && (under('[[Proposals]]') || under('Tasks')) \
+             && [1].exists(x, under('/a.md')) && under(doc.title)",
+        )
+        .unwrap();
+        assert_eq!(e.anchors(), ["Tasks", "[[Proposals]]", "/a.md"]);
     }
 
     #[test]

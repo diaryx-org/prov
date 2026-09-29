@@ -206,10 +206,7 @@ mod tests {
             panic!("{issues:?}");
         };
         assert!(yaml.contains("key: \"month(created)\""), "{yaml}");
-        assert!(
-            yaml.contains("doc.ancestors.exists(a, a.title == 'Daily')"),
-            "{yaml}"
-        );
+        assert!(yaml.contains("under('[[Daily]]')"), "{yaml}");
     }
 
     #[test]

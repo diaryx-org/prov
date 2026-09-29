@@ -26,7 +26,7 @@ views:
   daily:
     label: Daily
     icon: calendar
-    where: doc.ancestors.exists(a, a.id == 'abc1234')
+    where: under('[Daily](id:abc1234)')
     key: year(first(date_of_document, created, updated))
   people:
     label: People

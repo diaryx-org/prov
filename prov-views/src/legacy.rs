@@ -12,16 +12,13 @@
 //! The translation is exact where the old format was:
 //!
 //! - `group: [a, b]` + `by: month` → `key: month(first(a, b))`
-//! - `under: '[[Daily]]'` → `doc.ancestors.exists(a, a.title == 'Daily')`, by
-//!   `a.id` for an `id:` link and by `a.path` for a path
+//! - `under: '[[Daily]]'` → `under('[[Daily]]')`, the anchor as written
 //! - `has: x` → `present(x)`; `equals: { x: v }` → `'v' in field('x')`, since
 //!   the old comparison was by text and matched any item of a list
 //! - `nest:` → a `filing:` entry (`prov-filing`) of the same name, with the
 //!   anchor and the chain it filed by
 
-use prov_graph::link::Link;
 use prov_graph::meta::{Mapping, Value};
-use prov_graph::title;
 
 use crate::spec::is_retired;
 use prov_grain::{Grain, scalar_texts};
@@ -166,19 +163,10 @@ fn key_expression(chain: &[String], grain: Option<Grain>) -> String {
     }
 }
 
-/// The condition an `under:` anchor comes to: the anchor among the
-/// document's ancestors, matched the way the link named it.
+/// The condition an `under:` anchor comes to: the same anchor, as written,
+/// under the function that reads it the way the old key did.
 fn ancestry(under: &str) -> String {
-    let link = Link::parse(under);
-    if let Some(id) = link.id_target() {
-        return format!("doc.ancestors.exists(a, a.id == {})", cel_string(&id.0));
-    }
-    let target = link.addressed_target();
-    if title::is_alias_shaped(target) {
-        return format!("doc.ancestors.exists(a, a.title == {})", cel_string(target));
-    }
-    let path = target.trim_start_matches("./").trim_start_matches('/');
-    format!("doc.ancestors.exists(a, a.path == {})", cel_string(path))
+    format!("under({})", cel_string(under.trim()))
 }
 
 /// A field by name when CEL can say it as one, else through `field()`.
@@ -414,7 +402,7 @@ mod tests {
         assert_eq!(get(&t.view, "key"), "status");
         assert_eq!(
             get(&t.view, "where"),
-            "doc.ancestors.exists(a, a.title == 'Tasks') && present(status) && \
+            "under('[[Tasks]]') && present(status) && \
              !('done' in field('status') || 'dropped' in field('status'))"
         );
         assert!(t.filing.is_none());
@@ -430,10 +418,7 @@ mod tests {
             get(&t.view, "key"),
             "month(first(date_of_document, created))"
         );
-        assert_eq!(
-            get(&t.view, "where"),
-            "doc.ancestors.exists(a, a.id == 'abc1234')"
-        );
+        assert_eq!(get(&t.view, "where"), "under('[Daily](id:abc1234)')");
         let filing = t.filing.clone().expect("a filing entry");
         let spec = FilingSpec::parse("daily", &Value::Mapping(filing)).expect("parses");
         assert_eq!(spec.under.as_deref(), Some("[Daily](id:abc1234)"));
@@ -448,7 +433,7 @@ mod tests {
         assert_eq!(get(&t.view, "key"), "field('written.on')");
         assert_eq!(
             get(&t.view, "where"),
-            "doc.ancestors.exists(a, a.path == 'Calendar/index.md')"
+            "under('[Calendar](/Calendar/index.md)')"
         );
         assert!(Expression::parse(get(&t.view, "key")).is_ok());
     }

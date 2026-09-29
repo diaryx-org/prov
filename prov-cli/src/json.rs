@@ -480,6 +480,17 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("under", s(under)));
             fields.push(("why", s(why)));
         }
+        Finding::ViewScopeUnresolved {
+            doc,
+            view,
+            under,
+            why,
+        } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("view", s(view)));
+            fields.push(("under", s(under)));
+            fields.push(("why", s(why)));
+        }
         Finding::ManifestConflict { doc } => {
             fields.push(("doc", p(doc)));
         }

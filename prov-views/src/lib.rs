@@ -18,7 +18,7 @@
 //!   daily:
 //!     label: Daily
 //!     icon: calendar
-//!     where: "doc.ancestors.exists(a, a.title == 'Daily') && !present(draft)"
+//!     where: "under('Daily') && !present(draft)"
 //!     key: month(first(date_of_document, created, updated))
 //! ```
 //!

@@ -236,22 +236,24 @@ $ prov query "doc.title.startsWith('Walk')"
 river-walk.md — Walk by the river
 ```
 
-`doc.ancestors` is how you ask about **one part of the workspace**. Everything
+`under()` is how you ask about **one part of the workspace**. Everything
 filed under the Journal, however deep:
 
 <!-- exec expect -->
 ```console
-$ prov query "doc.ancestors.exists(a, a.title == 'Journal')"
+$ prov query "under('Journal')"
 fair-photo.md — Photo from the fair
 letter.md — Grandfather's letter
 library.md — At the library
 river-walk.md — Walk by the river
 ```
 
-`exists(a, …)` is CEL for "at least one item of this list, called `a`,
-satisfies …". This follows the tree, not the folders, so it keeps working if
-you move the Journal's files somewhere else. Matching on `a.id` rather than
-`a.title` keeps it working even if you rename the Journal.
+This follows the tree, not the folders, so it keeps working if you move the
+Journal's files somewhere else. `under()` names the index the way a link
+does — by title as here, by path (`under('/journal.md')`), or by id
+(`under('id:abc1234')`), which keeps working even if you rename the Journal.
+It is `doc.ancestors` underneath, and that list is there for anything
+`under()` does not say.
 
 ---
 
@@ -261,7 +263,7 @@ Add `--key` to group the answer. Each distinct value becomes a group:
 
 <!-- exec expect -->
 ```console
-$ prov query "doc.ancestors.exists(a, a.title == 'Tasks')" --key status
+$ prov query "under('Tasks')" --key status
 done (1)
   call-ada.md — Call Ada back
 open (1)
@@ -276,7 +278,7 @@ river is under both Ada and Grace — and a document with no value lands in
 
 <!-- exec expect -->
 ```console
-$ prov query "doc.ancestors.exists(a, a.title == 'Journal')" --key people
+$ prov query "under('Journal')" --key people
 Ada (2)
   library.md — At the library
   river-walk.md — Walk by the river
@@ -301,7 +303,7 @@ and `day()` cut a date to that size:
 
 <!-- exec expect -->
 ```console
-$ prov query "doc.ancestors.exists(a, a.title == 'Journal')" --key "month(created)"
+$ prov query "under('Journal')" --key "month(created)"
 2026-08 (2)
   fair-photo.md — Photo from the fair
   letter.md — Grandfather's letter
@@ -336,7 +338,7 @@ present:
 
 <!-- exec expect -->
 ```console
-$ prov query "doc.ancestors.exists(a, a.title == 'Journal')" --key "year(first(date_of_document, created))"
+$ prov query "under('Journal')" --key "year(first(date_of_document, created))"
 1913 (1)
   fair-photo.md — Photo from the fair
 1918 (1)
@@ -358,7 +360,7 @@ river shows up on both of its days:
 
 <!-- exec expect -->
 ```console
-$ prov query "doc.ancestors.exists(a, a.title == 'Journal')" --key "[day(created), day(updated)]"
+$ prov query "under('Journal')" --key "[day(created), day(updated)]"
 2026-08-30 (2)
   fair-photo.md — Photo from the fair
   letter.md — Grandfather's letter
@@ -424,7 +426,7 @@ exist — is refused before anything runs:
 <!-- exec allow-fail -->
 ```console
 $ prov query "present(people)" --key "mnth(created)"
-prov: key: there is no function `mnth` — prov adds `present`, `first`, `field`, `year`, `month`, `day`, `initial` to CEL's own
+prov: key: there is no function `mnth` — prov adds `present`, `first`, `field`, `under`, `year`, `month`, `day`, `initial` to CEL's own
 ```
 
 ---
@@ -439,7 +441,7 @@ time — the key first, since a view without one is not a view:
 <!-- exec -->
 ```console
 $ prov config views.open-tasks.key status
-$ prov config views.open-tasks.where "doc.ancestors.exists(a, a.title == 'Tasks') && status != 'done'"
+$ prov config views.open-tasks.where "under('Tasks') && status != 'done'"
 $ prov config views.open-tasks.label "Open tasks"
 ```
 
@@ -449,7 +451,7 @@ or you can write it into `prov.yaml` by hand:
 views:
   open-tasks:
     key: status
-    where: doc.ancestors.exists(a, a.title == 'Tasks') && status != 'done'
+    where: under('Tasks') && status != 'done'
     label: Open tasks
 ```
 
@@ -459,7 +461,7 @@ the question:
 <!-- exec expect -->
 ```console
 $ prov views
-open-tasks  Open tasks — key: status  where: doc.ancestors.exists(a, a.title == 'Tasks') && status != 'done'
+open-tasks  Open tasks — key: status  where: under('Tasks') && status != 'done'
 $ prov views open-tasks
 open (1)
   fix-gate.md — Fix the garden gate
@@ -467,9 +469,10 @@ open (1)
 1 document(s), 1 row(s)
 ```
 
-`prov check` reads your views as it reads everything else, so a typo in one is
-reported the next time you check rather than discovered the day the view comes
-back empty.
+`prov check` reads your views as it reads everything else, so a typo in one —
+an unknown function, or an `under('Taks')` that names no index — is reported
+the next time you check rather than discovered the day the view comes back
+empty.
 
 For a script or another program, `--json` gives the same answer as data —
 each document's path, title, id, ancestors and whole frontmatter — and lists
@@ -492,8 +495,8 @@ $ prov query "present(draft)" --json
 | a list field contains a value | `'Ada' in people` |
 | a field is filled in / is not | `present(draft)` / `!present(draft)` |
 | any item of a list matches | `tags.exists(t, t.startsWith('arch'))` |
-| under an index in the tree | `doc.ancestors.exists(a, a.title == 'Journal')` |
-| …surviving a rename of that index | `doc.ancestors.exists(a, a.id == 'abc1234')` |
+| under an index in the tree | `under('Journal')` |
+| …surviving a rename of that index | `under('id:abc1234')` |
 | a title or path pattern | `doc.title.startsWith('Walk')`, `doc.path.matches('^tasks/')` |
 | group by a field | `--key status` |
 | group by month / year / day | `--key "month(created)"` |
@@ -502,9 +505,9 @@ $ prov query "present(draft)" --json
 | an A–Z index | `--key "initial(people)"` |
 | a nested field | `field('written.on')`, `field('confirmed[].by')` |
 
-prov's functions are `present`, `first`, `field`, `year`, `month`, `day` and
-`initial`; everything else — `==`, `in`, `&&`, `exists`, `startsWith`,
-`matches`, `size` — is CEL's own, and CEL's
+prov's functions are `present`, `first`, `field`, `under`, `year`, `month`,
+`day` and `initial`; everything else — `==`, `in`, `&&`, `exists`,
+`startsWith`, `matches`, `size` — is CEL's own, and CEL's
 [language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)
 documents it.
 

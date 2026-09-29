@@ -8,7 +8,7 @@
 //!   daily:
 //!     label: Daily
 //!     icon: calendar
-//!     where: "doc.ancestors.exists(a, a.title == 'Daily') && !present(draft)"
+//!     where: "under('Daily') && !present(draft)"
 //!     key: month(first(date_of_document, created))
 //! ```
 //!
@@ -39,9 +39,9 @@
 //! A view used to carry `under:`, a link whose subtree it walked. That made the
 //! view the one reader that knew the workspace has a shape. Now prov walks the
 //! spine once, for the census ([`crate::documents`]), and hands each document
-//! its ancestors as data — `doc.ancestors` — so scope is a condition like any
-//! other and survives a move or a rename because the ancestry is recomputed on
-//! every run.
+//! its ancestors as data — `doc.ancestors`, read by `under('Daily')` — so
+//! scope is a condition like any other and survives a move or a rename because
+//! the ancestry is recomputed on every run.
 //!
 //! # A view does not file
 //!

@@ -170,55 +170,19 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         for (field, declarations) in &config.fields {
             for (index, spec) in declarations.iter().enumerate() {
                 let Some(under) = &spec.under else { continue };
-                let link = Link::parse(under);
-                let nominal = !link.is_external()
-                    && !link.is_same_document()
-                    && link.id_ref().is_none()
-                    && title::is_alias_shaped(link.addressed_target());
-                if nominal && titles.is_none() {
-                    titles = Some(self.title_index_scoped(&root_doc).await?);
-                }
-                let unresolved = |why: String| Unresolved {
-                    field: field.clone(),
-                    index,
-                    under: under.clone(),
-                    why,
-                };
-                let anchor = match self.resolve_link_with(&root_doc, &link, titles.as_ref()) {
-                    Target::Path(path) => path,
-                    Target::UnresolvedId(id) => {
-                        out.unresolved.push(unresolved(format!(
-                            "no document is registered under the id `{}`",
-                            id.0
-                        )));
-                        continue;
-                    }
-                    Target::AmbiguousAlias(name) => {
-                        out.unresolved
-                            .push(unresolved(format!("several documents are titled `{name}`")));
-                        continue;
-                    }
-                    Target::External | Target::SameDocument | Target::Foreign { .. } => {
-                        out.unresolved.push(unresolved(
-                            "an anchor must name a document in this workspace".to_string(),
-                        ));
+                let tree = match self.resolve_anchor(&root_doc, under, &mut titles).await? {
+                    Ok(tree) => tree,
+                    Err(why) => {
+                        out.unresolved.push(Unresolved {
+                            field: field.clone(),
+                            index,
+                            under: under.clone(),
+                            why,
+                        });
                         continue;
                     }
                 };
-                let tree = self
-                    .graph
-                    .tree_with(
-                        &anchor,
-                        TreeOptions {
-                            ignore_missing: true,
-                        },
-                    )
-                    .await?;
-                if !matches!(tree.kind, NodeKind::Doc) {
-                    out.unresolved
-                        .push(unresolved("no document exists there".to_string()));
-                    continue;
-                }
+                let anchor = tree.path.clone();
                 let mut members = BTreeSet::new();
                 for child in &tree.children {
                     collect(child, &mut members);
@@ -232,6 +196,61 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             }
         }
         Ok(out)
+    }
+
+    /// The document an anchor names — a scoped `fields` declaration's
+    /// `under:`, or a view's `under('…')` — resolved against the tree below
+    /// `root_doc` as any link is: a path, an `id:`, or a title, which must
+    /// name exactly one document. The subtree comes back with it, since the
+    /// one caller that wants members wants them from here.
+    ///
+    /// `Ok(Err(why))` is an anchor that names nothing prov could walk to, in a
+    /// sentence a user can act on. `titles` is built on the first name-shaped
+    /// anchor and reused, since it costs a scan.
+    pub(crate) async fn resolve_anchor(
+        &self,
+        root_doc: &Path,
+        under: &str,
+        titles: &mut Option<TitleIndex>,
+    ) -> Result<std::result::Result<prov_graph::graph::Node, String>> {
+        let link = Link::parse(under);
+        let nominal = !link.is_external()
+            && !link.is_same_document()
+            && link.id_ref().is_none()
+            && title::is_alias_shaped(link.addressed_target());
+        if nominal && titles.is_none() {
+            *titles = Some(self.title_index_scoped(root_doc).await?);
+        }
+        let anchor = match self.resolve_link_with(root_doc, &link, titles.as_ref()) {
+            Target::Path(path) => path,
+            Target::UnresolvedId(id) => {
+                return Ok(Err(format!(
+                    "no document is registered under the id `{}`",
+                    id.0
+                )));
+            }
+            Target::AmbiguousAlias(name) => {
+                return Ok(Err(format!("several documents are titled `{name}`")));
+            }
+            Target::External | Target::SameDocument | Target::Foreign { .. } => {
+                return Ok(Err(
+                    "an anchor must name a document in this workspace".to_string()
+                ));
+            }
+        };
+        let tree = self
+            .graph
+            .tree_with(
+                &anchor,
+                TreeOptions {
+                    ignore_missing: true,
+                },
+            )
+            .await?;
+        if !matches!(tree.kind, NodeKind::Doc) {
+            return Ok(Err("no document exists there".to_string()));
+        }
+        Ok(Ok(tree))
     }
 }
 

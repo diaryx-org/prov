@@ -405,7 +405,7 @@ fn a_retired_view_is_reported_with_its_replacement() {
     );
     assert!(
         out.contains("key: \"month(first(date_of_document, created))\"")
-            && out.contains("where: \"doc.ancestors.exists(a, a.title == 'Daily')\"")
+            && out.contains("where: \"under('[[Daily]]')\"")
             && out.contains("filing:\n      daily:\n        under: \"[[Daily]]\""),
         "{out}"
     );

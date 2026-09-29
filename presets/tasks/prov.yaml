@@ -31,13 +31,11 @@ views:
     # tasks` shelf a closed task moves to — says no status, and is not an open
     # task.
     where: >-
-      doc.ancestors.exists(a, a.title == 'Tasks')
-      && present(status) && !(status in ['done', 'dropped'])
+      under('Tasks') && present(status) && !(status in ['done', 'dropped'])
     key: status
   proposals:
     label: Proposals
-    where: >-
-      doc.ancestors.exists(a, a.title == 'Proposals') && present(status)
+    where: under('Proposals') && present(status)
     key: status
   work:
     label: All work

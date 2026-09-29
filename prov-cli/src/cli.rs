@@ -277,11 +277,11 @@ pub(crate) enum Command {
     /// name (`status == 'open'`), a field it lacks is `null`, and `doc` is the
     /// document itself — `doc.path`, `doc.title`, `doc.id`, `doc.meta`, and
     /// `doc.ancestors`, everything above it in the tree. prov adds `present`,
-    /// `first`, `field`, `year`, `month`, `day` and `initial`. With no WHERE,
-    /// every document; with no `--key`, a flat list.
+    /// `first`, `field`, `under`, `year`, `month`, `day` and `initial`. With no
+    /// WHERE, every document; with no `--key`, a flat list.
     ///
     ///   prov query "present(draft)"
-    ///   prov query "doc.ancestors.exists(a, a.title == 'Tasks')" --key status
+    ///   prov query "under('Tasks')" --key status
     ///   prov query --key "year(created)"
     Query {
         /// The condition a document must meet (default: every document).
