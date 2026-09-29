@@ -780,6 +780,8 @@ dependencies = [
  "proptest",
  "prov-config",
  "prov-exports",
+ "prov-filing",
+ "prov-grain",
  "prov-graph",
  "prov-store",
  "prov-testkit",
@@ -809,6 +811,7 @@ dependencies = [
  "indexmap",
  "proptest",
  "prov-exports",
+ "prov-filing",
  "prov-graph",
  "prov-views",
  "thiserror",
@@ -821,6 +824,22 @@ dependencies = [
  "prov-graph",
  "prov-testkit",
  "prov-views",
+]
+
+[[package]]
+name = "prov-filing"
+version = "0.15.5"
+dependencies = [
+ "prov-grain",
+ "prov-graph",
+]
+
+[[package]]
+name = "prov-grain"
+version = "0.15.5"
+dependencies = [
+ "edtf-core",
+ "prov-graph",
 ]
 
 [[package]]
@@ -858,7 +877,8 @@ name = "prov-views"
 version = "0.15.5"
 dependencies = [
  "cel",
- "edtf-core",
+ "prov-filing",
+ "prov-grain",
  "prov-graph",
  "prov-testkit",
  "unicode-normalization",

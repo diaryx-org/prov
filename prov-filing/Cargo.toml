@@ -1,0 +1,28 @@
+[package]
+name = "prov-filing"
+description = "Filing for a prov workspace: where a new record goes, declared as the `filing:` axis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+# The read core, for the metadata a record is filed by. A filing entry
+# *describes* where a record goes; the frontend files it through prov, so
+# nothing here needs to write, and depending on `prov-graph` rather than
+# `prov-store`/`prov` means it cannot.
+prov-graph = { workspace = true, default-features = false }
+# How a value is cut into shelves, and the chain of coarser shelves a nest
+# builds. Shared with `prov-views`, which reads by the same grains; filing
+# does not depend on the view engine.
+prov-grain = { workspace = true, default-features = false }
+
+[features]
+default = ["yaml"]
+yaml = ["prov-graph/yaml", "prov-grain/yaml"]
+json = ["prov-graph/json", "prov-grain/json"]
+toml = ["prov-graph/toml", "prov-grain/toml"]
+fig-lang = ["prov-graph/fig-lang", "prov-grain/fig-lang"]

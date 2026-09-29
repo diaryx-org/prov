@@ -463,7 +463,7 @@ pub enum Finding {
     /// A field declared `type: date` carries a `value` that is not one: not
     /// a calendar date, not an RFC 3339 instant, and not EDTF — the
     /// `1943-05`, `1913~`, `192X`, `1918/1922`, `XXXX` an archive writes
-    /// (see [`prov_views::date`]). `why` is the parser's reason.
+    /// (see [`prov_grain::date`]). `why` is the parser's reason.
     ///
     /// The value is what a date view *silently* leaves ungrouped: `May 1943`
     /// and a torn-off day both land in the undated bucket, and only one of
@@ -1658,7 +1658,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // `1943` back as an integer, which is a year and needs no
                 // saying, and an absent or null field is not a bad value.
                 for (_, value) in strings_at(&doc.meta, &FieldPath::parse(field)) {
-                    if let Err(err) = crate::views::date::parse(&value) {
+                    if let Err(err) = crate::grain::date::parse(&value) {
                         findings.push(Finding::MalformedDate {
                             doc: path.clone(),
                             field: field.clone(),

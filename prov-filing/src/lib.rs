@@ -1,14 +1,18 @@
-//! Filing: where a new record goes — the `filing:` axis.
+//! # prov-filing
+//!
+//! Filing: where a new record goes — the `filing:` axis of a
+//! [prov](https://docs.rs/prov) workspace.
 //!
 //! A view reads. A filing entry says where a frontend should *write* a new
 //! record: under which index, by which field, how deep. The two used to be one
-//! declaration, a view with a `nest:` key, and that was the mistake this module
+//! declaration, a view with a `nest:` key, and that was the mistake this crate
 //! exists to correct. Filing writes into the spine, which is single-parent, so
 //! it needs guarantees before anything runs — one value per record, a grain
 //! whose levels chain — and a view carrying a `nest:` had to live inside those
 //! guarantees even when it was only being read. Apart, a view is free to be a
-//! query ([`crate::expr`]) and a filing entry stays a small closed declaration
-//! prov can check.
+//! query (`prov-views`) and a filing entry stays a small closed declaration
+//! prov can check. The two share only the [`Grain`]s they cut values by, which
+//! are `prov-grain`'s, so this crate does not depend on the view engine.
 //!
 //! ```yaml
 //! filing:
@@ -57,8 +61,8 @@
 use prov_graph::field::{FieldPath, values_at};
 use prov_graph::meta::{Mapping, Value};
 
-use crate::grain::Grain;
-use crate::scalar::scalar_texts;
+pub use prov_grain::Grain;
+use prov_grain::scalar_texts;
 
 /// The config block filing entries are declared in.
 pub const FILING_KEY: &str = "filing";
@@ -213,7 +217,7 @@ impl FilingSpec {
     pub fn display_label(&self) -> String {
         match &self.label {
             Some(label) => label.clone(),
-            None => crate::spec::humanize(&self.name),
+            None => humanize(&self.name),
         }
     }
 
@@ -285,6 +289,24 @@ fn field_chain(value: Option<&Value>) -> Vec<String> {
         Some(Value::Sequence(items)) => items.iter().filter_map(|v| non_empty(Some(v))).collect(),
         _ => Vec::new(),
     }
+}
+
+/// `daily_entries` → `Daily entries`: a key is written for a file, a label for
+/// a person. The same rule a view's label falls back to.
+fn humanize(key: &str) -> String {
+    let mut words = key.split(['_', '-']).filter(|w| !w.is_empty());
+    let Some(first) = words.next() else {
+        return key.to_string();
+    };
+    let mut out = first.to_string();
+    if let Some(c) = out.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    for word in words {
+        out.push(' ');
+        out.push_str(&word.to_lowercase());
+    }
+    out
 }
 
 fn non_empty(value: Option<&Value>) -> Option<String> {

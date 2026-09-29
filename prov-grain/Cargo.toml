@@ -1,0 +1,25 @@
+[package]
+name = "prov-grain"
+description = "Grains for a prov workspace: how a value is cut into groups, and the chain of coarser cuts a filing nests through"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+# The metadata value a grain reads. Nothing else of the read core is used, and
+# nothing here can write.
+prov-graph = { workspace = true, default-features = false }
+# What a calendar grain reads a value through — see `src/date.rs`. Pure and
+# dependency-free.
+edtf-core.workspace = true
+
+[features]
+default = ["yaml"]
+yaml = ["prov-graph/yaml"]
+json = ["prov-graph/json"]
+toml = ["prov-graph/toml"]
+fig-lang = ["prov-graph/fig-lang"]

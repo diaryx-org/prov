@@ -27,7 +27,8 @@
 //! `where:` and `key:` are [CEL](expr) expressions over each document's
 //! fields and the document itself (`doc`). prov adds a handful of functions
 //! that carry its own decisions — `year`/`month`/`day` cut a value read as
-//! EDTF (so an archive's `1913~` and `1918/1922` file, see [`date`]),
+//! EDTF (so an archive's `1913~` and `1918/1922` file, see
+//! `prov_grain::date`; the grains are `prov-grain`'s, shared with filing),
 //! `initial` cuts an A–Z index, `first` is a fallback chain, `present` asks
 //! whether a field is filled in — and nothing in this crate knows which field
 //! is the date: the three names in the example above are a *declaration the
@@ -35,13 +36,13 @@
 //!
 //! A view does not know the spine. The census ([`documents`]) records each
 //! document's ancestors, and a view scopes itself by reading them. Where a
-//! *new* record goes is not a view's either: that is [`filing`], a
+//! *new* record goes is not a view's either: that is `prov-filing`, a
 //! declaration of its own, because filing writes into the single-parent spine
 //! and needs guarantees reading does not.
 //!
 //! ## What this crate does not do
 //!
-//! **It cannot write.** Its one dependency is `prov-graph`, the read core,
+//! **It cannot write.** It reads through `prov-graph`, the read core,
 //! whose filesystem port has no method that writes a byte — so a view engine is
 //! structurally unable to modify the workspace it reads, rather than merely
 //! intending not to.
@@ -50,7 +51,7 @@
 //! paired, ids registered, links resolvable, fixity honest — and a view is not
 //! that: a wrong view shows the wrong rows and you edit the file. That is why
 //! this is a crate beside prov rather than a feature inside it, and why
-//! [`FilingSpec::route`] is a *description* of where a frontend should file a
+//! `prov_filing::FilingSpec::route` is a *description* of where a frontend should file a
 //! new record rather than something this crate goes and does. Its expression
 //! evaluator, CEL, cannot write either: an expression has no side effects and
 //! always finishes.
@@ -90,26 +91,17 @@
 //! # }
 //! ```
 
-pub mod date;
 pub mod error;
 pub mod expr;
-pub mod filing;
-pub mod grain;
 pub mod group;
 pub mod legacy;
 pub mod lint;
-mod scalar;
 pub mod search;
 pub mod select;
 pub mod spec;
 
 pub use error::{Error, Result};
 pub use expr::{Evaluator, Expression, ExpressionError, FUNCTIONS, KeyShape};
-pub use filing::{
-    FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, NESTS, Nest, NestRoute,
-    diagnose_filing, filing_from,
-};
-pub use grain::{GRAINS, Grain};
 pub use group::{Group, RowSet, group};
 pub use legacy::{Translation, translate};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};

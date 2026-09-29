@@ -11,7 +11,7 @@
 //!
 //! A view is a way of *reading*, and reading has no invariant: a wrong view
 //! shows the wrong rows and you edit the file. So nothing here needs the static
-//! guarantees filing does (those are [`crate::filing`]'s), and a view can be as
+//! guarantees filing does (those are `prov-filing`'s), and a view can be as
 //! expressive as a query language — provided the language cannot write and
 //! always finishes. CEL is designed for exactly that: it is deliberately not
 //! Turing complete, an expression has no side effects, and it is what
@@ -65,9 +65,8 @@ use cel::{Context, ExecutionError, FunctionContext, IdedExpr, Program, ResolveRe
 use prov_graph::field::{FieldPath, values_at};
 use prov_graph::meta::{Mapping, Value};
 
-use crate::grain::Grain;
-use crate::scalar::scalar_texts;
 use crate::select::Row;
+use prov_grain::{Grain, scalar_texts};
 
 /// prov's functions — the only names an expression may call beyond CEL's own.
 pub const FUNCTIONS: &[&str] = &[

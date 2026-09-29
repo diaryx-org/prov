@@ -16,16 +16,15 @@
 //!   `a.id` for an `id:` link and by `a.path` for a path
 //! - `has: x` → `present(x)`; `equals: { x: v }` → `'v' in field('x')`, since
 //!   the old comparison was by text and matched any item of a list
-//! - `nest:` → a [`filing`](crate::filing) entry of the same name, with the
+//! - `nest:` → a `filing:` entry (`prov-filing`) of the same name, with the
 //!   anchor and the chain it filed by
 
 use prov_graph::link::Link;
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::title;
 
-use crate::grain::Grain;
-use crate::scalar::scalar_texts;
 use crate::spec::is_retired;
+use prov_grain::{Grain, scalar_texts};
 
 /// A retired view, rewritten.
 #[derive(Debug, Clone, PartialEq)]
@@ -392,8 +391,8 @@ fn fields_of(value: &Value) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::expr::Expression;
-    use crate::filing::FilingSpec;
     use crate::spec::ViewSpec;
+    use prov_filing::FilingSpec;
 
     fn yaml(src: &str) -> Value {
         prov_graph::meta::parse_value(src, prov_graph::Format::Yaml).expect("yaml")

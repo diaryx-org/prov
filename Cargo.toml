@@ -3,7 +3,7 @@ resolver = "2"
 # `xtask` is prov's CI, as a program: `cargo xtask <job>` runs one CI job and the
 # workflow runs nothing else. It is a member so `cargo test --workspace` checks
 # it, and `publish = false` keeps it off crates.io.
-members = ["prov-graph", "prov-store", "prov-views", "prov-exports", "prov-config", "prov", "prov-cli", "prov-testkit", "xtask"]
+members = ["prov-graph", "prov-store", "prov-grain", "prov-views", "prov-filing", "prov-exports", "prov-config", "prov", "prov-cli", "prov-testkit", "xtask"]
 
 [workspace.package]
 version = "0.15.5"
@@ -84,7 +84,7 @@ moid = "1"
 # interval (`1918/1922`, `../1920`), or that the date is not known at all
 # (`XXXX`). `edtf-core` parses and bounds it — levels 0–2, `no_std`, no
 # dependencies — and is what the calendar grains cut through
-# (`prov-views/src/date.rs`) and what `check` judges a `type: date` value by.
+# (`prov-grain/src/date.rs`) and what `check` judges a `type: date` value by.
 # `edtf-normalize` is the repair: a deterministic reading of date prose
 # (`May 1943` → `1943-05`, `c. 1913` → `1913~`) that reports ambiguity rather
 # than guessing, which is what a `check` remedy is allowed to be.
@@ -127,9 +127,16 @@ prov-store = { path = "prov-store", version = "0.15.5", default-features = false
 fs-transaction = { version = "0.4" }
 # Test scaffolding, shared so it cannot drift. Never published — see its manifest.
 prov-testkit = { path = "prov-testkit" }
+# Grains: how a value is cut into groups, and the chain a nest builds. Shared
+# by the reading side (views) and the writing side (filing), so neither
+# depends on the other.
+prov-grain = { path = "prov-grain", version = "0.15.5", default-features = false }
 # The declarative view format and its executor. Depends on the read core only,
 # so a view engine cannot write to the workspace it reads.
 prov-views = { path = "prov-views", version = "0.15.5", default-features = false }
+# Where a new record goes: the `filing:` axis, split out of views because it is
+# the half that writes into the spine. Describes a route; files nothing.
+prov-filing = { path = "prov-filing", version = "0.15.5", default-features = false }
 # Gated egress sets: a view composed with a gate, judged as an export plan.
 prov-exports = { path = "prov-exports", version = "0.15.5", default-features = false }
 # Workspace configuration policy, codecs, diagnostics, and vocabularies.

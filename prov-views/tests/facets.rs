@@ -16,11 +16,9 @@
 //! and whether a field is controlled is `fields.<name>.values`, which prov has
 //! carried since before views existed. A view has no business restating it.
 
+use prov_filing::{FilingSpec, Grain, Nest, filing_from};
 use prov_graph::meta::{Mapping, Value};
-use prov_views::{
-    Evaluator, Expression, FilingSpec, Grain, KeyShape, Nest, Row, ViewSpec, filing_from,
-    translate, views_from,
-};
+use prov_views::{Evaluator, Expression, KeyShape, Row, ViewSpec, translate, views_from};
 
 /// The five lenses, as a workspace now declares them.
 const DECLARED: &str = "\

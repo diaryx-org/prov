@@ -45,7 +45,7 @@
 //!
 //! # A view does not file
 //!
-//! Where a *new* record goes is [`crate::filing`]'s, a declaration of its own.
+//! Where a *new* record goes is `prov-filing`'s, a declaration of its own.
 //! Filing writes into the single-parent spine and needs guarantees before
 //! anything runs; reading has no invariant, and keeping the two apart is what
 //! lets a view be a query.

@@ -89,13 +89,14 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{About, Fixity, IdStorage, WorkspaceConfig};
 use crate::identity::Registration;
+use prov_grain::Grain;
 use prov_graph::content::{ContentFormat, transcode};
 use prov_graph::document::{EmbedStyle, MetaCarrier, embed_carrier};
 use prov_graph::error::{Error, Result};
 use prov_graph::link::{Addressing, Notation, PathStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, RelationSet};
-use prov_views::{Grain, KeyShape, ViewSpec};
+use prov_views::{KeyShape, ViewSpec};
 
 /// The `Workspace` methods that decide when to call [`generate`], where the
 /// result goes, and whether it differs from what is already on disk. Kept out

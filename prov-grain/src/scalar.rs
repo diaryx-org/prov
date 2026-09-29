@@ -9,7 +9,7 @@ use prov_graph::meta::Value;
 /// rendered rather than skipped — a `rating: 5` groups under `5`. A mapping has
 /// no single text and is not groupable; a nested sequence is not flattened,
 /// because a list of lists is a shape no frontmatter field means to declare.
-pub(crate) fn scalar_texts(value: &Value) -> Vec<String> {
+pub fn scalar_texts(value: &Value) -> Vec<String> {
     match value {
         Value::Sequence(items) => items.iter().filter_map(scalar_text).collect(),
         other => scalar_text(other).into_iter().collect(),
@@ -18,7 +18,7 @@ pub(crate) fn scalar_texts(value: &Value) -> Vec<String> {
 
 /// One scalar's trimmed text, or `None` for a null, an empty string, or a
 /// composite.
-pub(crate) fn scalar_text(value: &Value) -> Option<String> {
+pub fn scalar_text(value: &Value) -> Option<String> {
     let text = match value {
         Value::String(s) => s.trim().to_string(),
         Value::Int(i) => i.to_string(),

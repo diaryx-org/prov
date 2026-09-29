@@ -1,8 +1,8 @@
 //! Grains: how finely a value is cut into groups.
 //!
 //! A grain is what a view's `year(…)`, `month(…)`, `day(…)` and `initial(…)`
-//! functions apply (see [`crate::expr`]), and what a filing entry's `nest:`
-//! names (see [`crate::filing`]). The two uses need different things from it,
+//! functions apply (`prov-views`), and what a filing entry's `nest:`
+//! names (`prov-filing`). The two uses need different things from it,
 //! and the type says which: reading needs only [`Grain::cuts`], filing also
 //! needs [`Grain::chain`].
 
@@ -20,11 +20,11 @@ use prov_graph::meta::{Mapping, Value};
 ///
 /// - [`cuts`](Self::cuts) — value → keys. This is all a view's `key:` needs
 ///   (through the `year`/`month`/`day`/`initial` functions, see
-///   [`crate::expr`]), because grouping is a *reading* operation with no
+///   `prov-views`), because grouping is a *reading* operation with no
 ///   invariant to keep. Usually one key; an interval (`1918/1922`) is under every year it
 ///   spans, which is what makes it *keys*.
 /// - [`chain`](Self::chain) — the coarser grains this one refines, coarsest
-///   first. This is what [`nest`](crate::FilingSpec::nest) needs, and it is a strictly
+///   first. This is what a filing entry's `nest` needs, and it is a strictly
 ///   stronger requirement: nesting builds a hierarchy of index documents, so
 ///   each level's key must be determined by the finer level's
 ///   (`2026-07-24` → `2026-07` → `2026`, `Ada` → `Ad` → `A`). A coarsening
@@ -32,13 +32,13 @@ use prov_graph::meta::{Mapping, Value};
 ///
 /// The second constraint is prov's, not taste. `nest` files a record into the
 /// **spanning relation**, which is single-parent, so a nest chain must also be
-/// *single-valued* per document — see [`FilingSpec::route`](crate::FilingSpec::route), which returns
+/// *single-valued* per document — see `prov_filing::FilingSpec::route`, which returns
 /// `None` rather than guessing which of a multi-valued field's values a
 /// document should be filed under.
 ///
 /// # Adding a grain
 ///
-/// The rule is the one [`crate::expr`] uses for prov's functions: a **concrete lens
+/// The rule is the one `prov_views::expr` uses for prov's functions: a **concrete lens
 /// that cannot otherwise be said**, not a shape that seems likely to be wanted.
 /// `initial` earns its place as the A–Z index every list of names and places
 /// eventually wants. A numeric `bucket` (ratings by tens) is the obvious next
@@ -209,7 +209,7 @@ impl Grain {
     ///
     /// The single-valued half of [`cuts`](Self::cuts), for the caller that
     /// needs one answer: filing. An interval has several homes at a grain it
-    /// spans, and [`FilingSpec::route`](crate::FilingSpec::route) must not pick one, for the reason
+    /// spans, and `prov_filing::FilingSpec::route` must not pick one, for the reason
     /// it does not pick between two people.
     pub fn cut(self, value: &str) -> Option<String> {
         let mut keys = self.cuts(value);

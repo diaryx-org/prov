@@ -28,6 +28,7 @@ use fig_schema::FieldType;
 
 use crate::textdist::nearest;
 use prov_exports::{ExportIssueKind, ExportSpec};
+use prov_filing::{FilingIssueKind, FilingSpec};
 use prov_graph::content::ContentFormat;
 use prov_graph::document::EmbedStyle;
 use prov_graph::field::FieldPath;
@@ -36,7 +37,7 @@ use prov_graph::identity::{Registration, Trigger};
 use prov_graph::link::{Addressing, LinkStyle, Notation, PathStyle, ReferenceStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, Relation, RelationSet};
-use prov_views::{FilingIssueKind, FilingSpec, ViewIssueKind, ViewSpec};
+use prov_views::{ViewIssueKind, ViewSpec};
 
 /// Where a document's stable id is persisted. Defined in `prov-graph`, because
 /// it is the one identity setting that changes what a link *resolves to* — a
@@ -1040,7 +1041,10 @@ impl WorkspaceConfig {
         }
         // Filing entries: `filing: { <name>: { under, field, nest } }`, merged
         // per entry and replaced whole, like views.
-        if let Some(entries) = meta.get(prov_views::FILING_KEY).and_then(Value::as_mapping) {
+        if let Some(entries) = meta
+            .get(prov_filing::FILING_KEY)
+            .and_then(Value::as_mapping)
+        {
             for (name, value) in entries {
                 let Some(spec) = FilingSpec::parse(name, value) else {
                     continue;
@@ -1292,7 +1296,7 @@ impl WorkspaceConfig {
             for spec in &self.filing {
                 entries.insert(spec.name.clone(), Value::Mapping(spec.to_mapping()));
             }
-            map.insert(prov_views::FILING_KEY.into(), Value::Mapping(entries));
+            map.insert(prov_filing::FILING_KEY.into(), Value::Mapping(entries));
         }
 
         if !self.exports.is_empty() {
@@ -2043,7 +2047,7 @@ fn diagnose_filing(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mappi
     for (name, spec) in map {
         let prefix = format!("filing.{name}");
         diagnose_nest_is_fileable(issues, &prefix, spec, surface);
-        for issue in prov_views::diagnose_filing(name, spec) {
+        for issue in prov_filing::diagnose_filing(name, spec) {
             let dotted = match issue.key.as_str() {
                 "" => prefix.clone(),
                 key => format!("{prefix}.{key}"),
@@ -2070,7 +2074,7 @@ fn diagnose_filing(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mappi
                     },
                 }),
                 FilingIssueKind::UnknownKey => {
-                    if let Some(sug) = nearest(&issue.key, prov_views::FILING_KEYS) {
+                    if let Some(sug) = nearest(&issue.key, prov_filing::FILING_KEYS) {
                         issues.push(unknown(dotted, format!("{prefix}.{sug}")));
                     }
                 }
@@ -2138,7 +2142,7 @@ fn diagnose_nest_is_fileable(
     // field says `type: ref`. A key in the chain that does not is reported:
     // the filing would work until the first move, and then break without a
     // word.
-    if nest == prov_views::Nest::Ref
+    if nest == prov_filing::Nest::Ref
         && let Some(field) = entry.field.iter().find(|k| !declared(k, FieldType::Ref))
     {
         issues.push(ConfigIssue {
@@ -2773,7 +2777,7 @@ mod tests {
                     label: Some("Daily entry".to_string()),
                     under: Some("[Daily](id:abc1234)".to_string()),
                     field: vec!["date_of_document".to_string(), "created".to_string()],
-                    nest: Some(prov_views::Nest::Grain(prov_views::Grain::Year)),
+                    nest: Some(prov_filing::Nest::Grain(prov_filing::Grain::Year)),
                 },
                 FilingSpec {
                     name: "tasks".to_string(),

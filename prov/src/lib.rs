@@ -257,13 +257,29 @@ pub use peers::PeerFile;
 pub mod views {
     pub use prov_views::{
         Ancestor, Clause, Corpus, Error, Evaluator, Excluded, Expression, ExpressionError,
-        FILING_KEY, FILING_KEYS, FUNCTIONS, Failure, FilingIssue, FilingIssueKind, FilingSpec,
-        GRAINS, Grain, Group, Hit, IndexedDoc, KeyShape, NESTS, Nest, NestRoute, Passage, Query,
-        RETIRED_VIEW_KEYS, Row, RowSet, Selection, Site, Translation, VIEW_KEYS, VIEWS_KEY,
-        ViewIssue, ViewIssueKind, ViewSpec, corpus, date, diagnose_filing, diagnose_view,
-        diagnose_views, documents, filing_from, fold, group, narrow, search, select, translate,
-        views_from,
+        FUNCTIONS, Failure, Group, Hit, IndexedDoc, KeyShape, Passage, Query, RETIRED_VIEW_KEYS,
+        Row, RowSet, Selection, Site, Translation, VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind,
+        ViewSpec, corpus, diagnose_view, diagnose_views, documents, fold, group, narrow, search,
+        select, translate, views_from,
     };
+}
+/// Where a new record goes — the `filing:` config axis, and the route a
+/// frontend files a record by.
+///
+/// Re-exported at prov's own path for the same reasons [`views`] is. prov
+/// itself never files a record on its own: a route is a description, and a
+/// frontend acts on it through route addressing.
+pub mod filing {
+    pub use prov_filing::{
+        FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, NESTS, Nest, NestRoute,
+        diagnose_filing, filing_from,
+    };
+}
+/// Grains — how a value is cut into groups, and the chain of coarser cuts a
+/// filing nests through. Shared by [`views`] and [`filing`], and by `check`,
+/// which judges a `type: date` value by the same EDTF reading ([`grain::date`]).
+pub mod grain {
+    pub use prov_grain::{GRAINS, Grain, date};
 }
 /// Named, closed-by-default document sets that may leave the workspace — the
 /// `exports:` config axis, and the plan that composes a gate with a view.

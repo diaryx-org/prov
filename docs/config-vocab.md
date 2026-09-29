@@ -381,8 +381,12 @@ obvious candidate and is deliberately absent: nobody has asked for one, and its
 keys would sort lexically as `0, 10, 100, 20`, needing group ordering to become
 grain-aware, which is the deferred `sort:` axis under another name.
 
+Grains are their own crate, `prov-grain`, because they belong to neither side:
+a view reads by a grain's cuts, and [filing](#filing) writes by its chain. Both
+depend on it, and neither on the other.
+
 The reading engine is the `prov-views` crate, whose dependencies are prov's
-read core, the EDTF parser and the CEL interpreter, none of which can write to
+read core, `prov-grain` and the CEL interpreter, none of which can write to
 the workspace it reads. Running a view is two steps, and they are worth
 knowing apart: **select** answers *which documents does this view cover* and
 returns a flat, deduplicated set; **group** projects that into groups and is a
@@ -438,8 +442,9 @@ to live inside them. MoReq2010 §1.4.5 draws the same line between
 index a record actually hangs under; keeping them apart is what keeps a change
 to how something reads from moving where tomorrow's entry lands.
 
-prov describes where a record files (`FilingSpec::route`), and a frontend
-files it: the route is index *titles* below `under`, exactly what prov's route
+prov describes where a record files (`FilingSpec::route`, in the
+`prov-filing` crate, which shares grains with views through `prov-grain` and
+does not depend on the view engine), and a frontend files it: the route is index *titles* below `under`, exactly what prov's route
 addressing takes (`prov new --under "Daily/2026/2026-07" -p`), or the link the
 record carries.
 
