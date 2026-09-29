@@ -1,29 +1,39 @@
 title: prov config
-spec: 1
+spec: 1 # not updated until 1.0
+
+root: README.md
+
+# The markup format of the content/body of new documents
 content_format: markdown
+# where IDs are stored: a registry, each file, or both
 id_storage: both
-updated: updated
+# When IDs are minted for new files
 identity: lazy
+# Whether hashes are recorded for attachments
 fixity: on
+# Whether prov keeps a record of which files were deleted
 record_deletions: true
+
+# settings for metadata in files
 metadata:
-  format: yaml
-  embed: delimited
+  format: yaml # the format
+  embed: delimited # whether/how the config data lives in the file
+
+# settings for links between files
 references:
-  notation: markdown
-  path_style: root
-  target: path
-  label: false
-created: created
+  notation: markdown # what format the links are written in
+  path_style: root # what the paths in links are relative to
+  target: path # path or ID
+  label: false # whether to include the title in links
+
 fields:
   audience:
     values: closed
     vocabulary: '[Audiences](/vocab/audiences.md)'
-    reify: true
   created:
-    type: datetime
+    stamp: create # written when prov makes the document
   updated:
-    type: datetime
+    stamp: edit # written whenever prov changes the document's content
   status:
   - under: '[[Tasks]]'
     values: closed
@@ -40,24 +50,23 @@ views:
     # tasks` shelf a closed task moves to — says no status, and is not an open
     # task.
     where: >-
-      doc.ancestors.exists(a, a.title == 'Tasks')
-      && present(status) && !(status in ['done', 'dropped'])
+      under('Tasks') && present(status) && !(status in ['done', 'dropped'])
     key: status
   proposals:
     label: Proposals
-    where: >-
-      doc.ancestors.exists(a, a.title == 'Proposals') && present(status)
+    where: under('Proposals') && present(status)
     key: status
   work:
     label: All work
     where: present(status)
     key: status
 workspace_id: prov
-root: README.md
+
+# Define how prov files may be exported
 exports:
   www:
     label: prov on diaryx.org
     gate:
       field: audience
       value: public
-    hold: draft
+    hold: status # a document waits while its status is a term that `holds: true`
