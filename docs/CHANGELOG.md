@@ -32,6 +32,37 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.17.0 — 2026-09-29
+
+### Breaking
+
+- **config** — retired config is rewritten, not only reported ([`c52f3d9`](https://github.com/diaryx-org/prov/commit/c52f3d968aa6589f78c55a7e0410cae3bf82ad51))
+- **graph** — a numeric title is a title wherever a title is read ([`060cb6e`](https://github.com/diaryx-org/prov/commit/060cb6e49349a87e55268a102c3618cdd592d0c4))
+
+### Added
+
+- **prov** — make public the rules consumers were keeping copies of ([`458fbeb`](https://github.com/diaryx-org/prov/commit/458fbebe54574347c3d9ed09bfc187cb98b49db4))
+- **filing** — the value a record files by is public ([`d420d36`](https://github.com/diaryx-org/prov/commit/d420d369690e63948c84310f6ef1e968aa8b4fb3))
+- **config** — a stamp declared `type: date` is written as the day ([`5d64e8b`](https://github.com/diaryx-org/prov/commit/5d64e8b6bce59dc3fe72c1c326dd5c338c34663a))
+- **prov** — prov files a new record — `Workspace::file` and `new --filing` ([`a04e97d`](https://github.com/diaryx-org/prov/commit/a04e97de33cc814e6553176516197d1894d22b01))
+
+### Behavioural changes
+
+- a top-level `updated:` or `created:` in either config surface is a `stamp_retired` config finding, so `check` fails on a workspace that still carries one.
+
+- `check --fix mechanical` rewrites retired views (adding their `filing:` entries) and retired stamp keys in place.
+
+- `prov config updated <field>` and `prov config created <field>` are refused, naming `fields.<field>.stamp`.
+
+- `prov check --json` reports `filing_taken` on a `view_retired` issue.
+
+- a document whose `title:` is a number, boolean or float is titled by that value's text in the tree, the title index, views (`doc.title`, `doc.ancestors`), `prov docs`/`prov views` output and the link labels prov writes, where it was untitled.
+
+- a field declaring both `stamp:` and `type: date` is written `YYYY-MM-DD` on the local clock by `prov new`, `edit`, `set`, `unset` and `stamp`, where it was written the UTC instant.
+
+- a confirmation measured against an edit stamp that is a bare date is stale only when the date is a later day than its `at`, where the two were compared as text.
+
+
 ## v0.16.0 — 2026-09-28
 
 ### Breaking
