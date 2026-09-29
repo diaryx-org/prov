@@ -255,22 +255,22 @@ pub(crate) fn machinery(
     Ok(stores)
 }
 
-/// The timestamp half of a content change to `rel`: the workspace's `updated`
-/// field and the instant `now`, or `None` when the workspace keeps no such
-/// field or `rel` is [`machinery`] rather than content. Shared by
-/// every verb that stamps — `edit`, `set`, `unset`, `stamp` — so they cannot
-/// disagree about which documents a timestamp may land in.
+/// The timestamp half of a content change to `rel`: the workspace's edit
+/// stamp and what `now` writes into it — the instant, or the day for a
+/// `type: date` field — or `None` when the workspace keeps no such field or
+/// `rel` is [`machinery`] rather than content. Shared by every verb that
+/// stamps — `edit`, `set`, `unset`, `stamp` — so they cannot disagree about
+/// which documents a timestamp may land in.
 pub(crate) fn updated_stamp<'a>(
     ctx: &'a Ctx,
     machinery: &[PathBuf],
     rel: &Path,
-    now: &'a str,
-) -> Option<(&'a str, &'a str)> {
-    let field = ctx.config.updated_field()?;
+    now: &prov::Now,
+) -> Option<(&'a str, String)> {
     if machinery.iter().any(|m| m == rel) {
         return None;
     }
-    Some((field, now))
+    ctx.config.stamp_value(prov::Stamp::Edit, now)
 }
 
 /// The workspace the multi-document commands drive: rooted at the discovered

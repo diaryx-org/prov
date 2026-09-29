@@ -118,6 +118,12 @@ that no longer exists. Both are the same clock in the same fixed-width RFC 3339
 spelling, so the comparison is one a reader makes by eye — *confirmed at
 09:20, changed at 10:00, or not*.
 
+A workspace whose edit stamp is declared `type: date` records only the day of
+an edit, and the comparison is made at that resolution: an entry is stale once
+the stamp names a later day than the one it was confirmed on. An edit made the
+same day as the confirmation cannot be told from one made before it, so it does
+not make the entry stale — the digest, where there is one, still does.
+
 Where the document records a `content_hash` — an attachment sidecar, a
 separated node, a manifest node — the entry also names the digest on record:
 

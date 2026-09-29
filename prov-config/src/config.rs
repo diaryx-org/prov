@@ -210,11 +210,12 @@ pub struct FieldSpec {
 
 /// When prov writes the current time into a field — `fields.<f>.stamp`.
 ///
-/// A stamped field's value is always an instant with its offset, RFC 3339 in
-/// UTC (`2026-09-28T14:03:00Z`), because prov reads it back; the field needs
-/// no `type:` to say so. The *name* is the workspace's: `updated`,
-/// `modified`, `lastmod`. A human-friendly date is a different, user-owned
-/// field prov never touches (DESIGN §2, "does prov read it back?").
+/// A stamped field's value is an instant with its offset, RFC 3339 in UTC
+/// (`2026-09-28T14:03:00Z`), because prov reads it back; the field needs no
+/// `type:` to say so. A field that declares `type: date` is written the
+/// calendar date on the writer's clock instead (`2026-09-28`) — a stamp a
+/// person reads, and may backdate. The *name* is the workspace's: `updated`,
+/// `modified`, `lastmod`. See [`WorkspaceConfig::stamp_value`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stamp {
     /// Written once, when prov makes the document (`prov new`).
@@ -771,6 +772,20 @@ impl WorkspaceConfig {
     /// `None` turns it off.
     pub fn created_field(&self) -> Option<&str> {
         self.stamped(Stamp::Create)
+    }
+
+    /// The field stamped `when`, and what to write into it at `now` — or
+    /// `None` when the workspace stamps nothing then.
+    ///
+    /// The value honours the field's declared type: a `type: date` field is
+    /// written the calendar date on the caller's clock (`2026-09-28`), a date
+    /// a person may later correct; any other is written the instant, which
+    /// is what prov reads back. The type is the unscoped declaration's, the
+    /// one the stamp is read from. prov still reads no clock: `now` is the
+    /// caller's, and this only decides its spelling.
+    pub fn stamp_value(&self, when: Stamp, now: &crate::Now) -> Option<(&str, String)> {
+        let field = self.stamped(when)?;
+        Some((field, now.stamp_for(self.field(field))))
     }
 
     /// Every declaration of every field, flattened, with the field's name —

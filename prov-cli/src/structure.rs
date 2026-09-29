@@ -288,8 +288,11 @@ fn opening_fields(
     sets: Vec<(String, Value)>,
 ) -> Result<Mapping, AnyError> {
     let mut fields = Mapping::new();
-    if let Some(created) = ctx.config.created_field() {
-        fields.insert(created.to_string(), Value::String(now_rfc3339()));
+    if let Some((created, value)) = ctx
+        .config
+        .stamp_value(prov::Stamp::Create, &crate::clock::now())
+    {
+        fields.insert(created.to_string(), Value::String(value));
     }
     for (name, value) in block_on(ws.defaults_for_child(&ctx.root_doc, &ctx.config, parent))? {
         fields.insert(name, value);

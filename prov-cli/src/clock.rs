@@ -30,6 +30,42 @@ pub(crate) fn now_rfc3339() -> String {
     rfc3339(since.as_secs(), since.subsec_micros())
 }
 
+/// The clock as a stamp reads it: [`now_rfc3339`], and the offset of the local
+/// wall clock at that moment — so a `type: date` stamp is the day on the wall
+/// of whoever ran the command, and an instant stamp is unchanged.
+pub(crate) fn now() -> prov::Now {
+    prov::Now::new(now_rfc3339(), local_offset_minutes())
+}
+
+/// Minutes east of UTC of the local wall clock right now, from the C library's
+/// own time-zone rules (`TZ`, `/etc/localtime`) — the ones `date` reads. The
+/// offset of *now*, not of a zone: across a daylight-saving change it moves,
+/// which is the point. Zero where the platform gives no answer.
+#[cfg(unix)]
+fn local_offset_minutes() -> i32 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as libc::time_t)
+        .unwrap_or(0);
+    // SAFETY: `localtime_r` is the reentrant form — it writes only into the
+    // `tm` it is handed, which is zeroed and owned here, and reads only the
+    // `time_t` passed by pointer. A null return (an unrepresentable time)
+    // leaves `tm` zeroed, which reads as UTC.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let filled = unsafe { !libc::localtime_r(&secs, &mut tm).is_null() };
+    if filled {
+        (tm.tm_gmtoff / 60) as i32
+    } else {
+        0
+    }
+}
+
+/// No portable offset without a time-zone database: UTC.
+#[cfg(not(unix))]
+fn local_offset_minutes() -> i32 {
+    0
+}
+
 /// Format an instant since the Unix epoch as an RFC 3339 UTC timestamp. Split out
 /// from [`now_rfc3339`] so the calendar arithmetic is testable without a clock.
 ///

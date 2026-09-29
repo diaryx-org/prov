@@ -226,3 +226,36 @@ fn the_about_page_says_what_a_document_starts_with() {
         "{page}"
     );
 }
+
+/// A `created` stamp declared `type: date` is written as the day on the local
+/// clock — the date `date +%F` prints — rather than the UTC instant, and
+/// `check` holds it to the date type it declares without complaint.
+#[cfg(unix)]
+#[test]
+fn a_date_typed_stamp_is_the_local_day() {
+    let dir = workspace("dated");
+    ok(&dir, &["config", "fields.created.type", "date"]);
+    ok(&dir, &["about"]);
+    let before = local_day();
+    ok(&dir, &["new", "Today", "--in", "index.md"]);
+    let after = local_day();
+    let text = read(&dir, "today.md");
+    let created = frontmatter(&text)
+        .into_iter()
+        .find_map(|line| line.strip_prefix("created: "))
+        .unwrap_or_else(|| panic!("{text}"))
+        .trim_matches('\'')
+        .to_string();
+    assert!(
+        created == before || created == after,
+        "{created} vs {before}: {text}"
+    );
+    ok(&dir, &["check"]);
+}
+
+/// Today on this machine's wall clock, as the system's own `date` reads it.
+#[cfg(unix)]
+fn local_day() -> String {
+    let out = Command::new("date").arg("+%F").output().expect("date");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}

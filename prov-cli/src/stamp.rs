@@ -16,7 +16,7 @@ use prov::{ContentState, block_on};
 
 use crate::CmdResult;
 use crate::actor;
-use crate::clock::now_rfc3339;
+use crate::clock;
 use crate::session::{Session, machinery, updated_stamp, ws_rel};
 
 /// `confirm` — append one entry to a document's `confirmed` list, or show the
@@ -62,7 +62,7 @@ pub(crate) fn cmd_confirm(file: &Path, by: Option<String>, show: bool) -> CmdRes
     }
 
     let actor = actor::resolve(by)?;
-    let now = now_rfc3339();
+    let now = clock::now_rfc3339();
     let entry = block_on(session.ws.confirm(&rel, &actor, &now))?;
     session.commit()?;
     let standing = block_on(session.ws.confirmations(&rel))?;
@@ -126,7 +126,7 @@ pub(crate) fn cmd_stamp(
     };
     let named = target.is_some();
 
-    let now = now_rfc3339();
+    let now = clock::now();
     // The workspace may not record an `updated` field at all, in which case
     // there is no timestamp half to this command and only the checksum moves.
     // Which documents may carry one is decided per path below, so that naming
@@ -163,9 +163,12 @@ pub(crate) fn cmd_stamp(
             ContentState::Unrecorded => (true, named),
             ContentState::Intact | ContentState::Unverifiable => (false, false),
         };
-        let timestamp = (claims_edit && !no_timestamp)
+        let stamp = (claims_edit && !no_timestamp)
             .then(|| updated_stamp(&session.ctx, &machinery, &path, &now))
             .flatten();
+        let timestamp = stamp
+            .as_ref()
+            .map(|(field, value)| (*field, value.as_str()));
         if !write {
             if named {
                 eprintln!(

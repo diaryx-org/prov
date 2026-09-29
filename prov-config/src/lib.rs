@@ -7,6 +7,7 @@
 mod textdist;
 
 pub mod config;
+pub mod now;
 pub mod upgrade;
 pub mod vocabulary;
 
@@ -16,6 +17,7 @@ pub use config::{
     diagnose, field_type_as_config_str, field_type_from_config_str, is_valid_scope_path,
     is_valid_workspace_id, metadata_format_from_str, metadata_format_str, spec_ahead,
 };
+pub use now::Now;
 pub use upgrade::{ConfigEdit, upgrade};
 pub use vocabulary::{Term, Vocabulary};
 

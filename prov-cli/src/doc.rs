@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use prov::{Format, RelationSet, Value, block_on, edit, meta};
 
 use crate::cli::MetaFormat;
-use crate::clock::now_rfc3339;
+use crate::clock;
 use crate::session::{Session, load, machinery, updated_stamp, workspace_around, ws_rel};
 use crate::term::edit_file;
 use crate::{AnyError, CmdResult};
@@ -208,13 +208,21 @@ fn write_field_edit(file: &Path, key: &str, text: &str) -> Result<(), AnyError> 
         return Ok(());
     };
     let mut session = Session::over(ctx)?;
-    let now = now_rfc3339();
+    let now = clock::now();
     let machinery = machinery(&session.ctx, &session.ws)?;
     let own_field = key.split('.').next() == session.ctx.config.updated_field();
     let stamp = (!own_field)
         .then(|| updated_stamp(&session.ctx, &machinery, &rel, &now))
         .flatten();
-    block_on(session.ws.save_document(&rel, text, stamp))?;
+    block_on(
+        session.ws.save_document(
+            &rel,
+            text,
+            stamp
+                .as_ref()
+                .map(|(field, value)| (*field, value.as_str())),
+        ),
+    )?;
     let stamped = stamp.map(|(field, _)| field.to_string());
     session.commit()?;
     if let Some(field) = stamped {
@@ -243,10 +251,17 @@ pub(crate) fn cmd_edit(file: &Path) -> CmdResult {
     // configured) with the current time — RFC 3339 UTC, the machine-standard
     // value the library reads back (DESIGN §2). Both self-gate, so this is a
     // no-op when neither is enabled.
-    let now = now_rfc3339();
+    let now = clock::now();
     let machinery = machinery(&session.ctx, &session.ws)?;
     let updated = updated_stamp(&session.ctx, &machinery, &rel, &now);
-    let wrote = block_on(session.ws.record_content_update(&rel, updated))?;
+    let wrote = block_on(
+        session.ws.record_content_update(
+            &rel,
+            updated
+                .as_ref()
+                .map(|(field, value)| (*field, value.as_str())),
+        ),
+    )?;
     let stamped = updated.map(|(field, _)| field.to_string());
     session.commit()?;
 

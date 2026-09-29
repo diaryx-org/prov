@@ -725,10 +725,26 @@ fields:
 ```
 
 A stamp alone is a complete declaration, and it needs no `type:`: what prov
-writes is always an instant, RFC 3339 in UTC (`2026-09-28T14:03:00Z`), because
-prov reads it back. The *name* is the workspace's — `updated`, `modified`,
-`lastmod`. A human-friendly date is a different field, the author's, which
-prov never touches.
+writes is an instant, RFC 3339 in UTC (`2026-09-28T14:03:00Z`), because prov
+reads it back. The *name* is the workspace's — `updated`, `modified`,
+`lastmod`.
+
+A stamp declared `type: date` is written as the calendar date instead —
+`created: 2026-09-28`, the day on the clock of whoever made the document, which
+a journal shows and a person may later backdate:
+
+```yaml
+fields:
+  created: { type: date, stamp: create }
+```
+
+The day depends on whose wall the moment fell on, which an instant alone does
+not say, so the program doing the writing supplies its clock's UTC offset with
+the time (`prov_config::Now`, and `WorkspaceConfig::stamp_value` for the value
+to write); the CLI reads the offset the way `date` does. Every other type
+keeps the instant. A date is checked as any `type: date` value is, and an edit
+stamp that is a date orders confirmations by day (see
+[Provenance](provenance.md) §3).
 
 A document has one creation instant and one last-edit instant, so each stamp
 belongs to one field: a second field claiming the same stamp is a

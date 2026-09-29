@@ -180,6 +180,31 @@ pub fn generate(
 /// Each section is `Option<String>`; a section with nothing to say about this
 /// workspace contributes nothing, which is what makes the page's length track
 /// how unusual the workspace is.
+/// What a stamped field holds, as the Timestamps paragraph says it: the
+/// instant prov reads back, or — for a field declared `type: date` — the day
+/// on the clock of whoever wrote it.
+fn stamp_form(config: &WorkspaceConfig, field: &str) -> &'static str {
+    if is_dated(config, field) {
+        "the calendar date it was written on, by the writer's clock (`1974-03-02`)"
+    } else {
+        "a UTC instant in RFC 3339 form (`1974-03-02T14:05:00Z`)"
+    }
+}
+
+/// [`stamp_form`] for two fields at once.
+fn stamp_forms(config: &WorkspaceConfig, field: &str) -> &'static str {
+    if is_dated(config, field) {
+        "the calendar date by the writer's clock (`1974-03-02`)"
+    } else {
+        "a UTC instant in RFC 3339 form (`1974-03-02T14:05:00Z`)"
+    }
+}
+
+fn is_dated(config: &WorkspaceConfig, field: &str) -> bool {
+    config.field(field).and_then(|spec| spec.ty)
+        == Some(fig_schema::FieldType::Extended(fig::ExtKind::LocalDate))
+}
+
 fn markdown_body(config: &WorkspaceConfig, relations: &RelationSet, ctx: &AboutContext) -> String {
     let sections = [
         Some(opening_section(config, relations, ctx)),
@@ -1117,26 +1142,40 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
                  was written by a person."
                 .to_string(),
             (Some(created), None) => format!(
-                "A field named {} is written when a document is made and holds a \
-                 UTC instant in RFC 3339 form (`1974-03-02T14:05:00Z`); it is not \
-                 touched after that. Any other date you find in a file was \
-                 written by a person.",
-                code(created)
+                "A field named {} is written when a document is made and holds {}; \
+                 it is not touched after that. Any other date you find in a file \
+                 was written by a person.",
+                code(created),
+                stamp_form(config, created)
             ),
             (None, Some(updated)) => format!(
-                "A field named {} is maintained automatically and holds a UTC \
-                 instant in RFC 3339 form (`1974-03-02T14:05:00Z`). Any other \
-                 date you find in a file was written by a person.",
-                code(updated)
+                "A field named {} is maintained automatically and holds {}. Any \
+                 other date you find in a file was written by a person.",
+                code(updated),
+                stamp_form(config, updated)
             ),
+            (Some(created), Some(updated))
+                if stamp_form(config, created) == stamp_form(config, updated) =>
+            {
+                format!(
+                    "Two fields hold {}: {} is written when a document is made \
+                     and not touched after that, and {} is maintained automatically \
+                     as the document changes. Any other date you find in a file was \
+                     written by a person.",
+                    stamp_forms(config, created),
+                    code(created),
+                    code(updated)
+                )
+            }
             (Some(created), Some(updated)) => format!(
-                "Two fields hold a UTC instant in RFC 3339 form \
-                 (`1974-03-02T14:05:00Z`): {} is written when a document is made \
-                 and not touched after that, and {} is maintained automatically \
-                 as the document changes. Any other date you find in a file was \
+                "{} is written when a document is made, and holds {}; it is not \
+                 touched after that. {} is maintained automatically as the document \
+                 changes, and holds {}. Any other date you find in a file was \
                  written by a person.",
                 code(created),
-                code(updated)
+                stamp_form(config, created),
+                code(updated),
+                stamp_form(config, updated)
             ),
         }
     ));
