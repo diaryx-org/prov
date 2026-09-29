@@ -456,6 +456,20 @@ pub(crate) fn cmd_config(
                             "prov: `{field}` is declared `type: ref` and scoped — a link field is read everywhere, so the scope narrows its other axes and not that"
                         );
                     }
+                    prov::ConfigIssueKind::ScopedStamp { field } => {
+                        eprintln!(
+                            "prov: `{field}` is stamped under a scope — a stamp is read from the field's unscoped declaration only"
+                        );
+                    }
+                    prov::ConfigIssueKind::RepeatedStamp {
+                        field,
+                        stamp,
+                        first,
+                    } => {
+                        eprintln!(
+                            "prov: `{field}` would be stamped on {stamp}, which `{first}` already is — a document has one such instant"
+                        );
+                    }
                     prov::ConfigIssueKind::NestRefNotDeclared { field } => {
                         eprintln!(
                             "prov: cannot file by reference through `{field}` — it is not declared `type: ref`, so a move of the shelf would not rewrite it"

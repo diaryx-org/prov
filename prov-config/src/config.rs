@@ -202,6 +202,46 @@ pub struct FieldSpec {
     /// The index itself is not in its own scope, for the reason a view's
     /// anchor is not one of its records.
     pub under: Option<String>,
+    /// When prov writes the current time into this field, if it does — see
+    /// [`Stamp`]. Read from the unscoped declaration only: when a document
+    /// changes is not a fact about where in the tree it sits.
+    pub stamp: Option<Stamp>,
+}
+
+/// When prov writes the current time into a field — `fields.<f>.stamp`.
+///
+/// A stamped field's value is always an instant with its offset, RFC 3339 in
+/// UTC (`2026-09-28T14:03:00Z`), because prov reads it back; the field needs
+/// no `type:` to say so. The *name* is the workspace's: `updated`,
+/// `modified`, `lastmod`. A human-friendly date is a different, user-owned
+/// field prov never touches (DESIGN §2, "does prov read it back?").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stamp {
+    /// Written once, when prov makes the document (`prov new`).
+    Create,
+    /// Written whenever prov changes the document's content — `edit`, `set`,
+    /// `unset`, `stamp` — and the instant a confirmation is judged stale
+    /// against.
+    Edit,
+}
+
+impl Stamp {
+    /// Parse the config spelling.
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "create" => Some(Stamp::Create),
+            "edit" => Some(Stamp::Edit),
+            _ => None,
+        }
+    }
+
+    /// The config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Stamp::Create => "create",
+            Stamp::Edit => "edit",
+        }
+    }
 }
 
 impl FieldSpec {
@@ -461,22 +501,6 @@ pub struct WorkspaceConfig {
     /// Whether the workspace generates **`about.md`**, the prose page that tells
     /// a stranger how to read this directory. On by default; see [`About`].
     pub about: About,
-    /// The frontmatter field prov's own edits (`edit`, `set`, `unset`, `stamp`)
-    /// stamp with the current time when a document's content changes — the
-    /// machine-maintained "last updated" field.
-    /// Empty (the default) disables it. The *name* is yours (`updated`,
-    /// `modified`, `lastmod`); the *value* is always machine-standard (RFC 3339
-    /// UTC), because prov reads it back to know when to rewrite it. A
-    /// human-friendly date is a *different*, user-owned field prov never
-    /// touches (see DESIGN §2, "does prov read it back?").
-    pub updated: String,
-    /// The frontmatter field `create` stamps with the current time when a
-    /// document is made — the sibling of [`updated`](Self::updated), written
-    /// once. Empty (the default) disables it. The same rule about name and
-    /// value applies: the name is yours, the value is RFC 3339 UTC, because
-    /// a value prov writes is one prov owns the format of, and a view
-    /// grouping by it (`by: month`) cuts ISO-8601 text.
-    pub created: String,
     /// What this workspace calls **itself** — the qualifier a cross-workspace
     /// reference (`id:<workspace>/<id>`) names it by. Empty (the default) means
     /// the workspace is anonymous: it can still *hold* foreign references, but
@@ -604,8 +628,6 @@ impl Default for WorkspaceConfig {
             record_deletions: true,
             fixity: Fixity::On,
             about: About::Structure,
-            updated: String::new(),
-            created: String::new(),
             workspace_id: String::new(),
             root: None,
             out_of_scope: Vec::new(),
@@ -723,6 +745,32 @@ impl WorkspaceConfig {
             .get(name)?
             .iter()
             .find(|spec| spec.under.is_none())
+    }
+
+    /// The field prov stamps `when`, if the workspace declares one: the first
+    /// field, in name order, whose unscoped declaration says `stamp: <when>`.
+    /// [`diagnose`] reports a second claimant and a scoped one.
+    pub fn stamped(&self, when: Stamp) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|(_, specs)| {
+                specs
+                    .iter()
+                    .any(|spec| spec.under.is_none() && spec.stamp == Some(when))
+            })
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// The field prov's own edits stamp with the current time when a
+    /// document's content changes — [`Stamp::Edit`]. `None` turns it off.
+    pub fn updated_field(&self) -> Option<&str> {
+        self.stamped(Stamp::Edit)
+    }
+
+    /// The field `create` stamps when a document is made — [`Stamp::Create`].
+    /// `None` turns it off.
+    pub fn created_field(&self) -> Option<&str> {
+        self.stamped(Stamp::Create)
     }
 
     /// Every declaration of every field, flattened, with the field's name —
@@ -984,13 +1032,18 @@ impl WorkspaceConfig {
                         .and_then(Value::as_str)
                         .and_then(field_type_from_config_str);
                     let default = spec.get("default").cloned();
+                    let stamp = spec
+                        .get("stamp")
+                        .and_then(Value::as_str)
+                        .and_then(Stamp::from_config_str);
                     // An entry that declares neither a type, nor a vocabulary,
                     // nor a starting value says nothing about the field that
                     // prov or a frontend could act on; recording it would only
                     // claim the field is described when it isn't — a scope
                     // alone governs nothing. (`diagnose` reports the malformed
                     // spelling that most often causes this.)
-                    if ty.is_none() && vocabulary.is_none() && default.is_none() {
+                    if ty.is_none() && vocabulary.is_none() && default.is_none() && stamp.is_none()
+                    {
                         continue;
                     }
                     let values = spec
@@ -1010,6 +1063,7 @@ impl WorkspaceConfig {
                         vocabulary,
                         default,
                         under,
+                        stamp,
                     });
                 }
                 if !declarations.is_empty() {
@@ -1077,12 +1131,6 @@ impl WorkspaceConfig {
             .and_then(IdStorage::from_config_str)
         {
             self.id_storage = v;
-        }
-        if let Some(v) = meta.get("updated").and_then(Value::as_str) {
-            self.updated = v.to_string();
-        }
-        if let Some(v) = meta.get("created").and_then(Value::as_str) {
-            self.created = v.to_string();
         }
         if let Some(v) = meta
             .get("identity")
@@ -1262,6 +1310,12 @@ impl WorkspaceConfig {
                         if let Some(default) = &spec.default {
                             entry.insert("default".into(), default.clone());
                         }
+                        if let Some(stamp) = spec.stamp {
+                            entry.insert(
+                                "stamp".into(),
+                                Value::String(stamp.as_config_str().into()),
+                            );
+                        }
                         Value::Mapping(entry)
                     })
                     .collect();
@@ -1304,8 +1358,6 @@ impl WorkspaceConfig {
             "id_storage".into(),
             Value::String(self.id_storage.as_config_str().into()),
         );
-        map.insert("updated".into(), Value::String(self.updated.clone()));
-        map.insert("created".into(), Value::String(self.created.clone()));
         map.insert(
             "identity".into(),
             Value::String(registration_str(self.identity).into()),
@@ -1442,6 +1494,20 @@ pub enum ConfigIssueKind {
     /// declaration's other axes say (a vocabulary, a starting value). `key`
     /// is the `under` key; `field` is the field.
     ScopedReference { field: String },
+    /// A scoped field declaration (`under:`) says `stamp:`. When a document
+    /// changes is not a fact about where in the tree it sits, so the stamp is
+    /// read from the field's unscoped declaration only, and this one is not
+    /// read.
+    ScopedStamp { field: String },
+    /// Two fields claim the same `stamp:`. A workspace has one creation
+    /// instant and one last-edit instant per document — a confirmation is
+    /// judged stale against *the* edit stamp — so the first field in name
+    /// order is stamped and `field` is not.
+    RepeatedStamp {
+        field: String,
+        stamp: String,
+        first: String,
+    },
 }
 
 /// Top-level config keys (block names + scalar axes + the `spec` marker).
@@ -1479,7 +1545,7 @@ const REFERENCE_KEYS: &[&str] = &["notation", "path_style", "target", "label"];
 /// (`means` is free-form and never near-miss-matched, like `updated`).
 const RELATION_DEF_KEYS: &[&str] = &["cardinality", "inverse", "means"];
 /// Keys inside each `fields.<name>` entry.
-const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "default", "under"];
+const FIELD_KEYS: &[&str] = &["type", "values", "vocabulary", "default", "under", "stamp"];
 
 /// If `meta` declares a `spec` newer than [`SPEC_VERSION`] — the version this
 /// build understands — the declared version. The signal that prov may be
@@ -1553,7 +1619,6 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     &["off", "structure"],
                 );
             }
-            "updated" | "created" => {} // free-form field names
             // A sequence of workspace-relative directory paths. Each entry is
             // judged on its own, so one malformed line is one issue naming
             // that line rather than a verdict on the whole list.
@@ -1894,6 +1959,35 @@ fn diagnose_fields(issues: &mut Vec<ConfigIssue>, value: &Value) {
             other => diagnose_field_declaration(issues, name, &prefix, other),
         }
     }
+    // One field per stamp: the first in name order is the one stamped, as
+    // [`WorkspaceConfig::stamped`] reads it, and any other is reported.
+    let mut claimed: BTreeMap<&str, &str> = BTreeMap::new();
+    for (name, spec) in map {
+        let unscoped = match spec {
+            Value::Sequence(items) => items.iter().find(|i| i.get("under").is_none()),
+            other => Some(other),
+        };
+        let Some(stamp) = unscoped
+            .and_then(|s| s.get("stamp"))
+            .and_then(Value::as_str)
+            .filter(|s| Stamp::from_config_str(s).is_some())
+        else {
+            continue;
+        };
+        match claimed.get(stamp) {
+            Some(first) => issues.push(ConfigIssue {
+                key: format!("fields.{name}.stamp"),
+                kind: ConfigIssueKind::RepeatedStamp {
+                    field: name.to_string(),
+                    stamp: stamp.to_string(),
+                    first: (*first).to_string(),
+                },
+            }),
+            None => {
+                claimed.insert(stamp, name);
+            }
+        }
+    }
 }
 
 /// One field declaration of `name`, at `prefix` (`fields.status`, or
@@ -1941,6 +2035,13 @@ fn diagnose_field_declaration(
                 // term of a closed vocabulary is `check`'s question, asked of
                 // the document that ends up carrying it.
                 "default" => {}
+                "stamp" => enum_axis(
+                    issues,
+                    &dotted,
+                    v,
+                    |s| Stamp::from_config_str(s).is_some(),
+                    &["create", "edit"],
+                ),
                 // A link, resolved against the tree at read time; whether it
                 // names an index is not a question one config surface can
                 // answer.
@@ -1963,6 +2064,16 @@ fn diagnose_field_declaration(
                     }
                 }
             }
+        }
+        // When a document changes is not a fact about where it sits, so a
+        // stamp is read from the unscoped declaration alone.
+        if entry.get("stamp").is_some() && entry.get("under").is_some() {
+            issues.push(ConfigIssue {
+                key: format!("{prefix}.stamp"),
+                kind: ConfigIssueKind::ScopedStamp {
+                    field: name.to_string(),
+                },
+            });
         }
         // A `ref` is read everywhere; a scope on one governs its other axes
         // and nothing about its being a link. Said once, here, so the author
@@ -2731,6 +2842,7 @@ mod tests {
                         // than as text, so a `default: 3` round-trips as an int.
                         default: Some(Value::String("friends".to_string())),
                         under: None,
+                        stamp: None,
                     }],
                 ),
                 // A type with no vocabulary — the other half of a field
@@ -2743,6 +2855,31 @@ mod tests {
                         vocabulary: None,
                         default: None,
                         under: None,
+                        stamp: None,
+                    }],
+                ),
+                // A stamp alone is a complete declaration, under a name of the
+                // workspace's choosing — one per kind of stamp.
+                (
+                    "made".to_string(),
+                    vec![FieldSpec {
+                        ty: None,
+                        values: OpenClosed::default(),
+                        vocabulary: None,
+                        default: None,
+                        under: None,
+                        stamp: Some(Stamp::Create),
+                    }],
+                ),
+                (
+                    "modified".to_string(),
+                    vec![FieldSpec {
+                        ty: None,
+                        values: OpenClosed::default(),
+                        vocabulary: None,
+                        default: None,
+                        under: None,
+                        stamp: Some(Stamp::Edit),
                     }],
                 ),
             ]),
@@ -2812,8 +2949,6 @@ mod tests {
             // what proves the value survives the mapping rather than being
             // silently re-defaulted on the way back.
             about: About::Off,
-            updated: "modified".to_string(),
-            created: "made".to_string(),
             // Non-default (the default is anonymous), so the round trip proves
             // the name survives rather than being silently dropped.
             workspace_id: "notes".to_string(),
@@ -3422,6 +3557,63 @@ mod tests {
 
         let config = WorkspaceConfig::from_meta(&Value::Mapping(top));
         assert!(config.fields.is_empty(), "{:?}", config.fields);
+    }
+
+    /// A config document's metadata, parsed from YAML.
+    fn yaml_meta(text: &str) -> Value {
+        prov_graph::document::Document::parse("prov.yaml", text)
+            .expect("a config document")
+            .meta
+    }
+
+    /// The stamp is a property of the field, read from its unscoped
+    /// declaration; the retired top-level `updated:`/`created:` keys stamp
+    /// nothing.
+    #[test]
+    fn a_stamp_is_declared_on_its_field() {
+        let config = WorkspaceConfig::from_meta(&yaml_meta(
+            "fields:\n  modified:\n    stamp: edit\n  born:\n    stamp: create\n  status:\n    - under: '[[Tasks]]'\n      stamp: edit\n",
+        ));
+        assert_eq!(config.updated_field(), Some("modified"));
+        assert_eq!(config.created_field(), Some("born"));
+
+        let retired =
+            WorkspaceConfig::from_meta(&yaml_meta("updated: updated\ncreated: created\n"));
+        assert_eq!(retired.updated_field(), None);
+        assert_eq!(retired.created_field(), None);
+    }
+
+    #[test]
+    fn a_scoped_or_second_stamp_is_reported() {
+        let issues = diagnose(&yaml_meta(
+            "fields:\n  a:\n    stamp: edit\n  b:\n    stamp: edit\n  c:\n    - under: '[[Tasks]]'\n      stamp: create\n  d:\n    stamp: sometimes\n",
+        ));
+        let kinds: Vec<(&str, &ConfigIssueKind)> =
+            issues.iter().map(|i| (i.key.as_str(), &i.kind)).collect();
+        assert!(
+            kinds.contains(&(
+                "fields.b.stamp",
+                &ConfigIssueKind::RepeatedStamp {
+                    field: "b".into(),
+                    stamp: "edit".into(),
+                    first: "a".into(),
+                }
+            )),
+            "{issues:?}"
+        );
+        assert!(
+            kinds.contains(&(
+                "fields.c.0.stamp",
+                &ConfigIssueKind::ScopedStamp { field: "c".into() }
+            )),
+            "{issues:?}"
+        );
+        assert!(
+            issues.iter().any(|i| i.key == "fields.d.stamp"
+                && matches!(i.kind, ConfigIssueKind::InvalidValue { .. })),
+            "{issues:?}"
+        );
+        assert_eq!(issues.len(), 3, "{issues:?}");
     }
 
     /// A `views:` block, as a config surface writes it.

@@ -57,7 +57,7 @@ fn line_for<'a>(text: &'a str, field: &str) -> Option<&'a str> {
 fn workspace(tag: &str) -> std::path::PathBuf {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes"]);
-    ok(&dir, &["config", "updated", "updated"]);
+    ok(&dir, &["config", "fields.updated.stamp", "edit"]);
     ok(&dir, &["new", "Rust", "--in", "index.md"]);
     dir
 }
@@ -159,18 +159,17 @@ fn a_loose_file_outside_any_workspace_is_rewritten_as_before() {
 #[test]
 fn the_workspace_node_is_edited_but_never_stamped() {
     let dir = workspace("node");
-    // `updated: updated` is *configuration* in the node: the name of the field.
-    // A stamp landing here would overwrite the name with an instant, and the
-    // workspace would then be told to maintain a field called
-    // `2026-…T…Z`.
+    // The node is configuration, not a record: a stamp landing here would
+    // write an `updated:` instant among the settings, and a node is never
+    // edited *as* a document.
     let (_, err) = ok(&dir, &["set", "prov.yaml", "fixity", "off"]);
     assert!(!err.contains("stamped"), "{err:?}");
     let node = read(&dir, "prov.yaml");
     assert!(node.contains("fixity: off"), "the edit landed: {node}");
-    assert_eq!(
-        line_for(&node, "updated"),
-        Some("updated: updated"),
-        "the axis still names the field: {node}"
+    assert_eq!(line_for(&node, "updated"), None, "no stamp landed: {node}");
+    assert!(
+        node.contains("  updated:\n    stamp: edit\n"),
+        "the declaration still stamps the field: {node}"
     );
 }
 
@@ -203,8 +202,5 @@ fn edit_and_stamp_also_leave_the_node_alone() {
 
     let (_, err) = ok(&dir, &["stamp", "prov.yaml"]);
     assert!(!err.contains("stamped `updated`"), "{err:?}");
-    assert_eq!(
-        line_for(&read(&dir, "prov.yaml"), "updated"),
-        Some("updated: updated")
-    );
+    assert_eq!(line_for(&read(&dir, "prov.yaml"), "updated"), None);
 }

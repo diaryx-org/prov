@@ -185,7 +185,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             workspace_id: config.workspace_id.clone(),
             out_of_scope: config.out_of_scope.iter().map(PathBuf::from).collect(),
             root: config.root.as_deref().map(PathBuf::from),
-            updated: config.updated.clone(),
+            updated: config.updated_field().unwrap_or_default().to_string(),
             ..Self::default()
         }
     }
@@ -2300,6 +2300,7 @@ mod reified_vocabulary_tests {
             vocabulary: Some("vocab/index.md".into()),
             default: None,
             under: None,
+            stamp: None,
         }
     }
 
@@ -2500,6 +2501,7 @@ mod reified_vocabulary_tests {
             vocabulary: None,
             default: None,
             under: None,
+            stamp: None,
         };
         assert!(
             block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &none))

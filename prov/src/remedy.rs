@@ -1222,6 +1222,11 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // everywhere, the other that the field is not a link. Diagnosis
                 // only.
                 crate::config::ConfigIssueKind::ScopedReference { .. } => Ok(Vec::new()),
+                // Which field is meant to carry the stamp, and whether a scoped
+                // one was meant to be the field's only declaration, are the
+                // author's to say. Diagnosis only.
+                crate::config::ConfigIssueKind::ScopedStamp { .. }
+                | crate::config::ConfigIssueKind::RepeatedStamp { .. } => Ok(Vec::new()),
                 // Two defensible repairs — drop the `nest`, or stop declaring
                 // the field a `seq` — and they mean different things about the
                 // workspace: one says this entry does not file, the other says

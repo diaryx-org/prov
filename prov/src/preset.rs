@@ -64,17 +64,25 @@ pub struct Preset {
 
 impl Preset {
     /// The one preset prov ships, unnamed: what a workspace gets when told
-    /// nothing else. The `created` and `updated` axes, each naming the field
-    /// of the same name, so that every document made here records when, and
-    /// every edit prov lands records that it did.
+    /// nothing else. Two stamped fields — `created`, stamped when a document
+    /// is made, and `updated`, stamped whenever prov changes one — so that
+    /// every document made here records when, and every edit prov lands
+    /// records that it did.
     ///
     /// Built in code rather than parsed from an embedded file so that it
     /// exists under every metadata-format feature set — a build without the
     /// `yaml` parser still has a default.
     pub fn builtin() -> Self {
+        let stamp = |when: crate::config::Stamp| {
+            let mut spec = Mapping::new();
+            spec.insert("stamp".into(), Value::String(when.as_config_str().into()));
+            Value::Mapping(spec)
+        };
+        let mut fields = Mapping::new();
+        fields.insert("created".into(), stamp(crate::config::Stamp::Create));
+        fields.insert("updated".into(), stamp(crate::config::Stamp::Edit));
         let mut config = Mapping::new();
-        config.insert("created".into(), Value::String("created".into()));
-        config.insert("updated".into(), Value::String("updated".into()));
+        config.insert("fields".into(), Value::Mapping(fields));
         Self {
             config,
             files: Vec::new(),
@@ -131,6 +139,14 @@ impl Preset {
                     K::ScopedReference { field } => {
                         format!("scopes `{field}`, which is declared `type: ref`")
                     }
+                    K::ScopedStamp { field } => {
+                        format!("stamps `{field}` under a scope, where a stamp is not read")
+                    }
+                    K::RepeatedStamp {
+                        field,
+                        stamp,
+                        first,
+                    } => format!("stamps `{field}` on {stamp}, which `{first}` already claims"),
                     K::NestRefNotDeclared { field } => {
                         format!(
                             "files by reference through `{field}`, which is not declared `type: ref`"
@@ -150,10 +166,23 @@ impl Preset {
     }
 
     /// The preset without one declared axis — for a caller whose own
-    /// explicit setting must win over the preset's, as an `init --updated-field`
-    /// does over the built-in's `updated`.
+    /// explicit setting must win over the preset's.
     pub fn without(mut self, key: &str) -> Self {
         self.config.shift_remove(key);
+        self
+    }
+
+    /// The preset without whichever field it stamps `when` — for a caller
+    /// naming that field itself, as `init --updated-field` does over the
+    /// built-in's `updated`. The field's other declarations go with it: a
+    /// preset field declared only to be stamped would otherwise be left
+    /// describing nothing.
+    pub fn without_stamp(mut self, when: crate::config::Stamp) -> Self {
+        if let Some(Value::Mapping(fields)) = self.config.get_mut("fields") {
+            fields.retain(|_, spec| {
+                spec.get("stamp").and_then(Value::as_str) != Some(when.as_config_str())
+            });
+        }
         self
     }
 }
@@ -479,11 +508,14 @@ mod tests {
             Value::String("[Statuses](/vocab/statuses.yaml)".into()),
         );
         status.insert("default".into(), Value::String("open".into()));
+        let mut updated = Mapping::new();
+        updated.insert("stamp".into(), Value::String("edit".into()));
         let mut fields = Mapping::new();
         fields.insert("status".into(), Value::Mapping(status));
+        fields.insert("updated".into(), Value::Mapping(updated));
         let mut config = Mapping::new();
         config.insert("fields".into(), Value::Mapping(fields));
-        config.insert("updated".into(), Value::String("updated".into()));
+        config.insert("fixity".into(), Value::String("off".into()));
         Preset {
             config,
             files: vec![(
@@ -501,21 +533,22 @@ mod tests {
             "index.md",
             "---\ntitle: Root\nconfig: prov.yaml\n---\n",
         );
-        write(&dir, "prov.yaml", "title: prov config\nupdated: ''\n");
+        write(&dir, "prov.yaml", "title: prov config\nfixity: on\n");
         let mut w = ws(&dir);
         let plan = block_on(w.apply_preset(Path::new("index.md"), &tasks_preset())).unwrap();
         assert!(plan.is_clean());
         assert_eq!(plan.surface, PathBuf::from("prov.yaml"));
         assert!(!plan.in_root_block);
-        // `updated: ''` is the default spelled out, so it is free to take.
         assert!(matches!(&plan.steps[0], Step::Set { key, .. } if key == "fields.status"));
-        assert!(matches!(&plan.steps[1], Step::Set { key, .. } if key == "updated"));
+        assert!(matches!(&plan.steps[1], Step::Set { key, .. } if key == "fields.updated"));
+        // `fixity: on` is the default spelled out, so it is free to take.
+        assert!(matches!(&plan.steps[2], Step::Set { key, .. } if key == "fixity"));
         assert!(
-            matches!(&plan.steps[2], Step::Write { path } if path == Path::new("vocab/statuses.yaml"))
+            matches!(&plan.steps[3], Step::Write { path } if path == Path::new("vocab/statuses.yaml"))
         );
 
         let node = read(&dir, "prov.yaml");
-        assert!(node.contains("updated: updated"), "{node}");
+        assert!(node.contains("stamp: edit"), "{node}");
         assert!(
             node.contains("status:") && node.contains("default: open"),
             "{node}"
@@ -527,7 +560,7 @@ mod tests {
         assert!(read(&dir, "vocab/statuses.yaml").contains("open: {}"));
         // And the workspace reads it back as its own config.
         let config = block_on(w.effective_config(Path::new("index.md"))).unwrap();
-        assert_eq!(config.updated, "updated");
+        assert_eq!(config.updated_field(), Some("updated"));
         assert_eq!(
             config.fields["status"][0].default,
             Some(Value::String("open".into()))
@@ -567,15 +600,15 @@ mod tests {
         let mut preset = tasks_preset();
         preset
             .config
-            .insert("updated".into(), Value::String("modified".into()));
+            .insert("fixity".into(), Value::String("on".into()));
         let plan = block_on(w.plan_preset(Path::new("index.md"), &preset)).unwrap();
         assert!(!plan.is_clean());
         assert_eq!(plan.collisions().count(), 2, "{plan:?}");
-        assert!(matches!(&plan.steps[1], Step::Differs { key, .. } if key == "updated"));
-        assert!(matches!(&plan.steps[2], Step::Occupied { .. }));
+        assert!(matches!(&plan.steps[2], Step::Differs { key, .. } if key == "fixity"));
+        assert!(matches!(&plan.steps[3], Step::Occupied { .. }));
         let err = block_on(w.apply_preset(Path::new("index.md"), &preset)).unwrap_err();
         assert!(
-            err.to_string().contains("updated is already declared"),
+            err.to_string().contains("fixity is already declared"),
             "{err}"
         );
         assert!(
@@ -604,14 +637,14 @@ mod tests {
         let root = read(&dir, "index.md");
         assert!(root.contains("  fixity: off\n"), "kept: {root}");
         assert!(
-            root.contains("  created: created\n") && root.contains("  updated: updated\n"),
+            root.contains("stamp: create") && root.contains("stamp: edit"),
             "{root}"
         );
         assert!(root.ends_with("body\n"));
         let config = block_on(w.effective_config(Path::new("index.md"))).unwrap();
         assert_eq!(
-            (config.created.as_str(), config.updated.as_str()),
-            ("created", "updated")
+            (config.created_field(), config.updated_field()),
+            (Some("created"), Some("updated"))
         );
     }
 

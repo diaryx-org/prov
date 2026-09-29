@@ -266,10 +266,11 @@ pub(crate) fn updated_stamp<'a>(
     rel: &Path,
     now: &'a str,
 ) -> Option<(&'a str, &'a str)> {
-    if ctx.config.updated.is_empty() || machinery.iter().any(|m| m == rel) {
+    let field = ctx.config.updated_field()?;
+    if machinery.iter().any(|m| m == rel) {
         return None;
     }
-    Some((ctx.config.updated.as_str(), now))
+    Some((field, now))
 }
 
 /// The workspace the multi-document commands drive: rooted at the discovered

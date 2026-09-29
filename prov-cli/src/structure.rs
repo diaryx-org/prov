@@ -288,8 +288,8 @@ fn opening_fields(
     sets: Vec<(String, Value)>,
 ) -> Result<Mapping, AnyError> {
     let mut fields = Mapping::new();
-    if !ctx.config.created.is_empty() {
-        fields.insert(ctx.config.created.clone(), Value::String(now_rfc3339()));
+    if let Some(created) = ctx.config.created_field() {
+        fields.insert(created.to_string(), Value::String(now_rfc3339()));
     }
     for (name, value) in block_on(ws.defaults_for_child(&ctx.root_doc, &ctx.config, parent))? {
         fields.insert(name, value);

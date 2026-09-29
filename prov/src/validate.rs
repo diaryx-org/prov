@@ -997,6 +997,22 @@ impl fmt::Display for Finding {
                     doc.display(),
                     issue.key,
                 ),
+                crate::config::ConfigIssueKind::ScopedStamp { field } => write!(
+                    f,
+                    "{}: config `{}` stamps `{field}` under a scope — when a document changes is not a fact about where it sits, so a stamp is read from the field's unscoped declaration only, and this one is not read (move `stamp` to a declaration with no `under`)",
+                    doc.display(),
+                    issue.key,
+                ),
+                crate::config::ConfigIssueKind::RepeatedStamp {
+                    field,
+                    stamp,
+                    first,
+                } => write!(
+                    f,
+                    "{}: config `{}` stamps `{field}` on {stamp}, but `{first}` already does — a document has one such instant, so `{first}` is stamped and `{field}` is not (drop one `stamp`)",
+                    doc.display(),
+                    issue.key,
+                ),
                 crate::config::ConfigIssueKind::BadExpression { message } => write!(
                     f,
                     "{}: config `{}` is not an expression prov can run — {message} (the view is not read until it is)",

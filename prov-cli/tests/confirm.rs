@@ -47,7 +47,7 @@ fn workspace(tag: &str) -> (PathBuf, PathBuf) {
     let (dir, peers) = sandbox(tag);
     for args in [
         &["init", "--yes"][..],
-        &["config", "updated", "updated"],
+        &["config", "fields.updated.stamp", "edit"],
         &["new", "Rust", "--in", "index.md"],
     ] {
         let (ok, out, err) = run(&dir, &peers, args, &[]);

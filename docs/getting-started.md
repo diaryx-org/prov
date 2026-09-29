@@ -498,12 +498,17 @@ references:
   path_style: root
   target: path
   label: false
+fields:
+  created:
+    stamp: create
+  updated:
+    stamp: edit
 id_storage: both
-updated: updated
-created: created
 identity: lazy
 fixity: on
 record_deletions: true
+about: structure
+workspace_id: ''
 $ prov config references.target id
 set references.target = id in prov.yaml
 ```
@@ -523,8 +528,7 @@ The knobs (dotted keys address nested axes):
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
 | `fixity`                  | `on`, `off`                                                    | whether content checksums are recorded           |
 | `record_deletions`        | `true`/`false`                                                 | a delete records what it destroyed               |
-| `updated`                 | *a field name*                                                 | the machine-maintained "last updated" field      |
-| `created`                 | *a field name*                                                 | the field `new` stamps when a document is made   |
+| `fields.<name>.stamp`     | `edit`, `create`                                               | prov writes the time into that field on every change it makes, or once when `new` makes the document |
 
 The two `init` identity prompts map onto these keys: **Identity** sets
 `identity`, and **References between documents** sets `references.target`. With
@@ -574,13 +578,13 @@ can check, and this archive does not deal in those — see
 else. What says an inline body changed is whatever backs up or version-controls
 the folder.
 
-The built-in preset already names an `updated` field (naming it again is a
-no-op). Attach a file — bytes nothing can diff, which is exactly where a
+The built-in preset already stamps an `updated` field on every edit
+(declaring it again is a no-op). Attach a file — bytes nothing can diff, which is exactly where a
 checksum earns its keep:
 
 <!-- exec -->
 ```console
-$ prov config updated updated
+$ prov config fields.updated.stamp edit
 $ printf 'date,note\n2026-01-01,first\n' > data.csv
 $ prov attach data.csv --in index.md
 attached data.csv (sidecar data.csv.yaml in index.md)

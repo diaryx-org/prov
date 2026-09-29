@@ -370,6 +370,20 @@ pub fn finding(f: &Finding) -> J {
                     fields.push(("issue", s("scoped_reference")));
                     fields.push(("field", s(field)));
                 }
+                prov::ConfigIssueKind::ScopedStamp { field } => {
+                    fields.push(("issue", s("scoped_stamp")));
+                    fields.push(("field", s(field)));
+                }
+                prov::ConfigIssueKind::RepeatedStamp {
+                    field,
+                    stamp,
+                    first,
+                } => {
+                    fields.push(("issue", s("repeated_stamp")));
+                    fields.push(("field", s(field)));
+                    fields.push(("stamp", s(stamp)));
+                    fields.push(("first", s(first)));
+                }
                 prov::ConfigIssueKind::NestRefNotDeclared { field } => {
                     fields.push(("issue", s("nest_ref_not_declared")));
                     fields.push(("field", s(field)));

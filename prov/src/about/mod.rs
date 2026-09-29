@@ -1112,31 +1112,31 @@ fn conventions_section(config: &WorkspaceConfig, ctx: &AboutContext) -> String {
 
     bullets.push(format!(
         "**Timestamps.** {}",
-        match (config.created.is_empty(), config.updated.is_empty()) {
-            (true, true) => "No modification times are maintained. Any date you find in a file \
+        match (config.created_field(), config.updated_field()) {
+            (None, None) => "No modification times are maintained. Any date you find in a file \
                  was written by a person."
                 .to_string(),
-            (false, true) => format!(
+            (Some(created), None) => format!(
                 "A field named {} is written when a document is made and holds a \
                  UTC instant in RFC 3339 form (`1974-03-02T14:05:00Z`); it is not \
                  touched after that. Any other date you find in a file was \
                  written by a person.",
-                code(&config.created)
+                code(created)
             ),
-            (true, false) => format!(
+            (None, Some(updated)) => format!(
                 "A field named {} is maintained automatically and holds a UTC \
                  instant in RFC 3339 form (`1974-03-02T14:05:00Z`). Any other \
                  date you find in a file was written by a person.",
-                code(&config.updated)
+                code(updated)
             ),
-            (false, false) => format!(
+            (Some(created), Some(updated)) => format!(
                 "Two fields hold a UTC instant in RFC 3339 form \
                  (`1974-03-02T14:05:00Z`): {} is written when a document is made \
                  and not touched after that, and {} is maintained automatically \
                  as the document changes. Any other date you find in a file was \
                  written by a person.",
-                code(&config.created),
-                code(&config.updated)
+                code(created),
+                code(updated)
             ),
         }
     ));
@@ -1238,10 +1238,10 @@ fn safe_to_change_section(config: &WorkspaceConfig, relations: &RelationSet) -> 
             code("content_hash")
         ));
     }
-    if !config.updated.is_empty() {
+    if let Some(updated) = config.updated_field() {
         careful.push(format!(
             "**{}** — maintained automatically, and in a fixed format.",
-            code(&config.updated)
+            code(updated)
         ));
     }
 
@@ -1982,21 +1982,34 @@ mod tests {
         let bespoke = WorkspaceConfig {
             spanning: Some("sections".into()),
             relation_defs: bespoke_defs,
-            fields: BTreeMap::from([(
-                "audience".into(),
-                vec![FieldSpec {
-                    ty: None,
-                    values: OpenClosed::Closed,
-                    vocabulary: Some("[Audiences](/vocab/audiences.yaml)".into()),
-                    default: None,
-                    under: None,
-                }],
-            )]),
+            fields: BTreeMap::from([
+                (
+                    "audience".into(),
+                    vec![FieldSpec {
+                        ty: None,
+                        values: OpenClosed::Closed,
+                        vocabulary: Some("[Audiences](/vocab/audiences.yaml)".into()),
+                        default: None,
+                        under: None,
+                        stamp: None,
+                    }],
+                ),
+                (
+                    "modified".into(),
+                    vec![FieldSpec {
+                        ty: None,
+                        values: OpenClosed::default(),
+                        vocabulary: None,
+                        default: None,
+                        under: None,
+                        stamp: Some(crate::config::Stamp::Edit),
+                    }],
+                ),
+            ]),
             reference_target: Addressing::Id,
             id_storage: IdStorage::FrontmatterOnly,
             record_deletions: false,
             fixity: Fixity::Off,
-            updated: "modified".into(),
             ..WorkspaceConfig::default()
         };
         let bespoke_ctx = AboutContext {
@@ -2205,6 +2218,7 @@ mod tests {
                     vocabulary: Some("[Tags](/vocab/tags.yaml)".into()),
                     default: None,
                     under: None,
+                    stamp: None,
                 }],
             ),
             (
@@ -2215,6 +2229,7 @@ mod tests {
                     vocabulary: Some("[Audiences](/vocab/audiences.md)".into()),
                     default: None,
                     under: None,
+                    stamp: None,
                 }],
             ),
         ]);

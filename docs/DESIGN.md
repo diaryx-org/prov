@@ -71,8 +71,8 @@ about it?** — and it sorts every field into three tiers:
    second are orderable rather than tied.
 2. **Vocabulary & representation — configurable.** The *names and surface
    spellings* of those mechanisms: which fields are relations, the spanning one,
-   reference styles, id storage, embed format, the *names* of the `updated` and `created` fields,
-   whether a feature is on. Configuring a workspace means re-spelling prov's
+   reference styles, id storage, embed format, which fields are stamped on
+   creation and on edit (`fields.<f>.stamp`), whether a feature is on. Configuring a workspace means re-spelling prov's
    fixed mechanisms for your vault — never redefining them. Essentially all
    prov config lives here.
 3. **Content — not prov's business.** Everything prov merely *carries*:

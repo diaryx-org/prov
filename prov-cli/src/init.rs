@@ -895,8 +895,6 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         // the whole thesis (DESIGN §1); asking would invite people to decline
         // the one artifact that makes the directory readable without prov.
         about: prov::About::Structure,
-        updated: updated_field.clone(),
-        created: created_field.clone(),
         // Anonymous unless asked for, and not prompted: a name only earns its
         // keep once some *other* workspace refers to this one, which is a thing
         // that happens later, to a minority of workspaces. `prov config
@@ -913,6 +911,26 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         root: None,
     };
     reference.write_onto(&mut ws_config);
+    // A named stamp field is a field declaration like any other; an empty
+    // name is the flag's spelling of "off", and declares nothing.
+    for (name, when) in [
+        (&updated_field, prov::Stamp::Edit),
+        (&created_field, prov::Stamp::Create),
+    ] {
+        if !name.is_empty() {
+            ws_config.fields.insert(
+                name.clone(),
+                vec![prov::FieldSpec {
+                    ty: None,
+                    values: prov::OpenClosed::default(),
+                    vocabulary: None,
+                    default: None,
+                    under: None,
+                    stamp: Some(when),
+                }],
+            );
+        }
+    }
 
     let meta_format: Format = meta.into();
     let config_name = sidecar_name(CONFIG_STEM, meta_format);
@@ -1019,10 +1037,10 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         None => prov::preset::Preset::builtin(),
     };
     if updated_given {
-        stencil = stencil.without("updated");
+        stencil = stencil.without_stamp(prov::Stamp::Edit);
     }
     if created_given {
-        stencil = stencil.without("created");
+        stencil = stencil.without_stamp(prov::Stamp::Create);
     }
     {
         let mut probe: Workspace<StdFs> = Workspace::builder(StdFs).root(&dir).build();
@@ -1208,15 +1226,13 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
     };
     // Read from the config as it is on disk — the preset may have named
     // either field — rather than from the flags.
-    let updated_note = if ws_config.updated.is_empty() {
-        String::new()
-    } else {
-        format!(", updates `{}`", ws_config.updated)
+    let updated_note = match ws_config.updated_field() {
+        Some(field) => format!(", updates `{field}`"),
+        None => String::new(),
     };
-    let created_note = if ws_config.created.is_empty() {
-        String::new()
-    } else {
-        format!(", stamps `{}`", ws_config.created)
+    let created_note = match ws_config.created_field() {
+        Some(field) => format!(", stamps `{field}`"),
+        None => String::new(),
     };
     let preset_note = match preset {
         Some(dir) => format!(", preset {}", dir.display()),

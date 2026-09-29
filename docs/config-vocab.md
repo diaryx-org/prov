@@ -131,6 +131,8 @@ prov:
       default: friends        # what a new document opens with — see "Field types" below
     created:
       type: date              # a type alone is a complete declaration
+    modified:
+      stamp: edit             # prov writes the time here on each change it makes — see "Stamps" below
     status:                 # several declarations, each scoped — see "Field types" below
       - under: '[[Tasks]]'      # governs the files under this index, and no others
         values: closed
@@ -166,8 +168,6 @@ prov:
       hold: draft             # optional — a document declaring `draft: true` waits
       view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
-  updated: modified           # name of the machine-maintained timestamp field (omit/"" = off)
-  created: created            # name of the field stamped when a document is made (omit/"" = off)
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
   root: home.md               # which document is the root — read only from the workspace node (omit = found by the `index`/`readme` scan)
 
@@ -184,7 +184,7 @@ prov:
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
-`id_storage: both`, `updated: ""`, `created: ""`, `workspace_id: ""`, `root:` unset,
+`id_storage: both`, `workspace_id: ""`, `root:` unset,
 `identity: lazy`, `fixity: on`, `record_deletions: true`, `about: structure`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
@@ -699,6 +699,39 @@ site inside a list — and a `default:` is written at a key path, inside the
 mapping, creating it if the document has none. A list path has no list to
 fill in a new document, so a `default:` on one is carried and never written.
 
+### Stamps
+
+`stamp:` says prov writes the current time into the field, and when:
+
+| `stamp:` | written |
+| --- | --- |
+| `create` | once, when prov makes the document (`prov new`) |
+| `edit` | whenever prov changes the document's content — `edit`, `set`, `unset`, `stamp` — and the instant a confirmation is judged stale against |
+
+```yaml
+fields:
+  created: { stamp: create }
+  updated: { stamp: edit }
+```
+
+A stamp alone is a complete declaration, and it needs no `type:`: what prov
+writes is always an instant, RFC 3339 in UTC (`2026-09-28T14:03:00Z`), because
+prov reads it back. The *name* is the workspace's — `updated`, `modified`,
+`lastmod`. A human-friendly date is a different field, the author's, which
+prov never touches.
+
+A document has one creation instant and one last-edit instant, so each stamp
+belongs to one field: a second field claiming the same stamp is a
+`repeated_stamp` finding, and the first in name order is the one written.
+When a document changes is not a fact about where it sits, so a stamp is read
+from the field's unscoped declaration only; one under a scope is a
+`scoped_stamp` finding and is not read.
+
+The stamps used to be top-level keys naming the field — `updated: modified`,
+`created: created` — beside a separate `fields` declaration of the same
+field's type. Those keys are no longer read: a workspace that still writes
+them stamps nothing until it declares `stamp:` on the field.
+
 ### Scoping a declaration
 
 A declaration governs the whole workspace unless it says `under:` — a link to
@@ -842,6 +875,8 @@ applies to path targets only.
 | `fixity: attachments` | `fixity: on` | coverage is no longer a scale — a `content_hash` is written wherever it covers a file of its own (an attachment's payload, a separated body), which is where `sha256sum` can reproduce it. Old spelling still read |
 | `fixity: all` | **dropped** → `fixity: on` | a combined document's body hash covered a parsed substring, not a file, so it was checkable only by prov. **Not** read as a synonym: it asked for the coverage that went away, so it lands as an invalid value (default kept, `check` reports it) rather than being quietly narrowed. Hashes already on record are still verified — see the `legacy_body_hash` finding |
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
+| `updated: modified` | `fields.modified.stamp: edit` | the stamp is a property of the field it writes. The old key is **not read** |
+| `created: made` | `fields.made.stamp: create` | likewise, and likewise not read |
 | — | `spec: 1` | new version marker |
 | `config`/`registry`/`deletions`/`history` pointers | unchanged, top-level | structure, not policy |
 | `recycle_bin: <path>` pointer | `deletions: <path>` | there is no bin; the log records what a delete destroyed. Old spelling still read |
@@ -979,18 +1014,19 @@ repository's [`presets/tasks/`](/presets/tasks/prov.yaml) is that example; its
 test applies it to a scratch workspace and runs `check` over the result.
 
 **prov ships exactly one preset, and it has no name.** It is what `init` writes
-when told nothing else — `created: created` and `updated: updated`, so that
-every document made here records when, and every edit prov lands records that
-it did — and it is a preset rather than a hard-coded default so that a
+when told nothing else — a `created` field stamped on creation and an
+`updated` field stamped on every edit, so that every document made here
+records when, and every edit prov lands records that it did — and it is a preset rather than a hard-coded default so that a
 directory can *replace* it: `init --preset <dir>` writes the directory instead.
-A flag that names an axis the preset also declares (`--updated-field`) wins.
+A flag that names a field the preset also stamps (`--updated-field modified`)
+wins, and the preset's own field for that stamp is not written.
 There is no registry and no list of names in the binary; every other preset is
 a directory, named by its path, and publishing one is `git push`.
 
 **Applying is additive and refuses collisions.** `prov presets <dir>` prints
 what applying would do — one line per config entry and per store — and touches
 nothing; `--write` applies it; with no `<dir>`, both act on the built-in. Each
-entry (`fields.status`, `views.open-tasks`, `updated`) is written where the
+entry (`fields.status`, `views.open-tasks`, `fixity`) is written where the
 workspace does not declare it, or declares it at its default; an entry already
 declared the same way is nothing to do; an entry declared *differently* is a
 collision, reported with the rest of the plan, and nothing is written, because

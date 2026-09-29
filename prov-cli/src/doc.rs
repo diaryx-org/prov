@@ -210,7 +210,7 @@ fn write_field_edit(file: &Path, key: &str, text: &str) -> Result<(), AnyError> 
     let mut session = Session::over(ctx)?;
     let now = now_rfc3339();
     let machinery = machinery(&session.ctx, &session.ws)?;
-    let own_field = key.split('.').next() == Some(session.ctx.config.updated.as_str());
+    let own_field = key.split('.').next() == session.ctx.config.updated_field();
     let stamp = (!own_field)
         .then(|| updated_stamp(&session.ctx, &machinery, &rel, &now))
         .flatten();

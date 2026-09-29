@@ -50,7 +50,7 @@ fn sandbox(tag: &str) -> std::path::PathBuf {
 fn workspace(tag: &str) -> std::path::PathBuf {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes", "--embed", "separate"]);
-    ok(&dir, &["config", "updated", "updated"]);
+    ok(&dir, &["config", "fields.updated.stamp", "edit"]);
     dir
 }
 

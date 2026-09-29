@@ -22,8 +22,6 @@ fields:
       values: closed
       vocabulary: '[Proposal statuses](/vocab/proposal-statuses.yaml)'
       default: draft
-  created: { type: datetime }
-  updated: { type: datetime }
 views:
   open-tasks:
     label: Open tasks

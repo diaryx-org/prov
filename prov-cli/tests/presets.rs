@@ -66,13 +66,15 @@ fn init_writes_the_builtin_preset_and_says_so() {
     );
     let node = read(&dir, "prov.yaml");
     assert!(
-        node.contains("updated: updated\n") && node.contains("created: created\n"),
+        node.contains("  updated:\n    stamp: edit\n")
+            && node.contains("  created:\n    stamp: create\n"),
         "{node}"
     );
     // And it is the same preset `presets` shows, with nothing left to add.
     let (out, err) = ok(&dir, &["presets"]);
     assert!(
-        out.contains("= created  (already so)") && out.contains("= updated  (already so)"),
+        out.contains("= fields.created  (already so)")
+            && out.contains("= fields.updated  (already so)"),
         "{out}"
     );
     assert!(err.contains("nothing to write"), "{err}");
@@ -83,10 +85,14 @@ fn a_flag_wins_over_the_builtin_presets_axis() {
     let dir = sandbox("flag-wins");
     ok(&dir, &["init", "--yes", "--updated-field", "modified"]);
     let node = read(&dir, "prov.yaml");
-    assert!(node.contains("updated: modified\n"), "{node}");
+    assert!(node.contains("  modified:\n    stamp: edit\n"), "{node}");
     assert!(
-        node.contains("created: created\n"),
-        "the other axis still lands: {node}"
+        !node.contains("  updated:\n"),
+        "the preset's own edit stamp gave way: {node}"
+    );
+    assert!(
+        node.contains("  created:\n    stamp: create\n"),
+        "the other stamp still lands: {node}"
     );
 }
 
@@ -100,7 +106,7 @@ fn a_preset_directory_replaces_the_builtin_at_init() {
     let node = read(&dir, "prov.yaml");
     assert!(node.contains("fixity: off\n"), "{node}");
     assert!(
-        node.contains("updated: ''\n") && node.contains("created: ''\n"),
+        !node.contains("stamp:"),
         "the built-in was not applied: {node}"
     );
 }
@@ -122,7 +128,7 @@ fn the_tasks_preset_applies_checks_clean_and_is_idempotent() {
 
     let (_, err) = ok(&dir, &["presets", &preset, "--write"]);
     assert!(
-        err.contains("wrote 6 config entries") && err.contains("2 file(s)"),
+        err.contains("wrote 4 config entries") && err.contains("2 file(s)"),
         "{err}"
     );
     assert!(

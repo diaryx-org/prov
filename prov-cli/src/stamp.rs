@@ -17,7 +17,7 @@ use prov::{ContentState, block_on};
 use crate::CmdResult;
 use crate::actor;
 use crate::clock::now_rfc3339;
-use crate::session::{Ctx, Session, machinery, updated_stamp, ws_rel};
+use crate::session::{Session, machinery, updated_stamp, ws_rel};
 
 /// `confirm` — append one entry to a document's `confirmed` list, or show the
 /// list with `--show`.
@@ -191,7 +191,7 @@ pub(crate) fn cmd_stamp(
             eprintln!(
                 "{}: would stamp {}",
                 path.display(),
-                stamp_summary(&session.ctx, timestamp, true)
+                stamp_summary(timestamp, true)
             );
             println!("{}", path.display());
             if state == ContentState::Unrecorded {
@@ -217,7 +217,7 @@ pub(crate) fn cmd_stamp(
             eprintln!(
                 "{}: stamped {}",
                 path.display(),
-                stamp_summary(&session.ctx, timestamp, hashed)
+                stamp_summary(timestamp, hashed)
             );
             println!("{}", path.display());
             if state == ContentState::Unrecorded {
@@ -252,11 +252,11 @@ pub(crate) fn cmd_stamp(
 }
 
 /// Which stamps a write landed, for one narration line.
-fn stamp_summary(ctx: &Ctx, timestamp: Option<(&str, &str)>, hashed: bool) -> String {
+fn stamp_summary(timestamp: Option<(&str, &str)>, hashed: bool) -> String {
     match (hashed, timestamp) {
-        (true, Some(_)) => format!("`{}` + checksum", ctx.config.updated),
+        (true, Some((field, _))) => format!("`{field}` + checksum"),
         (true, None) => "checksum".into(),
-        (false, Some(_)) => format!("`{}`", ctx.config.updated),
+        (false, Some((field, _))) => format!("`{field}`"),
         // `record_content_update` reported a write, so something moved; the
         // only remaining possibility is a timestamp field this narration was
         // not given. Unreachable in practice, and not worth a panic.

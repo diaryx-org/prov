@@ -60,9 +60,8 @@ fn frontmatter(text: &str) -> Vec<&str> {
 fn workspace(tag: &str) -> std::path::PathBuf {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes", "--created-field", "created"]);
-    let mut node = read(&dir, "prov.yaml");
-    node.push_str("fields:\n  status:\n    default: open\n  priority:\n    default: 2\n");
-    std::fs::write(dir.join("prov.yaml"), node).unwrap();
+    ok(&dir, &["config", "fields.status.default", "open"]);
+    ok(&dir, &["config", "fields.priority.default", "2"]);
     // The page is derived from the config, and the config was just edited by
     // hand; regenerate it so `check` has nothing to say about it.
     ok(&dir, &["about"]);
