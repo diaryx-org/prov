@@ -206,6 +206,22 @@ pub enum Fix {
         key: String,
         value: String,
     },
+    /// Rewrite configuration written in a retired form into the form prov
+    /// reads — several keys, perhaps in several blocks, applied to `doc` as
+    /// one write, so a view never lands without the filing entry it was
+    /// split from, nor a stamp on its field while the retired key still
+    /// names it.
+    ///
+    /// Each edit's key is a path from the top of `doc`'s metadata: a config
+    /// document's own top level, or through `prov` into a root's inline
+    /// block. The plan is [`prov_config::upgrade`]'s, made against `doc` as it
+    /// was when the remedy was offered; two findings can touch the same
+    /// declaration, so a caller applying several asks for each one's
+    /// remedies after the last has landed, as `check --fix` does.
+    RewriteConfig {
+        doc: PathBuf,
+        edits: Vec<crate::config::ConfigEdit>,
+    },
 }
 
 impl fmt::Display for Fix {
@@ -316,6 +332,10 @@ impl fmt::Display for Fix {
             Fix::SetConfigValue { doc, key, value } => {
                 write!(f, "set {key} to {value} in {}", doc.display())
             }
+            Fix::RewriteConfig { doc, edits } => {
+                let keys: Vec<String> = edits.iter().map(|e| e.key().join(".")).collect();
+                write!(f, "rewrite {} in {}", keys.join(", "), doc.display())
+            }
         }
     }
 }
@@ -398,6 +418,8 @@ pub enum RemedyKind {
     SetConfigKey,
     /// Correct an unreadable configuration value.
     SetConfigValue,
+    /// Rewrite configuration written in a retired form in the current one.
+    Upgrade,
     /// Rebuild a derived cache from the authority behind it.
     Rebuild,
     /// Regenerate a derived page from the configuration behind it.
@@ -422,6 +444,7 @@ impl RemedyKind {
             RemedyKind::SetDate => "set-date",
             RemedyKind::SetConfigKey => "set-config-key",
             RemedyKind::SetConfigValue => "set-config-value",
+            RemedyKind::Upgrade => "upgrade",
             RemedyKind::Rebuild => "rebuild",
             RemedyKind::Regenerate => "regenerate",
         }
@@ -1242,11 +1265,45 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 crate::config::ConfigIssueKind::NestRefNotDeclared { .. } => Ok(Vec::new()),
                 // Only the author knows what the expression was meant to say.
                 crate::config::ConfigIssueKind::BadExpression { .. } => Ok(Vec::new()),
-                // The replacement is exact, but it may add a `filing:` entry
-                // beside the view, and a config rewrite across two blocks is
-                // not a fix this machinery can apply as one edit. The finding
-                // prints it to paste.
-                crate::config::ConfigIssueKind::ViewRetired { .. } => Ok(Vec::new()),
+                // The replacement is exact — the old form said precisely
+                // this — so the rewrite restores what the author wrote rather
+                // than choosing anything, and it may run unattended. Where it
+                // would overwrite a `filing:` entry or a stamp another field
+                // already carries, `upgrade` plans nothing and the finding
+                // stands.
+                crate::config::ConfigIssueKind::ViewRetired { .. }
+                | crate::config::ConfigIssueKind::StampRetired { .. } => {
+                    let Some((prefix, surface)) = self.config_surface(doc, &issue.key).await else {
+                        return Ok(Vec::new());
+                    };
+                    let Some(edits) = crate::config::upgrade(&surface, issue) else {
+                        return Ok(Vec::new());
+                    };
+                    let effect = match &issue.kind {
+                        crate::config::ConfigIssueKind::StampRetired { stamp, field, .. }
+                            if !field.is_empty() =>
+                        {
+                            format!("declare {field} stamped on {stamp}")
+                        }
+                        crate::config::ConfigIssueKind::StampRetired { .. } => {
+                            "drop the key, which stamps nothing".to_string()
+                        }
+                        _ => "rewrite it as the view prov reads".to_string(),
+                    };
+                    let edits = edits
+                        .into_iter()
+                        .map(|edit| edit.prefixed(prefix.as_deref()))
+                        .collect();
+                    Ok(vec![Remedy::new(
+                        RemedyKind::Upgrade,
+                        Warrant::Derived,
+                        effect,
+                        Fix::RewriteConfig {
+                            doc: doc.clone(),
+                            edits,
+                        },
+                    )])
+                }
             },
             _ => Ok(Vec::new()),
         }
@@ -1336,6 +1393,23 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// where the block *is* the document, and the root's inline `prov:` block,
     /// where it is one key down. An editor addresses the file, so the prefix has
     /// to come back before the key can be written to.
+    /// The config surface in `doc` that a finding keyed `key` was reported
+    /// on, and the key its block sits under in `doc` — `Some("prov")` for a
+    /// root's inline block, `None` for a config document, whose whole
+    /// metadata is the surface. The same test as
+    /// [`config_key_path`](Self::config_key_path).
+    async fn config_surface(&self, doc: &Path, key: &str) -> Option<(Option<String>, Value)> {
+        let (_, parsed) = self.load(doc).await.ok()?;
+        let head = key.split('.').next()?;
+        match parsed.meta.get(crate::config::ROOT_CONFIG_KEY) {
+            Some(block) if block.get(head).is_some() => Some((
+                Some(crate::config::ROOT_CONFIG_KEY.to_string()),
+                block.clone(),
+            )),
+            _ => Some((None, parsed.meta)),
+        }
+    }
+
     async fn config_key_path(&self, doc: &Path, key: &str) -> String {
         let inline = self
             .load(doc)
@@ -1564,6 +1638,41 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     fig::Value::Str(value.clone()),
                 )?;
                 cs.write(doc, updated);
+            }
+            // Every edit through one editor and one render, so the rewrite
+            // lands as one write or not at all.
+            Fix::RewriteConfig { doc, edits } => {
+                use crate::config::ConfigEdit;
+                let (text, parsed) = self.load(doc).await?;
+                let mut editor = prov_store::edit::MetaEditor::open(
+                    &text,
+                    parsed.carrier.ok_or_else(|| {
+                        prov_graph::error::Error::Structure(format!(
+                            "{} has no metadata block to edit",
+                            doc.display()
+                        ))
+                    })?,
+                )?;
+                for edit in edits {
+                    let path: Vec<fig::Segment> = edit
+                        .key()
+                        .iter()
+                        .map(|part| match part.parse::<usize>() {
+                            Ok(index) => fig::Segment::Index(index),
+                            Err(_) => fig::Segment::Key(part),
+                        })
+                        .collect();
+                    match edit {
+                        ConfigEdit::Set { value, .. } => {
+                            editor.set_value(&path, fig::Value::from(value))?
+                        }
+                        ConfigEdit::Append { value, .. } => {
+                            editor.append_value(&path, fig::Value::from(value))?
+                        }
+                        ConfigEdit::Remove { .. } => editor.delete(&path)?,
+                    }
+                }
+                cs.write(doc, editor.render()?);
             }
             // Delegated above — a whole verb, not a metadata edit.
             Fix::Adopt { .. } | Fix::Reparent { .. } => unreachable!("delegated above"),
@@ -2294,6 +2403,98 @@ mod tests {
             text.contains("# how links are written"),
             "the comment survives: {text}"
         );
+    }
+
+    /// The shape a frontend upgrading its own config needs: every retired
+    /// entry is its own finding with its own rewrite, and applying the ones
+    /// it wrote leaves the rest standing.
+    #[test]
+    fn retired_config_is_rewritten_one_finding_at_a_time() {
+        let dir = tempdir("remedy-upgrade");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "spec: 1\nupdated: modified\ncreated: ''\n# declared fields\nfields:\n  modified:\n    type: datetime\nviews:\n  daily:\n    label: Daily\n    group: created\n    by: month\n    nest: month\n  mine:\n    group: status\n",
+        );
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let wanted = |f: &Finding| match f {
+            Finding::ConfigIssue { issue, .. } => {
+                matches!(
+                    issue.kind,
+                    crate::config::ConfigIssueKind::StampRetired { .. }
+                ) || issue.key == "views.daily"
+            }
+            _ => false,
+        };
+        // Planned against the file as it is now, so re-asked after each.
+        loop {
+            let findings = block_on(ws.check("index.md")).unwrap();
+            let Some(finding) = findings.iter().find(|f| wanted(f)) else {
+                break;
+            };
+            let remedies = block_on(ws.remedies(finding)).unwrap();
+            assert_eq!(kinds(&remedies), vec![RemedyKind::Upgrade], "{finding}");
+            assert_eq!(remedies[0].warrant, Warrant::Derived);
+            block_on(ws.apply_fix(&remedies[0].fix)).unwrap();
+        }
+
+        let text = read(&dir, "prov.yaml");
+        assert!(
+            text.contains("# declared fields"),
+            "comments survive: {text}"
+        );
+        assert!(
+            !text.contains("updated:") && !text.contains("created: ''"),
+            "{text}"
+        );
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let left: Vec<&str> = findings
+            .iter()
+            .filter_map(|f| match f {
+                Finding::ConfigIssue { issue, .. } => Some(issue.key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(left, ["views.mine"], "{findings:#?}\n{text}");
+        let config = block_on(ws.effective_config(Path::new("index.md"))).unwrap();
+        assert_eq!(config.updated_field(), Some("modified"));
+        assert_eq!(
+            config.field("modified").and_then(|f| f.ty),
+            Some(fig_schema::FieldType::Extended(
+                fig::ExtKind::OffsetDateTime
+            )),
+            "the declaration keeps its type: {text}"
+        );
+        assert!(config.views.iter().any(|v| v.name == "daily"), "{text}");
+        assert!(config.filing.iter().any(|f| f.name == "daily"), "{text}");
+    }
+
+    /// A root's inline `prov:` block is a surface too, one key down.
+    #[test]
+    fn a_retired_stamp_in_the_inline_block_is_rewritten_there() {
+        let dir = tempdir("remedy-upgrade-inline");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nprov:\n  created: born\n---\n",
+        );
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let issue = sole(&findings, |f| matches!(f, Finding::ConfigIssue { .. }));
+        let fix = block_on(ws.suggest_fix(issue)).unwrap().expect("a rewrite");
+        block_on(ws.apply_fix(&fix)).unwrap();
+        let text = read(&dir, "index.md");
+        assert!(
+            text.contains("born:") && text.contains("stamp: create"),
+            "{text}"
+        );
+        assert!(block_on(ws.check("index.md")).unwrap().is_empty(), "{text}");
     }
 
     #[test]

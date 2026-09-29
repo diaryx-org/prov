@@ -432,6 +432,16 @@ month(first(a, b))`, `under:` as the ancestry condition, `has: x` as
 `present(x)`, `equals: { x: v }` as `'v' in field('x')`, and `nest:` as a
 `filing:` entry of the same name.
 
+`check --fix` writes the replacement for you, and `--fix mechanical` does it
+unattended: the old form said exactly what the new one says, so nothing is
+being chosen. The view and its filing entry land in one write, so neither
+exists without the other. The one case left to you is a `filing:` entry of
+that name that already says something else — which of the two files new
+records is yours to decide, and the finding says so. A program that wrote such
+views on a user's behalf can upgrade just its own: each retired view is its
+own finding with its own repair (`Workspace::remedies`, `RemedyKind::Upgrade`),
+and applying one applies nothing else.
+
 ### Filing
 
 A view reads. A **filing** entry says where a frontend should *write* a new
@@ -730,7 +740,14 @@ from the field's unscoped declaration only; one under a scope is a
 The stamps used to be top-level keys naming the field — `updated: modified`,
 `created: created` — beside a separate `fields` declaration of the same
 field's type. Those keys are no longer read: a workspace that still writes
-them stamps nothing until it declares `stamp:` on the field.
+them stamps nothing until it declares `stamp:` on the field. `check` reports
+each as a `stamp_retired` finding, and `check --fix` moves the stamp onto the
+field's declaration — beside the `type:` it already has, on the unscoped
+declaration of a field declared per scope (adding one if there is none) — and
+drops the old key. An empty value, the old spelling of "stamp nothing", is
+simply dropped. Where another field already carries that stamp, nothing is
+moved: a document has one such instant, and which field holds it is yours to
+say.
 
 ### Scoping a declaration
 
@@ -875,7 +892,7 @@ applies to path targets only.
 | `fixity: attachments` | `fixity: on` | coverage is no longer a scale — a `content_hash` is written wherever it covers a file of its own (an attachment's payload, a separated body), which is where `sha256sum` can reproduce it. Old spelling still read |
 | `fixity: all` | **dropped** → `fixity: on` | a combined document's body hash covered a parsed substring, not a file, so it was checkable only by prov. **Not** read as a synonym: it asked for the coverage that went away, so it lands as an invalid value (default kept, `check` reports it) rather than being quietly narrowed. Hashes already on record are still verified — see the `legacy_body_hash` finding |
 | `updated_field: modified` | `updated: modified` | reframed as "this field is machine-maintained" |
-| `updated: modified` | `fields.modified.stamp: edit` | the stamp is a property of the field it writes. The old key is **not read** |
+| `updated: modified` | `fields.modified.stamp: edit` | the stamp is a property of the field it writes. The old key is **not read**; `check` reports it and `check --fix` moves it |
 | `created: made` | `fields.made.stamp: create` | likewise, and likewise not read |
 | — | `spec: 1` | new version marker |
 | `config`/`registry`/`deletions`/`history` pointers | unchanged, top-level | structure, not policy |
@@ -904,6 +921,12 @@ silently ignore:
   §3), reported as `SpanningNotSingleParent`. A `spanning` relation the same
   surface turns `off` is reported too: the workspace named a spine it does not
   have.
+- **Retired forms** — a view written with `group:`/`by:`/`under:`/`nest:` or a
+  `where:` mapping (`view_retired`), and a top-level `updated:`/`created:`
+  (`stamp_retired`). Neither is read. Unlike the others these have one right
+  repair, the same setting in the current form, and `check --fix` writes it —
+  unless it would overwrite something else the config says, which the finding
+  names.
 - `spec`, and the config document's own `title`/`part_of`, are whitelisted.
 
 Beyond the two config surfaces, `check` also validates the workspace's **stores**

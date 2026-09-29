@@ -478,6 +478,11 @@ pub(crate) fn cmd_config(
                     prov::ConfigIssueKind::BadExpression { message } => {
                         eprintln!("prov: {at} is not an expression prov can run — {message}");
                     }
+                    prov::ConfigIssueKind::StampRetired { stamp, .. } => {
+                        eprintln!(
+                            "prov: `{key}` is no longer read — a stamp is declared on its field, as `fields.<field>.stamp: {stamp}`"
+                        );
+                    }
                     prov::ConfigIssueKind::ViewRetired { .. } => {
                         eprintln!(
                             "prov: this view is written with the retired keys — `prov check` prints its replacement"

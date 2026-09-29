@@ -1465,14 +1465,38 @@ pub enum ConfigIssueKind {
     /// `nest:`, or a `where:` mapping of predicates. It is not read at all.
     /// `replacement` is the same view in the current form, as YAML to paste,
     /// when there was enough to translate.
-    ViewRetired { replacement: Option<String> },
+    ///
+    /// [`upgrade`](crate::upgrade()) rewrites it: the view replaced by its
+    /// translation, and, when the old view nested, a `filing.<name>` entry
+    /// beside it. `filing_taken` says that `filing.<name>` already holds a
+    /// different entry, so there is no rewrite to apply — which of the two
+    /// files new records is the author's to say.
+    ViewRetired {
+        replacement: Option<String>,
+        filing_taken: bool,
+    },
+    /// A top-level `updated:` or `created:` key — the retired way of naming
+    /// the field a stamp is written to. It is not read: nothing is stamped
+    /// until the field declares `fields.<field>.stamp: edit` (or `create`).
+    /// `key` is the retired key; `stamp` is `edit` or `create`; `field` is
+    /// the field it names, empty for the old spelling of "stamping off".
+    ///
+    /// [`upgrade`](crate::upgrade()) moves the stamp onto the field's own
+    /// declaration, keeping everything else it declares. `claimed_by` names
+    /// another field that already carries this stamp, in which case there is
+    /// no rewrite to apply: a document has one such instant, and which field
+    /// holds it is the author's to say.
+    StampRetired {
+        stamp: String,
+        field: String,
+        claimed_by: Option<String>,
+    },
     /// `workspace_id` holds a name that cannot be written as the qualifier of an
     /// `id:<workspace>/<id>` reference — it contains `/`, `:` or whitespace, or
     /// is not a string at all. `apply` ignored it, so the workspace stayed
     /// anonymous.
     ///
-    /// An **empty** value is not this: it is the explicit spelling of anonymous,
-    /// the way an empty `updated` spells that feature off.
+    /// An **empty** value is not this: it is the explicit spelling of anonymous.
     ///
     /// Unlike [`InvalidValue`](Self::InvalidValue) there is no list of accepted
     /// spellings to offer: the name is the user's to choose and only its *shape*
@@ -1523,8 +1547,6 @@ const TOP_KEYS: &[&str] = &[
     "filing",
     "exports",
     "id_storage",
-    "updated",
-    "created",
     "workspace_id",
     "root",
     "identity",
@@ -1654,8 +1676,7 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
             // target. A non-string is malformed for the same reason.
             //
             // The empty string is *not*: it is the explicit spelling of the
-            // default (anonymous), exactly as an empty `updated` spells the
-            // stamping feature off. `to_mapping` writes it that way, so
+            // default (anonymous). `to_mapping` writes it that way, so
             // flagging it would make prov's own serialized default fail its own
             // diagnosis.
             "workspace_id" => {
@@ -1702,7 +1723,33 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
             "references" => diagnose_reference_block(&mut issues, "references", value),
             "relations" => diagnose_relations(&mut issues, value),
             "fields" => diagnose_fields(&mut issues, value),
-            "views" => diagnose_views(&mut issues, value),
+            "views" => diagnose_views(&mut issues, value, meta),
+            // Retired: the stamp is declared on its field. Not in `TOP_KEYS`,
+            // so a near-miss is never steered onto a key that is not read.
+            "updated" | "created" => {
+                let stamp = if key == "updated" {
+                    Stamp::Edit
+                } else {
+                    Stamp::Create
+                };
+                let field = value
+                    .as_str()
+                    .map(|f| f.trim().to_string())
+                    .unwrap_or_else(|| value_summary(value));
+                let claimed_by = if field.is_empty() {
+                    None
+                } else {
+                    crate::upgrade::stamp_claimant(meta, stamp, &field)
+                };
+                issues.push(ConfigIssue {
+                    key: key.clone(),
+                    kind: ConfigIssueKind::StampRetired {
+                        stamp: stamp.as_config_str().to_string(),
+                        field,
+                        claimed_by,
+                    },
+                });
+            }
             "filing" => diagnose_filing(&mut issues, value, map),
             "exports" => diagnose_exports(&mut issues, value, map),
             other => {
@@ -2096,7 +2143,7 @@ fn diagnose_field_declaration(
 /// the crate that executes one); this is the translation into config-issue
 /// vocabulary, plus the near-miss suggestion, which needs the edit distance
 /// every other config near-miss already uses.
-fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
+fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Value) {
     let Some(map) = value.as_mapping() else {
         return block_shape_issue(issues, "views", value);
     };
@@ -2125,7 +2172,10 @@ fn diagnose_views(issues: &mut Vec<ConfigIssue>, value: &Value) {
                 }),
                 ViewIssueKind::Retired { replacement } => issues.push(ConfigIssue {
                     key: dotted,
-                    kind: ConfigIssueKind::ViewRetired { replacement },
+                    kind: ConfigIssueKind::ViewRetired {
+                        replacement,
+                        filing_taken: crate::upgrade::filing_taken(surface, name),
+                    },
                 }),
                 // Unlike a stray *top-level* key — which may be a user-owned
                 // field prov never reads (DESIGN §2) — a stray key inside a
@@ -3225,8 +3275,8 @@ mod tests {
                 "{bad:?}"
             );
         }
-        // Empty is the explicit spelling of anonymous — the same shape as an
-        // empty `updated` — so it is clean, and `to_mapping` may write it.
+        // Empty is the explicit spelling of anonymous, so it is clean, and
+        // `to_mapping` may write it.
         assert!(
             diagnose(&config_doc(&[("workspace_id", "")])).is_empty(),
             "an empty name is anonymity, not an error"
@@ -3755,6 +3805,7 @@ mod tests {
         assert_eq!(issues[0].key, "views.daily");
         let ConfigIssueKind::ViewRetired {
             replacement: Some(yaml),
+            filing_taken: false,
         } = &issues[0].kind
         else {
             panic!("{issues:?}");

@@ -1019,7 +1019,18 @@ impl fmt::Display for Finding {
                     doc.display(),
                     issue.key,
                 ),
-                crate::config::ConfigIssueKind::ViewRetired { replacement } => match replacement {
+                crate::config::ConfigIssueKind::ViewRetired {
+                    replacement,
+                    filing_taken,
+                } => match replacement {
+                    Some(yaml) if *filing_taken => write!(
+                        f,
+                        "{}: config `{}` is written with the retired view keys (`group`, `by`, `under`, `nest`, or a `where:` mapping) and is not read — it now reads as below, but `filing.{}` already says something else, so it is not rewritten for you (keep one filing entry by hand):\n{}",
+                        doc.display(),
+                        issue.key,
+                        issue.key.strip_prefix("views.").unwrap_or(&issue.key),
+                        indent(yaml),
+                    ),
                     Some(yaml) => write!(
                         f,
                         "{}: config `{}` is written with the retired view keys (`group`, `by`, `under`, `nest`, or a `where:` mapping) and is not read — it now reads:\n{}",
@@ -1030,6 +1041,31 @@ impl fmt::Display for Finding {
                     None => write!(
                         f,
                         "{}: config `{}` is written with the retired view keys (`group`, `by`, `under`, `nest`, or a `where:` mapping) and is not read — write it as `where:` and `key:` expressions",
+                        doc.display(),
+                        issue.key,
+                    ),
+                },
+                crate::config::ConfigIssueKind::StampRetired {
+                    stamp,
+                    field,
+                    claimed_by,
+                } => match (field.is_empty(), claimed_by) {
+                    (true, _) => write!(
+                        f,
+                        "{}: config `{}` is the retired way of naming a stamped field, and empty it says nothing (drop it)",
+                        doc.display(),
+                        issue.key,
+                    ),
+                    (false, Some(by)) => write!(
+                        f,
+                        "{}: config `{}` is the retired way of naming a stamped field and is not read — `{by}` already declares `stamp: {stamp}`, and a document has one such instant, so `{field}` is not stamped (drop `{}`, or move the stamp by hand)",
+                        doc.display(),
+                        issue.key,
+                        issue.key,
+                    ),
+                    (false, None) => write!(
+                        f,
+                        "{}: config `{}` is the retired way of naming a stamped field and is not read, so `{field}` is not stamped (declare `fields.{field}.stamp: {stamp}` instead)",
                         doc.display(),
                         issue.key,
                     ),

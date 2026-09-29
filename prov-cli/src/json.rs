@@ -392,9 +392,23 @@ pub fn finding(f: &Finding) -> J {
                     fields.push(("issue", s("bad_expression")));
                     fields.push(("message", s(message)));
                 }
-                prov::ConfigIssueKind::ViewRetired { replacement } => {
+                prov::ConfigIssueKind::ViewRetired {
+                    replacement,
+                    filing_taken,
+                } => {
                     fields.push(("issue", s("view_retired")));
                     fields.push(("replacement", opt(replacement.clone())));
+                    fields.push(("filing_taken", J::Bool(*filing_taken)));
+                }
+                prov::ConfigIssueKind::StampRetired {
+                    stamp,
+                    field,
+                    claimed_by,
+                } => {
+                    fields.push(("issue", s("stamp_retired")));
+                    fields.push(("stamp", s(stamp)));
+                    fields.push(("field", s(field)));
+                    fields.push(("claimed_by", opt(claimed_by.clone())));
                 }
             }
         }

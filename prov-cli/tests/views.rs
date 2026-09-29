@@ -411,6 +411,20 @@ fn a_retired_view_is_reported_with_its_replacement() {
     );
     let (_, out) = run(&dir, &["views"]);
     assert!(out.contains("declares no views"), "{out}");
+
+    // The replacement is exact, so an unattended sweep writes it — the view
+    // and its filing entry in one go, inside the root's own `prov:` block.
+    let (_, out) = run(&dir, &["check", "--fix", "mechanical"]);
+    assert!(out.contains("→ rewrite it as the view prov reads"), "{out}");
+    let (_, out) = run(&dir, &["check"]);
+    assert!(!out.contains("config `views.daily`"), "{out}");
+    let (_, out) = run(&dir, &["views"]);
+    assert!(out.contains("daily"), "{out}");
+    let root = std::fs::read_to_string(dir.join("index.md")).unwrap();
+    assert!(
+        root.contains("  filing:\n    daily:\n") && root.contains("contents:\n- daily.md"),
+        "{root}"
+    );
 }
 
 #[test]

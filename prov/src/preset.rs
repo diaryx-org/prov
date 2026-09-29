@@ -153,6 +153,11 @@ impl Preset {
                         )
                     }
                     K::BadExpression { message } => format!("not an expression: {message}"),
+                    K::StampRetired { stamp, field, .. } => {
+                        format!(
+                            "names `{field}` the retired way; declare `fields.{field}.stamp: {stamp}`"
+                        )
+                    }
                     K::ViewRetired { .. } => {
                         "written with the retired view keys; `prov check` prints its replacement"
                             .to_string()
