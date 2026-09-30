@@ -3,10 +3,11 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-09
-updated: 2026-09-17
+updated: 2026-09-30
 part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
+- '[A body link reads a covered payload as a document](/docs/tasks/a-body-link-reads-a-covered-payload-as-a-document.md)'
 ---
 
 # Tasks
