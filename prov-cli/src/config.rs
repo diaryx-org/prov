@@ -470,6 +470,11 @@ pub(crate) fn cmd_config(
                             "prov: `{field}` would be stamped on {stamp}, which `{first}` already is — a document has one such instant"
                         );
                     }
+                    prov::ConfigIssueKind::FilingKindClaimedTwice { kind, by } => {
+                        eprintln!(
+                            "prov: {at} files `{kind}`, which `filing.{by}` already does — a record of one kind is filed one way"
+                        );
+                    }
                     prov::ConfigIssueKind::NestRefNotDeclared { field } => {
                         eprintln!(
                             "prov: cannot file by reference through `{field}` — it is not declared `type: ref`, so a move of the shelf would not rewrite it"

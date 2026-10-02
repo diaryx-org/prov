@@ -384,6 +384,11 @@ pub fn finding(f: &Finding) -> J {
                     fields.push(("stamp", s(stamp)));
                     fields.push(("first", s(first)));
                 }
+                prov::ConfigIssueKind::FilingKindClaimedTwice { kind, by } => {
+                    fields.push(("issue", s("filing_kind_claimed_twice")));
+                    fields.push(("record_kind", s(kind)));
+                    fields.push(("by", s(by)));
+                }
                 prov::ConfigIssueKind::NestRefNotDeclared { field } => {
                     fields.push(("issue", s("nest_ref_not_declared")));
                     fields.push(("field", s(field)));

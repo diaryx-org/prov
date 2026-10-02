@@ -159,6 +159,11 @@ prov:
       under: '[Calendar](/Calendar/index.md)'
       field: written.on
       nest: ref               # file under the document the value links to
+    photos:
+      under: '[Photos](/Photos/index.md)'
+      field: [date_of_document, created]
+      nest: year
+      kind: [image, video]    # which records it files — see "Which records an entry files"
   exports:                    # what may *leave* — see "Exports" below
     letters:
       label: Letters home
@@ -453,6 +458,7 @@ record — under which index, by which field, how deep:
 | `field`  | the field path, or a list tried in order, the record is filed by. Required with `nest` |
 | `nest`   | a grain — how deep, through indexes titled by the cut value — or `ref`, to file under the document the value links to. Absent = directly under `under` |
 | `label`  | what a person calls it                                                |
+| `kind`   | the kinds of record it files: `page`, `image`, `audio`, `video`, `file`, `manifest`, or `attachment` for the four payload kinds. Absent = any |
 
 Filing used to be a view's `nest:` key, and was split out because it is the
 half that writes. The spine is single-parent, so filing needs guarantees before
@@ -501,6 +507,40 @@ declared `type: seq` is a `check` finding, and a document that turns out
 multi-valued at filing time simply has no route. A view grouping by such a
 field stays perfectly good; one document under several groups is the whole
 point of a view.
+
+#### Which records an entry files
+
+An application with one way to add anything — a page, a photograph, a voice
+memo, a scanned deed — needs to know where *each* goes, and an entry that
+names its kinds says:
+
+```yaml
+filing:
+  daily:
+    under: '[Daily](id:abc1234)'
+    field: [date_of_document, created]
+    nest: month
+    kind: page
+  photos:
+    under: '[Photos](/Photos/index.md)'
+    field: [date_of_document, created]
+    nest: year
+    kind: [image, video]
+```
+
+A record's kind is prov's reading of it (`RecordKind`, `Document::record_kind`):
+a manifest node is `manifest`; an attachment is the kind of its payload, from
+the payload's extension — `image`, `audio`, `video`, after the IANA top-level
+media types, or `file` for anything else; every other document is a `page`.
+`attachment` in a `kind:` list names the four payload kinds at once.
+
+Only an entry that **names** a kind answers for it (`filing_for_kind`; `prov new
+--filed`, `prov attach --filed`). An entry naming no kinds still files whatever
+it is asked to file, and which of several such entries an application uses —
+Daily, an inbox — stays the application's choice, as before. Two entries naming
+the same kind is a `check` finding, `FilingKindClaimedTwice`, and neither
+answers: a photograph cannot be filed two ways, and prov will not pick. A word
+that is not a kind drops the entry, as an unknown `nest:` does.
 
 #### `nest: ref` — filing by reference
 

@@ -985,6 +985,12 @@ impl fmt::Display for Finding {
                     doc.display(),
                     issue.key,
                 ),
+                crate::config::ConfigIssueKind::FilingKindClaimedTwice { kind, by } => write!(
+                    f,
+                    "{}: config `{}` files `{kind}`, which `filing.{by}` already does — a host asking where a record of that kind goes gets two answers, so it takes neither (name the kind in one entry)",
+                    doc.display(),
+                    issue.key,
+                ),
                 crate::config::ConfigIssueKind::NestRefNotDeclared { field } => write!(
                     f,
                     "{}: config `{}` files by reference through `{field}`, which is not declared `type: ref` — until it is, the value is a string rather than a link, and a move of the shelf would leave it pointing at where the shelf was (declare the field `type: ref`, or drop `nest`)",

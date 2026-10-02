@@ -1102,8 +1102,8 @@ pub(crate) struct NewArgs {
         long = "in",
         short = 'i',
         value_name = "TARGET",
-        required_unless_present = "filing",
-        conflicts_with = "filing"
+        required_unless_present_any = ["filing", "filed"],
+        conflicts_with_all = ["filing", "filed"]
     )]
     pub(crate) in_target: Option<String>,
     /// File the new document the way the workspace's `filing.<NAME>` entry
@@ -1111,8 +1111,13 @@ pub(crate) struct NewArgs {
     /// the index for each level of its grain — found by the period it carries,
     /// made when missing — cut from the new document's own value for the
     /// entry's field (its `created` stamp, or a `--set`).
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", conflicts_with = "filed")]
     pub(crate) filing: Option<String>,
+    /// File the new document through the one filing entry that names
+    /// `kind: page` — the entry a host's "add" files pages by — instead of
+    /// naming the entry. Refused when no entry, or several, name it.
+    #[arg(long)]
+    pub(crate) filed: bool,
     /// `mkdir -p` for containment — idempotent creation. Creates any missing
     /// route segments (when `--in` is a route), *and* treats an
     /// already-existing leaf (a same-titled child) as a no-op instead of an
@@ -1160,8 +1165,18 @@ pub(crate) struct AttachArgs {
     /// The parent that gains a spanning link to the attachment (default: the
     /// workspace root): a path (`daily.md`), a title route
     /// (`@Daily/2026/07`), or an id (`id:fpk38j`).
-    #[arg(long = "in", short = 'i', value_name = "TARGET")]
+    #[arg(
+        long = "in",
+        short = 'i',
+        value_name = "TARGET",
+        conflicts_with = "filed"
+    )]
     pub(crate) in_target: Option<String>,
+    /// File the attachment through the one filing entry that names its kind
+    /// (`kind: image` for a photograph, `manifest` with `--manifest`) instead
+    /// of naming a parent. Refused when no entry, or several, name the kind.
+    #[arg(long, conflicts_with = "all")]
+    pub(crate) filed: bool,
     /// Create any route segments that don't exist yet — `mkdir -p` for
     /// containment. Only meaningful when `--in` is a route.
     #[arg(long = "parents", short = 'p', requires = "in_target")]

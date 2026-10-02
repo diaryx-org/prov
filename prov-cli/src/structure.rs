@@ -100,6 +100,30 @@ fn resolve_placement(
     Ok(Some(terminal))
 }
 
+/// The name of the one filing entry that names `kind` — what `--filed`
+/// files through. An error naming the entries when none, or several, do.
+fn filing_entry_for_kind(session: &Session, kind: prov::RecordKind) -> Result<String, AnyError> {
+    use prov::filing::KindFiling;
+    match prov::filing::filing_for_kind(&session.ctx.config.filing, kind) {
+        KindFiling::One(spec) => Ok(spec.name.clone()),
+        KindFiling::Unclaimed => Err(format!(
+            "no filing entry names `kind: {}` — declare one, or name a parent with --in",
+            kind.as_str()
+        )
+        .into()),
+        KindFiling::Ambiguous(specs) => Err(format!(
+            "several filing entries name `kind: {}` ({}) — name one with --filing",
+            kind.as_str(),
+            specs
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .into()),
+    }
+}
+
 /// Where `new --filing <name>` puts the document: the container the
 /// workspace's filing entry names for it, found or made
 /// ([`Workspace::file`](prov::Workspace::file)).
@@ -208,6 +232,7 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
         title,
         in_target,
         filing,
+        filed,
         parents,
         layout,
         dry_run,
@@ -237,11 +262,21 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     // One reading of the clock for the whole command, so the document is
     // filed by the same instant it is stamped with.
     let now = crate::clock::now();
-    let placed = match (in_target.as_deref(), filing.as_deref()) {
+    let by_kind = if filed {
+        Some(filing_entry_for_kind(&session, prov::RecordKind::Page)?)
+    } else {
+        None
+    };
+    let placed = match (
+        in_target.as_deref(),
+        filing.as_deref().or(by_kind.as_deref()),
+    ) {
         (Some(target), _) => resolve_placement(&mut session, target, parents, layout, dry_run)?,
         (None, Some(filing)) => file_placement(&mut session, filing, &sets, &now, dry_run)?,
         (None, None) => {
-            return Err("name a parent with --in, or a filing entry with --filing".into());
+            return Err(
+                "name a parent with --in, or a filing entry with --filing or --filed".into(),
+            );
         }
     };
     let Some(parent_rel) = placed else {
@@ -393,6 +428,7 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
     let AttachArgs {
         payload,
         in_target,
+        filed,
         parents,
         layout,
         opaque,
@@ -414,7 +450,24 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
     // Default the parent to the workspace root — the common "attach this to my
     // workspace" case names no parent at all. Otherwise it is resolved exactly as
     // every other command resolves one, so an `@`-route `--in` works here too.
+    // `--filed` asks the filing entry that names the payload's kind instead.
     let parent_rel = match in_target {
+        None if filed => {
+            let Some(payload) = payload else {
+                return Err("--filed files one payload; name it".into());
+            };
+            let kind = if manifest {
+                prov::RecordKind::Manifest
+            } else {
+                prov::payload_kind(payload)
+            };
+            let entry = filing_entry_for_kind(&session, kind)?;
+            let now = crate::clock::now();
+            match file_placement(&mut session, &entry, &[], &now, false)? {
+                Some(p) => p,
+                None => return Ok(ExitCode::SUCCESS),
+            }
+        }
         None => session.ctx.root_doc.clone(),
         Some(t) => match resolve_placement(&mut session, t, parents, layout, false)? {
             Some(p) => p,

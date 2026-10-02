@@ -1262,6 +1262,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // rewritten. That is very likely what the author meant, and
                 // still theirs to say. Diagnosis only.
                 crate::config::ConfigIssueKind::NestRefNotDeclared { .. } => Ok(Vec::new()),
+                // Which of the two entries should file the kind is the
+                // author's to say. Diagnosis only.
+                crate::config::ConfigIssueKind::FilingKindClaimedTwice { .. } => Ok(Vec::new()),
                 // Only the author knows what the expression was meant to say.
                 crate::config::ConfigIssueKind::BadExpression { .. } => Ok(Vec::new()),
                 // The replacement is exact — the old form said precisely

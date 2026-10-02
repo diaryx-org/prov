@@ -147,6 +147,9 @@ impl Preset {
                         stamp,
                         first,
                     } => format!("stamps `{field}` on {stamp}, which `{first}` already claims"),
+                    K::FilingKindClaimedTwice { kind, by } => {
+                        format!("files `{kind}`, which `filing.{by}` already does")
+                    }
                     K::NestRefNotDeclared { field } => {
                         format!(
                             "files by reference through `{field}`, which is not declared `type: ref`"

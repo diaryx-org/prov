@@ -77,6 +77,7 @@ pub mod fs;
 pub mod graph;
 pub mod identity;
 pub mod index;
+pub mod kind;
 pub mod link;
 pub mod manifest;
 pub mod memo;

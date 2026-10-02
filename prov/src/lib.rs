@@ -93,6 +93,7 @@ pub use prov_graph;
 /// [`Workspace::register`](workspace::Workspace::register), is in
 /// [`workspace`].
 pub use prov_graph::identity;
+pub use prov_graph::kind::{RecordKind, payload_kind};
 /// The body-prose parser, re-exported whole — `prov-graph`'s, forwarded here
 /// so a consumer that depends on `prov` alone reaches the same twig the bodies
 /// were parsed with rather than pinning a second one. See
@@ -112,7 +113,7 @@ pub use prov_graph::{
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.
 pub use prov_graph::{
-    bulk, content, document, error, exec, graph, link, memo, meta, peer, relation, title,
+    bulk, content, document, error, exec, graph, kind, link, memo, meta, peer, relation, title,
 };
 /// Metadata editing, at the path it had before the write surface moved out of
 /// the read core into `prov-store`.
@@ -272,8 +273,9 @@ pub mod views {
 pub mod filing {
     pub use crate::mutate::{Filed, FilingPlan, PlannedIndex};
     pub use prov_filing::{
-        FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, NESTS, Nest, NestRoute,
-        chain_values, diagnose_filing, filing_from,
+        FILING_KEY, FILING_KEYS, FilingIssue, FilingIssueKind, FilingSpec, KIND_WORDS, KindFiling,
+        NESTS, Nest, NestRoute, RecordKind, chain_values, diagnose_filing, diagnose_kinds,
+        filing_for_kind, filing_from,
     };
 }
 /// Grains — how a value is cut into groups, and the chain of coarser cuts a

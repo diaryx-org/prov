@@ -49,6 +49,19 @@
 //! be declared `type: ref`, so that a move of the shelf rewrites every record
 //! that files under it (`prov-config` reports it when it is not).
 //!
+//! # Which records an entry files
+//!
+//! An entry may name the kinds of record it is for — `kind: [image, video]`,
+//! or `kind: attachment` for every payload kind — in prov's
+//! [`RecordKind`] words. A host with one way to add anything (a page, a
+//! photograph, a recording) asks [`filing_for_kind`] which entry takes the
+//! kind it is adding. Only an entry that *names* the kind answers: an entry
+//! that names none files whatever it is asked to, and which of several such
+//! entries a host uses — Daily, an inbox — stays the host's choice, as it was
+//! before kinds. Two entries naming the same kind is an ambiguity
+//! [`diagnose_kinds`] reports, since a photograph cannot be filed in two
+//! places.
+//!
 //! # This crate describes; `prov` files
 //!
 //! [`FilingSpec::route`] returns index *titles* or a link, which is exactly
@@ -61,6 +74,7 @@
 //! [MoReq2010]: https://moreq.info/files/moreq2010_vol1_v1_1_en.pdf
 
 use prov_graph::field::{FieldPath, values_at};
+pub use prov_graph::kind::{ATTACHMENT_KINDS, RECORD_KINDS, RecordKind};
 use prov_graph::meta::{Mapping, Value};
 
 pub use prov_grain::Grain;
@@ -70,7 +84,19 @@ use prov_grain::scalar_texts;
 pub const FILING_KEY: &str = "filing";
 
 /// The keys valid inside one `filing.<name>` entry.
-pub const FILING_KEYS: &[&str] = &["label", "under", "field", "nest"];
+pub const FILING_KEYS: &[&str] = &["label", "under", "field", "nest", "kind"];
+
+/// The words a `kind:` value accepts: every [`RecordKind`], and
+/// [`ATTACHMENT_KINDS`] for all the payload kinds at once.
+pub const KIND_WORDS: &[&str] = &[
+    "page",
+    "image",
+    "audio",
+    "video",
+    "file",
+    "manifest",
+    "attachment",
+];
 
 /// The `nest:` spellings that are a bare word: every grain's, and `ref`.
 pub const NESTS: &[&str] = &["year", "month", "day", "initial", "ref"];
@@ -160,6 +186,9 @@ pub struct FilingSpec {
     /// How deep, or by reference. `None` files flat, directly under
     /// [`under`](Self::under).
     pub nest: Option<Nest>,
+    /// The kinds of record this entry files, in declaration order, with
+    /// `attachment` expanded. Empty files any kind — see the module docs.
+    pub kind: Vec<RecordKind>,
 }
 
 impl FilingSpec {
@@ -179,13 +208,24 @@ impl FilingSpec {
         if nest.is_some() && field.is_empty() {
             return None;
         }
+        // An unknown kind drops the entry, as an unknown nest does: an entry
+        // that would take records it was not written for files them somewhere
+        // nobody chose.
+        let kind = kind_list(map.get("kind"))?;
         Some(FilingSpec {
             name: name.to_string(),
             label: non_empty(map.get("label")),
             under: non_empty(map.get("under")),
             field,
             nest,
+            kind,
         })
+    }
+
+    /// Whether this entry takes a record of `kind` — any kind, when it names
+    /// none.
+    pub fn files(&self, kind: RecordKind) -> bool {
+        self.kind.is_empty() || self.kind.contains(&kind)
     }
 
     /// The mapping this entry writes back as.
@@ -211,6 +251,9 @@ impl FilingSpec {
         }
         if let Some(nest) = self.nest {
             map.insert("nest".into(), nest.to_value());
+        }
+        if !self.kind.is_empty() {
+            map.insert("kind".into(), kind_value(&self.kind));
         }
         map
     }
@@ -299,6 +342,108 @@ pub fn chain_values(meta: &Value, chain: &[String]) -> Vec<String> {
     Vec::new()
 }
 
+/// The kinds a `kind:` value names — a bare word, or a list of them — with
+/// `attachment` expanded and repeats dropped. `Some(vec![])` when the key is
+/// absent or empty; `None` when any word is not a kind.
+fn kind_list(value: Option<&Value>) -> Option<Vec<RecordKind>> {
+    let words: Vec<&str> = match value {
+        None | Some(Value::Null) => return Some(Vec::new()),
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Sequence(items)) => {
+            let mut words = Vec::new();
+            for item in items {
+                words.push(item.as_str()?);
+            }
+            words
+        }
+        Some(_) => return None,
+    };
+    let mut kinds = Vec::new();
+    for word in words.into_iter().filter(|w| !w.trim().is_empty()) {
+        for kind in RecordKind::parse_list_item(word)? {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+    }
+    Some(kinds)
+}
+
+/// How a kind list writes back: one word for one kind, `attachment` for the
+/// four payload kinds together, a list otherwise.
+fn kind_value(kinds: &[RecordKind]) -> Value {
+    let all_payloads = RecordKind::payload_kinds()
+        .iter()
+        .all(|k| kinds.contains(k));
+    let mut words: Vec<&str> = Vec::new();
+    for kind in kinds {
+        let word = if all_payloads && kind.is_payload() {
+            ATTACHMENT_KINDS
+        } else {
+            kind.as_str()
+        };
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    match words.as_slice() {
+        [one] => Value::String((*one).to_string()),
+        many => Value::Sequence(
+            many.iter()
+                .map(|w| Value::String((*w).to_string()))
+                .collect(),
+        ),
+    }
+}
+
+/// Which entry files a record of a given kind — see [`filing_for_kind`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KindFiling<'a> {
+    /// No entry names the kind. A host files it however it filed records
+    /// before kinds — under an entry it chose, or where the person is.
+    Unclaimed,
+    /// Exactly one entry names it.
+    One(&'a FilingSpec),
+    /// Several do — the ambiguity [`diagnose_kinds`] reports. None of them
+    /// is the answer.
+    Ambiguous(Vec<&'a FilingSpec>),
+}
+
+/// The entry among `specs` that files records of `kind`: the one that names
+/// it. An entry naming no kinds is not an answer here, however many kinds it
+/// would take — see the module docs.
+pub fn filing_for_kind(specs: &[FilingSpec], kind: RecordKind) -> KindFiling<'_> {
+    let claiming: Vec<&FilingSpec> = specs.iter().filter(|s| s.kind.contains(&kind)).collect();
+    match claiming.as_slice() {
+        [] => KindFiling::Unclaimed,
+        [one] => KindFiling::One(one),
+        _ => KindFiling::Ambiguous(claiming),
+    }
+}
+
+/// Every kind two or more entries claim: one issue per later entry, against
+/// its `kind` key, naming the entry that claimed the kind first.
+pub fn diagnose_kinds(specs: &[FilingSpec]) -> Vec<FilingIssue> {
+    let mut first: Vec<(RecordKind, &str)> = Vec::new();
+    let mut issues = Vec::new();
+    for spec in specs {
+        for kind in &spec.kind {
+            match first.iter().find(|(k, _)| k == kind) {
+                Some((_, by)) => issues.push(FilingIssue {
+                    filing: spec.name.clone(),
+                    key: "kind".to_string(),
+                    kind: FilingIssueKind::KindClaimedTwice {
+                        kind: kind.as_str().to_string(),
+                        by: (*by).to_string(),
+                    },
+                }),
+                None => first.push((*kind, spec.name.as_str())),
+            }
+        }
+    }
+    issues
+}
+
 /// The field chain a `field:` value names — a bare string, or a list.
 fn field_chain(value: Option<&Value>) -> Vec<String> {
     match value {
@@ -355,7 +500,8 @@ pub struct FilingIssue {
 }
 
 /// The kinds of thing a `filing.<name>` entry gets wrong. Every one but
-/// [`UnknownKey`](Self::UnknownKey) drops the entry.
+/// [`UnknownKey`](Self::UnknownKey) and
+/// [`KindClaimedTwice`](Self::KindClaimedTwice) drops the entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilingIssueKind {
     /// The entry is not a mapping.
@@ -364,6 +510,16 @@ pub enum FilingIssueKind {
     NoField,
     /// A `nest:` that is neither a grain nor `ref`.
     BadNest,
+    /// A `kind:` naming something that is not a kind of record.
+    BadKind,
+    /// A kind another entry, `by`, already names. Reported against the
+    /// later entry; the entry itself is still read.
+    KindClaimedTwice {
+        /// The kind both name.
+        kind: String,
+        /// The entry that named it first.
+        by: String,
+    },
     /// A key this format does not define.
     UnknownKey,
 }
@@ -374,6 +530,7 @@ impl FilingIssueKind {
         match self {
             FilingIssueKind::UnknownKey => FILING_KEYS,
             FilingIssueKind::BadNest => NESTS,
+            FilingIssueKind::BadKind => KIND_WORDS,
             _ => &[],
         }
     }
@@ -396,6 +553,9 @@ pub fn diagnose_filing(name: &str, value: &Value) -> Vec<FilingIssue> {
         } else if field_chain(map.get("field")).is_empty() {
             issues.push(issue("field", FilingIssueKind::NoField));
         }
+    }
+    if kind_list(map.get("kind")).is_none() {
+        issues.push(issue("kind", FilingIssueKind::BadKind));
     }
     for key in map.keys() {
         if !FILING_KEYS.contains(&key.as_str()) {
@@ -501,6 +661,73 @@ mod tests {
         assert_eq!(
             diagnose_filing("x", &typo)[0].kind,
             FilingIssueKind::UnknownKey
+        );
+    }
+
+    #[test]
+    fn an_entry_names_the_kinds_it_files() {
+        let spec = FilingSpec::parse(
+            "photos",
+            &mapping(&[("kind", Value::Sequence(vec![text("image"), text("Video")]))]),
+        )
+        .expect("an entry");
+        assert_eq!(spec.kind, [RecordKind::Image, RecordKind::Video]);
+        assert!(spec.files(RecordKind::Image));
+        assert!(!spec.files(RecordKind::Page));
+
+        let any = FilingSpec::parse("inbox", &mapping(&[])).expect("an entry");
+        assert!(any.files(RecordKind::Audio), "no kind: files anything");
+
+        let attachments =
+            FilingSpec::parse("scans", &mapping(&[("kind", text("attachment"))])).unwrap();
+        assert_eq!(attachments.kind, RecordKind::payload_kinds());
+        assert_eq!(
+            attachments.to_mapping().get("kind"),
+            Some(&text("attachment")),
+            "the four payload kinds write back as the word that named them"
+        );
+    }
+
+    #[test]
+    fn an_unknown_kind_drops_the_entry() {
+        let bad = mapping(&[("kind", Value::Sequence(vec![text("image"), text("photo")]))]);
+        assert_eq!(FilingSpec::parse("x", &bad), None);
+        assert_eq!(diagnose_filing("x", &bad)[0].kind, FilingIssueKind::BadKind);
+    }
+
+    #[test]
+    fn only_an_entry_that_names_a_kind_answers_for_it() {
+        let parse = |name: &str, kind: Option<&str>| {
+            let pairs: Vec<(&str, Value)> = kind.map(|k| ("kind", text(k))).into_iter().collect();
+            FilingSpec::parse(name, &mapping(&pairs)).unwrap()
+        };
+        let specs = vec![
+            parse("daily", None),
+            parse("photos", Some("image")),
+            parse("scans", Some("attachment")),
+        ];
+        assert_eq!(
+            filing_for_kind(&specs, RecordKind::File),
+            KindFiling::One(&specs[2])
+        );
+        assert_eq!(
+            filing_for_kind(&specs, RecordKind::Page),
+            KindFiling::Unclaimed
+        );
+        assert_eq!(
+            filing_for_kind(&specs, RecordKind::Image),
+            KindFiling::Ambiguous(vec![&specs[1], &specs[2]])
+        );
+        assert_eq!(
+            diagnose_kinds(&specs),
+            vec![FilingIssue {
+                filing: "scans".into(),
+                key: "kind".into(),
+                kind: FilingIssueKind::KindClaimedTwice {
+                    kind: "image".into(),
+                    by: "photos".into()
+                },
+            }]
         );
     }
 

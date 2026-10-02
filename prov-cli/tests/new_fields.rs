@@ -323,3 +323,44 @@ fn new_files_through_a_filing_entry() {
     let (ok_, _, err) = run(&dir, &["new", "X", "--filing", "nope"]);
     assert!(!ok_ && err.contains("declared: daily"), "{err}");
 }
+
+/// `--filed` files through the one entry that names the record's kind: a
+/// page for `new`, the payload's media kind for `attach`. No entry, or two,
+/// is a refusal naming them rather than a guess.
+#[test]
+fn filed_follows_the_entry_that_names_the_kind() {
+    let dir = workspace("filed");
+    ok(&dir, &["new", "Daily", "--in", "index.md"]);
+    ok(&dir, &["new", "Photos", "--in", "index.md"]);
+    let config = read(&dir, "prov.yaml")
+        + "filing:\n  daily:\n    under: '[[Daily]]'\n    kind: page\n  photos:\n    under: '[[Photos]]'\n    kind: [image, video]\n";
+    std::fs::write(dir.join("prov.yaml"), config).unwrap();
+
+    let (out, _) = ok(&dir, &["new", "Tuesday", "--filed"]);
+    assert_eq!(out.trim(), "tuesday.md");
+    assert!(
+        read(&dir, "daily.md").contains("Tuesday"),
+        "filed under Daily"
+    );
+
+    std::fs::write(dir.join("beach.jpg"), [0xff, 0xd8, 0x01]).unwrap();
+    ok(&dir, &["attach", "beach.jpg", "--filed"]);
+    assert!(
+        read(&dir, "photos.md").contains("Beach"),
+        "filed under Photos"
+    );
+
+    std::fs::write(dir.join("deed.pdf"), b"%PDF-1.7").unwrap();
+    let (ok_, _, err) = run(&dir, &["attach", "deed.pdf", "--filed"]);
+    assert!(
+        !ok_ && err.contains("no filing entry names `kind: file`"),
+        "{err}"
+    );
+    ok(&dir, &["check"]);
+
+    let config = read(&dir, "prov.yaml") + "  scans:\n    kind: attachment\n";
+    std::fs::write(dir.join("prov.yaml"), config).unwrap();
+    std::fs::write(dir.join("dune.jpg"), [0xff, 0xd8, 0x02]).unwrap();
+    let (ok_, _, err) = run(&dir, &["attach", "dune.jpg", "--filed"]);
+    assert!(!ok_ && err.contains("photos, scans"), "{err}");
+}

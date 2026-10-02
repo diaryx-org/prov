@@ -1471,6 +1471,11 @@ pub enum ConfigIssueKind {
     /// the first key in the `field:` chain that is not, since the chain files
     /// by whichever is filled in.
     NestRefNotDeclared { field: String },
+    /// A filing entry names a kind of record another entry, `by`, already
+    /// names (`kind: image` twice). A host asking which entry files a
+    /// photograph gets no answer, so neither files one; `key` is the later
+    /// entry's `kind`.
+    FilingKindClaimedTwice { kind: String, by: String },
     /// A view's `where:` or `key:` is not an expression prov can run: it does
     /// not parse, or it calls a function that does not exist. The view is not
     /// read at all — a view with a broken condition must not become a view of
@@ -2223,6 +2228,17 @@ fn diagnose_filing(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mappi
             let expected = || issue.kind.expected().iter().map(|s| (*s).into()).collect();
             match &issue.kind {
                 FilingIssueKind::NotAMapping => block_shape_issue(issues, &prefix, spec),
+                FilingIssueKind::BadKind => issues.push(ConfigIssue {
+                    key: dotted.clone(),
+                    kind: ConfigIssueKind::InvalidValue {
+                        value: spec
+                            .get("kind")
+                            .map_or_else(|| "(absent)".to_string(), value_summary),
+                        expected: expected(),
+                    },
+                }),
+                // Cross-entry, reported below once every entry is read.
+                FilingIssueKind::KindClaimedTwice { .. } => {}
                 FilingIssueKind::NoField => issues.push(ConfigIssue {
                     key: dotted,
                     kind: ConfigIssueKind::InvalidValue {
@@ -2247,6 +2263,19 @@ fn diagnose_filing(issues: &mut Vec<ConfigIssue>, value: &Value, surface: &Mappi
                     }
                 }
             }
+        }
+    }
+    // Two entries naming one kind: which files a photograph has no answer.
+    let specs: Vec<FilingSpec> = map
+        .iter()
+        .filter_map(|(name, spec)| FilingSpec::parse(name, spec))
+        .collect();
+    for issue in prov_filing::diagnose_kinds(&specs) {
+        if let FilingIssueKind::KindClaimedTwice { kind, by } = issue.kind {
+            issues.push(ConfigIssue {
+                key: format!("filing.{}.kind", issue.filing),
+                kind: ConfigIssueKind::FilingKindClaimedTwice { kind, by },
+            });
         }
     }
 }
@@ -2970,6 +2999,7 @@ mod tests {
                     under: Some("[Daily](id:abc1234)".to_string()),
                     field: vec!["date_of_document".to_string(), "created".to_string()],
                     nest: Some(prov_filing::Nest::Grain(prov_filing::Grain::Year)),
+                    kind: vec![prov_filing::RecordKind::Page],
                 },
                 FilingSpec {
                     name: "tasks".to_string(),
@@ -2977,6 +3007,7 @@ mod tests {
                     under: Some("[[Tasks]]".to_string()),
                     field: Vec::new(),
                     nest: None,
+                    kind: Vec::new(),
                 },
             ],
             exports: vec![
@@ -3896,6 +3927,45 @@ mod tests {
                     }),
             "{issues:?}"
         );
+    }
+
+    /// A filing entry's `kind:` is read, a word that is no kind drops the
+    /// entry, and two entries naming one kind are reported against the later.
+    #[test]
+    fn filing_kinds_apply_and_their_mistakes_are_diagnosed() {
+        let seq = |words: &[&str]| Value::Sequence(words.iter().map(|w| str_value(w)).collect());
+        let block = filing_block(&[
+            ("photos", &[("kind", seq(&["image", "video"]))]),
+            ("scans", &[("kind", str_value("attachment"))]),
+            ("bad", &[("kind", str_value("photo"))]),
+        ]);
+        let config = WorkspaceConfig::from_meta(&block);
+        assert_eq!(
+            config
+                .filing
+                .iter()
+                .map(|f| (f.name.as_str(), f.kind.len()))
+                .collect::<Vec<_>>(),
+            [("photos", 2), ("scans", 4)],
+        );
+        let issues = diagnose(&block);
+        assert!(
+            issues.iter().any(|i| i.key == "filing.bad.kind"
+                && matches!(&i.kind, ConfigIssueKind::InvalidValue { value, expected }
+                    if value == "photo" && expected.iter().any(|e| e == "attachment"))),
+            "{issues:?}"
+        );
+        for kind in ["image", "video"] {
+            assert!(
+                issues.iter().any(|i| i.key == "filing.scans.kind"
+                    && i.kind
+                        == ConfigIssueKind::FilingKindClaimedTwice {
+                            kind: kind.into(),
+                            by: "photos".into()
+                        }),
+                "{kind}: {issues:?}"
+            );
+        }
     }
 
     /// An `exports:` block, as a config surface writes it.
