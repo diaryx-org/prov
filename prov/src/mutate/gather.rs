@@ -11,17 +11,24 @@
 //!
 //! ## Nothing is lost on the way
 //!
-//! The two shapes do not hold the same things. A sidecar is a whole record;
-//! a manifest row is a path and a digest. So each verb first works out what
-//! the other shape cannot carry ([`plan_gather`](Workspace::plan_gather),
+//! The two shapes do not hold the same things. A sidecar is a whole record
+//! and a document; a manifest row is a path, a digest and fields of its own,
+//! which the graph does not read. A field every gathered sidecar carries with
+//! the *same* value moves onto the node, since it was a fact about all of
+//! them, and any other — a date set on one photograph, a caption, a title
+//! someone wrote rather than the one the file name gives — onto that
+//! sidecar's row; a scatter puts a row's fields back on its sidecar. So each
+//! verb first works out what the other shape cannot carry
+//! ([`plan_gather`](Workspace::plan_gather),
 //! [`plan_scatter`](Workspace::plan_scatter)) and refuses while any of it is
 //! left:
 //!
-//! - **A field** the destination has no room for — a date set on one
-//!   photograph, a caption, a title someone wrote rather than the one the
-//!   file name gives. A field every gathered sidecar carries with the *same*
-//!   value is not lost: it moves onto the node, since it was a fact about all
-//!   of them. A field is the one loss a caller may accept, by naming it in
+//! - **A field** the destination has no room for: on the way in, one that
+//!   holds a link (a row is not read for links, so it would be one no rename
+//!   rewrites and no `check` reports broken) or that a row keeps for itself
+//!   (`path`, `hash`); on the way out, a row field a sidecar keeps for its
+//!   own bookkeeping (`content`, `id`, …), or the node's title when the node
+//!   goes. A field is the one loss a caller may accept, by naming it in
 //!   [`RegroupOptions::discard`] — the person said so.
 //! - **A link** to a record that will stop existing, or to a payload that
 //!   will move — a transcript naming the photograph, a page embedding it.
@@ -53,7 +60,9 @@ use crate::workspace::Workspace;
 use prov_graph::error::{Error, Result};
 use prov_graph::graph::LinkSite;
 use prov_graph::link;
-use prov_graph::manifest::{MANIFEST_KEY, Manifest, ManifestEntry, manifest_sibling};
+use prov_graph::manifest::{
+    HASH_KEY, MANIFEST_KEY, Manifest, ManifestEntry, PATH_KEY, manifest_sibling,
+};
 use prov_graph::meta::{Mapping, Value};
 use prov_store::edit::MetaEditor;
 use prov_store::fs::Storage;
@@ -98,7 +107,8 @@ impl LossKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RegroupOptions {
     /// Fields whose loss is accepted, by name — `created`, `date_of_document`.
-    /// Links and children are never accepted.
+    /// A field named here is dropped, too, where a gather would otherwise
+    /// have kept it on a row. Links and children are never accepted.
     pub discard: Vec<String>,
 }
 
@@ -129,6 +139,9 @@ pub struct GatherPlan {
     pub files: Vec<GatheredFile>,
     /// Fields every sidecar carries with one value, moved onto the node.
     pub carried: Vec<String>,
+    /// Fields only some sidecars carry, or carry differently, kept on the
+    /// rows of the ones that do.
+    pub on_rows: Vec<String>,
     /// What would be lost. A gather refuses while any is not accepted.
     pub losses: Vec<Loss>,
 }
@@ -150,7 +163,10 @@ pub struct ScatterPlan {
     /// order, with its payload.
     pub cards: Vec<(PathBuf, PathBuf)>,
     /// Fields of the node copied onto every sidecar, when the node is removed.
+    /// A row's own field of the same name wins on that row's sidecar.
     pub carried: Vec<String>,
+    /// Fields the rows carry, each put back on its own sidecar.
+    pub from_rows: Vec<String>,
     /// What would be lost. A scatter refuses while any is not accepted.
     pub losses: Vec<Loss>,
 }
@@ -303,44 +319,51 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         let parent = parent.expect("at least one card");
 
-        // Fields: shared by every card with one value → carried; anything
-        // else that is not bookkeeping → lost from the card that has it.
+        // Fields: shared by every card with one value → carried onto the
+        // node; anything else that is not bookkeeping → onto the row of the
+        // card that has it, unless a row cannot hold it.
         let updated = self.updated_field();
         let mut keys: Vec<String> = Vec::new();
+        let mut links: Vec<String> = Vec::new();
         for (_, meta) in &metas {
             for key in meta.keys() {
                 if !keys.contains(key) {
                     keys.push(key.clone());
                 }
             }
+            for found in self
+                .graph()
+                .frontmatter_links(&fig::Value::from(&Value::Mapping(meta.clone())))
+            {
+                let head = found.address.head().to_string();
+                if !links.contains(&head) {
+                    links.push(head);
+                }
+            }
         }
         let mut carried = Vec::new();
+        let mut on_rows = Vec::new();
         for key in keys {
             // Bookkeeping, or the children reported above.
             if managed(&key, &inverse, updated) || key == spanning {
                 continue;
             }
             if key == "title" {
-                for (file, (card, meta)) in files.iter().zip(&metas) {
-                    let derived = link::path_to_title(&file.from);
-                    if meta
-                        .get("title")
-                        .and_then(prov_graph::title::title_text)
-                        .as_deref()
-                        != Some(derived.as_str())
-                    {
-                        losses.push(Loss {
-                            record: card.clone(),
-                            what: LossKind::Field(key.clone()),
-                        });
-                    }
+                // A written title is the row's; one that is only the file
+                // name read as one is bookkeeping.
+                if files
+                    .iter()
+                    .zip(&metas)
+                    .any(|(file, (_, meta))| written_title(meta, &file.from).is_some())
+                {
+                    on_rows.push(key);
                 }
                 continue;
             }
             let first = metas[0].1.get(&key);
             if first.is_some() && metas.iter().all(|(_, m)| m.get(&key) == first) {
                 carried.push(key);
-            } else {
+            } else if links.contains(&key) || key == PATH_KEY || key == HASH_KEY {
                 for (card, meta) in &metas {
                     if meta.contains_key(&key) {
                         losses.push(Loss {
@@ -349,6 +372,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         });
                     }
                 }
+            } else {
+                on_rows.push(key);
             }
         }
 
@@ -390,6 +415,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             root: dir,
             files,
             carried,
+            on_rows,
             losses,
         })
     }
@@ -400,7 +426,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// index. Refused while [`plan_gather`](Self::plan_gather) reports a loss
     /// `options` does not accept. Returns the plan carried out.
     ///
-    /// A sidecar's `content_hash` becomes its row's digest. When the workspace
+    /// A sidecar's `content_hash` becomes its row's digest, and its fields in
+    /// [`on_rows`](GatherPlan::on_rows) the row's fields. When the workspace
     /// records checksums and a sidecar had none, the payload is read and
     /// hashed, so the manifest is a fixity baseline throughout or (when the
     /// workspace records none and the sidecars had none) an inventory.
@@ -438,8 +465,23 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 }
                 None => None,
             };
+            let meta = doc.meta.as_mapping().cloned().unwrap_or_default();
+            let mut fields = Mapping::new();
+            for key in &plan.on_rows {
+                if options.discard.contains(key) {
+                    continue;
+                }
+                let value = if key == "title" {
+                    written_title(&meta, &file.from).cloned()
+                } else {
+                    meta.get(key).cloned()
+                };
+                if let Some(value) = value {
+                    fields.insert(key.clone(), value);
+                }
+            }
             if first_meta.is_none() {
-                first_meta = Some(doc.meta.as_mapping().cloned().unwrap_or_default());
+                first_meta = Some(meta);
             }
             entries.push(ManifestEntry {
                 path: file
@@ -448,6 +490,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     .unwrap_or(&file.to)
                     .to_path_buf(),
                 hash,
+                fields,
             });
         }
         // An inventory or a baseline, never half of each.
@@ -612,12 +655,27 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         };
         let format = self.default_embed_format();
+        let updated = self.updated_field();
         let mut cards = Vec::new();
+        let mut from_rows: Vec<String> = Vec::new();
+        let mut losses = Vec::new();
         for entry in &manifest.files {
             let payload = manifest.file_path(&manifest_doc, entry);
             let card = sidecar_path(&payload, format);
             if self.exists(&card).await? {
                 return Err(Error::AlreadyExists(card));
+            }
+            for key in entry.fields.keys() {
+                // The sidecar's own bookkeeping is written by the scatter, not
+                // taken from a row, which has no say over it.
+                if managed(key, &inverse, updated) || *key == spanning {
+                    losses.push(Loss {
+                        record: payload.clone(),
+                        what: LossKind::Field(key.clone()),
+                    });
+                } else if !from_rows.contains(key) {
+                    from_rows.push(key.clone());
+                }
             }
             cards.push((card, payload));
         }
@@ -628,9 +686,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             Some(index) => (false, link::normalize(index)),
         };
         let mut carried = Vec::new();
-        let mut losses = Vec::new();
         if !keeps_node {
-            let updated = self.updated_field();
             let fields = doc.meta.as_mapping().cloned().unwrap_or_default();
             for key in fields.keys() {
                 if managed(key, &inverse, updated) || *key == spanning {
@@ -679,6 +735,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             keeps_node,
             cards,
             carried,
+            from_rows,
             losses,
         })
     }
@@ -689,8 +746,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// [`plan_scatter`](Self::plan_scatter) reports a loss `options` does not
     /// accept. Returns the plan carried out.
     ///
-    /// Each row's digest becomes its sidecar's `content_hash`; under fixity a
-    /// row with none is read and hashed, as `attach` would.
+    /// Each row's digest becomes its sidecar's `content_hash`, and its fields
+    /// the sidecar's — a row's `title` in place of the file name's. Under
+    /// fixity a row with none is read and hashed, as `attach` would.
     pub async fn scatter(
         &mut self,
         node: &Path,
@@ -721,7 +779,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     *payload == manifest.file_path(&manifest_doc, entry)
                 })
         );
-        let hashes: Vec<Option<String>> = manifest.files.iter().map(|e| e.hash.clone()).collect();
+        let rows: Vec<(Option<String>, Mapping)> = manifest
+            .files
+            .iter()
+            .map(|e| (e.hash.clone(), e.fields.clone()))
+            .collect();
         let (node_text, node_doc) = self.load(&plan.node).await?;
         let (into_text, into_doc) = if plan.keeps_node {
             (node_text.clone(), node_doc.clone())
@@ -739,8 +801,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut cs = self.change();
         let mut downs = Vec::new();
         let mut sidecars = Vec::new();
-        for ((card, payload), hash) in plan.cards.iter().zip(hashes) {
-            let title = link::path_to_title(payload);
+        for ((card, payload), (hash, fields)) in plan.cards.iter().zip(rows) {
+            let title = fields
+                .get("title")
+                .and_then(prov_graph::title::title_text)
+                .unwrap_or_else(|| link::path_to_title(payload));
             let up = self
                 .authored_target(&inverse, card, &plan.into, &into_title, true)
                 .await?;
@@ -775,6 +840,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             for key in &plan.carried {
                 if let Some(value) = node_doc.meta.get(key) {
                     map.insert(key.clone(), value.clone());
+                }
+            }
+            // The row's own, last: it is about this file, where a carried
+            // field was about all of them.
+            for (key, value) in fields {
+                if key != "title" && plan.from_rows.contains(&key) {
+                    map.insert(key, value);
                 }
             }
             sidecars.push((
@@ -862,6 +934,14 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.commit(cs).await?;
         Ok(plan)
     }
+}
+
+/// The title a sidecar's person wrote — `None` when it has none, or only the
+/// one its payload's file name reads as.
+fn written_title<'m>(meta: &'m Mapping, payload: &Path) -> Option<&'m Value> {
+    let title = meta.get("title")?;
+    let derived = link::path_to_title(payload);
+    (prov_graph::title::title_text(title).as_deref() != Some(derived.as_str())).then_some(title)
 }
 
 /// `name` under `dir`, suffixed (`photo-2.jpg`) when an earlier file in the
@@ -958,35 +1038,53 @@ mod tests {
     }
 
     #[test]
-    fn a_field_one_card_carries_is_a_loss_and_a_shared_one_moves_to_the_node() {
+    fn a_shared_field_moves_to_the_node_and_one_card_s_onto_its_row() {
         let dir = album_tree("gather-fields");
         for name in ["a.jpg.yaml", "b.jpg.yaml"] {
             let text = read(&dir, name) + "audience: family\n";
             write(&dir, name, text);
         }
-        let text = read(&dir, "a.jpg.yaml") + "date_of_document: 2025-05-02\n";
+        let text = read(&dir, "a.jpg.yaml").replace("title: A\n", "title: Mum at the lake\n")
+            + "date_of_document: 2025-05-02\n";
         write(&dir, "a.jpg.yaml", text);
 
         let plan = block_on(ws(&dir).plan_gather(&cards(&["a.jpg", "b.jpg"]), Path::new("album")))
             .unwrap();
         assert_eq!(plan.carried, ["audience"]);
-        assert_eq!(
-            plan.losses,
-            [Loss {
-                record: "a.jpg.yaml".into(),
-                what: LossKind::Field("date_of_document".into())
-            }]
-        );
-        let err = block_on(ws(&dir).gather(
+        assert_eq!(plan.on_rows, ["title", "date_of_document"]);
+        assert!(plan.losses.is_empty(), "{:?}", plan.losses);
+
+        block_on(ws(&dir).gather(
             &cards(&["a.jpg", "b.jpg"]),
             Path::new("album"),
             "Album",
             &RegroupOptions::default(),
         ))
-        .unwrap_err();
-        assert!(err.to_string().contains("date_of_document"), "{err}");
-        assert!(dir.join("a.jpg").exists(), "a refusal moves nothing");
+        .unwrap();
+        assert!(read(&dir, "album.yaml").contains("audience: family"));
+        let (_, manifest) = block_on(ws(&dir).manifest_of(Path::new("album.yaml")))
+            .unwrap()
+            .unwrap();
+        let a = &manifest.files[0].fields;
+        assert_eq!(
+            a.keys().collect::<Vec<_>>(),
+            ["title", "date_of_document"],
+            "{a:?}"
+        );
+        assert_eq!(a["title"], Value::String("Mum at the lake".into()));
+        assert!(
+            manifest.files[1].fields.is_empty(),
+            "b's title was only its file name: {:?}",
+            manifest.files[1].fields
+        );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
 
+    #[test]
+    fn a_discarded_field_stays_off_the_row() {
+        let dir = album_tree("gather-discard");
+        let text = read(&dir, "a.jpg.yaml") + "date_of_document: 2025-05-02\n";
+        write(&dir, "a.jpg.yaml", text);
         block_on(ws(&dir).gather(
             &cards(&["a.jpg", "b.jpg"]),
             Path::new("album"),
@@ -996,7 +1094,102 @@ mod tests {
             },
         ))
         .unwrap();
-        assert!(read(&dir, "album.yaml").contains("audience: family"));
+        let manifest = read(&dir, "album.manifest.yaml");
+        assert!(!manifest.contains("date_of_document"), "{manifest}");
+    }
+
+    /// A row is not read for links, so one carried there would be a link no
+    /// rename rewrites and no `check` sees: it is a loss, as before.
+    #[test]
+    fn a_field_holding_a_link_cannot_go_onto_a_row() {
+        let dir = album_tree("gather-link-field");
+        let text = read(&dir, "a.jpg.yaml") + "source: '[Note](/note.md)'\n";
+        write(&dir, "a.jpg.yaml", text);
+        let linked = |dir: &Path| {
+            Workspace::builder(StdFs)
+                .root(dir)
+                .references(vec![prov_graph::field::FieldPath::parse("source")])
+                .build()
+        };
+        let plan =
+            block_on(linked(&dir).plan_gather(&cards(&["a.jpg", "b.jpg"]), Path::new("album")))
+                .unwrap();
+        assert!(plan.on_rows.is_empty(), "{:?}", plan.on_rows);
+        assert_eq!(
+            plan.losses,
+            [Loss {
+                record: "a.jpg.yaml".into(),
+                what: LossKind::Field("source".into())
+            }]
+        );
+    }
+
+    /// A row's fields go back onto its sidecar, its title in place of the
+    /// file name's and over a field the node carries; one naming the
+    /// sidecar's own bookkeeping is a loss.
+    #[test]
+    fn scattering_puts_a_row_s_fields_back_on_its_sidecar() {
+        let dir = tempdir("scatter-fields");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "photos/a.jpg", [0xff, 0xd8, 1]);
+        write(&dir, "photos/b.jpg", [0xff, 0xd8, 2]);
+        let manifest = "title: Photos — manifest\nroot: photos/\nfiles:\n\
+                        - path: a.jpg\n  title: Mum at the lake\n  audience: just us\n\
+                        - path: b.jpg\n";
+        write(&dir, "photos.manifest.yaml", manifest);
+        write(
+            &dir,
+            "photos.yaml",
+            "title: Photos\npart_of: index.md\nmanifest: photos.manifest.yaml\naudience: family\n",
+        );
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- photos.yaml\n---\n",
+        );
+
+        let plan =
+            block_on(ws(&dir).plan_scatter(Path::new("photos.yaml"), Some(Path::new("index.md"))))
+                .unwrap();
+        assert_eq!(plan.from_rows, ["title", "audience"]);
+        block_on(ws(&dir).scatter(
+            Path::new("photos.yaml"),
+            Some(Path::new("index.md")),
+            &RegroupOptions {
+                discard: vec!["title".into()],
+            },
+        ))
+        .unwrap();
+        let a = read(&dir, "photos/a.jpg.yaml");
+        assert!(a.contains("title: Mum at the lake"), "{a}");
+        assert!(
+            a.contains("audience: just us") && !a.contains("family"),
+            "{a}"
+        );
+        let b = read(&dir, "photos/b.jpg.yaml");
+        assert!(
+            b.contains("title: B\n") && b.contains("audience: family"),
+            "{b}"
+        );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+
+        let dir = tempdir("scatter-managed");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "photos/a.jpg", [0xff, 0xd8, 1]);
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        let text = read(&dir, "photos.manifest.yaml").replace(
+            "- path: a.jpg\n",
+            "- path: a.jpg\n  content: elsewhere.jpg\n",
+        );
+        write(&dir, "photos.manifest.yaml", text);
+        let plan = block_on(ws(&dir).plan_scatter(Path::new("photos.yaml"), None)).unwrap();
+        assert_eq!(
+            plan.losses,
+            [Loss {
+                record: "photos/a.jpg".into(),
+                what: LossKind::Field("content".into())
+            }]
+        );
     }
 
     #[test]
@@ -1194,10 +1387,14 @@ mod tests {
     }
 
     /// Gather, then scatter in place: every photograph is a sidecar again,
-    /// now under the album, and the workspace checks clean throughout.
+    /// now under the album, with what was said about it, and the workspace
+    /// checks clean throughout.
     #[test]
     fn a_gather_scatters_back() {
         let dir = album_tree("round-trip");
+        let text = read(&dir, "b.jpg.yaml").replace("title: B\n", "title: The dog\n")
+            + "date_of_document: 2025-05-02\n";
+        write(&dir, "b.jpg.yaml", text);
         block_on(ws(&dir).gather(
             &cards(&["a.jpg", "b.jpg", "c.jpg"]),
             Path::new("album"),
@@ -1210,6 +1407,11 @@ mod tests {
         for name in ["a", "b", "c"] {
             assert!(dir.join(format!("album/{name}.jpg.yaml")).exists());
         }
+        let b = read(&dir, "album/b.jpg.yaml");
+        assert!(
+            b.contains("title: The dog") && b.contains("date_of_document: 2025-05-02"),
+            "{b}"
+        );
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 }

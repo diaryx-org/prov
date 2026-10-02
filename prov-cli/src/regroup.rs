@@ -80,6 +80,9 @@ pub(crate) fn cmd_gather(
         for key in &plan.carried {
             eprintln!("  would carry `{key}` onto {}", plan.node.display());
         }
+        for key in plan.on_rows.iter().filter(|k| !options.discard.contains(k)) {
+            eprintln!("  would keep `{key}` on the rows of the files that have it");
+        }
         if blocked {
             return Err("nothing gathered".into());
         }
@@ -128,6 +131,12 @@ pub(crate) fn cmd_scatter(
     if dry_run || blocked {
         for (card, _) in &plan.cards {
             eprintln!("  would write {}", card.display());
+        }
+        for key in &plan.carried {
+            eprintln!("  would carry `{key}` onto every sidecar");
+        }
+        for key in &plan.from_rows {
+            eprintln!("  would put `{key}` back on the sidecars of the rows that have it");
         }
         if blocked {
             return Err("nothing scattered".into());

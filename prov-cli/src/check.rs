@@ -363,6 +363,12 @@ pub(crate) fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResu
         session.commit()?;
         if changed.is_clean() {
             eprintln!("{}: already up to date", changed.manifest.display());
+        } else if changed.repinned {
+            eprintln!(
+                "{}: rows already up to date; {} re-pinned over the manifest as edited",
+                changed.manifest.display(),
+                node.display()
+            );
         } else {
             eprintln!(
                 "{}: {} added, {} removed, {} changed",

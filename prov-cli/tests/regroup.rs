@@ -70,21 +70,42 @@ fn photographs_gather_into_an_album_and_scatter_back() {
 }
 
 #[test]
-fn a_field_only_one_photograph_carries_refuses_until_discarded() {
-    let dir = workspace("discard");
+fn a_field_only_one_photograph_carries_stays_on_its_row() {
+    let dir = workspace("row-fields");
     ok(
         &dir,
         &["set", "a.jpg.yaml", "date_of_document", "2025-05-02"],
     );
 
-    let (ok_, _, err) = run(&dir, &["gather", "a.jpg", "b.jpg", "--into", "album"]);
-    assert!(!ok_, "{err}");
+    let (_, err) = ok(
+        &dir,
+        &["gather", "a.jpg", "b.jpg", "--into", "album", "--dry-run"],
+    );
     assert!(
-        err.contains("a.jpg.yaml: field `date_of_document`") && err.contains("--discard"),
+        err.contains("would keep `date_of_document` on the rows"),
         "{err}"
     );
-    assert!(dir.join("a.jpg").exists(), "a refusal moves nothing");
+    ok(&dir, &["gather", "a.jpg", "b.jpg", "--into", "album"]);
+    let manifest = read(&dir, "album.manifest.yaml");
+    assert!(
+        manifest.contains("date_of_document: 2025-05-02"),
+        "{manifest}"
+    );
+    ok(&dir, &["check"]);
 
+    ok(&dir, &["scatter", "album"]);
+    assert!(read(&dir, "album/a.jpg.yaml").contains("date_of_document: 2025-05-02"));
+    assert!(!read(&dir, "album/b.jpg.yaml").contains("date_of_document"));
+    ok(&dir, &["check"]);
+}
+
+#[test]
+fn a_discarded_field_is_left_behind() {
+    let dir = workspace("discard");
+    ok(
+        &dir,
+        &["set", "a.jpg.yaml", "date_of_document", "2025-05-02"],
+    );
     ok(
         &dir,
         &[
@@ -97,5 +118,22 @@ fn a_field_only_one_photograph_carries_refuses_until_discarded() {
             "date_of_document",
         ],
     );
+    assert!(!read(&dir, "album.manifest.yaml").contains("date_of_document"));
+    ok(&dir, &["check"]);
+}
+
+#[test]
+fn an_edited_row_is_repinned_by_an_update() {
+    let dir = workspace("repin");
+    ok(&dir, &["gather", "a.jpg", "b.jpg", "--into", "album"]);
+    let text = read(&dir, "album.manifest.yaml")
+        .replace("- path: a.jpg\n", "- path: a.jpg\n  caption: At the lake\n");
+    std::fs::write(dir.join("album.manifest.yaml"), &text).unwrap();
+    let (clean, _, _) = run(&dir, &["check"]);
+    assert!(!clean, "the node's pin is behind the edit");
+
+    let (_, err) = ok(&dir, &["manifest", "album", "--update"]);
+    assert!(err.contains("re-pinned"), "{err}");
+    assert_eq!(read(&dir, "album.manifest.yaml"), text);
     ok(&dir, &["check"]);
 }

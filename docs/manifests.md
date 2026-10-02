@@ -45,6 +45,8 @@ root: photos/
 files:
   - path: 2019/IMG_0001.jpg
     hash: sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae
+    title: Mum at the lake
+    date_of_document: 2019-07-04
   - path: 2019/IMG_0002.jpg
     hash: sha256:fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9
 ```
@@ -83,6 +85,16 @@ Each row:
 - `hash` — `sha256:<64 lowercase hex>`, the digest of the file's bytes exactly as
   `prov::fixity::digest` computes it, so `sha256sum` verifies it independently.
   Optional (§3).
+- **any other key** — a field of that one file: a title someone wrote, a
+  caption, the day it was taken. Optional, any value, kept as written. A
+  refresh keeps a row's fields while its file is there (§5), and a scatter
+  puts them back on the file's sidecar (§7).
+
+A row's fields are **data, not links**. The graph does not read links inside a
+manifest — that is what keeps ten thousand rows off every walk — so a link
+written on a row is one no `rename` rewrites and no `check` reports broken.
+Nor is a row a document: views and queries see the node, not its rows. A fact
+that needs to be a link, or to be found by a view, belongs on a sidecar.
 
 Rows are sorted by `path`, byte-wise ascending on the `/`-joined UTF-8 string —
 **not** `Path` ordering, which compares component-wise and disagrees (`a.jpg` vs
@@ -140,6 +152,10 @@ sha256sum photos.manifest.yaml
 cd photos && sha256sum -c <(…)   # or read the rows and check what you care about
 ```
 
+The pin covers the whole manifest, a row's fields included, so editing a
+caption by hand leaves it behind until `prov manifest --update` re-records it
+(§5).
+
 The node's pin is written whenever the workspace records checksums at all
 (`fixity: on`, the default), independently of whether the rows carry hashes:
 pinning one small file costs nothing, and it is what the rest hangs from. It is
@@ -164,6 +180,13 @@ A malformed manifest yields *only* that finding for its directory: with no
 trustworthy row set there is nothing to compare a listing against, and reporting
 every photograph as unlisted would bury the finding that matters under ten
 thousand that do not.
+
+**`--update` keeps what a row says.** Rebuilding the rows from the directory
+drops only what is no longer there: a row whose file is still present keeps its
+fields, bytes changed or not, and one whose file has gone takes them with it.
+When the rows already agree and only the manifest's text has changed — a
+caption edited by hand — the manifest is left as written and the node is
+re-pinned over it.
 
 **The repair is never automatic.** Rebuilding a manifest accepts the directory as
 it stands — including a file that has *vanished*, which it writes out of the
@@ -212,21 +235,27 @@ payloads move into a new directory, the sidecars are removed, and one node
 takes the first sidecar's place in their index. `scatter` is the reverse: one
 sidecar per covered file, written beside it.
 
-The two shapes do not hold the same things. A sidecar is a whole record and a
-row is a path and a digest, so both verbs first list what the other shape
-cannot carry, and refuse while any of it is left:
+A field every sidecar carries with **one** value moves onto the node, since it
+was a fact about all of them. A field only some carry, or carry differently —
+a date set on one photograph, a title someone wrote — moves onto the rows of
+the ones that have it (§2.2). `scatter` puts a row's fields back on its sidecar,
+a row's `title` in place of the one the file name gives.
+
+The two shapes still do not hold the same things. A sidecar is a document, and a
+row is not, so both verbs first list what the other shape cannot carry, and
+refuse while any of it is left:
 
 | Loss | Accepted with |
 |---|---|
-| a field only some sidecars carry, or carry differently — a date set on one photograph, a title someone wrote | `--discard FIELD` |
+| a field holding a link, which a row cannot (§2.2), unless every sidecar shares it; or one named `path` or `hash` | `--discard FIELD` |
+| a row field named for a sidecar's own bookkeeping (`content`, `id`, …), on the way out | `--discard FIELD` |
 | a link to a sidecar, or to its file, from anywhere but its index — a transcript, a page embedding the picture | never — remove the link first |
 | records contained by a sidecar | never — move them first |
 
-A field every sidecar carries with **one** value is not lost: it moves onto the
-node, since it was a fact about all of them. Bookkeeping is not lost either:
-the sidecar's `id` (nothing may link to it), its link up, `content`,
-`attachment`, the workspace's edit stamp, and a title that is only the file
-name read as one. Each sidecar's `content_hash` becomes its row's digest, so a
+`--discard FIELD` on a gather also drops a field that would have gone onto a
+row. Bookkeeping is not lost either: the sidecar's `id` (nothing may link to
+it), its link up, `content`, `attachment`, the workspace's edit stamp, and a
+title that is only the file name read as one. Each sidecar's `content_hash` becomes its row's digest, so a
 gathered manifest is a fixity baseline without re-reading what was already
 pinned.
 
@@ -235,9 +264,10 @@ it loses its `manifest` pointer and gains them as children, and keeps its
 title, its id and every link to it, so nothing is lost. `--into INDEX` removes
 the node instead and puts the sidecars under that index — in the node's place,
 when it is the node's own parent — each carrying the node's fields. Its title,
-and any link to it, are then the losses. A directory that no longer agrees with
-its manifest is not scattered: bring the record up to date first, so that a
-missing file is a decision rather than a side effect.
+and any link to it, are then the losses. A row's own field wins over a node
+field of the same name on that row's sidecar. A directory that no longer agrees
+with its manifest is not scattered: bring the record up to date first, so that
+a missing file is a decision rather than a side effect.
 
 Each verb is one change set: moved, written and removed together.
 
@@ -247,7 +277,7 @@ Each verb is one change set: moved, written and removed together.
 |---|---|
 | `attach DIR --manifest [--in P] [--no-hash]` | cover a directory: mint the node and the manifest, link the node under a parent |
 | `manifest TARGET` | what the manifest says, and whether the directory still agrees (no file reads) |
-| `manifest TARGET --update` | rebuild the rows from the directory as it is now, re-stamping the node |
+| `manifest TARGET --update` | rebuild the rows from the directory as it is now, keeping each row's fields, re-stamping the node |
 | `manifest TARGET --verify` | re-read every listed file and compare its checksum |
 | `gather ATTACHMENT... --into DIR [--title T] [--discard FIELD] [--dry-run]` | attachments of one index into one manifest over `DIR` (§7) |
 | `scatter TARGET [--into INDEX] [--discard FIELD] [--dry-run]` | a manifest back into one attachment per file (§7) |

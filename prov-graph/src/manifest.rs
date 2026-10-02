@@ -29,6 +29,11 @@
 //! - **`hash` is optional.** A manifest with no hashes is an inventory — what is
 //!   supposed to be here — and one with hashes is that plus a fixity baseline.
 //!   Hashing ten thousand files has a real cost, so it is a choice, not a tax.
+//! - **A row may say more about its file.** Any key beside `path` and `hash`
+//!   is a field of that one file — a caption, a date, a title someone wrote —
+//!   kept as written. It is data, not a link: the graph does not read links
+//!   in a manifest, so a link written on a row would be one no rename
+//!   rewrites and no `check` reports broken.
 //! - **The manifest is hashed by its node.** The sidecar's `content_hash` covers
 //!   the manifest document's bytes exactly as an attachment's covers its
 //!   payload's, which is what makes the per-file hashes trustworthy: tampering
@@ -73,19 +78,22 @@ pub const HASH_KEY: &str = "hash";
 /// attachment's payload is.
 pub const MANIFEST_INFIX: &str = "manifest";
 
-/// One row: a covered file and, when the manifest carries a fixity baseline,
-/// the digest of its bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One row: a covered file, the digest of its bytes when the manifest carries
+/// a fixity baseline, and whatever else the row says about that file.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ManifestEntry {
     /// The file, relative to the manifest's `root` and normalized.
     pub path: PathBuf,
     /// `sha256:<hex>`, or `None` in an unhashed (inventory-only) manifest.
     pub hash: Option<String>,
+    /// Every other key on the row, in the order written: fields of this one
+    /// file. Never `path` or `hash`.
+    pub fields: Mapping,
 }
 
 /// A parsed manifest document: the directory it claims, and the files it says
 /// are in it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Manifest {
     /// The covered directory as written, relative to the manifest document's
     /// own directory.
@@ -100,10 +108,11 @@ impl Manifest {
     ///
     /// Strict about the two things a reader must be able to trust — a `root` it
     /// can resolve and rows that name a path — and permissive about everything
-    /// else, since a manifest is a document a person may edit: an unknown key is
-    /// carried past, and a row that is not a mapping with a `path` is refused
-    /// rather than silently dropped, because a dropped row reads as "that file
-    /// was never claimed" and would turn a damaged manifest into a clean report.
+    /// else, since a manifest is a document a person may edit: any other key on
+    /// a row is kept as one of its [`fields`](ManifestEntry::fields), and a row
+    /// that is not a mapping with a `path` is refused rather than silently
+    /// dropped, because a dropped row reads as "that file was never claimed"
+    /// and would turn a damaged manifest into a clean report.
     pub fn from_meta(meta: &Value) -> Result<Self> {
         let root = meta
             .get(ROOT_KEY)
@@ -130,12 +139,20 @@ impl Manifest {
                     "manifest row {i} (`{path}`) climbs outside the manifest's root"
                 )));
             }
+            let fields = row
+                .as_mapping()
+                .into_iter()
+                .flatten()
+                .filter(|(key, _)| *key != PATH_KEY && *key != HASH_KEY)
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
             files.push(ManifestEntry {
                 path: crate::link::normalize(path),
                 hash: row
                     .get(HASH_KEY)
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                fields,
             });
         }
         Ok(Manifest { root, files })
@@ -162,6 +179,7 @@ impl Manifest {
                         if let Some(hash) = &entry.hash {
                             row.insert(HASH_KEY.into(), Value::String(hash.clone()));
                         }
+                        row.extend(entry.fields.clone());
                         Value::Mapping(row)
                     })
                     .collect(),
@@ -358,11 +376,11 @@ mod tests {
             files: vec![
                 ManifestEntry {
                     path: PathBuf::from("a/b.jpg"),
-                    hash: None,
+                    ..Default::default()
                 },
                 ManifestEntry {
                     path: PathBuf::from("a.jpg"),
-                    hash: None,
+                    ..Default::default()
                 },
             ],
         };
@@ -377,6 +395,29 @@ mod tests {
             crate::meta::serialize_mapping(&m.to_mapping("Photos — manifest"), fig::Format::Yaml)
                 .unwrap();
         assert!(text.contains("root: photos/"), "{text}");
+        assert_eq!(parse(&text).unwrap(), m);
+    }
+
+    #[test]
+    fn a_row_keeps_what_else_it_says_about_its_file() {
+        let m = parse(
+            "root: photos/\nfiles:\n\
+             - path: a.jpg\n  hash: sha256:abc\n  title: Mum at the lake\n  date: 2019-07-04\n\
+             - path: b.jpg\n",
+        )
+        .unwrap();
+        let keys: Vec<&str> = m.files[0].fields.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["title", "date"],
+            "in the order written, path and hash apart"
+        );
+        assert!(m.files[1].fields.is_empty());
+
+        let text =
+            crate::meta::serialize_mapping(&m.to_mapping("Photos — manifest"), fig::Format::Yaml)
+                .unwrap();
+        assert!(text.contains("title: Mum at the lake"), "{text}");
         assert_eq!(parse(&text).unwrap(), m);
     }
 

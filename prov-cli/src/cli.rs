@@ -572,10 +572,11 @@ pub(crate) enum Command {
     /// in their index. For photographs added one at a time that turn out to be
     /// one album.
     ///
-    /// Refused while a sidecar holds something a manifest row cannot — a field
-    /// only it carries, a link to it or its file from elsewhere, children —
-    /// and each is listed. A field every sidecar shares moves onto the node;
-    /// `--discard FIELD` accepts losing one that does not.
+    /// A field every sidecar shares moves onto the node, and one only some
+    /// carry onto the rows of the files that have it. Refused while a sidecar
+    /// holds something a manifest cannot — a field holding a link, a link to
+    /// it or its file from elsewhere, children — and each is listed;
+    /// `--discard FIELD` accepts losing such a field.
     Gather {
         /// The attachments, by sidecar or by file — all in one index.
         #[arg(required = true, value_name = "ATTACHMENT")]
@@ -586,8 +587,8 @@ pub(crate) enum Command {
         /// The node's title (default: the directory's name read as a title).
         #[arg(long)]
         title: Option<String>,
-        /// Accept losing this field from the sidecars that carry it. Repeat
-        /// for several.
+        /// Drop this field from the sidecars that carry it rather than keep
+        /// it on their rows, or accept losing it. Repeat for several.
         #[arg(long, value_name = "FIELD")]
         discard: Vec<String>,
         /// List what would move, be carried and be lost, and write nothing.
@@ -595,7 +596,7 @@ pub(crate) enum Command {
         dry_run: bool,
     },
     /// Scatter a manifest back into one attachment per covered file. The files
-    /// stay where they are; each gains a sidecar.
+    /// stay where they are; each gains a sidecar, carrying its row's fields.
     ///
     /// Bare, the node is kept as the index the sidecars go under — same title,
     /// same id, every link to it still good — and loses only its manifest.
@@ -610,7 +611,8 @@ pub(crate) enum Command {
         /// title route (`@Photos`), or an id.
         #[arg(long, value_name = "INDEX")]
         into: Option<String>,
-        /// Accept losing this field of the node. Repeat for several.
+        /// Accept losing this field — of the node, or a row's that a sidecar
+        /// keeps for itself. Repeat for several.
         #[arg(long, value_name = "FIELD")]
         discard: Vec<String>,
         /// List the sidecars that would be written and what would be lost,

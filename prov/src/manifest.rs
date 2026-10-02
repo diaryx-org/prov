@@ -90,12 +90,19 @@ pub struct ManifestUpdate {
     /// Files whose recorded digest disagreed with their current bytes. In an
     /// unhashed manifest this is always empty — there was nothing to disagree.
     pub changed: Vec<PathBuf>,
+    /// Whether the rows already agreed with the directory but the manifest's
+    /// bytes were not the ones its node pinned — a row's field edited by hand —
+    /// so the pin was re-recorded over the manifest as it stands.
+    pub repinned: bool,
 }
 
 impl ManifestUpdate {
     /// Whether the rebuild found the manifest already correct.
     pub fn is_clean(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && !self.repinned
     }
 }
 
@@ -168,12 +175,16 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 .map(|(path, hash)| ManifestEntry {
                     path,
                     hash: Some(hash),
+                    ..Default::default()
                 })
                 .collect()
         } else {
             paths
                 .into_iter()
-                .map(|path| ManifestEntry { path, hash: None })
+                .map(|path| ManifestEntry {
+                    path,
+                    ..Default::default()
+                })
                 .collect()
         };
         let mut manifest = Manifest {
@@ -307,7 +318,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// autofix ([`Fix::RegenerateManifest`](crate::remedy::Fix::RegenerateManifest))
     /// stages exactly the same two writes into the change set it is already
     /// building, rather than committing a second one behind its back. The writes
-    /// are empty when the manifest is already correct.
+    /// are empty when the manifest is already correct, and the node alone when
+    /// only its pin is behind.
     pub(crate) async fn plan_manifest_rebuild(
         &self,
         node: &Path,
@@ -328,9 +340,22 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         } else {
             current.is_hashed()
         };
-        let fresh = self
+        let mut fresh = self
             .build_manifest(&manifest_doc, &current.root, hashed)
             .await?;
+        // What a row says about its file is the one thing the directory cannot
+        // say again: it stays on the row while the file does, bytes changed or
+        // not, and goes with the row when the file has gone.
+        let mut said: std::collections::BTreeMap<&Path, &Mapping> = current
+            .files
+            .iter()
+            .map(|e| (e.path.as_path(), &e.fields))
+            .collect();
+        for entry in &mut fresh.files {
+            if let Some(fields) = said.remove(entry.path.as_path()) {
+                entry.fields = fields.clone();
+            }
+        }
 
         let old: std::collections::BTreeMap<&Path, Option<&String>> = current
             .files
@@ -358,8 +383,26 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 update.removed.push(path.to_path_buf());
             }
         }
+        let (node_text, node_doc) = self.load(&node).await?;
         if update.is_clean() {
-            return Ok((update, Vec::new()));
+            // The rows stand, so the manifest is not rewritten — a person's
+            // edits to it are kept as they laid them out. Its node is
+            // re-pinned when those edits left the pin behind, since saying so
+            // is what asking for an update over an edited manifest means.
+            let bytes = self.read_bytes(&manifest_doc).await?;
+            let pinned = node_doc.meta.get("content_hash").and_then(Value::as_str);
+            let actual = crate::fixity::digest(&bytes);
+            if pinned.is_none_or(|pin| pin == actual) {
+                return Ok((update, Vec::new()));
+            }
+            update.repinned = true;
+            let restamped = prov_store::edit::set_in_text(
+                &node_text,
+                node_doc.carrier,
+                "content_hash",
+                fig::Value::Str(actual),
+            )?;
+            return Ok((update, vec![(node, restamped)]));
         }
 
         let (_, manifest_parsed) = self.load(&manifest_doc).await?;
@@ -374,7 +417,6 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let mut writes = vec![(manifest_doc, new_text.clone())];
         // The node pins the manifest, so a rewritten manifest is a stale pin
         // until this lands with it — one change set, never two.
-        let (node_text, node_doc) = self.load(&node).await?;
         if node_doc.meta.get("content_hash").is_some() || self.fixity().is_on() {
             let restamped = prov_store::edit::set_in_text(
                 &node_text,
@@ -545,7 +587,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// **preserves the manifest's hashing mode** — an inventory stays an
     /// inventory, a hashed manifest is re-hashed in full — because whether to
     /// carry a fixity baseline over this directory is a decision already made,
-    /// and a refresh is not the place to silently reverse it.
+    /// and a refresh is not the place to silently reverse it. A row's own
+    /// fields stay on it while its file is there; when they are all that
+    /// changed, the manifest is left as written and only the node's pin is
+    /// re-recorded ([`ManifestUpdate::repinned`]).
     ///
     /// Nothing is written when nothing changed, down to the byte: a manifest is
     /// a file some transport carries, and rewriting an identical one is a
@@ -716,6 +761,40 @@ mod tests {
         let update = block_on(w.update_manifest(Path::new("photos.yaml"))).unwrap();
         assert!(update.is_clean());
         assert_eq!(read(&dir, "photos.manifest.yaml"), before);
+    }
+
+    #[test]
+    fn a_refresh_keeps_what_a_row_says_while_its_file_is_there() {
+        let dir = photos("row-fields");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        let text = read(&dir, "photos.manifest.yaml")
+            .replace("- path: a.jpg\n", "- path: a.jpg\n  caption: At the lake\n")
+            .replace(
+                "- path: 2019/b.jpg\n",
+                "- path: 2019/b.jpg\n  caption: The dog\n",
+            );
+        write(&dir, "photos.manifest.yaml", text.clone());
+
+        // Edited by hand, the rows still agree with the directory: the
+        // manifest stands as written and the node's pin catches up.
+        assert!(!block_on(ws(&dir).check("index.md")).unwrap().is_empty());
+        let update = block_on(ws(&dir).update_manifest(Path::new("photos.yaml"))).unwrap();
+        assert!(update.repinned && !update.is_clean(), "{update:?}");
+        assert_eq!(read(&dir, "photos.manifest.yaml"), text);
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+
+        write(&dir, "photos/a.jpg", [0xff, 0xd8, 0x99]); // rewritten
+        std::fs::remove_file(dir.join("photos/2019/b.jpg")).unwrap(); // gone
+        write(&dir, "photos/c.jpg", [0xff, 0xd8, 0x03]); // added
+        block_on(ws(&dir).update_manifest(Path::new("photos.yaml"))).unwrap();
+
+        let manifest = read(&dir, "photos.manifest.yaml");
+        assert!(manifest.contains("caption: At the lake"), "{manifest}");
+        assert!(
+            !manifest.contains("The dog"),
+            "went with its row: {manifest}"
+        );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 
     #[test]
