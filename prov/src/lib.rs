@@ -313,7 +313,8 @@ pub use intake::{Adoption, PlanOutcome, StructurePlan, SynthNode};
 pub use journal::{Recovered, recover, recover_kept_in};
 pub use manifest::{ManifestStatus, ManifestUpdate};
 pub use mutate::{
-    ContentState, Created, Diagnosis, Filed, FilingPlan, PlannedIndex, Reordered, Reparented,
+    ContentState, Created, Diagnosis, Filed, FilingPlan, GatherPlan, GatheredFile, Loss, LossKind,
+    PlannedIndex, RegroupOptions, Reordered, Reparented, ScatterPlan,
 };
 pub use prov_exports::ExportSpec;
 pub use prov_views::ViewSpec;

@@ -423,7 +423,7 @@ pub(crate) fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResu
 /// The node describing `target`, which may be the covered directory, the node
 /// itself, or the manifest document. A rename separates their names, so all
 /// three are accepted rather than making the user work out which one prov wants.
-fn resolve_manifest_node(
+pub(crate) fn resolve_manifest_node(
     ws: &Workspace<StdFs, Minter, FileIndex>,
     target: &Path,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {

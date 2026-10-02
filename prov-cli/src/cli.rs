@@ -567,6 +567,57 @@ pub(crate) enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Gather attachments into one manifest: their files move into a new
+    /// directory, their sidecars go, and one node takes the first one's place
+    /// in their index. For photographs added one at a time that turn out to be
+    /// one album.
+    ///
+    /// Refused while a sidecar holds something a manifest row cannot — a field
+    /// only it carries, a link to it or its file from elsewhere, children —
+    /// and each is listed. A field every sidecar shares moves onto the node;
+    /// `--discard FIELD` accepts losing one that does not.
+    Gather {
+        /// The attachments, by sidecar or by file — all in one index.
+        #[arg(required = true, value_name = "ATTACHMENT")]
+        cards: Vec<PathBuf>,
+        /// The new directory the files move into. The node is named for it.
+        #[arg(long, value_name = "DIR")]
+        into: PathBuf,
+        /// The node's title (default: the directory's name read as a title).
+        #[arg(long)]
+        title: Option<String>,
+        /// Accept losing this field from the sidecars that carry it. Repeat
+        /// for several.
+        #[arg(long, value_name = "FIELD")]
+        discard: Vec<String>,
+        /// List what would move, be carried and be lost, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Scatter a manifest back into one attachment per covered file. The files
+    /// stay where they are; each gains a sidecar.
+    ///
+    /// Bare, the node is kept as the index the sidecars go under — same title,
+    /// same id, every link to it still good — and loses only its manifest.
+    /// With `--into`, the node goes and the sidecars join that index (in the
+    /// node's place, when it is the node's own parent), each carrying the
+    /// node's fields; its title is then a loss to `--discard`.
+    Scatter {
+        /// The covered directory, or the node or manifest document.
+        #[arg(value_name = "TARGET")]
+        target: PathBuf,
+        /// The index the sidecars go under instead of the node: a path, a
+        /// title route (`@Photos`), or an id.
+        #[arg(long, value_name = "INDEX")]
+        into: Option<String>,
+        /// Accept losing this field of the node. Repeat for several.
+        #[arg(long, value_name = "FIELD")]
+        discard: Vec<String>,
+        /// List the sidecars that would be written and what would be lost,
+        /// and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Move/rename a document, maintaining every affected link: every inbound
     /// reference across the workspace (parent entry, children's inverses,
     /// overlay links, body links and images) and the document's own relative

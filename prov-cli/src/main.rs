@@ -46,6 +46,7 @@ mod ignore;
 mod init;
 mod json;
 mod peer;
+mod regroup;
 mod session;
 mod stamp;
 mod structure;
@@ -160,6 +161,19 @@ fn main() -> ExitCode {
             update,
             verify,
         } => check::cmd_manifest(&target, update, verify),
+        Command::Gather {
+            cards,
+            into,
+            title,
+            discard,
+            dry_run,
+        } => regroup::cmd_gather(&cards, &into, title.as_deref(), discard, dry_run),
+        Command::Scatter {
+            target,
+            into,
+            discard,
+            dry_run,
+        } => regroup::cmd_scatter(&target, into.as_deref(), discard, dry_run),
         Command::Mv {
             from,
             to,

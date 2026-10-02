@@ -55,6 +55,8 @@
 //! - `separate` — one combined document split into a metadata node and a body
 //!   file, and `combine` back.
 //! - `duplicate` — a shallow copy as a fresh sibling.
+//! - `gather` — attachment sidecars into one manifest over a directory of
+//!   their payloads, and `scatter`, a manifest back into sidecars.
 //! - `convert` — the re-spellings that move no document: a link's style, and a
 //!   metadata block's language or embedding shape.
 //! - `save` — a content edit's own bookkeeping (the `content_hash` and
@@ -78,6 +80,7 @@ mod create;
 pub(crate) mod delete;
 mod duplicate;
 mod file;
+mod gather;
 pub(crate) mod maintain;
 mod move_tree;
 mod rename;
@@ -91,6 +94,7 @@ pub(crate) mod tombstone;
 pub use create::Created;
 pub use delete::Diagnosis;
 pub use file::{Filed, FilingPlan, PlannedIndex};
+pub use gather::{GatherPlan, GatheredFile, Loss, LossKind, RegroupOptions, ScatterPlan};
 pub use reorder::Reordered;
 pub use reparent::Reparented;
 pub use save::ContentState;

@@ -204,7 +204,44 @@ the first recording, which is a worse default for the only workspaces this
 feature exists for. Keep the bytes safe the way the rest of an archive is kept
 safe: a backup, on separate media.
 
-## 7. Commands
+## 7. Gathering attachments, and scattering them again
+
+Photographs are often attached one at a time, before anyone knows they are an
+album. `gather` turns a set of attachment sidecars into a manifest: the
+payloads move into a new directory, the sidecars are removed, and one node
+takes the first sidecar's place in their index. `scatter` is the reverse: one
+sidecar per covered file, written beside it.
+
+The two shapes do not hold the same things. A sidecar is a whole record and a
+row is a path and a digest, so both verbs first list what the other shape
+cannot carry, and refuse while any of it is left:
+
+| Loss | Accepted with |
+|---|---|
+| a field only some sidecars carry, or carry differently — a date set on one photograph, a title someone wrote | `--discard FIELD` |
+| a link to a sidecar, or to its file, from anywhere but its index — a transcript, a page embedding the picture | never — remove the link first |
+| records contained by a sidecar | never — move them first |
+
+A field every sidecar carries with **one** value is not lost: it moves onto the
+node, since it was a fact about all of them. Bookkeeping is not lost either:
+the sidecar's `id` (nothing may link to it), its link up, `content`,
+`attachment`, the workspace's edit stamp, and a title that is only the file
+name read as one. Each sidecar's `content_hash` becomes its row's digest, so a
+gathered manifest is a fixity baseline without re-reading what was already
+pinned.
+
+`scatter` by default **keeps the node**, as the index the new sidecars go under:
+it loses its `manifest` pointer and gains them as children, and keeps its
+title, its id and every link to it, so nothing is lost. `--into INDEX` removes
+the node instead and puts the sidecars under that index — in the node's place,
+when it is the node's own parent — each carrying the node's fields. Its title,
+and any link to it, are then the losses. A directory that no longer agrees with
+its manifest is not scattered: bring the record up to date first, so that a
+missing file is a decision rather than a side effect.
+
+Each verb is one change set: moved, written and removed together.
+
+## 8. Commands
 
 | Command | What it does |
 |---|---|
@@ -212,5 +249,7 @@ safe: a backup, on separate media.
 | `manifest TARGET` | what the manifest says, and whether the directory still agrees (no file reads) |
 | `manifest TARGET --update` | rebuild the rows from the directory as it is now, re-stamping the node |
 | `manifest TARGET --verify` | re-read every listed file and compare its checksum |
+| `gather ATTACHMENT... --into DIR [--title T] [--discard FIELD] [--dry-run]` | attachments of one index into one manifest over `DIR` (§7) |
+| `scatter TARGET [--into INDEX] [--discard FIELD] [--dry-run]` | a manifest back into one attachment per file (§7) |
 
 `TARGET` is the covered directory, the node, or the manifest document.
