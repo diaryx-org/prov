@@ -32,6 +32,25 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.17.1 — 2026-10-02
+
+### Added
+
+- **filing** — a filing entry names the kinds of record it files ([`d414368`](https://github.com/diaryx-org/prov/commit/d4143687610a15323a987375f55d9cdbc5dc9be1))
+- **manifest** — gather attachments into a manifest, and scatter one back ([`2fa727e`](https://github.com/diaryx-org/prov/commit/2fa727e1400dedea20f4acd3de4ef8d9b6e443b5))
+
+### Behavioural changes
+
+- a `kind:` key on a filing entry is read, where it was an
+  unknown-key warning and ignored.
+
+- a filing entry whose `kind:` names a word that is not a
+  kind is dropped and diagnosed, where the key was ignored and the entry kept.
+
+- two filing entries naming the same kind are a
+  `filing_kind_claimed_twice` config finding, so `check` fails on them.
+
+
 ## v0.17.0 — 2026-09-29
 
 ### Breaking
