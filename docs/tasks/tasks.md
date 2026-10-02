@@ -9,6 +9,7 @@ contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[A body link reads a covered payload as a document](/docs/tasks/a-body-link-reads-a-covered-payload-as-a-document.md)'
 - '[A manifest has no add-only verb](/docs/tasks/a-manifest-has-no-add-only-verb.md)'
+- '[A filing entry cannot say what kind of record it files](/docs/tasks/a-filing-entry-cannot-say-what-kind-it-files.md)'
 ---
 
 # Tasks
