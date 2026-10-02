@@ -4,8 +4,8 @@ description: "`filing.<name>` says where records go and what they are filed by, 
 author: adammharris
 created: 2026-10-02
 updated: 2026-10-02
-status: open
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+status: done
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A filing entry cannot say what kind of record it files
@@ -32,3 +32,10 @@ written, has to declare two entries and leave the host to guess which applies.
 - `diagnose_filing` reports an unknown kind.
 - The CLI's `new --filing` and `Workspace::file` take the kind, or infer it
   from the payload when one is given.
+
+## Resolved
+
+Done in d414368 (`feat(filing): a filing entry names the kinds of record it
+files`): `kind:` on a filing entry, `RecordKind` and `Document::record_kind`,
+`filing_for_kind`, the `FilingKindClaimedTwice` finding, and `--filed` on
+`prov new` and `prov attach`.
