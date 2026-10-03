@@ -49,6 +49,23 @@
 //! and a confirmation inherits it rather than adding to it. A workspace that
 //! keeps no `updated` field gets staleness on the digest-bearing shapes only.
 //!
+//! # Binding to content instead
+//!
+//! A workspace that sets `confirmations: content`
+//! ([`ConfirmationBinding::Content`](crate::config::ConfirmationBinding))
+//! closes that hole. Every confirmation on a document without a
+//! `content_hash` names the document's [content digest](content_digest) as
+//! `of`, and an entry that carries one stands **exactly** while its `of` is
+//! still the content digest. The stamp is not consulted for it: the content
+//! digest covers the stamp along with every other byte.
+//!
+//! The content digest is the digest of the document **without its `confirmed`
+//! list**, because a digest of the whole file would move with every entry
+//! appended to it, and no confirmation could ever name the thing it confirms.
+//! Which bytes are bookkeeping is this module's knowledge, so the rule lives
+//! here, as a function of a path and a text that an outside tool can apply to
+//! the bytes a document had at a past revision.
+//!
 //! # Actors
 //!
 //! A bare actor is a person. A non-human carries a prefix — `agent:` for a
@@ -63,7 +80,11 @@
 //! stored: storing it would be storing a conclusion, and a conclusion goes
 //! stale the moment an entry is appended or the document edited.
 
+use std::path::Path;
+
 use crate::meta::Value;
+use prov_graph::document::Document;
+use prov_graph::error::Result;
 
 /// The frontmatter key holding the confirmation list.
 pub const CONFIRMED: &str = "confirmed";
@@ -167,8 +188,9 @@ pub struct Confirmation {
     /// `type: date` stamp, as a day).
     pub at: String,
     /// The `content_hash` the document recorded at the moment of confirming,
-    /// for a document that records one. Absent on a combined document, which
-    /// has no digest to name.
+    /// for a document that records one. On any other document, the document's
+    /// [content digest](content_digest) at that moment, in a workspace that
+    /// binds confirmations to content; absent in one that does not.
     pub of: Option<String>,
 }
 
@@ -214,6 +236,31 @@ impl Confirmation {
     /// is not RFC 3339 — written by hand, or by another tool — falls back to
     /// the text comparison it always had.
     pub fn is_stale(&self, updated: Option<&str>, content_hash: Option<&str>) -> bool {
+        self.is_stale_against(updated, content_hash, None)
+    }
+
+    /// [`is_stale`](Self::is_stale), in a workspace that binds confirmations
+    /// to content: `content_digest` is the document's
+    /// [content digest](content_digest) now, given when the workspace sets
+    /// `confirmations: content` and `None` otherwise.
+    ///
+    /// On a document that records no `content_hash`, an entry naming an `of`
+    /// is stale exactly when that is not `content_digest` — the stamp is not
+    /// consulted, since the digest already covers it. Every other entry, and
+    /// every entry on a document that records a `content_hash`, is judged by
+    /// [`is_stale`](Self::is_stale)'s rule. With `content_digest` absent this
+    /// *is* that rule.
+    pub fn is_stale_against(
+        &self,
+        updated: Option<&str>,
+        content_hash: Option<&str>,
+        content_digest: Option<&str>,
+    ) -> bool {
+        if content_hash.is_none()
+            && let (Some(of), Some(now)) = (&self.of, content_digest)
+        {
+            return of != now;
+        }
         if let Some(updated) = updated
             && later(updated, &self.at)
         {
@@ -282,13 +329,24 @@ impl Confirmations {
     /// Sort a document's list against its current `updated` instant and
     /// `content_hash`.
     pub fn read(meta: &Value, updated_field: Option<&str>) -> Confirmations {
+        Self::read_against(meta, updated_field, None)
+    }
+
+    /// [`read`](Self::read), with the document's [content digest](content_digest)
+    /// now, for a workspace that sets `confirmations: content` — see
+    /// [`Confirmation::is_stale_against`] for the rule.
+    pub fn read_against(
+        meta: &Value,
+        updated_field: Option<&str>,
+        content_digest: Option<&str>,
+    ) -> Confirmations {
         let updated = updated_field
             .and_then(|field| meta.get(field))
             .and_then(Value::as_str);
         let hash = meta.get("content_hash").and_then(Value::as_str);
         let mut out = Confirmations::default();
         for entry in Confirmation::read_all(meta) {
-            if entry.is_stale(updated, hash) {
+            if entry.is_stale_against(updated, hash, content_digest) {
                 out.stale.push(entry);
             } else {
                 out.live.push(entry);
@@ -307,6 +365,66 @@ impl Confirmations {
             Tier::MachineConfirmed
         }
     }
+}
+
+/// The **content digest** of the document at `path` whose text is `text`: the
+/// digest, in [`fixity`](crate::fixity)'s `sha256:<hex>` form, of the text as
+/// it would be with the `confirmed` key removed from its metadata.
+///
+/// The key is removed with the same comment-preserving edit
+/// [`Workspace::confirm`](crate::Workspace::confirm) appends with, so every
+/// other byte — comments, key order, the body, the `updated` stamp — is what
+/// the file says. A document whose metadata has no `confirmed` key digests as
+/// its text, unchanged. So appending a confirmation never moves it, and any
+/// other edit does.
+///
+/// One case is closed by hand: a fenced block left holding nothing once the
+/// key is gone is left out too, because confirming a document that had no
+/// metadata block is what put it there. (So the first confirmation of a
+/// document whose block was already empty, `---` over `---`, is the one that
+/// moves its content digest — once, and the entry still names the digest the
+/// file has after it.)
+///
+/// `path` says how the text is read, as it does for
+/// [`Document::parse`]: a `.yaml`, `.json` or `.toml` path is a document whose
+/// whole file is metadata, and anything else carries a fenced block whose
+/// format the text itself declares (`---` YAML, `+++` TOML, `;;;` JSON). It is
+/// a pure function of the two, so an outside tool computes the content digest
+/// of the bytes a document had at any past revision with the path it had
+/// then.
+pub fn content_digest(path: impl AsRef<Path>, text: &str) -> Result<String> {
+    content_digest_of(text, &Document::parse(path.as_ref(), text)?)
+}
+
+/// [`content_digest`] over a text already parsed to `doc`.
+pub(crate) fn content_digest_of(text: &str, doc: &Document) -> Result<String> {
+    Ok(crate::fixity::digest(content_text(text, doc)?.as_bytes()))
+}
+
+/// The text the content digest is taken of: `text` without its `confirmed`
+/// key, and without a fenced block that held nothing else — confirming a
+/// document that had no metadata block is what created it.
+fn content_text(text: &str, doc: &Document) -> Result<String> {
+    let Some(carrier) = doc.carrier else {
+        return Ok(text.to_string());
+    };
+    if doc.meta.get(CONFIRMED).is_none() {
+        return Ok(text.to_string());
+    }
+    let stripped = prov_store::edit::unset_in_text(text, Some(carrier), CONFIRMED)?;
+    if let prov_graph::document::MetaCarrier::Fenced(kind) = carrier {
+        let found = fig::Embed::extract(&stripped, kind)?;
+        let left = crate::meta::parse_value(found.content(), kind.inner_format())?;
+        let empty = match &left {
+            Value::Null => true,
+            Value::Mapping(map) => map.is_empty(),
+            _ => false,
+        };
+        if empty {
+            return Ok(format!("{}{}", found.host_before(), found.host_after()));
+        }
+    }
+    Ok(stripped)
 }
 
 /// Whether the edit stamp `a` is later than the confirmation instant `b`.
@@ -410,6 +528,33 @@ mod tests {
         assert!(!bound.is_stale(None, Some("sha256:aa")));
         assert!(bound.is_stale(None, Some("sha256:bb")));
         assert!(bound.is_stale(None, None), "the digest it named is gone");
+    }
+
+    /// Bound to content, an entry naming an `of` on a document with no
+    /// `content_hash` is judged by that alone; anything else keeps the rule it
+    /// had.
+    #[test]
+    fn bound_to_content_the_digest_alone_decides() {
+        let c = Confirmation {
+            by: "amh".into(),
+            at: "2026-09-11T09:20:00.000000Z".into(),
+            of: Some("sha256:aa".into()),
+        };
+        let later = Some("2026-09-12T00:00:00.000000Z");
+        assert!(!c.is_stale_against(later, None, Some("sha256:aa")));
+        assert!(c.is_stale_against(None, None, Some("sha256:bb")));
+        // A recorded `content_hash` is what an `of` names on that document.
+        assert!(c.is_stale_against(None, Some("sha256:bb"), Some("sha256:aa")));
+        assert!(c.is_stale_against(later, Some("sha256:aa"), Some("sha256:aa")));
+        // No `of`: the stamp, as before.
+        let bare = Confirmation {
+            of: None,
+            ..c.clone()
+        };
+        assert!(bare.is_stale_against(later, None, Some("sha256:aa")));
+        assert!(!bare.is_stale_against(None, None, Some("sha256:aa")));
+        // Not bound: exactly `is_stale`.
+        assert_eq!(c.is_stale_against(None, None, None), c.is_stale(None, None));
     }
 
     /// A `type: date` edit stamp orders by day: an edit on a later day than

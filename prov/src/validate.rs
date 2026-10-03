@@ -1398,9 +1398,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// Reads each document's `confirmed` list against its own `updated` stamp
     /// (under the field this workspace configures — none configured, nothing
-    /// compared) and its `content_hash`; see
-    /// [`Confirmations::read`](crate::provenance::Confirmations::read) for the
-    /// rule. Nothing here consults any other finding, and no other finding
+    /// compared) and its `content_hash`, and in a workspace that sets
+    /// `confirmations: content` against its content digest; see
+    /// [`Confirmations::read_against`](crate::provenance::Confirmations::read_against)
+    /// for the rule. Nothing here consults any other finding, and no other finding
     /// consults this list: a confirmation is a claim about meaning, a finding
     /// is a claim about state, and neither is evidence for the other.
     async fn confirmation_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
@@ -1408,10 +1409,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for path in documents {
             // A reached payload file will not parse as a document — nothing to
             // read, and not this pass's business.
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok((text, doc)) = self.load(path).await else {
                 continue;
             };
-            let standing = crate::provenance::Confirmations::read(&doc.meta, self.updated_field());
+            let standing = self.standing(&text, &doc);
             // A live entry is one made after the last change, so the document
             // has been confirmed since and its older entries are history. Only
             // a document nothing stands for is reported, naming the newest

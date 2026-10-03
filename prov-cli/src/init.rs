@@ -895,6 +895,9 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         // the whole thesis (DESIGN §1); asking would invite people to decline
         // the one artifact that makes the directory readable without prov.
         about: prov::About::Structure,
+        // The stamp, and not prompted: binding confirmations to content is for
+        // a workspace whose history checks them, which `init` cannot know of.
+        confirmations: prov::ConfirmationBinding::Stamp,
         // Anonymous unless asked for, and not prompted: a name only earns its
         // keep once some *other* workspace refers to this one, which is a thing
         // that happens later, to a minority of workspaces. `prov config

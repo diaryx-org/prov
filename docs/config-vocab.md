@@ -181,6 +181,7 @@ prov:
   fixity: on                 # off | on — what a checksum covers follows the document's shape
   record_deletions: true     # bool — a delete records what it destroyed
   about: structure           # off | structure — generate about.md, the page that explains this directory
+  confirmations: stamp       # stamp | content — what a confirmation is measured against (Provenance §3)
   out_of_scope:               # directories beside the workspace that are not the workspace
     - history                 # another tool's store, a sync cache, a vendored checkout
     - .obsidian
@@ -191,6 +192,7 @@ Every axis is optional; an absent key keeps its default. Defaults:
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
 `id_storage: both`, `workspace_id: ""`, `root:` unset,
 `identity: lazy`, `fixity: on`, `record_deletions: true`, `about: structure`,
+`confirmations: stamp`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in
 diaryx vocabulary, so a minimal vault declares none; absent `fields` ⇒ no field
 is described (every such field is ordinary carried content); absent `views` ⇒ the

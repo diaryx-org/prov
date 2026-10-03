@@ -82,7 +82,9 @@ a second confirmation by the same person is a second fact, and an entry the
 document has since moved out from under is history.
 
 Both are ordinary frontmatter. A workspace that never runs `confirm` has no
-entries, no findings, and nothing to configure — there is no axis for this.
+entries, no findings, and nothing to configure. The one axis there is,
+`confirmations`, chooses what an entry is measured against (§3), and its
+default is the one described first.
 
 ## 2. Actors
 
@@ -145,6 +147,62 @@ bumps the stamp is invisible here. That is the hole `updated` already has, and
 a confirmation inherits it rather than adding to it. A workspace that keeps no
 `updated` field gets staleness on the digest-bearing shapes only, which is
 fair: it has already said it does not track edits.
+
+### Binding to content instead
+
+A workspace can close that hole by measuring confirmations against the bytes:
+
+```yaml
+# prov.yaml
+confirmations: content        # stamp (the default) | content
+```
+
+There, `prov confirm` writes `of:` on every document, not only the three
+shapes above. On a document that records no `content_hash`, `of:` is the
+document's **content digest**:
+
+```yaml
+updated: 2026-09-11T09:00:00.000000Z
+confirmed:
+- by: amh
+  at: 2026-09-11T09:20:00.000000Z
+  of: sha256:5f3c1a…
+```
+
+and the entry stands **exactly while its `of:` is still the content digest**.
+The stamp is not compared for it: the content digest covers the stamp along
+with every other byte, so an edit that bumps it unseats the entry anyway, and
+an edit that forgets to bump it unseats the entry too. A document that records
+a `content_hash` still names that, and is judged as above. An entry with no
+`of:` — one written before the workspace opted in — keeps the stamp rule.
+
+**The content digest** is the `sha256:<hex>` digest of the document's text as
+it would be with the `confirmed` key removed from its metadata. It leaves out
+the list because a digest of the whole file would move with every entry
+appended to it: no confirmation could ever name the thing it confirms. Which
+bytes are bookkeeping is prov's to say, so the rule is prov's, and stated here
+so that anything else can apply it:
+
+- The key is removed with the same comment-preserving edit `confirm` writes
+  with, in whatever format the metadata is in — `---` YAML, `+++` TOML, `;;;`
+  JSON, or a whole-file `.yaml`/`.json`/`.toml` document. Everything else —
+  comments, key order, the body, `updated` — is digested as the file says it.
+- A document whose metadata has no `confirmed` key digests as its text,
+  unchanged.
+- A fenced block left holding nothing once the key is gone is left out with
+  it, since confirming a document that had no metadata block is what created
+  one.
+
+So appending a confirmation never moves the content digest, and every other
+edit does. It is a function of a path and a text alone
+(`prov::provenance::content_digest`; `Workspace::content_digest` for a
+document in the workspace), so a tool holding the bytes a document had at a
+past revision can compute what its content digest was then, and check that an
+entry's `of:` named the content it was written over.
+
+What this does not do is make the line more than a claim: whoever can edit the
+document can write any `of:` they like. Checking that it was honest is a
+question about history, and belongs to whatever keeps the history.
 
 **`prov confirm` never stamps `updated`.** Appending an entry is bookkeeping
 about the document, not an edit of it, and a verb that bumped the stamp it is

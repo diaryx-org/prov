@@ -391,6 +391,50 @@ impl About {
     }
 }
 
+/// What a confirmation is **measured against** — the `confirmations` axis.
+///
+/// A confirmation stands while the document has not changed since it was
+/// made, and the question is what counts as the record of a change. The
+/// default answers with the workspace's edit stamp, which a reader compares
+/// with the entry's `at` by eye. `content` answers with the bytes: every
+/// confirmation names the document's *content digest* as `of:` — its digest
+/// without its own `confirmed` list — and stands exactly while that is still
+/// the content digest. That closes the hole the stamp leaves (an edit that
+/// never bumps it) at the cost of a comparison nobody makes by eye.
+///
+/// A document that records a `content_hash` — an attachment sidecar, a
+/// separated node, a manifest node — is bound to that digest under either
+/// value, as it always was.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConfirmationBinding {
+    /// Measured against the `updated` stamp, and against the recorded
+    /// `content_hash` where there is one (`stamp`, the default).
+    #[default]
+    Stamp,
+    /// Every confirmation names the document's content digest as `of:`, and
+    /// stands while it still matches (`content`).
+    Content,
+}
+
+impl ConfirmationBinding {
+    /// Parse the `confirmations` config spelling; unknown → `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "stamp" => Some(Self::Stamp),
+            "content" => Some(Self::Content),
+            _ => None,
+        }
+    }
+
+    /// The `confirmations` config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Stamp => "stamp",
+            Self::Content => "content",
+        }
+    }
+}
+
 /// The workspace-wide policy a config declares.
 ///
 /// `PartialEq` without `Eq`, for the reason [`FieldSpec`] gives: a field's
@@ -502,6 +546,9 @@ pub struct WorkspaceConfig {
     /// Whether the workspace generates **`about.md`**, the prose page that tells
     /// a stranger how to read this directory. On by default; see [`About`].
     pub about: About,
+    /// What a confirmation is measured against — the edit stamp (the
+    /// default) or the document's content digest. See [`ConfirmationBinding`].
+    pub confirmations: ConfirmationBinding,
     /// What this workspace calls **itself** — the qualifier a cross-workspace
     /// reference (`id:<workspace>/<id>`) names it by. Empty (the default) means
     /// the workspace is anonymous: it can still *hold* foreign references, but
@@ -629,6 +676,7 @@ impl Default for WorkspaceConfig {
             record_deletions: true,
             fixity: Fixity::On,
             about: About::Structure,
+            confirmations: ConfirmationBinding::Stamp,
             workspace_id: String::new(),
             root: None,
             out_of_scope: Vec::new(),
@@ -1177,6 +1225,13 @@ impl WorkspaceConfig {
         {
             self.about = v;
         }
+        if let Some(v) = meta
+            .get("confirmations")
+            .and_then(Value::as_str)
+            .and_then(ConfirmationBinding::from_config_str)
+        {
+            self.confirmations = v;
+        }
         // The declared scope. Replaced whole rather than merged, unlike `views`
         // and `fields`: those are keyed collections where a later surface adds
         // an entry, and this is one statement about one workspace — a surface
@@ -1390,6 +1445,10 @@ impl WorkspaceConfig {
             Value::String(self.about.as_config_str().into()),
         );
         map.insert(
+            "confirmations".into(),
+            Value::String(self.confirmations.as_config_str().into()),
+        );
+        map.insert(
             "workspace_id".into(),
             Value::String(self.workspace_id.clone()),
         );
@@ -1576,6 +1635,7 @@ const TOP_KEYS: &[&str] = &[
     // before the rename is read rather than reported as an unknown key.
     "recycle_bin",
     "about",
+    "confirmations",
     "out_of_scope",
 ];
 /// Keys inside the `metadata:` block.
@@ -1659,6 +1719,15 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     value,
                     |s| About::from_config_str(s).is_some(),
                     &["off", "structure"],
+                );
+            }
+            "confirmations" => {
+                enum_axis(
+                    &mut issues,
+                    key,
+                    value,
+                    |s| ConfirmationBinding::from_config_str(s).is_some(),
+                    &["stamp", "content"],
                 );
             }
             // A sequence of workspace-relative directory paths. Each entry is
@@ -3045,6 +3114,8 @@ mod tests {
             // what proves the value survives the mapping rather than being
             // silently re-defaulted on the way back.
             about: About::Off,
+            // Non-default, for the same reason.
+            confirmations: ConfirmationBinding::Content,
             // Non-default (the default is anonymous), so the round trip proves
             // the name survives rather than being silently dropped.
             workspace_id: "notes".to_string(),
@@ -3411,6 +3482,31 @@ mod tests {
         let mut unchanged = WorkspaceConfig::default();
         unchanged.apply(&config_doc(&[("about", "structrue")]));
         assert_eq!(unchanged.about, About::Structure);
+    }
+
+    #[test]
+    fn confirmations_default_to_the_stamp_and_accept_only_their_two_spellings() {
+        assert_eq!(
+            WorkspaceConfig::default().confirmations,
+            ConfirmationBinding::Stamp
+        );
+        let mut cfg = WorkspaceConfig::default();
+        cfg.apply(&config_doc(&[("confirmations", "content")]));
+        assert_eq!(cfg.confirmations, ConfirmationBinding::Content);
+        assert!(diagnose(&config_doc(&[("confirmations", "content")])).is_empty());
+
+        let issues = diagnose(&config_doc(&[("confirmations", "digest")]));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            matches!(&issues[0].kind, ConfigIssueKind::InvalidValue { value, expected }
+                if value == "digest"
+                    && expected.contains(&"stamp".to_string())
+                    && expected.contains(&"content".to_string())),
+            "{issues:?}"
+        );
+        let mut unchanged = WorkspaceConfig::default();
+        unchanged.apply(&config_doc(&[("confirmations", "digest")]));
+        assert_eq!(unchanged.confirmations, ConfirmationBinding::Stamp);
     }
 
     #[test]

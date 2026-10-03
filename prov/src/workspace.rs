@@ -131,6 +131,9 @@ pub struct Settings {
     /// see [`Workspace::updated_field`]. Empty means the workspace keeps no
     /// such field.
     pub updated: String,
+    /// What a confirmation is measured against — see
+    /// [`Workspace::confirmation_binding`].
+    pub confirmations: crate::config::ConfirmationBinding,
 }
 
 impl Default for Settings {
@@ -150,6 +153,7 @@ impl Default for Settings {
             out_of_scope: Vec::new(),
             root: None,
             updated: String::new(),
+            confirmations: crate::config::ConfirmationBinding::Stamp,
         }
     }
 }
@@ -186,6 +190,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             out_of_scope: config.out_of_scope.iter().map(PathBuf::from).collect(),
             root: config.root.as_deref().map(PathBuf::from),
             updated: config.updated_field().unwrap_or_default().to_string(),
+            confirmations: config.confirmations,
             ..Self::default()
         }
     }
@@ -514,6 +519,19 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// [`restore`](Self::restore) repairs the graph from once they are back.
     pub fn record_deletions(&self) -> bool {
         self.settings.record_deletions
+    }
+
+    /// What a confirmation in this workspace is measured against
+    /// (`confirmations`, the edit stamp by default).
+    ///
+    /// Under [`Content`](crate::config::ConfirmationBinding::Content),
+    /// [`confirm`](Self::confirm) names the document's
+    /// [content digest](Self::content_digest) as `of:` on every entry, and an
+    /// entry carrying one stands exactly while it is still the content digest
+    /// — see [`provenance`](crate::provenance). A document that records a
+    /// `content_hash` is bound to that digest under either value.
+    pub fn confirmation_binding(&self) -> crate::config::ConfirmationBinding {
+        self.settings.confirmations
     }
 
     /// How this workspace embeds metadata — the family (`delimited`,
@@ -1902,6 +1920,13 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Set what a confirmation is measured against (the edit stamp by
+    /// default) — see [`Workspace::confirmation_binding`].
+    pub fn confirmations(mut self, binding: crate::config::ConfirmationBinding) -> Self {
+        self.settings.confirmations = binding;
+        self
+    }
+
     /// Set the metadata embedding family — the `(style, format)` half that
     /// resolves to a concrete carrier. Defaults to
     /// [`EmbedStyle::Delimited`], matching the config default.
@@ -2100,6 +2125,7 @@ mod tests {
             out_of_scope: vec![PathBuf::from("history")],
             root: Some(PathBuf::from("home.md")),
             updated: "updated".into(),
+            confirmations: crate::config::ConfirmationBinding::Content,
         };
         let ws = Workspace::builder(DummyFs)
             .root("vault")
@@ -2114,6 +2140,10 @@ mod tests {
         assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
         assert_eq!(ws.fixity(), Fixity::Off);
         assert!(!ws.record_deletions());
+        assert_eq!(
+            ws.confirmation_binding(),
+            crate::config::ConfirmationBinding::Content
+        );
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
         assert_eq!(ws.workspace_id(), "notes");
         assert_eq!(ws.out_of_scope(), [PathBuf::from("history")]);
@@ -2144,6 +2174,7 @@ mod tests {
             embed_style: EmbedStyle::CodeBlock,
             default_embed_format: fig::Format::Json,
             workspace_id: "notes".into(),
+            confirmations: crate::config::ConfirmationBinding::Content,
             ..Default::default()
         };
 
@@ -2158,6 +2189,10 @@ mod tests {
         assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
         assert_eq!(ws.default_embed_format(), fig::Format::Json);
         assert_eq!(ws.workspace_id(), "notes");
+        assert_eq!(
+            ws.confirmation_binding(),
+            crate::config::ConfirmationBinding::Content
+        );
         // A config always yields an explicit reference style, which is why the
         // legacy `id_links` axis stays at its default and is never consulted.
         assert_eq!(ws.reference_style(), config.reference_style());

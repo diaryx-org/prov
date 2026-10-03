@@ -508,6 +508,7 @@ identity: lazy
 fixity: on
 record_deletions: true
 about: structure
+confirmations: stamp
 workspace_id: ''
 $ prov config references.target id
 set references.target = id in prov.yaml
@@ -528,6 +529,7 @@ The knobs (dotted keys address nested axes):
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
 | `fixity`                  | `on`, `off`                                                    | whether content checksums are recorded           |
 | `record_deletions`        | `true`/`false`                                                 | a delete records what it destroyed               |
+| `confirmations`           | `stamp`, `content`                                             | what a confirmation is measured against ([Provenance](/docs/provenance.md) §3) |
 | `fields.<name>.stamp`     | `edit`, `create`                                               | prov writes the time into that field on every change it makes, or once when `new` makes the document |
 
 The two `init` identity prompts map onto these keys: **Identity** sets
