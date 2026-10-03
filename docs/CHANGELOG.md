@@ -32,6 +32,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.18.0 — 2026-10-03
+
+### Breaking
+
+- **manifest** — a manifest row carries fields of its own file ([`444c9b4`](https://github.com/diaryx-org/prov/commit/444c9b4b112e670fd9a9fc684b790215772541db))
+- **deps** — move to twig 4 ([`33fe32b`](https://github.com/diaryx-org/prov/commit/33fe32b8270f6e0cd15ee102bf985606c3ec8786))
+
+### Behavioural changes
+
+- `gather` no longer refuses a field only some sidecars carry; it moves the field onto their manifest rows unless `--discard` names it.
+
+- `manifest --update` keeps keys on a row other than `path` and `hash`, which it used to drop, and re-pins the node when only the manifest's text changed instead of reporting it up to date.
+
+
 ## v0.17.1 — 2026-10-02
 
 ### Added
