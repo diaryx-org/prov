@@ -44,7 +44,7 @@ jobs:
       language: rust
       cargo-package: prov-cli
       needs-zig: true
-      # The reusable workflow's default trails twig 4.0.1's minimum, 0.17.0.
+      # Matches ci.yml's setup-zig: twig 4.0.1 builds from source only with 0.17.0.
       zig-version: "0.17.0"
       wasi: true
     secrets:
