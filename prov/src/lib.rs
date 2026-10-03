@@ -65,6 +65,7 @@ pub use prov_graph::fixity;
 #[cfg(test)]
 mod fs_faults;
 pub mod intake;
+pub mod landing;
 pub mod manifest;
 pub mod mutate;
 pub mod node;
@@ -245,6 +246,7 @@ pub use crossing::{
     Boundary, Crossing, Descent, Federation, Peer, Reached, Refusal, Trust, descend, open_peer,
 };
 pub use discovery::{Discovered, Discovery, discover};
+pub use landing::{Landed, Landing};
 pub use peers::PeerFile;
 /// Declarative views over the workspace — the `views:` config axis, the
 /// traversal that selects the documents one covers, and the pure grouping over

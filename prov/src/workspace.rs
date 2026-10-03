@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use crate::change::{ChangeSet, FileOp};
 use crate::config::{Fixity, IdStorage};
 use crate::identity::{IdentityPolicy, NoIdentity, Trigger};
+use crate::landing::{Landed, Landing};
 use prov_graph::document::EmbedStyle;
 use prov_graph::error::{Error, Result};
 use prov_graph::fs::ReadStorage;
@@ -230,6 +231,19 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
     /// Held as given and checked at use ([`journal`](Workspace::journal)),
     /// because [`WorkspaceBuilder::build`] has no way to refuse.
     journal_home: Option<PathBuf>,
+    /// Who to tell when a change set lands — see
+    /// [`set_landing`](Workspace::set_landing).
+    landing: Option<LandingHook>,
+}
+
+/// A [`Landing`] hook, with a `Debug` that says only that there is one.
+#[derive(Clone)]
+struct LandingHook(Arc<dyn Landing>);
+
+impl std::fmt::Debug for LandingHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Landing")
+    }
 }
 
 /// Hand-written rather than derived, because the read memo carries its own
@@ -248,6 +262,10 @@ pub struct Workspace<FS, Id = NoIdentity, Ix = NoIndex> {
 /// and a second handle that journaled into the tree while the first kept its
 /// journal elsewhere would be two writers disagreeing about where the crash
 /// state lives — the one disagreement recovery cannot survive.
+///
+/// So is the **landing hook**: a write through either handle is a write to
+/// the same tree, and whoever asked to be told about the tree's writes asked
+/// about both.
 impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
     fn clone(&self) -> Self {
         Self {
@@ -257,6 +275,7 @@ impl<FS: Clone, Id: Clone, Ix: Clone> Clone for Workspace<FS, Id, Ix> {
             pending_stamps: self.pending_stamps.clone(),
             inbound: inbound::empty(),
             journal_home: self.journal_home.clone(),
+            landing: self.landing.clone(),
         }
     }
 }
@@ -281,6 +300,7 @@ impl<FS> Workspace<FS, NoIdentity, NoIndex> {
             settings: Settings::default(),
             bulk: None,
             journal_home: None,
+            landing: None,
         }
     }
 }
@@ -313,6 +333,19 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// so a consumer that rebuilds its workspace can carry it over.
     pub fn bulk_reads(&self) -> Option<Arc<dyn BulkReads>> {
         self.graph.bulk_reads()
+    }
+
+    /// Tell `hook` what every change set this workspace lands did to the
+    /// tree, as it lands — see [`crate::landing`]. Replaces any hook already
+    /// installed.
+    pub fn set_landing(&mut self, hook: Arc<dyn Landing>) {
+        self.landing = Some(LandingHook(hook));
+    }
+
+    /// The hook [`set_landing`](Self::set_landing) installed, if any — so a
+    /// consumer that rebuilds its workspace can carry it over.
+    pub fn landing(&self) -> Option<Arc<dyn Landing>> {
+        self.landing.as_ref().map(|hook| Arc::clone(&hook.0))
     }
 
     /// Keep this workspace's write-ahead journal in `home` instead of in the
@@ -1433,13 +1466,17 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// It is also the one place every write passes, which makes it where the
     /// inbound index learns what changed: decided from the staged bytes before
     /// the apply, settled against the disk after it, and dropped if the apply
-    /// failed — see [`inbound`].
+    /// failed — see [`inbound`]. And where a [`Landing`] hook is told what
+    /// landed, once it has.
     pub async fn apply_set(&self, cs: &ChangeSet) -> Result<()> {
         let journal = self.journal()?;
         let plan = self.plan_inbound(cs);
         match journal.apply(cs, self.fs(), self.root()).await {
             Ok(()) => {
                 self.settle_inbound(plan).await;
+                if let Some(hook) = &self.landing {
+                    hook.0.landed(&Landed::of(cs));
+                }
                 Ok(())
             }
             Err(e) => {
@@ -1850,6 +1887,7 @@ pub struct WorkspaceBuilder<FS, Id, Ix> {
     settings: Settings,
     bulk: Option<Hook>,
     journal_home: Option<PathBuf>,
+    landing: Option<LandingHook>,
 }
 
 impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
@@ -1863,6 +1901,13 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
     /// [`Workspace::set_bulk_reads`] and [`prov_graph::bulk`].
     pub fn bulk_reads(mut self, hook: Arc<dyn BulkReads>) -> Self {
         self.bulk = Some(Hook::new(hook));
+        self
+    }
+
+    /// Who to tell when a change set lands — see
+    /// [`Workspace::set_landing`].
+    pub fn landing(mut self, hook: Arc<dyn Landing>) -> Self {
+        self.landing = Some(LandingHook(hook));
         self
     }
 
@@ -2001,6 +2046,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             settings: self.settings,
             bulk: self.bulk,
             journal_home: self.journal_home,
+            landing: self.landing,
         }
     }
 
@@ -2014,6 +2060,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             settings: self.settings,
             bulk: self.bulk,
             journal_home: self.journal_home,
+            landing: self.landing,
         }
     }
 
@@ -2041,6 +2088,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             pending_stamps: Vec::new(),
             inbound: inbound::empty(),
             journal_home: self.journal_home,
+            landing: self.landing,
         }
     }
 }
