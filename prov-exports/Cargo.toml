@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # The read core. An export *plans* which documents leave; nothing about

@@ -31,9 +31,7 @@ id: 1ch2991
 # prov (Plaintext Records, Organized and Verifiable)
 
 [![CI](https://img.shields.io/github/actions/workflow/status/diaryx-org/prov/ci.yml?branch=main)](https://github.com/diaryx-org/prov/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/prov.svg)](https://crates.io/crates/prov)
-[![docs.rs](https://img.shields.io/docsrs/prov)](https://docs.rs/prov)
-[![license](https://img.shields.io/crates/l/prov.svg)](#license)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 A *self-describing plaintext workspace*: a set of documents whose structure lives in the documents' own embedded metadata (frontmatter), not in the filesystem layout or an app-private sidecar folder.
 
@@ -48,7 +46,7 @@ A *self-describing plaintext workspace*: a set of documents whose structure live
 
 `cargo xtask ci` runs everything CI runs, in the order CI runs it; `cargo xtask` on its own lists the individual jobs. The [workflow](.github/workflows/ci.yml) does nothing but ask `cargo xtask ci-matrix` what the jobs are and run each one, so changing CI means editing [`xtask/src/main.rs`](xtask/src/main.rs) and nothing else.
 
-Releases are one command: `release release <patch|minor|major|x.y.z>` bumps the workspace version, cuts the changelog's unreleased region into a released section, commits and tags — and pushes only when given `--push`, because the push is what publishes the workspace's crates to crates.io. See [Releasing](docs/releasing.md).
+Releases are one command: `release release <patch|minor|major|x.y.z>` bumps the workspace version, cuts the changelog's unreleased region into a released section, commits and tags — and pushes only when given `--push`, because the push is what ships the Homebrew binaries. prov is not on crates.io: a Rust project depends on it from git, `prov = { git = "https://github.com/diaryx-org/prov", branch = "main" }`. See [Releasing](docs/releasing.md).
 
 Building needs [Zig](https://ziglang.org) 0.16 on `PATH` — prov's `fig` and `twig-doc` dependencies are Zig-backed, and their build scripts run `zig build`. `nix develop` provides it, as does the `flake.nix` dev shell.
 

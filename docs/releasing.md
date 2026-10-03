@@ -1,13 +1,28 @@
 # Releasing prov
 
-Every published crate in the workspace shares one version number, one tag, and
-one changelog — `cargo publish --workspace --dry-run` says which crates those
-are, and in what order they go up. A release is therefore one command:
+Every crate in the workspace shares one version number, one tag, and one
+changelog. A release is therefore one command:
 
 ```console
 $ release release minor          # bump, changelog, commit, tag
-$ release release minor --push   # …and push, which publishes
+$ release release minor --push   # …and push, which ships the binaries
 ```
+
+prov is not on crates.io; 0.18.0 was the last version uploaded there. The
+repositories that build on it — plates, provui, diaryx — name it as a git
+dependency, every one of them the same way:
+
+```toml
+prov = { git = "https://github.com/diaryx-org/prov", branch = "main" }
+```
+
+and each one's `Cargo.lock` records the exact commit it builds, which `cargo
+update -p prov` moves. So a change reaches them once it is pushed to `main`,
+not once it is released: a tag is a name for a commit and the start of a
+Homebrew build, not the step that makes the code available. The spelling has to
+match everywhere, because cargo tells sources apart by it — one consumer on a
+`rev` or a `tag` while another is on `branch = "main"` is two provs in one
+graph, and a type from one is not a type from the other.
 
 `release` is the shared tooling in [diaryx-org/devtools][devtools], which prov,
 twig, leaf, flower, and the historica repos all cut releases with. What makes
@@ -21,11 +36,8 @@ do on its own.
 
 ## What a tag starts
 
-Pushing `vX.Y.Z` starts two workflows, and neither can be undone:
+Pushing `vX.Y.Z` starts one workflow, and it cannot be undone:
 
-- **`publish.yml`** runs `cargo publish --workspace`, which uploads every
-  publishable crate in dependency order, waiting on the index between them. A
-  crates.io version number can be yanked but never reused.
 - **`homebrew.yml`** builds the release binaries, attaches a WASI build, cuts
   the GitHub release, writes the formula into `diaryx-org/homebrew-tap`, and
   then sets the release body to that version's section of the changelog —
@@ -38,17 +50,14 @@ Pushing `vX.Y.Z` starts two workflows, and neither can be undone:
 
 That is why `release` stops at the local tag unless it is given `--push`: every
 step before the push is a commit you can amend or throw away, and the push is
-the step that spends a version number. Without `--push` the command prints the
-two `git push` lines it did not run, and the two-line undo.
+the step that writes the tap. Without `--push` the command prints the two `git
+push` lines it did not run, and the two-line undo.
 
 ## What `release` checks first
 
 `release release` refuses before it writes anything if the working tree is
 dirty, the branch is not `main`, `main` is behind `origin/main`, the tag already
-exists locally or on origin, git-cliff is not installed, or **any crate is
-already on crates.io at the target version**. That last one is not paranoia:
-0.5.0 went up from a laptop without ever being tagged, so the tag list is not a
-reliable record of what has been spent — the registry is.
+exists locally or on origin, or git-cliff is not installed.
 
 Then it runs the whole of CI (`cargo xtask ci`), the same jobs the workflow
 runs. `--no-verify` skips that, and is for a release you have just watched go
@@ -63,33 +72,7 @@ green.
 | `release changelog` | print the generated region |
 | `release changelog --write` | splice it into `docs/CHANGELOG.md` |
 | `release changelog --check` | fail if that region is stale |
-| `cargo publish --workspace --dry-run` | the publish order, derived from the manifests |
-| `cargo publish --workspace` | publish every publishable crate |
 | `release release-notes [tag]` | that release's changelog section, as the GitHub release body |
-
-`cargo publish --workspace` has no way to skip a version already on the index,
-which the hand-rolled loop it replaced did. So a release that died halfway (say
-`prov` up, `prov-cli` not) is finished by naming what already went up:
-
-```console
-$ cargo publish --workspace --exclude prov
-```
-
-and a re-run of a tag that fully published fails on its first crate rather than
-doing nothing.
-
-Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, and
-moid. It was Trusted Publishing until v0.6.0, which failed at its first upload
-with `403 … token is not valid for crate prov-graph`: the token that scheme
-mints is scoped to the crates the workflow is *registered* for, one crate at a
-time, and the workspace had become eleven crates (it has since been
-consolidated down; the argument is unchanged, and so is the failure mode).
-
-One token covers all of them, but it has to actually cover all of them — issue
-it with `publish-update` and `publish-new` (a crate the workspace has never
-published needs the latter) and no crate restriction, or a release fails the
-same way at whichever crate the token cannot reach — cargo reports it as
-`403 … token is not valid for crate <name>` at the first upload it cannot make.
 
 ## The changelog
 
@@ -110,7 +93,7 @@ below the end marker, where regeneration cannot reach it.
 `--write` also answers to the tag list, not just to the region: any `v*` tag
 with no `## <tag> —` section of its own gets one, generated from its commit
 range and folded in at its place in the order. That is what a tag cut *after*
-the fact needs — v0.5.0 was tagged once its crates were already on crates.io,
+the fact needs — v0.5.0 was tagged once its crates were already published,
 and until the backfill existed, tagging it made those commits vanish from the
 file entirely: no longer unreleased, and in no section either. `--check` reports
 a missing section the same way it reports a stale region. Existing sections are

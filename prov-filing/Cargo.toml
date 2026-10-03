@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # The read core, for the metadata a record is filed by. A filing entry

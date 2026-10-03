@@ -8,12 +8,12 @@ release_branch = "main"
 # What to run before cutting. Each repo owns its own CI; this names it.
 verify = "cargo xtask ci"
 
+# Not on crates.io: prov is consumed from git, by commit. 0.18.0 was the last
+# version uploaded.
+publishes = false
+
 # What pushing the tag sets off, most consequential first. The warning printed
 # before the push is handed back to you is composed from these.
-[[tag_starts]]
-workflow = "publish.yml"
-does = "uploads every publishable crate to crates.io"
-
 [[tag_starts]]
 workflow = "homebrew.yml"
 does = "builds the binaries and writes the tap"

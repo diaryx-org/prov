@@ -16,6 +16,8 @@ repository = "https://github.com/diaryx-org/prov"
 homepage = "https://github.com/diaryx-org/prov"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
+# Not on crates.io: plates, provui and diaryx consume prov from git, by commit.
+publish = false
 
 [workspace.dependencies]
 # Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs

@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # The metadata value a grain reads. Nothing else of the read core is used, and

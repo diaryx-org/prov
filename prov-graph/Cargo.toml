@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 # The filesystem port and the transaction that lands a change through it. The

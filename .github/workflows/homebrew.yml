@@ -1,7 +1,8 @@
 name: Release
-# The binary half of a release: the `prov` CLI to Homebrew and a WASI build. (Its
-# sibling, publish.yml, does the registry half; the notes on the release itself
-# are written from the laptop that cut the tag, and are no longer a job here.)
+# What a release ships: the `prov` CLI to Homebrew and a WASI build. (There is
+# no registry half — prov is consumed from git, not crates.io — and the notes on
+# the release itself are written from the laptop that cut the tag, and are no
+# longer a job here.)
 # The build/attach/render/push mechanics are shared with twig,
 # fig, and moid and live in diaryx-org/.github; only what makes prov different is
 # below.
