@@ -12,7 +12,13 @@
 //! confirmation fresh by construction. Appending to the list is bookkeeping
 //! about the document, not an edit of it.
 //!
+//! An entry may carry keys of another tool's beside `by`, `at` and `of` — a
+//! signature over the entry, say — written by [`confirm_with`] at the moment
+//! the entry is made, since nothing later may rewrite it. prov keeps them and
+//! never reads them.
+//!
 //! [`provenance`]: crate::provenance
+//! [`confirm_with`]: Workspace::confirm_with
 
 use std::path::Path;
 
@@ -22,8 +28,12 @@ use crate::provenance::{CONFIRMED, Confirmation};
 use crate::workspace::Workspace;
 use prov_graph::error::{Error, Result};
 use prov_graph::link;
+use prov_graph::meta::{Mapping, Value};
 use prov_store::fs::Storage;
 use prov_store::index::IndexStore;
+
+/// The keys of an entry that prov writes and reads.
+const PROV_KEYS: [&str; 3] = ["by", "at", "of"];
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// Append a confirmation to the document at `path`: `by` confirmed it `at`
@@ -56,6 +66,33 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         path: impl AsRef<Path>,
         by: &str,
         at: &str,
+    ) -> Result<Confirmation> {
+        self.confirm_with(path, by, at, |_| Ok(Mapping::new()))
+            .await
+    }
+
+    /// [`confirm`](Self::confirm), with keys of the caller's own written into
+    /// the entry beside `by`, `at` and `of`.
+    ///
+    /// `extend` is handed the entry exactly as it will be written — its `of`
+    /// already named — and answers with the keys to add: a signature over the
+    /// entry is the case this exists for, and a signature has to cover the
+    /// `of` that only this verb computes. They are written now or never,
+    /// because nothing rewrites an entry once it is in the list.
+    ///
+    /// prov keeps such keys and never reads them: they decide nothing about
+    /// whether the entry is well formed, whether it stands, or the document's
+    /// tier, and they sit inside the list the content digest leaves out.
+    /// [`Confirmation::read_extended`] hands them back. A key that is one of
+    /// prov's own (`by`, `at`, `of`) is refused rather than let it say
+    /// something prov would read; so is an error from `extend`, with nothing
+    /// written.
+    pub async fn confirm_with(
+        &mut self,
+        path: impl AsRef<Path>,
+        by: &str,
+        at: &str,
+        extend: impl FnOnce(&Confirmation) -> Result<Mapping>,
     ) -> Result<Confirmation> {
         let path = link::normalize(path.as_ref());
         if by.trim().is_empty() {
@@ -95,9 +132,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 )));
             }
         };
-        let append = |entry: &Confirmation| {
+        let append = |entry: &Confirmation, extra: &Mapping| {
             let mut entries = entries.clone();
-            entries.push(entry.to_value());
+            let mut value = entry.to_value();
+            if let Value::Mapping(map) = &mut value {
+                map.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            entries.push(value);
             prov_store::edit::set_in_text(
                 &text,
                 doc.carrier,
@@ -110,16 +151,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             at: at.to_string(),
             of,
         };
-        let mut written = append(&entry)?;
         if entry.of.is_none() && self.confirmation_binding() == ConfirmationBinding::Content {
             // Taken from the text as it will be written, not as it was read: a
             // document with no metadata block gains one here, and the content
             // digest is what a reader computes from the file that results. The
             // entry's own `of` sits inside the list the digest leaves out, so
-            // naming it does not move it.
-            entry.of = Some(crate::provenance::content_digest(&path, &written)?);
-            written = append(&entry)?;
+            // naming it does not move it — and nor do the caller's keys.
+            let provisional = append(&entry, &Mapping::new())?;
+            entry.of = Some(crate::provenance::content_digest(&path, &provisional)?);
         }
+        let extra = extend(&entry)?;
+        if let Some(own) = PROV_KEYS.iter().find(|k| extra.contains_key(**k)) {
+            return Err(Error::Structure(format!(
+                "`{own}` is prov's own key in a confirmation, and cannot be added beside it"
+            )));
+        }
+        let written = append(&entry, &extra)?;
         let mut cs = self.change();
         cs.write(&path, written);
         self.commit(cs).await?;
@@ -428,6 +475,78 @@ mod tests {
             digest_of("a.md", &confirmed.replace("alpha", "beta")),
             digest_of("a.md", bare)
         );
+    }
+
+    /// A caller's keys ride in the entry they were made with, see the entry
+    /// as written (its `of` included), and change nothing prov decides: the
+    /// digest, the standing, the tier, `check`. One of prov's own keys is
+    /// refused, and so is a caller that fails, each with nothing written.
+    #[test]
+    fn a_callers_keys_are_written_with_the_entry_and_never_read() {
+        let dir = scratch("confirm", "extend");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n---\n");
+        let original = "---\npart_of: index.md\nupdated: 2026-09-11T09:00:00.000000Z\n---\nalpha\n";
+        write(&dir, "a.md", original);
+        let mut ws = content_workspace(&dir);
+
+        let entry =
+            block_on(
+                ws.confirm_with("a.md", "amh", "2026-09-11T09:20:00.000000Z", |entry| {
+                    let mut signature = Mapping::new();
+                    signature.insert("key".into(), Value::String("RWQkey".into()));
+                    signature.insert(
+                        "over".into(),
+                        Value::String(format!(
+                            "{} {}",
+                            entry.by,
+                            entry.of.as_deref().unwrap_or("-")
+                        )),
+                    );
+                    let mut extra = Mapping::new();
+                    extra.insert("signature".into(), Value::Mapping(signature));
+                    Ok(extra)
+                }),
+            )
+            .unwrap();
+        let digest = block_on(ws.content_digest("a.md")).unwrap();
+        assert_eq!(digest, crate::fixity::digest(original.as_bytes()));
+        assert_eq!(entry.of.as_deref(), Some(digest.as_str()));
+
+        let text = read(&dir, "a.md");
+        assert!(
+            text.contains(&format!("    over: amh {digest}\n")),
+            "{text}"
+        );
+        let doc = prov_graph::document::Document::parse(Path::new("a.md"), &text).unwrap();
+        let extended = Confirmation::read_extended(&doc.meta);
+        assert_eq!(extended.len(), 1);
+        assert_eq!(extended[0].0, entry);
+        assert_eq!(extended[0].1.keys().collect::<Vec<_>>(), ["signature"]);
+        assert_eq!(Confirmation::read_all(&doc.meta), vec![entry]);
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+        assert_eq!(
+            block_on(ws.confirmations("a.md")).unwrap().tier(),
+            Tier::HumanConfirmed
+        );
+
+        let before = read(&dir, "a.md");
+        let refused =
+            block_on(
+                ws.confirm_with("a.md", "amh", "2026-09-11T09:30:00.000000Z", |_| {
+                    let mut extra = Mapping::new();
+                    extra.insert("of".into(), Value::String("sha256:mine".into()));
+                    Ok(extra)
+                }),
+            );
+        assert!(refused.is_err());
+        let failed = block_on(ws.confirm_with(
+            "a.md",
+            "amh",
+            "2026-09-11T09:30:00.000000Z",
+            |_| Err(Error::Structure("no key to sign with".into())),
+        ));
+        assert!(failed.is_err());
+        assert_eq!(read(&dir, "a.md"), before, "nothing written");
     }
 
     #[test]

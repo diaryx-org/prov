@@ -222,6 +222,35 @@ impl Confirmation {
             .collect()
     }
 
+    /// [`read_all`](Self::read_all), with each entry's keys beyond `by`, `at`
+    /// and `of` beside it, in the order written: the keys another tool added
+    /// when the entry was made ([`Workspace::confirm_with`]). prov reads none
+    /// of them.
+    ///
+    /// [`Workspace::confirm_with`]: crate::Workspace::confirm_with
+    pub fn read_extended(meta: &Value) -> Vec<(Confirmation, crate::meta::Mapping)> {
+        let Some(entries) = meta.get(CONFIRMED).and_then(Value::as_sequence) else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| {
+                let map = entry.as_mapping()?;
+                let confirmation = Confirmation {
+                    by: map.get("by")?.as_str()?.to_string(),
+                    at: map.get("at")?.as_str()?.to_string(),
+                    of: map.get("of").and_then(Value::as_str).map(str::to_string),
+                };
+                let rest = map
+                    .iter()
+                    .filter(|(key, _)| !matches!(key.as_str(), "by" | "at" | "of"))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                Some((confirmation, rest))
+            })
+            .collect()
+    }
+
     /// Whether the document has changed since this confirmation was made,
     /// given the document's current `updated` instant and `content_hash`.
     ///

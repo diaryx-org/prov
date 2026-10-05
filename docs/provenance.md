@@ -81,6 +81,25 @@ one. Nothing else writes the list, and nothing ever rewrites or drops an entry:
 a second confirmation by the same person is a second fact, and an entry the
 document has since moved out from under is history.
 
+**An entry may carry keys of another tool's** beside `by`, `at` and `of`:
+a signature over the entry, a reference to the evidence checked against.
+They are written with the entry, when it is made (`confirm_with` in the
+library), because nothing rewrites an entry afterwards; prov keeps them and
+never reads them. They decide nothing about whether the entry is well
+formed, whether it stands or the document's tier, and they sit inside the
+list the content digest leaves out (§3), so adding one moves nothing. A
+workspace that wants them held to a shape declares them like any key in a
+list, as `confirmed[].signature`. prov's own three keys cannot be added
+this way.
+
+```yaml
+confirmed:
+- by: amh
+  at: 2026-09-11T09:20:00.000000Z
+  of: sha256:9f86d0…
+  signature: { key: RWTd8LRC…, minisig: … }
+```
+
 Both are ordinary frontmatter. A workspace that never runs `confirm` has no
 entries, no findings, and nothing to configure. The one axis there is,
 `confirmations`, chooses what an entry is measured against (§3), and its
@@ -261,7 +280,8 @@ or a named process and kept. Three rules follow:
   `author` field beside it. A signed record that the document's keeper cannot
   edit — a reviewer vouching for a revision, in their own history — is a
   different tool's subject, and the verb here is named so as not to be mistaken
-  for it.
+  for it. That tool may keep its signature in the entry (§1), and checking it
+  is still that tool's: prov reads neither the signature nor whose key it is.
 
 ## 7. Which documents
 
