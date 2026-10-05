@@ -104,20 +104,42 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // Everything under the directory, hidden entries included: all of it
         // moves. Which of it prov also *reads* — and so maintains — is decided
         // per file below, on the same terms every walk draws: not hidden, not
-        // parked, not an opaque payload.
+        // parked, not an attachment's payload.
         let files = self.files_under(&from_dir).await?;
         let root = self.root_document().await?;
         let parked = match &root {
             Some(root) => self.parked_dirs(root).await?,
             None => self.out_of_scope().to_vec(),
         };
-        let maintained = |path: &Path| {
+        let hidden = |path: &Path| {
             let below = path.strip_prefix(&from_dir).unwrap_or(path);
-            !below
+            below
                 .iter()
                 .any(|part| part.to_str().is_some_and(|p| p.starts_with('.')))
-                && !parked.iter().any(|dir| path.starts_with(dir))
+                || parked.iter().any(|dir| path.starts_with(dir))
+        };
+        // Every payload an attachment sidecar under the directory names. An
+        // opaque one would be skipped by its extension anyway; a specimen
+        // (`attach --opaque`) is a file prov could read and has promised not
+        // to, so its links are an exhibit's, and respelling them would rewrite
+        // the very bytes the sidecar pins. Only whole-file documents can be
+        // sidecars, so only those are opened.
+        let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
+        for path in &files {
+            if hidden(path) || prov_graph::document::whole_file_format(path).is_none() {
+                continue;
+            }
+            if let Ok((_, doc)) = self.load(path).await
+                && doc.is_attachment()
+                && let Some(payload) = doc.content_path(path)
+            {
+                payloads.insert(payload);
+            }
+        }
+        let maintained = |path: &Path| {
+            !hidden(path)
                 && !prov_graph::document::is_opaque_payload(path)
+                && !payloads.contains(path)
         };
 
         // The registry is asked before any rewrite is computed, as `rename`
@@ -553,6 +575,31 @@ mod tests {
             dir.join("photos/one.jpg").is_file(),
             "the archive stays put"
         );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_tree_move_carries_a_specimen_payload_byte_for_byte() {
+        // A specimen's payload is a `.md` prov could read, so the opacity test
+        // let it through to be maintained, and its relative link was respelled
+        // for the new directory — rewriting the bytes its sidecar pins.
+        let dir = tempdir("move-tree-specimen");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- shelf/shelf.md\n---\n",
+        );
+        write(
+            &dir,
+            "shelf/shelf.md",
+            "---\ntitle: Shelf\npart_of: /index.md\n---\n",
+        );
+        attach_specimen(&dir, "shelf/sample.md", "shelf/shelf.md");
+
+        block_on(ws(&dir).move_tree(Path::new("shelf"), Path::new("deep/shelf"))).unwrap();
+
+        assert_eq!(read(&dir, "deep/shelf/sample.md"), SPECIMEN);
+        assert!(read(&dir, "deep/shelf/sample.md.yaml").contains("content: sample.md"));
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 }

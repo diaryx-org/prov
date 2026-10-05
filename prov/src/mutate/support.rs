@@ -28,6 +28,19 @@ pub(super) fn ws(dir: &Path) -> Workspace<StdFs> {
     Workspace::builder(StdFs).root(dir).build()
 }
 
+/// A specimen: a prov document held as an exhibit, with a relative body link
+/// that would be respelled if anything mistook it for a document of this
+/// workspace.
+pub(super) const SPECIMEN: &str =
+    "---\ntitle: Someone Else's Note\n---\nSee [the other](other.md).\n";
+
+/// Write [`SPECIMEN`] at `rel` and shadow it with `attach --opaque` under
+/// `parent`, returning the sidecar.
+pub(super) fn attach_specimen(dir: &Path, rel: &str, parent: &str) -> PathBuf {
+    write(dir, rel, SPECIMEN);
+    block_on(ws(dir).attach_opaque(Path::new(rel), Path::new(parent))).unwrap()
+}
+
 /// An identity-bearing workspace: lazy minting, persistent-style index.
 pub(super) fn id_ws(dir: &Path) -> Workspace<StdFs, Minter, FileIndex> {
     Workspace::builder(StdFs)

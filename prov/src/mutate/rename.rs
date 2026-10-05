@@ -249,8 +249,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// **prose** node shares its body's stem (`notes.yaml` ↔ `notes.md`), so the
     /// body keeps its own extension on the new stem. An **attachment** node
     /// carries the whole payload name plus a metadata extension (`hero.jpg.yaml`
-    /// ↔ `hero.jpg`), so the payload name *is* the node's stem — reconstructing it
-    /// with the body's extension would double it (`hero.jpg.jpg`).
+    /// ↔ `hero.jpg`), so the payload name is the node's stem when that already
+    /// ends in the payload's extension, and the stem with it appended when it
+    /// does not (`hero.yaml` ↔ `hero.jpg`) — see [`body_sibling`].
     async fn plan_body_move(
         &self,
         doc: &Document,
@@ -263,13 +264,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Some(body_from) = content_target(doc, from) else {
             return Ok(None);
         };
-        let opaque = prov_graph::document::is_opaque_payload(&body_from);
-        let (body_to, new_ref) = body_sibling(to, &body_from);
-        // An *attachment* payload is opaque bytes (an image, a PDF) — never read
-        // it as text, and never rewrite it. The bare `rename` carries the bytes;
-        // `text` stays `None`. A prose body is loaded and its wikilinks
+        let attachment = doc.is_attachment();
+        let (body_to, new_ref) = body_sibling(to, &body_from, attachment);
+        // An *attachment* payload is never read as text and never rewritten —
+        // opaque bytes (an image, a PDF) or a specimen prov could read but has
+        // promised not to (`attach --opaque`), whose links are an exhibit's and
+        // not this workspace's. The bare `rename` carries the bytes; `text`
+        // stays `None`. A prose body is loaded and its wikilinks
         // re-relativized when the directory changes, as before.
-        let (read, text) = if opaque {
+        let (read, text) = if attachment {
             (None, None)
         } else {
             let (raw, _) = self.load(&body_from).await?;
@@ -1528,5 +1531,45 @@ mod tests {
             "the child's up-link followed the root"
         );
         assert_eq!(block_on(ws(&dir).check("home.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn renaming_a_sidecar_off_its_payloads_name_keeps_the_payloads_extension() {
+        // `hero.yaml` is not shaped `<payload>.<ext>`, so the payload's name is
+        // the stem with the payload's own extension put back — never the bare
+        // stem, which would leave an image called `hero`.
+        let dir = tempdir("rename-sidecar-plain-name");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8, 0x01]).unwrap();
+        block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
+
+        block_on(ws(&dir).rename(Path::new("photo.jpg.yaml"), Path::new("hero.yaml"))).unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.join("hero.jpg")).unwrap(),
+            [0xff, 0xd8, 0x01]
+        );
+        assert!(!dir.join("hero").exists());
+        assert!(read(&dir, "hero.yaml").contains("content: hero.jpg"));
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn renaming_a_specimen_moves_its_payload_verbatim_under_its_own_name() {
+        // A specimen's payload is a `.md` prov could read, and is an attachment
+        // all the same: it keeps its name shape (`notes.md`, not `notes.md.md`)
+        // and its bytes — its relative link is the exhibit's, not respelled for
+        // the directory it lands in.
+        let dir = tempdir("rename-specimen");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        attach_specimen(&dir, "sample.md", "index.md");
+
+        block_on(ws(&dir).rename(Path::new("sample.md.yaml"), Path::new("kept/notes.md.yaml")))
+            .unwrap();
+
+        assert_eq!(read(&dir, "kept/notes.md"), SPECIMEN);
+        assert!(!dir.join("kept/notes.md.md").exists());
+        assert!(read(&dir, "kept/notes.md.yaml").contains("content: notes.md"));
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 }

@@ -413,6 +413,16 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if prov_graph::document::is_opaque_payload(&prose) {
             return skip_or_err(named, path, "its content is an opaque payload, not prose");
         }
+        // A specimen (`attach --opaque`) points at a file prov could read and
+        // has promised not to: its grammar is the exhibit's, and transcoding it
+        // would rewrite the bytes its sidecar pins.
+        if doc.is_attachment() {
+            return skip_or_err(
+                named,
+                path,
+                "it is an attachment, whose payload is held unread, not prose",
+            );
+        }
         let Some(from_format) = ContentFormat::from_extension(&prose) else {
             return skip_or_err(named, path, "it has no body prose to convert");
         };
@@ -1334,5 +1344,35 @@ mod tests {
             Some(Path::new("a.dj")),
             "the id followed its document"
         );
+    }
+
+    #[test]
+    fn convert_content_format_leaves_a_specimen_alone() {
+        // A specimen's payload is Markdown prov could transcode, and it is an
+        // exhibit held unread: named, it is refused; swept, it is passed over.
+        let dir = tempdir("convert-content-specimen");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n# Hi\n");
+        attach_specimen(&dir, "sample.md", "index.md");
+
+        let err = block_on(ws(&dir).convert_content_format(
+            Path::new("sample.md.yaml"),
+            ContentFormat::Djot,
+            false,
+            false,
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("attachment"), "{err}");
+
+        let n = block_on(ws(&dir).convert_content_format(
+            Path::new("index.md"),
+            ContentFormat::Djot,
+            true,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(n, vec![PathBuf::from("index.dj")]);
+        assert_eq!(read(&dir, "sample.md"), SPECIMEN);
+        assert!(!dir.join("sample.dj").exists());
+        assert_eq!(block_on(ws(&dir).check("index.dj")).unwrap(), vec![]);
     }
 }

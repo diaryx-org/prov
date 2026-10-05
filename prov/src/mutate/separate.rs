@@ -30,7 +30,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// prose, joined by a `content` attribute on the metadata file. Every inbound
     /// link to the document is retargeted to the new metadata file, and a
     /// registered ID follows it. Returns the metadata file's path. The inverse of
-    /// [`combine`](Workspace::combine).
+    /// [`combine`](Workspace::combine). Refuses an attachment's shadowed payload:
+    /// its sidecar is the node.
     pub async fn separate(&mut self, path: &Path) -> Result<PathBuf> {
         // Retargeting inbound links costs a census plus a load of every source
         // it turns up — see `rename`, which shares the collector.
@@ -38,6 +39,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let path = link::normalize(path);
         if !self.exists(&path).await? {
             return Err(Error::NotFound(path.to_path_buf()));
+        }
+        // A shadowed payload (`attach --opaque`) has a block that is an
+        // exhibit's, not a claim about this workspace: its sidecar is the node,
+        // and splitting the payload would rewrite the bytes the sidecar pins.
+        if let Some(sidecar) = self.attachment_for(&path).await? {
+            return Err(Error::Structure(format!(
+                "{} is an attachment's payload — its sidecar {} is the node, and the \
+                 payload is held unread",
+                path.display(),
+                sidecar.display()
+            )));
         }
         let (own_text, doc) = self.load(&path).await?;
         let Some(MetaCarrier::Fenced(kind)) = doc.carrier else {
@@ -122,7 +134,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// combined file: the body file regains its metadata as frontmatter (in the
     /// metadata file's format), the metadata file is removed, and inbound links
     /// are retargeted to the combined file. Returns the combined file's path. The
-    /// inverse of [`separate`](Workspace::separate).
+    /// inverse of [`separate`](Workspace::separate). Refuses an attachment
+    /// sidecar: its payload is held unread, so there is no body to fold into.
     pub async fn combine(&mut self, path: &Path) -> Result<PathBuf> {
         // As in `separate`: retargeting the inbound links costs a census plus a
         // load of every source it turns up.
@@ -141,6 +154,17 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 path.display()
             )));
         };
+        // An attachment's `content` is a payload, not a body: folding the
+        // sidecar into it would write frontmatter into an image, or into the
+        // specimen whose bytes the sidecar exists to keep exact.
+        if doc.is_attachment() {
+            return Err(Error::Structure(format!(
+                "{} is an attachment — its payload {} is held unread, so there is no \
+                 body to fold its metadata into",
+                path.display(),
+                content.display()
+            )));
+        }
         let Some(mapping) = doc.meta.as_mapping() else {
             return Err(Error::Structure(format!(
                 "{} has no metadata",
@@ -300,5 +324,32 @@ mod tests {
         assert_eq!(read(&dir, "doc.md"), "the prose\n", "unmerged, untouched");
         assert_eq!(w.index().resolve(&a), Some(PathBuf::from("doc.yaml")));
         assert_eq!(w.index().resolve(&b), Some(PathBuf::from("doc.md")));
+    }
+
+    #[test]
+    fn combine_refuses_an_attachment_and_separate_its_shadowed_payload() {
+        // Combining a sidecar would write frontmatter into its payload; separating
+        // a specimen would split the exhibit the sidecar pins. Neither has a
+        // body of this workspace's to work on.
+        let dir = tempdir("combine-attachment");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8]).unwrap();
+        block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
+        attach_specimen(&dir, "sample.md", "index.md");
+
+        for sidecar in ["photo.jpg.yaml", "sample.md.yaml"] {
+            let err = block_on(ws(&dir).combine(Path::new(sidecar))).unwrap_err();
+            assert!(err.to_string().contains("is an attachment"), "{err}");
+            assert!(dir.join(sidecar).is_file());
+        }
+        let err = block_on(ws(&dir).separate(Path::new("sample.md"))).unwrap_err();
+        assert!(
+            err.to_string().contains("its sidecar sample.md.yaml"),
+            "{err}"
+        );
+
+        assert_eq!(std::fs::read(dir.join("photo.jpg")).unwrap(), [0xff, 0xd8]);
+        assert_eq!(read(&dir, "sample.md"), SPECIMEN);
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 }

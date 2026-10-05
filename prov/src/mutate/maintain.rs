@@ -534,20 +534,36 @@ pub(crate) fn splice_body_span(
 }
 
 /// Where a separated node's body file sits beside a node placed at `node_to`,
-/// and the `content` value (the body's basename) that points at it. `body_from`
-/// is the current body file, whose shape decides the naming convention: an
-/// **attachment** payload (opaque bytes) *is* the node's stem and already
-/// carries its own extension (`hero.jpg.yaml` ↔ `hero.jpg`), while a separated
-/// **prose** body shares the node's stem and keeps its own extension
+/// and the `content` value (the body's basename) that points at it.
+/// `attachment` is the node's own [`is_attachment`](Document::is_attachment),
+/// and it decides the naming convention, never the body's extension: a
+/// specimen (`attach --opaque`) has a payload prov could read and is an
+/// attachment all the same.
+///
+/// An **attachment** payload keeps its own extension, whatever the node is
+/// called: the conventional sidecar already spells it (`hero.jpg.yaml` ↔
+/// `hero.jpg`, `sample.md.yaml` ↔ `sample.md`), and a node named otherwise has
+/// it appended (`hero.yaml` ↔ `hero.jpg`) — a payload is bytes in a format of
+/// their own, and renaming its node must not rename that format away. A
+/// separated **prose** body shares the node's stem and keeps its own extension
 /// (`notes.yaml` ↔ `notes.md`). Shared by [`rename`](super::rename)'s
 /// `plan_body_move` and [`Workspace::duplicate`].
-pub(super) fn body_sibling(node_to: &Path, body_from: &Path) -> (PathBuf, String) {
-    let body_to = if prov_graph::document::is_opaque_payload(body_from) {
-        let stem = node_to
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        node_to.with_file_name(stem)
+pub(super) fn body_sibling(
+    node_to: &Path,
+    body_from: &Path,
+    attachment: bool,
+) -> (PathBuf, String) {
+    let stem = node_to
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let body_to = if attachment {
+        match body_from.extension().and_then(|e| e.to_str()) {
+            Some(ext) if !stem.ends_with(&format!(".{ext}")) => {
+                node_to.with_file_name(format!("{stem}.{ext}"))
+            }
+            _ => node_to.with_file_name(stem),
+        }
     } else {
         let ext = body_from
             .extension()

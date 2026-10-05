@@ -229,9 +229,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// the new directory `dir` would do — read only.
     ///
     /// Refuses outright (an error, not a loss) when a card is not an
-    /// attachment, its payload is missing or already under a manifest, the
-    /// cards are not all in one index, `dir` already exists, or the node's
-    /// name beside it is taken. Everything else is in the plan: the moves,
+    /// attachment, its payload is missing, readable (a specimen), or already
+    /// under a manifest, the cards are not all in one index, `dir` already
+    /// exists, or the node's name beside it is taken. Everything else is in the plan: the moves,
     /// what is carried onto the node, and what would be lost.
     pub async fn plan_gather(&self, cards: &[PathBuf], dir: &Path) -> Result<GatherPlan> {
         let _scope = self.read_scope();
@@ -270,6 +270,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 .ok_or_else(|| Error::Structure(format!("{} has no content", card.display())))?;
             if !self.exists(&payload).await? {
                 return Err(Error::NotFound(payload));
+            }
+            // A manifest covers only files prov cannot read; a readable file
+            // under its root would be a document there. A specimen
+            // (`attach --opaque`) is shadowed by its own sidecar, which a row
+            // in a manifest cannot do for it.
+            if !prov_graph::document::is_opaque_payload(&payload) {
+                return Err(Error::Structure(format!(
+                    "{} shadows {}, a file prov can read — a manifest covers only \
+                     opaque files, so a specimen keeps its own sidecar",
+                    card.display(),
+                    payload.display()
+                )));
             }
             if self.graph().under_manifest(&payload).await? {
                 return Err(Error::Structure(format!(
@@ -1413,5 +1425,19 @@ mod tests {
             "{b}"
         );
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_specimen_card_is_not_gathered() {
+        // A manifest covers files prov cannot read. A specimen's payload is one
+        // it can, kept unread only by its own sidecar — a row cannot do that.
+        let dir = album_tree("gather-specimen");
+        attach_specimen(&dir, "sample.md", "index.md");
+
+        let err =
+            block_on(ws(&dir).plan_gather(&cards(&["a.jpg", "sample.md"]), Path::new("album")))
+                .unwrap_err();
+        assert!(err.to_string().contains("only opaque files"), "{err}");
+        assert!(!dir.join("album").exists());
     }
 }

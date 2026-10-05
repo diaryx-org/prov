@@ -67,7 +67,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // needs its own. Resolve the source body up front so the unique-name
         // search can keep the node *and* its body collision-free together.
         let body_from = content_target(&doc, &source);
-        let (dest, body_dest) = self.unique_copy_path(&source, body_from.as_deref()).await?;
+        let (dest, body_dest) = self
+            .unique_copy_path(&source, body_from.as_deref(), doc.is_attachment())
+            .await?;
 
         // The copy's text: `source`'s metadata and body verbatim, minus the cloned
         // `id` (identity is per-document) and the spanning field (no cloned
@@ -150,30 +152,52 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// file's destination when `source` is a separated node (`body_from` is its
     /// current body). The suffix is bumped until *both* the node and its body are
     /// free, so a duplicated pair never half-collides with an existing one.
+    ///
+    /// An `attachment` sidecar spelled by the convention (`photo.jpg.yaml`) takes
+    /// the suffix before its payload's extension — `photo-copy.jpg.yaml` over
+    /// `photo-copy.jpg` — so the copy's payload is still a `.jpg`, rather than
+    /// the `photo.jpg-copy` the plain rule would make of it.
     async fn unique_copy_path(
         &self,
         source: &Path,
         body_from: Option<&Path>,
+        attachment: bool,
     ) -> Result<(PathBuf, Option<(PathBuf, String)>)> {
         let stem = source.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
             Error::Structure(format!("{} has no filename to copy", source.display()))
         })?;
         let ext = source.extension().and_then(|e| e.to_str());
+        // For a conventional sidecar: the payload's name without its extension,
+        // and that extension, which the suffix goes in front of.
+        let payload_ext = body_from
+            .filter(|_| attachment)
+            .and_then(|b| b.extension())
+            .and_then(|e| e.to_str());
+        let (base, inner) = match payload_ext
+            .and_then(|pext| stem.strip_suffix(&format!(".{pext}")).map(|b| (b, pext)))
+        {
+            Some((base, pext)) => (base, Some(pext)),
+            None => (stem, None),
+        };
         for n in 1.. {
             let suffix = if n == 1 {
                 "-copy".to_string()
             } else {
                 format!("-copy-{n}")
             };
+            let copied = match inner {
+                Some(pext) => format!("{base}{suffix}.{pext}"),
+                None => format!("{base}{suffix}"),
+            };
             let name = match ext {
-                Some(ext) => format!("{stem}{suffix}.{ext}"),
-                None => format!("{stem}{suffix}"),
+                Some(ext) => format!("{copied}.{ext}"),
+                None => copied,
             };
             let node = match source.parent() {
                 Some(dir) => dir.join(name),
                 None => PathBuf::from(name),
             };
-            let body = body_from.map(|b| body_sibling(&node, b));
+            let body = body_from.map(|b| body_sibling(&node, b, attachment));
             let node_free = !self.exists(&node).await?;
             let body_free = match &body {
                 Some((body_to, _)) => !self.exists(body_to).await?,
@@ -342,5 +366,32 @@ mod tests {
             "the copy carries its own id: {copied}"
         );
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn duplicate_an_attachment_puts_the_suffix_before_the_payloads_extension() {
+        // `photo.jpg.yaml` copies to `photo-copy.jpg.yaml` over `photo-copy.jpg`
+        // — a payload that is still a `.jpg` — and a second copy bumps the
+        // suffix in the same place.
+        let dir = tempdir("duplicate-attachment");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8, 0x07]).unwrap();
+        block_on(ws(&dir).attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
+
+        let first = block_on(ws(&dir).duplicate(Path::new("photo.jpg.yaml"))).unwrap();
+        assert_eq!(first, PathBuf::from("photo-copy.jpg.yaml"));
+        assert!(read(&dir, "photo-copy.jpg.yaml").contains("content: photo-copy.jpg"));
+        assert_eq!(
+            std::fs::read(dir.join("photo-copy.jpg")).unwrap(),
+            [0xff, 0xd8, 0x07]
+        );
+
+        let second = block_on(ws(&dir).duplicate(Path::new("photo.jpg.yaml"))).unwrap();
+        assert_eq!(second, PathBuf::from("photo-copy-2.jpg.yaml"));
+        assert!(read(&dir, "photo-copy-2.jpg.yaml").contains("content: photo-copy-2.jpg"));
+        assert!(dir.join("photo-copy-2.jpg").is_file());
+        assert!(!dir.join("photo.jpg-copy").exists());
+
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 }

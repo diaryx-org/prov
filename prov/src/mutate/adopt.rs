@@ -28,7 +28,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// Additive and idempotent: whichever direction already exists is left as-is,
     /// so re-running (or adopting a partially-linked file) is a no-op. Both files
-    /// must exist. Refuses when `child` already declares the inverse relation to a
+    /// must exist, and neither may be an attachment's payload (opaque bytes, or a
+    /// file a sidecar shadows): the sidecar is the node. Refuses when `child`
+    /// already declares the inverse relation to a
     /// *different* parent — a contested containment a human must resolve, never
     /// overwritten (mirrors [`suggest_fix`](Self::suggest_fix) declining the same
     /// case). Registers `parent` when the workspace authors id links, exactly as
@@ -47,6 +49,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for existing in [&child, &parent] {
             if !self.exists(existing).await? {
                 return Err(Error::NotFound(existing.to_path_buf()));
+            }
+        }
+        // An attachment's payload is not a node: its sidecar is, and adopting
+        // the payload would write frontmatter into bytes prov holds unread —
+        // corrupting an image, or editing the exhibit a specimen is.
+        for existing in [&child, &parent] {
+            if let Some(sidecar) = self.attachment_for(existing).await? {
+                return Err(Error::Structure(format!(
+                    "{} is an attachment's payload — its sidecar {} is the node; \
+                     adopt that instead",
+                    existing.display(),
+                    sidecar.display()
+                )));
+            }
+            if prov_graph::document::is_opaque_payload(existing) {
+                return Err(Error::Structure(format!(
+                    "{} is not a document prov reads — `attach` it to give it a node",
+                    existing.display()
+                )));
             }
         }
 
@@ -197,5 +218,36 @@ mod tests {
         // a.md now claims index.md; adopting it under a different parent is refused.
         let contested = block_on(w.adopt(Path::new("a.md"), Path::new("other.md")));
         assert!(contested.is_err(), "a contested parent must be refused");
+    }
+
+    #[test]
+    fn adopt_refuses_an_attachments_payload_and_names_its_sidecar() {
+        // A specimen is a `.md` adopt could write `part_of` into — editing the
+        // exhibit. Its sidecar is the node, and the refusal says so.
+        let dir = tempdir("adopt-specimen");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        write(&dir, "other.md", "---\ntitle: Other\n---\n");
+        attach_specimen(&dir, "sample.md", "index.md");
+
+        let err =
+            block_on(ws(&dir).adopt(Path::new("sample.md"), Path::new("other.md"))).unwrap_err();
+        assert!(
+            err.to_string().contains("its sidecar sample.md.yaml"),
+            "{err}"
+        );
+        let err =
+            block_on(ws(&dir).adopt(Path::new("other.md"), Path::new("sample.md"))).unwrap_err();
+        assert!(
+            err.to_string().contains("its sidecar sample.md.yaml"),
+            "{err}"
+        );
+        assert_eq!(read(&dir, "sample.md"), SPECIMEN);
+
+        // An opaque file with no sidecar yet is pointed at `attach`.
+        std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8]).unwrap();
+        let err =
+            block_on(ws(&dir).adopt(Path::new("photo.jpg"), Path::new("index.md"))).unwrap_err();
+        assert!(err.to_string().contains("attach"), "{err}");
+        assert_eq!(std::fs::read(dir.join("photo.jpg")).unwrap(), [0xff, 0xd8]);
     }
 }
