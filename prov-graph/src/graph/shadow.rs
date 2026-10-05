@@ -16,10 +16,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::Graph;
+use super::{Graph, Target};
+use crate::document::whole_file_format;
 use crate::fs::ReadStorage;
 use crate::index::IdIndex;
-use crate::link;
+use crate::link::{self, Link};
 
 const SIDECAR_EXTENSIONS: &[&str] = &["yaml", "yml", "json", "toml", "fig", "figl"];
 
@@ -146,6 +147,55 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             }
         }
         false
+    }
+
+    /// The payload the attachment sidecar at `path` stands for — its `content`
+    /// target, normalized and workspace-relative — or `None` when `path` is not
+    /// an attachment sidecar: a document, a separated prose node, a payload, a
+    /// manifest node, or nothing at all.
+    ///
+    /// Only a whole-file metadata document can be a sidecar, so any other path
+    /// answers `None` without being read: asking this of every embed in a page
+    /// costs a load only for the references that name a card. The payload is
+    /// not checked for existence; a missing one is `check`'s to report, and a
+    /// caller drawing it learns the same thing by failing to open it.
+    pub async fn attachment_payload(&self, path: &Path) -> Option<PathBuf> {
+        let path = link::normalize(path);
+        whole_file_format(&path)?;
+        let (_, doc) = self.load(&path).await.ok()?;
+        if !doc.is_attachment() {
+            return None;
+        }
+        doc.content_path(&path)
+    }
+
+    /// Resolve `link` (written in the document at `doc`) to the **file it
+    /// stands for**: [`resolve_link`](Self::resolve_link), and then, when the
+    /// target is an attachment sidecar, its payload
+    /// ([`attachment_payload`](Self::attachment_payload)).
+    ///
+    /// A card is the node, so a reference naming one — `[photo](id:x)`,
+    /// `photo.jpg.yaml` — resolves to the card everywhere structure is
+    /// concerned, which is what [`resolve_link`](Self::resolve_link) answers.
+    /// But a host *drawing* the reference wants the bytes: an embed
+    /// `![](id:x)` of a card shows its image, and a download link to a card
+    /// fetches its file. This is that reading. A reference straight to a
+    /// payload resolves to the payload, and one to anything that is not an
+    /// attachment sidecar — a document, an unresolved id, an external URL —
+    /// comes back exactly as `resolve_link` gives it.
+    ///
+    /// Path and `id:` references only, as `resolve_link`; for a nominal
+    /// (`[[alias]]`) reference resolve with
+    /// [`resolve_link_with`](Self::resolve_link_with) and pass the path to
+    /// [`attachment_payload`](Self::attachment_payload).
+    pub async fn resolve_payload(&self, doc: &Path, link: &Link) -> Target {
+        let target = self.resolve_link(doc, link);
+        if let Target::Path(path) = &target
+            && let Some(payload) = self.attachment_payload(path).await
+        {
+            return Target::Path(payload);
+        }
+        target
     }
 }
 

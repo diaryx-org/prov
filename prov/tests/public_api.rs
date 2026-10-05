@@ -626,3 +626,30 @@ fn a_numeric_title_is_a_title_everywhere() {
         .unwrap();
     assert_eq!(year.title().as_deref(), Some("2026"));
 }
+
+// ───────────────────────── what a reference stands for ──────────────────────
+
+#[test]
+fn an_embed_naming_a_card_resolves_to_its_payload_through_the_public_api() {
+    let root = tmp("resolve-payload");
+    std::fs::write(root.join("index.md"), "---\ntitle: Home\n---\n").unwrap();
+    std::fs::write(root.join("photo.jpg"), [0xff, 0xd8]).unwrap();
+    let mut ws = Workspace::builder(StdFs).root(&root).build();
+    let card = block_on(ws.attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
+
+    let embed = prov::Link::parse(&card.to_string_lossy());
+    assert_eq!(
+        ws.resolve_link(Path::new("index.md"), &embed),
+        prov::Target::Path(card.clone()),
+        "structurally, the reference names the card"
+    );
+    assert_eq!(
+        block_on(ws.resolve_payload(Path::new("index.md"), &embed)),
+        prov::Target::Path(PathBuf::from("photo.jpg")),
+        "drawn, it stands for the payload"
+    );
+    assert_eq!(
+        block_on(ws.attachment_payload(&card)),
+        Some(PathBuf::from("photo.jpg"))
+    );
+}

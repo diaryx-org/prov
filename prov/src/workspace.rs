@@ -1667,6 +1667,22 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.resolve_link(doc, link)
     }
 
+    /// Resolve `link`, written in the document at `doc`, to the file it stands
+    /// for: [`resolve_link`](Self::resolve_link), then an attachment sidecar's
+    /// payload in place of the sidecar. What a host draws for an embed
+    /// `![](id:x)` naming a card, or fetches for a download link to one; see
+    /// [`Graph::resolve_payload`].
+    pub async fn resolve_payload(&self, doc: &Path, link: &Link) -> Target {
+        self.graph.resolve_payload(doc, link).await
+    }
+
+    /// The payload the attachment sidecar at `path` stands for, or `None` when
+    /// `path` is not an attachment sidecar; see [`Graph::attachment_payload`].
+    /// The forward lookup to [`attachment_for`](Self::attachment_for)'s reverse.
+    pub async fn attachment_payload(&self, path: &Path) -> Option<PathBuf> {
+        self.graph.attachment_payload(path).await
+    }
+
     /// [`resolve_link`](Self::resolve_link), with a title index for nominal
     /// (`[[alias]]`) references.
     pub fn resolve_link_with(

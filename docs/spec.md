@@ -328,7 +328,9 @@ Four consequences worth stating outright:
 - **A non-plaintext file is wrapped, not linked.** To bring an image or PDF into
   the workspace, `attach` mints a sidecar (`photo.jpg.yaml`) — an ordinary content
   node whose `content` field names the opaque payload. The graph stays all-plaintext;
-  the binary rides along as a node's body.
+  the binary rides along as a node's body. A reference to the sidecar names the
+  node; a reader *drawing* that reference — an embed, a download link — draws the
+  payload its `content` names.
 - **At scale, the wrapper is shared.** One sidecar per file is the right shape
   for the file you thought about and the wrong one for the archive you dumped:
   ten thousand photographs would mean ten thousand documents, which no editor can

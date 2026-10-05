@@ -922,4 +922,58 @@ mod tests {
         );
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
+
+    #[test]
+    fn resolve_payload_reads_a_reference_to_a_card_as_its_payload() {
+        use crate::identity::{Minter, Registration};
+        use prov_graph::graph::Target;
+        use prov_graph::index::IdIndex;
+        use prov_graph::link::Link;
+        use prov_store::index::FileIndex;
+
+        let dir = tempdir("resolve-payload");
+        write(&dir, "index.md", b"---\ntitle: Home\n---\n");
+        write(&dir, "notes.md", b"---\ntitle: Notes\n---\n");
+        write(&dir, "media/photo.jpg", [0xff, 0xd8, 0x01]);
+        write(&dir, "sample.md", b"---\ntitle: Specimen\n---\nexhibit\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+        block_on(w.attach(Path::new("media/photo.jpg"), Path::new("index.md"))).unwrap();
+        block_on(w.attach_opaque(Path::new("sample.md"), Path::new("index.md"))).unwrap();
+        let id = w
+            .index()
+            .id_for_path(Path::new("media/photo.jpg.yaml"))
+            .expect("an eager policy registers the card");
+
+        let resolve =
+            |raw: &str| block_on(w.resolve_payload(Path::new("index.md"), &Link::parse(raw)));
+        let path = |p: &str| Target::Path(PathBuf::from(p));
+        // A card, by id and by path, stands for its payload.
+        assert_eq!(resolve(&format!("id:{id}")), path("media/photo.jpg"));
+        assert_eq!(resolve("media/photo.jpg.yaml"), path("media/photo.jpg"));
+        assert_eq!(resolve("/media/photo.jpg.yaml"), path("media/photo.jpg"));
+        // So does a specimen's card, whose payload prov could read.
+        assert_eq!(resolve("sample.md.yaml"), path("sample.md"));
+        // A payload is itself; a document, and anything that is not a path, is
+        // what `resolve_link` says.
+        assert_eq!(resolve("media/photo.jpg"), path("media/photo.jpg"));
+        assert_eq!(resolve("notes.md"), path("notes.md"));
+        assert_eq!(resolve("https://example.com/p.jpg"), Target::External);
+        assert_eq!(resolve("missing.yaml"), path("missing.yaml"));
+
+        // The forward lookup on its own.
+        let payload = |p: &str| block_on(w.attachment_payload(Path::new(p)));
+        assert_eq!(
+            payload("media/photo.jpg.yaml"),
+            Some(PathBuf::from("media/photo.jpg"))
+        );
+        assert_eq!(payload("sample.md.yaml"), Some(PathBuf::from("sample.md")));
+        assert_eq!(payload("media/photo.jpg"), None);
+        assert_eq!(payload("sample.md"), None);
+        assert_eq!(payload("index.md"), None);
+        assert_eq!(payload("missing.yaml"), None);
+    }
 }
