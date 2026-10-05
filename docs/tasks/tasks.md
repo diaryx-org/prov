@@ -3,12 +3,14 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-09
-updated: 2026-10-02
+updated: 2026-10-05
 part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[A body link reads a covered payload as a document](/docs/tasks/a-body-link-reads-a-covered-payload-as-a-document.md)'
+- '[A card''s backlinks leave out the references to its payload](/docs/tasks/a-cards-backlinks-leave-out-its-payloads.md)'
 - '[A manifest has no add-only verb](/docs/tasks/a-manifest-has-no-add-only-verb.md)'
+- '[check skips orphaned sidecars](/docs/tasks/check-skips-orphaned-sidecars.md)'
 ---
 
 # Tasks
