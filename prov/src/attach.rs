@@ -332,6 +332,23 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .authored_target(&spanning, &parent, &node, &title, false)
             .await?;
 
+        // Identity hook — eager policies assign an ID from birth (idempotent: an
+        // id-linked sidecar was already registered above). It runs before the
+        // sidecar is composed, as in `create`, because a frontmatter-stamping
+        // workspace writes that id into the sidecar itself: the sidecar is the
+        // node, so it is what carries the identity.
+        if self.identity().registration().fires_on(Trigger::Create)
+            && self.index().id_for_path(&node).is_none()
+        {
+            let id = self.mint_unique(&node);
+            self.index_mut().register(&id, &node);
+        }
+        let stamp = self
+            .id_storage()
+            .stamps_frontmatter()
+            .then(|| self.index().id_for_path(&node))
+            .flatten();
+
         // The sidecar: a whole-file mapping pointing `content` at the payload
         // (a sibling, so just its name) and flagged as an attachment.
         let payload_ref = payload
@@ -341,6 +358,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .to_string();
         let mut map = Mapping::new();
         map.insert("title".into(), Value::String(title));
+        if let Some(id) = &stamp {
+            map.insert("id".into(), Value::String(id.0.clone()));
+        }
         map.insert(inverse.clone(), Value::String(up));
         map.insert("content".into(), Value::String(payload_ref));
         map.insert("attachment".into(), Value::Bool(true));
@@ -379,15 +399,6 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         cs.expect_absent(&node);
         cs.write(&node, node_text);
         cs.write(&parent, parent_out);
-
-        // Identity hook — eager policies assign an ID from birth (idempotent: an
-        // id-linked sidecar was already registered above).
-        if self.identity().registration().fires_on(Trigger::Create)
-            && self.index().id_for_path(&node).is_none()
-        {
-            let id = self.mint_unique(&node);
-            self.index_mut().register(&id, &node);
-        }
         self.commit(cs).await?;
         Ok(node)
     }
@@ -876,5 +887,39 @@ mod tests {
             "content repointed"
         );
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn attach_stamps_the_sidecars_id_under_frontmatter_storage() {
+        use crate::config::IdStorage;
+        use crate::identity::{Minter, Registration};
+        use prov_graph::index::IdIndex;
+        use prov_store::index::FileIndex;
+
+        // An eager policy mints the sidecar an id at birth. Under frontmatter
+        // storage that id belongs in the sidecar as well as the registry, as it
+        // does for a document `create` makes — the sidecar is the node, so it is
+        // what carries the identity.
+        let dir = tempdir("stamp");
+        write(&dir, "index.md", b"---\ntitle: Home\n---\n");
+        write(&dir, "photo.jpg", [0xff, 0xd8, 0xff, 0xe0]);
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_storage(IdStorage::Frontmatter)
+            .build();
+        block_on(w.attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
+
+        let id = w
+            .index()
+            .id_for_path(Path::new("photo.jpg.yaml"))
+            .expect("sidecar registered");
+        let sidecar = read(&dir, "photo.jpg.yaml");
+        assert!(
+            sidecar.contains(&format!("id: {id}")),
+            "the sidecar carries its own id: {sidecar}"
+        );
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
 }

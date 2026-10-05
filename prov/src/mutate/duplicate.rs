@@ -136,11 +136,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
         // Identity hook — an eager policy assigns the copy an ID from birth
         // (idempotent: the down-link above already registered it under `id_links`).
-        if self.identity().registration().fires_on(Trigger::Create)
-            && self.index().id_for_path(&dest).is_none()
-        {
-            let id = self.mint_unique(&dest);
-            self.index_mut().register(&id, &dest);
+        // Registered for authoring, so a frontmatter-stamping workspace writes the
+        // new id into the copy staged above, at commit, as it does for every
+        // document an op registers in passing.
+        if self.identity().registration().fires_on(Trigger::Create) {
+            self.register_for_authoring(&dest);
         }
         self.commit(cs).await?;
         Ok(dest)
@@ -311,5 +311,36 @@ mod tests {
         // Source body untouched, and the workspace validates.
         assert_eq!(read(&dir, "notes.md"), "Prose body, duplicated.\n");
         assert_eq!(block_on(ws(&dir).check("index.yaml")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn duplicate_stamps_the_copys_id_under_frontmatter_storage() {
+        use crate::config::IdStorage;
+        use crate::identity::Registration;
+        use prov_graph::index::IdIndex;
+
+        // The copy drops the source's id, and an eager policy mints it one of
+        // its own. Under frontmatter storage that new id is written into the
+        // copy, as `create` writes one into a document it makes.
+        let dir = tempdir("duplicate-stamp");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_storage(IdStorage::Frontmatter)
+            .build();
+        block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
+        let copy = block_on(w.duplicate(Path::new("a.md"))).unwrap();
+
+        let source_id = w.index().id_for_path(Path::new("a.md")).unwrap();
+        let copy_id = w.index().id_for_path(&copy).expect("copy registered");
+        assert_ne!(source_id, copy_id);
+        let copied = read(&dir, &copy.to_string_lossy());
+        assert!(
+            copied.contains(&format!("id: {copy_id}")),
+            "the copy carries its own id: {copied}"
+        );
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
 }
