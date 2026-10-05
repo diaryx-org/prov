@@ -116,7 +116,12 @@ pub(crate) fn cmd_stamp(
     // here and still will not parse as a document — it is covered through its
     // sidecar, and skipped below where it is found.
     let targets: Vec<PathBuf> = match (target, all) {
-        (Some(path), _) => vec![ws_rel(&session.ctx, path)?],
+        // A named payload is stamped through its sidecar: the sidecar is the
+        // node and holds the checksum, and the payload is not a document.
+        (Some(path), _) => {
+            let rel = ws_rel(&session.ctx, path)?;
+            vec![block_on(session.ws.attachment_for(&rel))?.unwrap_or(rel)]
+        }
         (None, true) => block_on(session.ws.reachable_documents_from(&session.ctx.root_doc))?
             .into_iter()
             .collect(),

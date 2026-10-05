@@ -365,6 +365,36 @@ fn stamp_all_leaves_a_shadowed_payload_untouched() {
     ok(&dir, &["check"]);
 }
 
+#[test]
+fn stamp_of_a_payload_restamps_its_sidecar() {
+    // The help says an attachment's payload is covered through its sidecar, so
+    // either handle works. Naming the payload has to reach the sidecar's
+    // checksum, since the payload itself is bytes with nowhere to put one.
+    let dir = workspace("payload");
+    std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8, 0x01]).unwrap();
+    ok(&dir, &["attach", "photo.jpg"]);
+    let before = read(&dir, "photo.jpg.yaml");
+    std::fs::write(dir.join("photo.jpg"), [0xff, 0xd8, 0x02]).unwrap();
+    let (ok_check, _, _) = run(&dir, &["check"]);
+    assert!(!ok_check, "the changed payload is a fixity mismatch");
+
+    let (out, _) = ok(&dir, &["stamp", "photo.jpg"]);
+    assert_eq!(
+        out.trim(),
+        "photo.jpg.yaml",
+        "the sidecar is what was stamped"
+    );
+    let after = read(&dir, "photo.jpg.yaml");
+    let hash = |text: &str| {
+        text.lines()
+            .find(|l| l.starts_with("content_hash:"))
+            .map(str::to_owned)
+    };
+    assert!(hash(&after).is_some(), "{after}");
+    assert_ne!(hash(&before), hash(&after), "{after}");
+    ok(&dir, &["check"]);
+}
+
 /// A markdown workspace with an open `tags` vocabulary and one note whose tag
 /// is a near miss of a term — the warning `check` raises without anything
 /// being broken.
