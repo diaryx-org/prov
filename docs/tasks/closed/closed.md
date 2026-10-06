@@ -14,6 +14,7 @@ contents:
 - '[A list under `equals` is read as its first element](/docs/tasks/closed/equals-keeps-a-lists-first-element.md)'
 - '[A filing entry cannot say what kind of record it files](/docs/tasks/closed/a-filing-entry-cannot-say-what-kind-it-files.md)'
 - '[A card''s backlinks leave out the references to its payload](/docs/tasks/closed/a-cards-backlinks-leave-out-its-payloads.md)'
+- '[A body link reads a covered payload as a document](/docs/tasks/closed/a-body-link-reads-a-covered-payload-as-a-document.md)'
 ---
 
 # Closed tasks

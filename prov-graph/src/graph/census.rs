@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Graph;
+use crate::document::is_opaque_payload;
 use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
@@ -346,7 +347,8 @@ pub fn reachable_set(
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// [`reachable_set`], minus any **shadowed attachment payload**
-    /// (`attach --opaque`) — the population a pass may parse *as a document*.
+    /// (`attach --opaque`) and any **covered payload** (an opaque file under a
+    /// manifest's root) — the population a pass may parse *as a document*.
     ///
     /// A shadowed payload is still reachable (it must not be reported as an
     /// orphan, and it is still fixity-checked *through its sidecar*), but its
@@ -361,6 +363,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// `prov`'s `orphans` builds one: the direct children of every
     /// directory the reachable set occupies, so a shadow check costs a set
     /// lookup per candidate extension rather than a stat.
+    ///
+    /// A covered payload arrives here when a document links it from its body.
+    /// It is still reached — the link resolves, and a missing file is still
+    /// broken — but `manifests.md` §3 says it is not a document, so whatever
+    /// metadata block its bytes happen to hold (a captured HTML page's data
+    /// island, `content_hash` and all) is never taken as its own. Its fixity is
+    /// the manifest's row, checked by `check`'s manifest pass.
     pub async fn reachable_documents(
         &self,
         start: &Path,
@@ -381,8 +390,24 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     ) -> Result<BTreeSet<PathBuf>> {
         let reached_dirs = Self::reached_dirs(reachable);
         let probe = super::ShadowProbe::over(self.direct_child_files(&reached_dirs).await?.iter());
+        // The covered roots, asked only of the paths that can be documents: a
+        // payload's own bytes must not get to declare a manifest either. Asked
+        // at all only when an opaque path was reached, which is rare.
+        let covered = if reachable.iter().any(|p| is_opaque_payload(p)) {
+            let readable: BTreeSet<PathBuf> = reachable
+                .iter()
+                .filter(|p| !is_opaque_payload(p))
+                .cloned()
+                .collect();
+            self.manifest_roots(&readable).await
+        } else {
+            BTreeSet::new()
+        };
         let mut documents = BTreeSet::new();
         for path in reachable {
+            if is_opaque_payload(path) && covered.iter().any(|root| path.starts_with(root)) {
+                continue;
+            }
             if !self.is_shadowed_payload(path, &probe).await {
                 documents.insert(path.clone());
             }
