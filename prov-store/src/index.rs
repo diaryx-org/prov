@@ -318,6 +318,13 @@ pub struct FileIndex {
     /// block (one-record-per-line) layout on bare hosts; per-record creation
     /// would make fig auto-create a flow map.
     has_registry_key: bool,
+    /// Whether `host_text` spells some record's id as a bare YAML key that
+    /// does not read back as a string (`1234567:`, which YAML reads as a
+    /// number). fig's editor refuses every edit to a mapping holding such a
+    /// key, so the next render rewrites the whole `registry` value, quoted,
+    /// instead of upserting record by record. Only ever set by
+    /// [`parse`](Self::parse), for a registry an older prov wrote.
+    requote: bool,
     dirty: bool,
     /// The last [`checkpoint`](IndexStore::checkpoint).
     saved: Option<Box<FileIndexState>>,
@@ -335,6 +342,7 @@ struct FileIndexState {
     host_text: String,
     persisted: BTreeMap<Id, Option<String>>,
     has_registry_key: bool,
+    requote: bool,
     dirty: bool,
 }
 
@@ -350,6 +358,7 @@ impl FileIndex {
             carrier: MetaCarrier::WholeFile(format),
             persisted: BTreeMap::new(),
             has_registry_key: false,
+            requote: false,
             dirty: false,
             saved: None,
         }
@@ -381,6 +390,7 @@ impl FileIndex {
         self.host_text = reparsed.host_text;
         self.persisted = reparsed.persisted;
         self.has_registry_key = reparsed.has_registry_key;
+        self.requote = reparsed.requote;
         Ok(())
     }
 
@@ -413,12 +423,21 @@ impl FileIndex {
             carrier,
             persisted: BTreeMap::new(),
             has_registry_key: doc.meta.get("registry").is_some(),
+            requote: false,
             dirty: false,
             saved: None,
         };
+        // A bare all-digit key reads back as a number, and the number as text
+        // is not always the id that was written: `0123456` is 123456. The
+        // source keeps the spelling, so recover it from there.
+        let respelled = match carrier {
+            MetaCarrier::WholeFile(fig::Format::Yaml) => bare_registry_keys(text),
+            _ => HashMap::new(),
+        };
+        index.requote = !respelled.is_empty();
         if let Some(registry) = doc.meta.get("registry").and_then(Value::as_mapping) {
             for (id, value) in registry {
-                let id = Id(id.clone());
+                let id = Id(respelled.get(id).unwrap_or(id).clone());
                 match value {
                     Value::Null => {
                         index.persisted.insert(id.clone(), None);
@@ -495,8 +514,32 @@ impl FileIndex {
             return Ok(rendered);
         }
 
-        // Steady state: per-record comment-preserving upserts of the diff.
         let mut editor = MetaEditor::open_or_init(&self.host_text, Some(self.carrier))?;
+        // A registry with a bare numeric key cannot be edited a record at a
+        // time (see `requote`), so it is rewritten whole, once, with every
+        // key quoted as the serializer quotes it. Records land in ID order and
+        // comments among them are lost; the rest of the host is untouched.
+        if self.requote {
+            let mut registry = Mapping::new();
+            for (id, value) in &current {
+                registry.insert(
+                    id.0.clone(),
+                    value.clone().map(Value::String).unwrap_or(Value::Null),
+                );
+            }
+            editor.replace_value(
+                &[fig::Segment::Key("registry")],
+                fig::Value::from(&Value::Mapping(registry)),
+            )?;
+            let rendered = editor.render()?;
+            self.host_text = rendered.clone();
+            self.persisted = current;
+            self.requote = false;
+            return Ok(rendered);
+        }
+
+        // Steady state: per-record comment-preserving upserts of the diff.
+        let yaml = matches!(self.carrier, MetaCarrier::WholeFile(fig::Format::Yaml));
         for (id, value) in &current {
             if self.persisted.get(id) == Some(value) {
                 continue;
@@ -505,11 +548,19 @@ impl FileIndex {
                 .clone()
                 .map(fig::Value::Str)
                 .unwrap_or(fig::Value::Null);
+            // The editor writes a new key bare, and a bare `1234567` is a
+            // number to the next reader, after which every edit of the
+            // mapping fails. A key it does not yet hold is handed over already
+            // quoted; one it holds is found by its name, however spelled.
+            let quoted;
+            let key = if yaml && !self.persisted.contains_key(id) && !bare_yaml_key_is_string(id) {
+                quoted = format!("'{}'", id.as_str().replace('\'', "''"));
+                quoted.as_str()
+            } else {
+                id.as_str()
+            };
             editor.set_value(
-                &[
-                    fig::Segment::Key("registry"),
-                    fig::Segment::Key(id.as_str()),
-                ],
+                &[fig::Segment::Key("registry"), fig::Segment::Key(key)],
                 fig_value,
             )?;
         }
@@ -643,6 +694,7 @@ impl IndexStore for FileIndex {
             host_text: self.host_text.clone(),
             persisted: self.persisted.clone(),
             has_registry_key: self.has_registry_key,
+            requote: self.requote,
             dirty: self.dirty,
         }));
     }
@@ -657,6 +709,7 @@ impl IndexStore for FileIndex {
             host_text,
             persisted,
             has_registry_key,
+            requote,
             dirty,
         } = *saved;
         self.live = live;
@@ -664,6 +717,7 @@ impl IndexStore for FileIndex {
         self.host_text = host_text;
         self.persisted = persisted;
         self.has_registry_key = has_registry_key;
+        self.requote = requote;
         self.dirty = dirty;
     }
 
@@ -710,11 +764,141 @@ impl IndexStore for FileIndex {
     }
 }
 
+/// Whether `key`, written bare where YAML expects a scalar, reads back as the
+/// string `key`. `1234567`, `0123456`, `true` and `null` do not.
+fn bare_yaml_key_is_string(key: &Id) -> bool {
+    let key = key.as_str();
+    matches!(
+        prov_graph::meta::parse_mapping(&format!("k: {key}\n"), fig::Format::Yaml),
+        Ok(m) if m.get("k").and_then(Value::as_str) == Some(key)
+    )
+}
+
+/// The records of a YAML registry whose key is spelled bare and does not read
+/// back as a string, as `read -> written`: the key the parsed mapping holds
+/// (`123456`, the number as text) to the spelling in the source (`0123456`).
+///
+/// A line scan of the block `registry:` mapping, which is the only layout prov
+/// writes. A flow mapping or a key spelled across lines is not recovered; its
+/// record reads as the parser reads it, as before.
+fn bare_registry_keys(text: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let indented = line.starts_with(' ') || line.starts_with('\t');
+        if !indented {
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            inside = line.trim_end() == "registry:";
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let Some((key, _)) = line.trim_start().split_once(':') else {
+            continue;
+        };
+        if key.is_empty() || key.starts_with(['\'', '"', '#']) {
+            continue;
+        }
+        let written = Id(key.to_string());
+        if bare_yaml_key_is_string(&written) {
+            continue;
+        }
+        let read = prov_graph::meta::parse_mapping(&format!("{key}: x\n"), fig::Format::Yaml)
+            .ok()
+            .and_then(|m| m.keys().next().cloned());
+        if let Some(read) = read {
+            out.insert(read, written.0);
+        }
+    }
+    out
+}
+
 // These engine tests use YAML fixtures throughout, so they run whenever the
 // (default) `yaml` feature is on.
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
+
+    /// The NOID alphabet has digits, so about one minted id in 1,700 is all
+    /// digits. fig's editor writes a new key bare, and a bare `1234567` is a
+    /// number to the next reader; fig then refuses every edit to the mapping
+    /// holding it, so the registry could never be written again
+    /// (`metadata error: invalid argument`).
+    #[test]
+    fn an_all_digit_id_is_written_quoted_and_the_registry_stays_editable() {
+        let host = "title: ID registry\nregistry:\n  abcdefg: a.md\n";
+        let mut ix = FileIndex::parse(Path::new("registry.yaml"), host).unwrap();
+        let (digits, zero) = (Id("1234567".into()), Id("0123456".into()));
+        ix.register(&digits, Path::new("n.md"));
+        ix.register(&zero, Path::new("z.md"));
+        let first = ix.render().unwrap();
+        assert!(first.contains("'1234567': n.md"), "{first}");
+        assert!(first.contains("'0123456': z.md"), "{first}");
+        assert!(first.contains("abcdefg: a.md"), "{first}");
+
+        // The next reader sees both ids as written, and can edit again —
+        // including moving one of the quoted records.
+        let mut ix = FileIndex::parse(Path::new("registry.yaml"), &first).unwrap();
+        assert_eq!(ix.resolve(&digits), Some(PathBuf::from("n.md")));
+        assert_eq!(ix.resolve(&zero), Some(PathBuf::from("z.md")));
+        ix.register(&Id("bcdfghj".into()), Path::new("b.md"));
+        ix.set_path(&digits, Path::new("moved.md"));
+        let second = ix.render().unwrap();
+        assert!(second.contains("'1234567': moved.md"), "{second}");
+        let reread = FileIndex::parse(Path::new("registry.yaml"), &second).unwrap();
+        assert_eq!(reread.resolve(&digits), Some(PathBuf::from("moved.md")));
+        assert_eq!(reread.resolve(&zero), Some(PathBuf::from("z.md")));
+        assert_eq!(
+            reread.resolve(&Id("bcdfghj".into())),
+            Some(PathBuf::from("b.md"))
+        );
+    }
+
+    /// A registry an older prov already wrote with a bare numeric key reads
+    /// every id as it was written (`0123456`, not the number 123456), and its
+    /// next edit rewrites the records quoted instead of failing.
+    #[test]
+    fn a_registry_with_an_unquoted_numeric_id_recovers() {
+        let host = "title: ID registry\npart_of: index.md\nregistry:\n  abcdefg: a.md\n  1234567: n.md\n  0123456: z.md\n  bcdfghj: null\n";
+        let mut ix = FileIndex::parse(Path::new("registry.yaml"), host).unwrap();
+        let (digits, zero) = (Id("1234567".into()), Id("0123456".into()));
+        assert_eq!(ix.resolve(&digits), Some(PathBuf::from("n.md")));
+        assert_eq!(
+            ix.resolve(&zero),
+            Some(PathBuf::from("z.md")),
+            "the leading zero is part of the id"
+        );
+        assert!(ix.is_tombstoned(&Id("bcdfghj".into())));
+
+        ix.register(&Id("cdfghjk".into()), Path::new("c.md"));
+        let out = ix.render().expect("the edit no longer fails");
+        assert!(
+            out.starts_with("title: ID registry\npart_of: index.md\n"),
+            "{out}"
+        );
+        assert!(out.contains("'1234567': n.md"), "{out}");
+        assert!(out.contains("'0123456': z.md"), "{out}");
+
+        let mut reread = FileIndex::parse(Path::new("registry.yaml"), &out).unwrap();
+        assert_eq!(reread.resolve(&digits), Some(PathBuf::from("n.md")));
+        assert_eq!(reread.resolve(&zero), Some(PathBuf::from("z.md")));
+        assert_eq!(
+            reread.resolve(&Id("abcdefg".into())),
+            Some(PathBuf::from("a.md"))
+        );
+        assert_eq!(
+            reread.resolve(&Id("cdfghjk".into())),
+            Some(PathBuf::from("c.md"))
+        );
+        assert!(reread.is_tombstoned(&Id("bcdfghj".into())));
+        // Repaired, it is edited record by record again.
+        reread.register(&Id("dfghjkm".into()), Path::new("d.md"));
+        let again = reread.render().unwrap();
+        assert!(again.contains("dfghjkm: d.md"), "{again}");
+    }
 
     #[test]
     fn set_host_keeps_this_stores_records_and_preserves_the_hosts() {
