@@ -548,7 +548,8 @@ pub(crate) enum Command {
     /// Bare, it reports what the manifest says and whether the directory still
     /// agrees with it, reading no covered file. `--update` rebuilds the list
     /// from the directory as it is now (and re-stamps the node that pins it);
-    /// `--verify` re-reads every listed file and compares its checksum, which is
+    /// `--add` records only the files it names, leaving every other row as it
+    /// is; `--verify` re-reads every listed file and compares its checksum, which is
     /// the pass `check` deliberately leaves out because it costs a full read of
     /// the archive.
     Manifest {
@@ -560,12 +561,18 @@ pub(crate) enum Command {
         /// rows whose file is gone, and re-checksum what is there. Accepts the
         /// directory as it stands, so a file you have *lost* is written out of
         /// the record — which is why it is never automatic.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "add")]
         update: bool,
         /// Re-read every listed file and compare its checksum against the
         /// manifest — the deep integrity pass over the archive.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "add")]
         verify: bool,
+        /// Record these files, new under the covered directory, and nothing
+        /// else: every other row stays as it is, its file present or not, and
+        /// only these are checksummed. Refuses a file outside the directory,
+        /// a document, or one already listed.
+        #[arg(long, value_name = "FILE", num_args = 1..)]
+        add: Vec<PathBuf>,
     },
     /// Gather attachments into one manifest: their files move into a new
     /// directory, their sidecars go, and one node takes the first one's place
