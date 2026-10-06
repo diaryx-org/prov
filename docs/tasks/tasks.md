@@ -7,7 +7,6 @@ updated: 2026-10-06
 part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
-- '[A nested workspace is walked as the outer one''s](/docs/tasks/a-nested-workspace-is-walked-as-the-outer-ones.md)'
 ---
 
 # Tasks
