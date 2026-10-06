@@ -434,6 +434,24 @@ pub enum Finding {
     /// reference qualified with this workspace's own name, which *is* local and
     /// so is a real parent.
     NamedRootContained { node: PathBuf, named: PathBuf },
+    /// A link written by path (or an id this registry maps to a path) that
+    /// resolves into a workspace nested inside this one, at `workspace`.
+    ///
+    /// The nested workspace is a workspace of its own — its own registry, its
+    /// own spanning tree — and the edge into it is meant to be foreign
+    /// (`id:<workspace>/<id>`), which no walk crosses. A local link bridges
+    /// the two: this workspace's census now reads the nested one's file as its
+    /// own, and a rename on either side can break it without either noticing.
+    LinkIntoNestedWorkspace {
+        doc: PathBuf,
+        site: LinkSite,
+        target: String,
+        workspace: PathBuf,
+    },
+    /// Two or more workspaces nested inside this one declare the same
+    /// `workspace_id`, so `id:<name>/…` here cannot say which it means and
+    /// resolves to neither. `roots` are their directories, sorted.
+    NestedWorkspaceNameShared { name: String, roots: Vec<PathBuf> },
     /// A record store — reached through the `pointer` relation (`registry`,
     /// `recycle_bin`, or a `fields` vocabulary) — is a **markdown** document
     /// (fenced frontmatter) rather than a whole-file config document. prov
@@ -705,6 +723,12 @@ impl Finding {
             | Finding::ConfigHomesDisagree { node, .. }
             | Finding::NamedRootMissing { node, .. }
             | Finding::NamedRootContained { node, .. } => node,
+            Finding::LinkIntoNestedWorkspace { doc, .. } => doc,
+            // Every root is as much the subject as the others; the first,
+            // sorted, so the grouping is stable.
+            Finding::NestedWorkspaceNameShared { roots, .. } => {
+                roots.first().map_or(Path::new(""), PathBuf::as_path)
+            }
             // The root is what declares the outdated spelling, and what the
             // rename edits; the log it names is fine as it is.
             Finding::LegacyDeletionsPointer { root, .. } => root,
@@ -764,6 +788,8 @@ impl Finding {
             | Finding::ConfigHomesDisagree { .. }
             | Finding::NamedRootMissing { .. }
             | Finding::NamedRootContained { .. }
+            | Finding::LinkIntoNestedWorkspace { .. }
+            | Finding::NestedWorkspaceNameShared { .. }
             | Finding::MalformedStore { .. }
             | Finding::UnknownTerm { .. }
             | Finding::MalformedDate { .. }
@@ -804,6 +830,8 @@ impl Finding {
             Finding::ConfigHomesDisagree { .. } => "config_homes_disagree",
             Finding::NamedRootMissing { .. } => "named_root_missing",
             Finding::NamedRootContained { .. } => "named_root_contained",
+            Finding::LinkIntoNestedWorkspace { .. } => "link_into_nested_workspace",
+            Finding::NestedWorkspaceNameShared { .. } => "nested_workspace_name_shared",
             Finding::MalformedStore { .. } => "malformed_store",
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
@@ -1106,6 +1134,26 @@ impl fmt::Display for Finding {
                 node.display(),
                 named.display(),
             ),
+            Finding::LinkIntoNestedWorkspace {
+                doc,
+                site,
+                target,
+                workspace,
+            } => write!(
+                f,
+                "{}: {site} links `{target}`, inside the workspace nested at {} — link it as `id:<workspace>/<id>`, since a local link makes its documents read as this workspace's",
+                doc.display(),
+                workspace.display(),
+            ),
+            Finding::NestedWorkspaceNameShared { name, roots } => write!(
+                f,
+                "workspaces nested at {} all declare `{name}`, so `id:{name}/…` here names none of them — give each its own `workspace_id`",
+                roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
             Finding::MalformedStore { doc, pointer } => write!(
                 f,
                 "{}: `{pointer}` store is markdown — a record store must be a whole-file config document (.yaml/.json/.figl)",
@@ -1389,6 +1437,48 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         findings.extend(self.date_findings(start, &documents).await?);
         findings.extend(self.stale_label_findings(&census).await?);
         findings.extend(self.confirmation_findings(&documents).await?);
+        findings.extend(self.nested_findings(&census).await?);
+        Ok(findings)
+    }
+
+    /// Report every census link that lands inside a nested workspace
+    /// ([`Finding::LinkIntoNestedWorkspace`]), and every name two nested
+    /// workspaces both declare ([`Finding::NestedWorkspaceNameShared`]).
+    ///
+    /// One ancestor test per resolved link, against the directories
+    /// [`nested_workspaces`](prov_graph::graph::Graph::nested_workspaces)
+    /// found — which is nothing at all in a workspace that nests none.
+    async fn nested_findings(&self, census: &[CensusEntry]) -> Result<Vec<Finding>> {
+        let nested = self.graph().nested_workspaces().await?;
+        if nested.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut findings = Vec::new();
+        for entry in census {
+            let to = match &entry.resolution {
+                Resolution::Path(to) | Resolution::Id { to, .. } => to,
+                Resolution::CaseMismatch { got, .. } => got,
+                _ => continue,
+            };
+            if let Some(workspace) = nested.iter().find(|dir| to.starts_with(dir)) {
+                findings.push(Finding::LinkIntoNestedWorkspace {
+                    doc: entry.source.clone(),
+                    site: entry.site.clone(),
+                    target: entry.target_text.clone(),
+                    workspace: workspace.clone(),
+                });
+            }
+        }
+        let peers = self.nested_peers().await?;
+        for (name, roots) in peers.ambiguous() {
+            findings.push(Finding::NestedWorkspaceNameShared {
+                name: name.to_owned(),
+                roots: roots
+                    .iter()
+                    .map(|root| root.strip_prefix(self.root()).unwrap_or(root).to_path_buf())
+                    .collect(),
+            });
+        }
         Ok(findings)
     }
 
@@ -2376,6 +2466,72 @@ mod tests {
                 .count(),
             1,
             "the one file is diagnosed once: {findings:?}"
+        );
+    }
+
+    /// A library linking into the book it holds by path has bridged two
+    /// workspaces; the same reference spelled `id:book/<id>` is the foreign
+    /// edge the boundary is made of, and is not reported.
+    #[test]
+    fn a_path_link_into_a_nested_workspace_is_reported() {
+        let dir = tempdir("nested-link");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\n---\nSee [the book](book/README.md) and [chapter one](id:book/ch1).\n",
+        );
+        write(
+            &dir,
+            "book/prov.yaml",
+            "workspace_id: book\nroot: README.md\n",
+        );
+        write(&dir, "book/README.md", "---\ntitle: The Book\n---\n");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let bridged: Vec<_> = findings
+            .iter()
+            .filter(|f| matches!(f, Finding::LinkIntoNestedWorkspace { .. }))
+            .collect();
+        assert!(
+            matches!(
+                bridged.as_slice(),
+                [Finding::LinkIntoNestedWorkspace { doc, target, workspace, .. }]
+                    if doc == Path::new("index.md")
+                        && target == "book/README.md"
+                        && workspace == Path::new("book")
+            ),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn two_nested_workspaces_declaring_one_name_are_reported() {
+        let dir = tempdir("nested-shared-name");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        for at in ["shelf/book", "attic/book"] {
+            write(
+                &dir,
+                &format!("{at}/prov.yaml"),
+                "workspace_id: book\nroot: README.md\n",
+            );
+            write(
+                &dir,
+                &format!("{at}/README.md"),
+                "---\ntitle: The Book\n---\n",
+            );
+        }
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            findings.iter().any(|f| matches!(
+                f,
+                Finding::NestedWorkspaceNameShared { name, roots }
+                    if name == "book"
+                        && roots == &[PathBuf::from("attic/book"), PathBuf::from("shelf/book")]
+            )),
+            "{findings:?}"
         );
     }
 
@@ -3764,6 +3920,117 @@ mod tests {
         let findings = block_on(w.check("index.md")).unwrap();
         assert_eq!(fs.doc_reads(&dir, copy), 1, "check read the store twice");
         assert_eq!(findings, vec![], "{findings:?}");
+    }
+
+    /// The walks a caller makes through the bare graph — the census every view
+    /// narrows, an export plan, the term holds — are bounded by the
+    /// workspace's parking as the workspace's own walks are.
+    ///
+    /// The regression: `prov_views::documents` walked with `Graph::tree_with`,
+    /// which parked nothing, so a spanning `[[alias]]` forced a full title scan
+    /// that read every revision in a declared-out-of-scope store (historica's
+    /// `history/operations/` in a diaryx library, read on every publish) and
+    /// every item in a legacy recycle bin — and then found each document
+    /// twice, so the alias it was building the index for came out ambiguous.
+    #[test]
+    fn a_walk_through_the_graph_reads_nothing_the_workspace_parks() {
+        use crate::fs_faults::CountingFs;
+
+        let dir = tempdir("graph-walk-parked");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\nrecycle_bin: bin/index.md\ncontents:\n- '[[Tasks]]'\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "title: prov config\nfields:\n  status:\n    - values: closed\n      vocabulary: /statuses.yaml\n",
+        );
+        write(
+            &dir,
+            "statuses.yaml",
+            "title: Statuses\nvocabulary: { field: status, values: closed }\nterms:\n  draft: { holds: true }\n  done: {}\n",
+        );
+        write(
+            &dir,
+            "tasks.md",
+            "---\ntitle: Tasks\npart_of: index.md\ncontents:\n- '[[Sketch]]'\n- '[[Shipped]]'\n---\n",
+        );
+        write(
+            &dir,
+            "sketch.md",
+            "---\ntitle: Sketch\npart_of: tasks.md\naudience: public\nstatus: draft\n---\n",
+        );
+        write(
+            &dir,
+            "shipped.md",
+            "---\ntitle: Shipped\npart_of: tasks.md\naudience: public\nstatus: done\n---\n",
+        );
+        // Another tool's store, declared out of scope, holding an old revision
+        // under the same title.
+        let revision = "history/operations/0001/sketch.md";
+        write(&dir, revision, "---\ntitle: Sketch\n---\n");
+        // A legacy recycle bin, parked by the pointer on the root, holding a
+        // binned copy under the same title.
+        write(&dir, "bin/index.md", "---\ntitle: Recycle bin\n---\n");
+        let binned = "bin/items/0001/shipped.md";
+        write(&dir, binned, "---\ntitle: Shipped\n---\n");
+
+        let fs = CountingFs::default();
+        let ws = Workspace::builder(fs.clone())
+            .root(&dir)
+            .out_of_scope([PathBuf::from("history")])
+            .build();
+        let root = Path::new("index.md");
+        let reads = |what: &str| {
+            assert_eq!(fs.doc_reads(&dir, revision), 0, "{what} read the history");
+            assert_eq!(fs.doc_reads(&dir, binned), 0, "{what} read the bin");
+        };
+
+        let rows = block_on(prov_views::documents(ws.graph(), root)).unwrap();
+        reads("prov_views::documents");
+        let paths: Vec<_> = rows.iter().map(|r| r.path.to_str().unwrap()).collect();
+        assert_eq!(
+            paths,
+            ["index.md", "shipped.md", "sketch.md", "tasks.md"],
+            "each alias names one document"
+        );
+
+        let spec = prov_exports::ExportSpec {
+            name: "www".into(),
+            label: None,
+            gate: prov_exports::Gate {
+                field: "audience".into(),
+                value: "public".into(),
+            },
+            hold: Some("status".into()),
+            view: None,
+        };
+        let holds = block_on(ws.term_holds(root, &spec)).unwrap();
+        reads("term_holds");
+        assert!(holds.contains(Path::new("sketch.md")));
+
+        let plan = block_on(ws.export_plan(root, &spec, &[])).unwrap();
+        reads("export_plan");
+        let held: Vec<_> = plan.held.iter().map(|d| d.path.to_str().unwrap()).collect();
+        let entries: Vec<_> = plan
+            .entries
+            .iter()
+            .map(|d| d.path.to_str().unwrap())
+            .collect();
+        assert_eq!(held, ["sketch.md"]);
+        assert_eq!(entries, ["shipped.md"]);
+
+        // The bare graph's census and its own title index, for good measure.
+        block_on(ws.graph().census(root)).unwrap();
+        reads("Graph::census");
+        block_on(ws.graph().title_index()).unwrap();
+        assert_eq!(
+            fs.doc_reads(&dir, revision),
+            0,
+            "the full title index read the declared store"
+        );
     }
 
     // Real-world regression: a fenced code block containing Python list

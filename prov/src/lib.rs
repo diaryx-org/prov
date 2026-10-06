@@ -68,6 +68,7 @@ pub mod intake;
 pub mod landing;
 pub mod manifest;
 pub mod mutate;
+pub mod nested;
 pub mod node;
 pub mod peers;
 pub mod preset;
@@ -247,6 +248,7 @@ pub use crossing::{
 };
 pub use discovery::{Discovered, Discovery, discover};
 pub use landing::{Landed, Landing};
+pub use nested::{Nearest, NestedPeers};
 pub use peers::PeerFile;
 /// Declarative views over the workspace — the `views:` config axis, the
 /// traversal that selects the documents one covers, and the pure grouping over

@@ -82,6 +82,7 @@ pub mod link;
 pub mod manifest;
 pub mod memo;
 pub mod meta;
+pub mod node;
 pub mod peer;
 pub mod relation;
 pub mod title;
@@ -100,8 +101,8 @@ pub use fig::Format;
 pub use fixity::Fixity;
 pub use fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
 pub use graph::{
-    Backlink, CensusEntry, Graph, LinkSite, Node, NodeKind, ReadSettings, Resolution,
-    StructuralFact, Target, TreeOptions, Walk, reachable_set,
+    Backlink, CensusEntry, Graph, LinkSite, Node, NodeKind, ParkedStore, Parking, ReadSettings,
+    Resolution, StorePointer, StructuralFact, Target, TreeOptions, Walk, reachable_set,
 };
 pub use identity::{Id, IdStorage};
 pub use index::{Collision, IdIndex, NoIndex};

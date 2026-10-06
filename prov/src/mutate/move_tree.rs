@@ -63,8 +63,10 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// Refused, before anything is touched: the workspace root; a `from_dir`
     /// that is not a directory (`rename` moves a document); a `to_dir` that
-    /// exists (a merge is not a move) or lies under `from_dir`; and a mover
-    /// whose id the registry already binds to its destination.
+    /// exists (a merge is not a move) or lies under `from_dir`; a move that
+    /// takes the directory across a nested workspace's edge (one moved whole
+    /// is not refused); and a mover whose id the registry already binds to its
+    /// destination.
     pub async fn move_tree(&mut self, from_dir: &Path, to_dir: &Path) -> Result<()> {
         // One walk of the directory, one census, and a load of every document
         // either turns up; the scope makes each document one read.
@@ -96,6 +98,15 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if self.exists(&to_dir).await? {
             return Err(Error::AlreadyExists(to_dir));
         }
+        // What is above each end, not the directory itself: a nested
+        // workspace moved whole keeps its own edge with it.
+        self.refuse_crossing(
+            &from_dir,
+            super::rename::parent_of(&from_dir),
+            super::rename::parent_of(&to_dir),
+            &to_dir,
+        )
+        .await?;
         let moves = Moves::Tree {
             from: from_dir.clone(),
             to: to_dir.clone(),
@@ -445,6 +456,53 @@ mod tests {
         );
 
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    /// A library holding a book of its own beside its own notes.
+    fn shelf(tag: &str) -> PathBuf {
+        let dir = book(tag);
+        write(
+            &dir,
+            "held/prov.yaml",
+            "workspace_id: held\nroot: README.md\n",
+        );
+        write(
+            &dir,
+            "held/README.md",
+            "---\ntitle: Held\ncontents:\n- one.md\n---\n",
+        );
+        write(
+            &dir,
+            "held/one.md",
+            "---\ntitle: One\npart_of: README.md\n---\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn a_move_across_a_nested_workspace_s_edge_is_refused() {
+        let dir = shelf("move-across-nested");
+
+        let into = block_on(ws(&dir).rename(Path::new("b/b.md"), Path::new("held/b.md")));
+        assert!(
+            matches!(&into, Err(Error::Structure(why)) if why.contains("copy and a delete")),
+            "{into:?}"
+        );
+        let out = block_on(ws(&dir).rename(Path::new("held/one.md"), Path::new("one.md")));
+        assert!(matches!(out, Err(Error::Structure(_))), "{out:?}");
+        let tree = block_on(ws(&dir).move_tree(Path::new("a"), Path::new("held/a")));
+        assert!(matches!(tree, Err(Error::Structure(_))), "{tree:?}");
+        assert!(dir.join("b/b.md").exists() && dir.join("held/one.md").exists());
+    }
+
+    /// The nested workspace moved whole keeps its edge with it, and nothing
+    /// in it changes workspace.
+    #[test]
+    fn a_nested_workspace_moved_whole_is_not_refused() {
+        let dir = shelf("move-nested-whole");
+        block_on(ws(&dir).move_tree(Path::new("held"), Path::new("b/held"))).unwrap();
+        assert!(dir.join("b/held/prov.yaml").exists());
+        assert!(dir.join("b/held/one.md").exists());
     }
 
     #[test]
