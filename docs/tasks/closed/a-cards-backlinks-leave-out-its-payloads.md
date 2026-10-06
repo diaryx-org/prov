@@ -3,12 +3,17 @@ title: A card's backlinks leave out the references to its payload
 description: "`backlinks_to` a sidecar lists only the references that name the sidecar, so a page that embeds the picture is not among the places that use it"
 author: adammharris
 created: 2026-10-05
-updated: 2026-10-05
-status: open
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-06
+status: done
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A card's backlinks leave out the references to its payload
+
+**Status.** Done, in `fix(graph): a card's node backlinks hold the references
+to its payload` (2026-10-06): `backlinks_to_node` answers through either
+handle and marks each reference to the payload `Backlink::via_payload`;
+`backlinks_to` is unchanged for `plan_scatter` and `prov backlinks`.
 
 An attachment is one node with two handles: the sidecar, which a relation or
 an `id:` reference names, and the payload, which a body embed or a download

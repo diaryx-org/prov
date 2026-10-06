@@ -13,6 +13,7 @@ contents:
 - '[A retitle censuses the whole workspace to find its inbound links](/docs/tasks/closed/retitle-censuses-the-whole-workspace.md)'
 - '[A list under `equals` is read as its first element](/docs/tasks/closed/equals-keeps-a-lists-first-element.md)'
 - '[A filing entry cannot say what kind of record it files](/docs/tasks/closed/a-filing-entry-cannot-say-what-kind-it-files.md)'
+- '[A card''s backlinks leave out the references to its payload](/docs/tasks/closed/a-cards-backlinks-leave-out-its-payloads.md)'
 ---
 
 # Closed tasks
