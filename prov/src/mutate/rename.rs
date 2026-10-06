@@ -56,6 +56,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// A `from` that is a **directory** is [`move_tree`](Self::move_tree): the
     /// whole directory moves as one change set, every document under it a
     /// mover.
+    ///
+    /// Refused when `from` and `to` lie on different sides of a nested
+    /// workspace's edge: the document would carry this registry's id into a
+    /// workspace with a registry of its own, or the reverse. Bringing a
+    /// document across is a copy and a delete, said as such.
     pub async fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
         // `collect_inbound_rewrites` censuses the whole reachable graph and then
         // loads each source it found in order to rewrite it — two reads of every
@@ -74,6 +79,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if self.exists(&to).await? {
             return Err(Error::AlreadyExists(to.to_path_buf()));
         }
+        self.refuse_crossing(&from, parent_of(&from), parent_of(&to), &to)
+            .await?;
 
         // `to` may already be registered — a live entry the on-disk check above
         // cannot see, since `id_storage`'s default `both` lets a registry entry
@@ -474,6 +481,61 @@ pub(super) fn rerelativize_body_links(
     }
     new_body.push_str(&body[cursor..]);
     splice_body(text, body, &new_body)
+}
+
+/// The directory `path` sits in, the root being the empty path.
+pub(super) fn parent_of(path: &Path) -> &Path {
+    path.parent().unwrap_or(Path::new(""))
+}
+
+impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Every nested workspace's root at or above the workspace-relative
+    /// directory `dir`, outermost first — the boundaries a path in `dir` is
+    /// behind. A directory that does not exist yet holds no node.
+    pub(super) async fn nesting(&self, dir: &Path) -> Result<Vec<PathBuf>> {
+        let mut found = Vec::new();
+        let mut ancestors: Vec<&Path> = dir
+            .ancestors()
+            .filter(|a| !a.as_os_str().is_empty())
+            .collect();
+        ancestors.reverse();
+        for at in ancestors {
+            let Ok(entries) = self.graph().listing(at).await else {
+                continue;
+            };
+            if self.graph().nests_workspace(at, &entries).await {
+                found.push(at.to_path_buf());
+            }
+        }
+        Ok(found)
+    }
+
+    /// Refuse moving `from` to `to` when the directories they sit in
+    /// (`from_in`, `to_in`) are behind different nested workspaces' edges.
+    pub(super) async fn refuse_crossing(
+        &self,
+        from: &Path,
+        from_in: &Path,
+        to_in: &Path,
+        to: &Path,
+    ) -> Result<()> {
+        let leaving = self.nesting(from_in).await?;
+        let arriving = self.nesting(to_in).await?;
+        if leaving == arriving {
+            return Ok(());
+        }
+        let side = |nesting: &[PathBuf]| match nesting.last() {
+            Some(root) => format!("the workspace nested at {}", root.display()),
+            None => "this workspace".to_owned(),
+        };
+        Err(Error::Structure(format!(
+            "{} cannot move to {}: it would leave {} for {}, and a document crosses into another workspace as a copy and a delete, not a move",
+            from.display(),
+            to.display(),
+            side(&leaving),
+            side(&arriving),
+        )))
+    }
 }
 
 #[cfg(all(test, feature = "yaml"))]
