@@ -4,11 +4,16 @@ description: "A directory holding its own workspace node is read by the outer wo
 author: adammharris
 created: 2026-10-06
 updated: 2026-10-06
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A nested workspace is walked as the outer one's
+
+> **Done, 2026-10-06**, by `feat(graph): stop at a nested workspace, and judge
+> it by its own list` and the three commits after it. Each item below is
+> built and tested; `docs/reference-styles.md` § "A workspace inside a
+> workspace" says how the boundary is held.
 
 The prov half of diaryx's accepted proposal *A book someone else wrote is a
 workspace inside the library* (diaryx

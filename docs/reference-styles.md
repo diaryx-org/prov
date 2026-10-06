@@ -336,14 +336,32 @@ with this workspace's own name (which is local, per the rule above) — because
 that is a root saying something here contains it, and that is a contradiction
 (`named_root_contained`).
 
-Two rules come with it, and neither is one prov can enforce.
+Two rules come with it. The first is now a check; the second is a fact about
+how a workspace is opened.
 
 **An edge into a sub-workspace is foreign, or it is not a boundary.** If the
 outer root *also* reaches the inner directory by a path link, the inner
-documents are censused by both roots and neither census is wrong. prov cannot
-raise a finding about it — the outer check is reachability-bounded and only sees
-the inner directory *because* the path link exists — so this is a rule for the
-writer, not a check.
+documents are censused by both roots and neither census is wrong. The outer
+`check` reports it (`link_into_nested_workspace`): a directory holding a node
+of its own is a nested workspace whether or not anything links into it, so
+the test is one ancestor comparison per resolved link and needs no
+reachability. The rest of the boundary is held the same way, off the node
+rather than off the links:
+
+- The flat scans — `scan_ids`, the full title scan, the content-document scan —
+  stop at a nested node, so the inner registry's ids and the inner titles are
+  never read as the outer workspace's.
+- `ignore_list` judges the nested directory by the inner workspace's own graph:
+  what it reaches travels with the outer folder, and what it declares, parks or
+  leaves loose is listed under it.
+- A `rename` or `move_tree` whose ends are on different sides of a nested root
+  is refused. Bringing a document across is a copy and a delete.
+- `Workspace::nested_peers` maps each nested workspace's `workspace_id` to its
+  directory, as a `PeerResolver` a host consults ahead of its device-local one
+  (`NestedPeers::before`): the directory travels with the library, so the
+  route holds on every device the library reaches. Two nested workspaces
+  declaring one name are refused rather than guessed, and `check` reports them
+  (`nested_workspace_name_shared`).
 
 **Which root you opened decides where the boundary is.** The spanning climb
 falls back to the root document of the workspace it was given. Opened at the
@@ -462,6 +480,12 @@ re-relativize, restyle and `check --fix` all preserve locators.
   `part_of` that no node names is still not a root. `named_root_contained`
   (`validate.rs`) resolves the parent and reports it only when it lands
   *locally*, self-qualification included.
+- ✅ **The boundary held from outside** (§ "A workspace inside a workspace"):
+  `Graph::nests_workspace` and `nested_workspaces` (`prov-graph`'s `scan.rs`,
+  with the node's shape in `prov_graph::node`), the scans stopping there,
+  `ignore_list`'s nested list, `link_into_nested_workspace` and
+  `nested_workspace_name_shared` (`validate.rs`), the move refusal
+  (`mutate/rename.rs`), and `NestedPeers` (`nested.rs`).
 - ✅ **Crossing a boundary** (§ "What prov does, and where it stops"):
   `prov::crossing` — `open_peer`, `descend`, `Trust`, `Refusal`, `Boundary`,
   `Federation` — composed *above* `Graph` out of `Workspace::tree` and the peer
