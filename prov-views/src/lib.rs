@@ -106,5 +106,5 @@ pub use group::{Group, RowSet, group};
 pub use legacy::{Translation, translate};
 pub use lint::{ViewIssue, ViewIssueKind, diagnose_view, diagnose_views};
 pub use search::{Corpus, Excluded, Hit, IndexedDoc, Passage, Query, Site, corpus, fold, search};
-pub use select::{Ancestor, Clause, Failure, Row, Selection, documents, narrow, select};
+pub use select::{Ancestor, Clause, Failure, Reference, Row, Selection, documents, narrow, select};
 pub use spec::{RETIRED_VIEW_KEYS, VIEW_KEYS, VIEWS_KEY, ViewSpec, humanize, views_from};
