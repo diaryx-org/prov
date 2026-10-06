@@ -438,6 +438,21 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("node", p(node)));
             fields.push(("named", p(named)));
         }
+        Finding::LinkIntoNestedWorkspace {
+            doc,
+            site,
+            target,
+            workspace,
+        } => {
+            fields.push(("doc", p(doc)));
+            self::site(site, &mut fields);
+            fields.push(("target", s(target)));
+            fields.push(("workspace", p(workspace)));
+        }
+        Finding::NestedWorkspaceNameShared { name, roots } => {
+            fields.push(("name", s(name)));
+            fields.push(("roots", J::Arr(roots.iter().map(|root| p(root)).collect())));
+        }
         Finding::MalformedStore { doc, pointer } => {
             fields.push(("doc", p(doc)));
             fields.push(("pointer", s(pointer)));
