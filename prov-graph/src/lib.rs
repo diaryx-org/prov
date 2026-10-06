@@ -82,6 +82,7 @@ pub mod link;
 pub mod manifest;
 pub mod memo;
 pub mod meta;
+pub mod node;
 pub mod peer;
 pub mod relation;
 pub mod title;
