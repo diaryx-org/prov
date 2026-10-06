@@ -25,6 +25,8 @@
 //!   the node under a parent (the bulk analogue of `attach`).
 //! - [`update_manifest`](Workspace::update_manifest) — rebuild the rows from the
 //!   directory as it is now, and re-stamp the node.
+//! - [`extend_manifest`](Workspace::extend_manifest) — append rows for named
+//!   files, hashing only those and leaving every other row as it was.
 //! - [`manifest_status`](Workspace::manifest_status) — what the manifest says and
 //!   whether the directory still agrees, reading no covered file.
 //! - [`verify_manifest`](Workspace::verify_manifest) — the **deep** check: read
@@ -405,16 +407,29 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             return Ok((update, vec![(node, restamped)]));
         }
 
-        let (_, manifest_parsed) = self.load(&manifest_doc).await?;
+        let writes = self.manifest_rewrite(&node, &manifest_doc, &fresh).await?;
+        Ok((update, writes))
+    }
+
+    /// The writes that replace `node`'s manifest document with `rows`: the
+    /// manifest under its own title, and the node re-pinned over the new bytes.
+    async fn manifest_rewrite(
+        &self,
+        node: &Path,
+        manifest_doc: &Path,
+        rows: &Manifest,
+    ) -> Result<Vec<(PathBuf, String)>> {
+        let (_, manifest_parsed) = self.load(manifest_doc).await?;
         let title = manifest_parsed
             .meta
             .get("title")
             .and_then(prov_graph::title::title_text)
-            .unwrap_or_else(|| link::path_to_title(&manifest_doc));
+            .unwrap_or_else(|| link::path_to_title(manifest_doc));
         let format = self.default_embed_format();
-        let new_text = prov_graph::meta::serialize_mapping(&fresh.to_mapping(&title), format)?;
+        let new_text = prov_graph::meta::serialize_mapping(&rows.to_mapping(&title), format)?;
 
-        let mut writes = vec![(manifest_doc, new_text.clone())];
+        let (node_text, node_doc) = self.load(node).await?;
+        let mut writes = vec![(manifest_doc.to_path_buf(), new_text.clone())];
         // The node pins the manifest, so a rewritten manifest is a stale pin
         // until this lands with it — one change set, never two.
         if node_doc.meta.get("content_hash").is_some() || self.fixity().is_on() {
@@ -424,8 +439,122 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 "content_hash",
                 fig::Value::Str(crate::fixity::digest(new_text.as_bytes())),
             )?;
-            writes.push((node, restamped));
+            writes.push((node.to_path_buf(), restamped));
         }
+        Ok(writes)
+    }
+
+    /// What appending rows for `paths` to `node`'s manifest would record, and
+    /// the writes that would do it — the read half of
+    /// [`extend_manifest`](Workspace::extend_manifest).
+    ///
+    /// Each path is workspace-relative and must name a file the directory scan
+    /// would list: under the covered root, opaque, not hidden, not inside a
+    /// nested manifest's directory, and not already a row. Anything else is
+    /// refused before a byte is read, and the whole call with it — a partial
+    /// add would leave the caller to work out which of its files were taken.
+    async fn plan_manifest_extend(
+        &self,
+        node: &Path,
+        paths: &[PathBuf],
+    ) -> Result<(ManifestUpdate, Vec<(PathBuf, String)>)> {
+        let node = link::normalize(node);
+        let Some((manifest_doc, mut current)) = self.manifest_of(&node).await? else {
+            return Err(Error::Structure(format!(
+                "{} declares no manifest",
+                node.display()
+            )));
+        };
+        let mut update = ManifestUpdate {
+            manifest: manifest_doc.clone(),
+            ..Default::default()
+        };
+        if paths.is_empty() {
+            return Ok((update, Vec::new()));
+        }
+        let root = current.checked_root(&manifest_doc)?;
+        let mut listed: std::collections::BTreeSet<PathBuf> =
+            current.files.iter().map(|e| e.path.clone()).collect();
+        let mut added = Vec::new();
+        for path in paths {
+            let path = link::normalize(path);
+            let refuse = |why: &str| {
+                Err(Error::Structure(format!(
+                    "cannot add {} to {}: {why}",
+                    path.display(),
+                    manifest_doc.display()
+                )))
+            };
+            let Some(rel) = path
+                .strip_prefix(&root)
+                .ok()
+                .filter(|r| !r.as_os_str().is_empty() && !link::escapes_root(&path))
+            else {
+                return refuse(&format!("it is not under {}", root.display()));
+            };
+            let rel = rel.to_path_buf();
+            if !prov_graph::document::is_opaque_payload(&rel) {
+                return refuse("it is a document, which a manifest never covers");
+            }
+            if rel.iter().any(|c| c.to_string_lossy().starts_with('.')) {
+                return refuse("a hidden file is never listed");
+            }
+            if !self
+                .graph()
+                .stat(&path)
+                .await
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
+                return refuse("no such file");
+            }
+            // A nested manifest owns its subtree, so a row here would claim a
+            // file the scan never lists — reported missing while present.
+            let mut dir = path.parent();
+            while let Some(d) = dir.filter(|d| *d != root && d.starts_with(&root)) {
+                if self.manifest_node_for(d).await?.is_some() {
+                    return refuse(&format!("{} has a manifest of its own", d.display()));
+                }
+                dir = d.parent();
+            }
+            if !listed.insert(rel.clone()) {
+                return refuse("it is already listed");
+            }
+            added.push((path, rel));
+        }
+
+        // The mode is the manifest's, as on a rebuild: an empty one takes the
+        // workspace's, a hashed one hashes the new rows — and only those.
+        let hashed = if current.files.is_empty() {
+            self.fixity().is_on()
+        } else {
+            current.is_hashed()
+        };
+        let digests: Vec<Option<String>> = if hashed {
+            let mut digests = crate::fixity::Digests::new();
+            for (path, _) in &added {
+                digests.push(self.read_bytes(path).await?);
+            }
+            digests.finish().into_iter().map(Some).collect()
+        } else {
+            vec![None; added.len()]
+        };
+        for ((_, rel), hash) in added.into_iter().zip(digests) {
+            update.added.push(rel.clone());
+            current.files.push(ManifestEntry {
+                path: rel,
+                hash,
+                ..Default::default()
+            });
+        }
+        current.sort();
+        update
+            .added
+            .sort_by_key(|p| prov_graph::manifest::path_sort_key(p));
+
+        let writes = self
+            .manifest_rewrite(&node, &manifest_doc, &current)
+            .await?;
         Ok((update, writes))
     }
 }
@@ -597,6 +726,40 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// conflict waiting to happen for no gain.
     pub async fn update_manifest(&mut self, node: &Path) -> Result<ManifestUpdate> {
         let (update, writes) = self.plan_manifest_rebuild(node).await?;
+        if writes.is_empty() {
+            return Ok(update);
+        }
+        let mut cs = self.change();
+        for (path, text) in writes {
+            cs.write(&path, text);
+        }
+        self.commit(cs).await?;
+        Ok(update)
+    }
+
+    /// Append rows for `paths` — workspace-relative files under `node`'s
+    /// covered root — to its manifest, and re-stamp the node's `content_hash`
+    /// over the result in the same change set. Returns the rows added, in
+    /// [`ManifestUpdate::added`].
+    ///
+    /// The add verb, for a host that has just put files into a covered
+    /// directory and knows which. Unlike
+    /// [`update_manifest`](Self::update_manifest) it does not look at the rest
+    /// of the directory: every existing row stays as it was, its file present
+    /// or not — a file missing here may be gone, or not yet synced to this
+    /// device, and an add is no place to decide which — and only the named
+    /// files are read, when the manifest is hashed. Adding two photographs to
+    /// an archive of two thousand reads two.
+    ///
+    /// Refuses, writing nothing, a path outside the root, a readable document,
+    /// a file the directory scan would never list, one that does not exist, or
+    /// one already listed. Writes nothing when `paths` is empty.
+    pub async fn extend_manifest(
+        &mut self,
+        node: &Path,
+        paths: &[PathBuf],
+    ) -> Result<ManifestUpdate> {
+        let (update, writes) = self.plan_manifest_extend(node, paths).await?;
         if writes.is_empty() {
             return Ok(update);
         }
@@ -794,6 +957,159 @@ mod tests {
             !manifest.contains("The dog"),
             "went with its row: {manifest}"
         );
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn extend_appends_named_files_and_keeps_every_other_row() {
+        let dir = photos("extend");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        let text = read(&dir, "photos.manifest.yaml")
+            .replace("- path: a.jpg\n", "- path: a.jpg\n  caption: At the lake\n");
+        write(&dir, "photos.manifest.yaml", text);
+
+        // A listed file goes missing (not yet synced here), another is
+        // rewritten, an unnamed one appears: an add touches none of them.
+        std::fs::remove_file(dir.join("photos/a.jpg")).unwrap();
+        write(&dir, "photos/2019/b.jpg", [0xff, 0xd8, 0x99]);
+        write(&dir, "photos/unnamed.jpg", [0xff, 0xd8, 0x05]);
+        write(&dir, "photos/c.jpg", [0xff, 0xd8, 0x03]);
+        write(&dir, "photos/2020/d.jpg", [0xff, 0xd8, 0x04]);
+
+        let update = block_on(ws(&dir).extend_manifest(
+            Path::new("photos.yaml"),
+            &[
+                PathBuf::from("photos/c.jpg"),
+                PathBuf::from("photos/2020/d.jpg"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            update.added,
+            vec![PathBuf::from("2020/d.jpg"), PathBuf::from("c.jpg")]
+        );
+        assert!(update.removed.is_empty() && update.changed.is_empty());
+
+        let (_, manifest) = block_on(ws(&dir).manifest_of(Path::new("photos.yaml")))
+            .unwrap()
+            .unwrap();
+        let row = |p: &str| {
+            manifest
+                .files
+                .iter()
+                .find(|e| e.path == Path::new(p))
+                .unwrap_or_else(|| panic!("no row for {p}: {manifest:?}"))
+        };
+        assert_eq!(
+            row("a.jpg").hash.as_deref(),
+            Some(crate::fixity::digest(&[0xff, 0xd8, 0x01]).as_str()),
+            "a missing file keeps its row"
+        );
+        assert!(row("a.jpg").fields.contains_key("caption"));
+        assert_eq!(
+            row("2019/b.jpg").hash.as_deref(),
+            Some(crate::fixity::digest(&[0xff, 0xd8, 0x02]).as_str()),
+            "an existing row is not re-hashed"
+        );
+        assert_eq!(
+            row("c.jpg").hash.as_deref(),
+            Some(crate::fixity::digest(&[0xff, 0xd8, 0x03]).as_str())
+        );
+        assert!(row("2020/d.jpg").hash.is_some());
+        assert_eq!(manifest.files.len(), 4, "the unnamed file is not added");
+
+        // The node was re-pinned in the same change set: no fixity finding,
+        // only the drift the add deliberately left alone.
+        let status = block_on(ws(&dir).manifest_status(Path::new("photos.yaml")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.missing, vec![PathBuf::from("a.jpg")]);
+        assert_eq!(status.extra, vec![PathBuf::from("unnamed.jpg")]);
+        let findings = block_on(ws(&dir).check("index.md")).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::FixityMismatch { .. })),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn extend_refuses_what_a_row_cannot_honestly_say() {
+        let dir = photos("extend-refuse");
+        write(&dir, "elsewhere.jpg", [0xff]);
+        write(&dir, "photos/note.md", b"---\ntitle: Note\n---\n");
+        write(&dir, "photos/.hidden.jpg", [0xff]);
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        write(&dir, "photos/new.jpg", [0xff]);
+        let before = read(&dir, "photos.manifest.yaml");
+
+        for (path, why) in [
+            ("elsewhere.jpg", "not under"),
+            ("photos/../elsewhere.jpg", "not under"),
+            ("photos/note.md", "document"),
+            ("photos/.hidden.jpg", "hidden"),
+            ("photos/absent.jpg", "no such file"),
+            ("photos/a.jpg", "already listed"),
+        ] {
+            let err = block_on(ws(&dir).extend_manifest(
+                Path::new("photos.yaml"),
+                &[PathBuf::from("photos/new.jpg"), PathBuf::from(path)],
+            ))
+            .unwrap_err();
+            assert!(err.to_string().contains(why), "{path}: {err}");
+        }
+        // Naming one file twice is the same refusal.
+        let err = block_on(ws(&dir).extend_manifest(
+            Path::new("photos.yaml"),
+            &[
+                PathBuf::from("photos/new.jpg"),
+                PathBuf::from("photos/new.jpg"),
+            ],
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("already listed"), "{err}");
+        assert_eq!(
+            read(&dir, "photos.manifest.yaml"),
+            before,
+            "a refused add writes nothing, the good paths in it included"
+        );
+    }
+
+    #[test]
+    fn extend_with_nothing_writes_nothing() {
+        let dir = photos("extend-empty");
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        // Laid out by hand, so a rewrite would show.
+        let text = format!("{}\n", read(&dir, "photos.manifest.yaml"));
+        write(&dir, "photos.manifest.yaml", text.clone());
+        let node = read(&dir, "photos.yaml");
+
+        let update = block_on(ws(&dir).extend_manifest(Path::new("photos.yaml"), &[])).unwrap();
+        assert!(update.is_clean());
+        assert_eq!(update.manifest, PathBuf::from("photos.manifest.yaml"));
+        assert_eq!(read(&dir, "photos.manifest.yaml"), text);
+        assert_eq!(read(&dir, "photos.yaml"), node);
+    }
+
+    #[test]
+    fn extending_an_inventory_records_no_checksum() {
+        let dir = photos("extend-unhashed");
+        block_on(ws(&dir).attach_manifest_titled(
+            Path::new("photos"),
+            Path::new("index.md"),
+            None,
+            false,
+        ))
+        .unwrap();
+        write(&dir, "photos/c.jpg", [0xff, 0xd8, 0x03]);
+        block_on(
+            ws(&dir).extend_manifest(Path::new("photos.yaml"), &[PathBuf::from("photos/c.jpg")]),
+        )
+        .unwrap();
+        let manifest = read(&dir, "photos.manifest.yaml");
+        assert!(manifest.contains("path: c.jpg"), "{manifest}");
+        assert!(!manifest.contains("hash:"), "{manifest}");
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 
