@@ -21,12 +21,20 @@ use std::pin::Pin;
 
 use super::{Graph, ShadowProbe, Target};
 use crate::content::ContentFormat;
-use crate::document::is_opaque_payload;
+use crate::document::{is_opaque_payload, whole_file_format};
 use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::index::IdIndex;
 use crate::link::{self, Link};
 use crate::title::{self, TitleIndex};
+
+fn is_content(path: &Path) -> bool {
+    ContentFormat::from_extension(path).is_some()
+}
+
+fn is_any_document(path: &Path) -> bool {
+    is_content(path) || whole_file_format(path).is_some()
+}
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// Build the workspace's [`TitleIndex`] by scanning every document under the
@@ -292,14 +300,31 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
     /// Every content document (Markdown/Djot/HTML) under the root, as sorted
     /// workspace-relative paths — the on-disk population the orphan check diffs
-    /// against what the spanning tree reaches (DESIGN §8). Deliberately restricted
-    /// to *content* documents: whole-file metadata sidecars (a config or registry
-    /// document, a stray `.yaml`) are not prose a user orphans, so they are not
-    /// candidates. A flat filesystem scan (hidden entries skipped), independent of
-    /// link resolution, like the title/id scans beside it.
+    /// against what the spanning tree reaches (DESIGN §8). Restricted to prose
+    /// by extension: a whole-file metadata document may be a content node (an
+    /// attachment sidecar) or machinery (a config or registry document), and
+    /// telling them apart takes a read, so those are
+    /// [`all_documents`](Self::all_documents)' to list. A flat
+    /// filesystem scan (hidden entries skipped), independent of link
+    /// resolution, like the title/id scans beside it.
     pub async fn content_documents(&self) -> Result<Vec<PathBuf>> {
         let mut docs = Vec::new();
-        self.scan_content_dir(PathBuf::new(), &mut docs).await?;
+        self.scan_content_dir(PathBuf::new(), is_content, &mut docs)
+            .await?;
+        docs.sort();
+        Ok(docs)
+    }
+
+    /// Every document under the root, prose and whole-file metadata (`.yaml`,
+    /// `.json`, …) alike, sorted — [`content_documents`](Self::content_documents)
+    /// widened, in one walk rather than two. Only the names: which whole-file
+    /// documents are content nodes (an attachment sidecar) and which are
+    /// machinery (a config, the registry, a vocabulary, a manifest store) takes
+    /// a read, and the caller decides which ones are worth it.
+    pub async fn all_documents(&self) -> Result<Vec<PathBuf>> {
+        let mut docs = Vec::new();
+        self.scan_content_dir(PathBuf::new(), is_any_document, &mut docs)
+            .await?;
         docs.sort();
         Ok(docs)
     }
@@ -352,11 +377,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             .collect()
     }
 
-    /// Recursively collect content-document paths under `rel_dir`. Same walk as
-    /// [`scan_ids_dir`](Self::scan_ids_dir); unreadable/hidden entries are skipped.
+    /// Recursively collect the file paths under `rel_dir` that `keep` admits.
+    /// Same walk as [`scan_ids_dir`](Self::scan_ids_dir); unreadable/hidden
+    /// entries are skipped.
     fn scan_content_dir<'a>(
         &'a self,
         rel_dir: PathBuf,
+        keep: fn(&Path) -> bool,
         docs: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
@@ -383,10 +410,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     rel_dir.join(&name)
                 };
                 if entry.file_type().is_dir() {
-                    self.scan_content_dir(rel, docs).await?;
-                } else if entry.file_type().is_file()
-                    && ContentFormat::from_extension(&rel).is_some()
-                {
+                    self.scan_content_dir(rel, keep, docs).await?;
+                } else if entry.file_type().is_file() && keep(&rel) {
                     docs.push(rel);
                 }
             }

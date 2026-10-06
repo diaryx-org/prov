@@ -1916,6 +1916,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.content_documents().await
     }
 
+    /// Every prose and whole-file metadata document under the root; see
+    /// [`Graph::all_documents`].
+    pub(crate) async fn all_documents(&self) -> Result<Vec<PathBuf>> {
+        self.graph.all_documents().await
+    }
+
     /// The files directly inside `dirs` — the bounded listing the scans share.
     pub(crate) async fn direct_child_files(
         &self,
