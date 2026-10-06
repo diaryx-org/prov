@@ -3716,6 +3716,56 @@ mod tests {
         );
     }
 
+    /// An `id:` link resolves through the registry, so it never builds the
+    /// title index, and a walk over a library whose links are all ids reads
+    /// nothing outside what it reaches.
+    ///
+    /// It used to: `id:abc` has no separator and no extension, so it was
+    /// "alias-shaped", and a spanning link of that shape makes the bounded
+    /// title scope give up and scan every directory under the root. The copy
+    /// below stands for another tool's store inside the library (historica's
+    /// `history/operations/` in a diaryx library), which nothing links and the
+    /// workspace has not declared out of scope; each walk read every document
+    /// in it.
+    #[test]
+    fn an_id_linked_walk_reads_nothing_it_does_not_reach() {
+        use crate::fs_faults::CountingFs;
+        use prov_graph::index::IdIndex;
+        use prov_testkit::read;
+
+        let dir = tempdir("id-link-no-title-scan");
+        write(&dir, "index.md", "---\ntitle: Root\n---\n");
+        let fs = CountingFs::default();
+        let mut w = Workspace::builder(fs.clone())
+            .root(&dir)
+            .identity(Minter::lazy(7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .id_links(true)
+            .build();
+        block_on(w.create(Path::new("notes/a.md"), Path::new("index.md"))).unwrap();
+        block_on(w.create(Path::new("notes/b.md"), Path::new("index.md"))).unwrap();
+        let b = w.index().id_for_path(Path::new("notes/b.md")).unwrap();
+        // A body link by id too, the `[x](id:abc)` shape a publish follows.
+        let a = read(&dir, "notes/a.md");
+        write(&dir, "notes/a.md", format!("{a}\nSee [b](id:{b}).\n"));
+        // A copy titled like `notes/a.md`'s stem, in a store nothing links.
+        write(&dir, "history/operations/0001/a.md", "---\ntitle: a\n---\n");
+        let copy = "history/operations/0001/a.md";
+        let index = read(&dir, "index.md");
+        assert!(index.contains("id:"), "contents are id links: {index}");
+
+        block_on(w.census("index.md")).unwrap();
+        assert_eq!(fs.doc_reads(&dir, copy), 0, "census read the store");
+        block_on(w.tree("index.md")).unwrap();
+        assert_eq!(fs.doc_reads(&dir, copy), 0, "tree read the store");
+        // `check` does read it, once: its island sweep looks at every
+        // unreached document for a claim on the tree, by design, and that is
+        // what `out_of_scope` exists to stop. The title index adds nothing.
+        let findings = block_on(w.check("index.md")).unwrap();
+        assert_eq!(fs.doc_reads(&dir, copy), 1, "check read the store twice");
+        assert_eq!(findings, vec![], "{findings:?}");
+    }
+
     // Real-world regression: a fenced code block containing Python list
     // comprehensions (`[[float('inf')] * width ...]`) must never be mistaken
     // for a `[[…]]` wikilink — DESIGN §8's motivating example, life-sized.
