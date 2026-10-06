@@ -976,4 +976,85 @@ mod tests {
         assert_eq!(payload("index.md"), None);
         assert_eq!(payload("missing.yaml"), None);
     }
+
+    #[test]
+    fn a_cards_backlinks_hold_the_references_to_its_payload() {
+        use crate::identity::{Minter, Registration};
+        use prov_graph::graph::LinkSite;
+        use prov_graph::index::IdIndex;
+        use prov_store::index::FileIndex;
+
+        // One card, reached three ways: its parent's `contents` names the
+        // sidecar, an `id:` reference names the sidecar too, and a body embed
+        // names the payload — the one that actually shows the picture.
+        let dir = tempdir("node-backlinks");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\ncontents:\n- page.md\n---\n",
+        );
+        write(&dir, "photo.jpg", [0xff, 0xd8]);
+        let mut w = Workspace::builder(StdFs)
+            .root(&dir)
+            .identity(Minter::with(Registration::EAGER, 7))
+            .index(FileIndex::new(fig::Format::Yaml))
+            .build();
+        block_on(w.attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
+        let id = w
+            .index()
+            .id_for_path(Path::new("photo.jpg.yaml"))
+            .expect("an eager policy registers the card");
+        write(
+            &dir,
+            "page.md",
+            format!(
+                "---\ntitle: Page\npart_of: index.md\n---\n![](/photo.jpg)\n\n[card](id:{id})\n"
+            )
+            .as_bytes(),
+        );
+
+        // Through either handle, one answer: all three references, the embed
+        // alone marked as naming the payload.
+        let by_sidecar = block_on(w.backlinks_to_node("index.md", "photo.jpg.yaml")).unwrap();
+        let by_payload = block_on(w.backlinks_to_node("index.md", "photo.jpg")).unwrap();
+        assert_eq!(by_sidecar, by_payload);
+        assert_eq!(by_sidecar.len(), 3, "{by_sidecar:?}");
+        assert!(
+            by_sidecar
+                .iter()
+                .any(|bl| bl.source == Path::new("index.md")
+                    && bl.site.relation() == Some("contents")
+                    && !bl.by_id
+                    && !bl.via_payload),
+            "{by_sidecar:?}"
+        );
+        assert!(
+            by_sidecar.iter().any(|bl| bl.source == Path::new("page.md")
+                && matches!(bl.site, LinkSite::Body(_))
+                && bl.by_id
+                && !bl.via_payload),
+            "{by_sidecar:?}"
+        );
+        assert!(
+            by_sidecar.iter().any(|bl| bl.source == Path::new("page.md")
+                && matches!(bl.site, LinkSite::Body(_))
+                && !bl.by_id
+                && bl.via_payload),
+            "{by_sidecar:?}"
+        );
+
+        // `backlinks_to` keeps answering for exactly the path it was given.
+        let sidecar_only = block_on(w.backlinks_to("index.md", "photo.jpg.yaml")).unwrap();
+        assert_eq!(sidecar_only.len(), 2, "{sidecar_only:?}");
+        assert!(sidecar_only.iter().all(|bl| !bl.via_payload));
+        let payload_only = block_on(w.backlinks_to("index.md", "photo.jpg")).unwrap();
+        assert_eq!(payload_only.len(), 1, "{payload_only:?}");
+        assert!(!payload_only[0].via_payload);
+
+        // A document has one handle, and its node backlinks are its backlinks.
+        assert_eq!(
+            block_on(w.backlinks_to_node("index.md", "page.md")).unwrap(),
+            block_on(w.backlinks_to("index.md", "page.md")).unwrap()
+        );
+    }
 }

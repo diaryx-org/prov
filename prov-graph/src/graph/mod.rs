@@ -95,7 +95,8 @@ pub mod shadow;
 pub mod tree;
 
 pub use census::{
-    Backlink, CensusEntry, FrontmatterLink, LinkSite, Resolution, StructuralFact, inbound, invert,
+    Backlink, CensusEntry, FrontmatterLink, LinkSite, Resolution, StructuralFact, inbound,
+    inbound_node, invert,
 };
 pub use census::{Walk, reachable_set};
 pub use parking::{ParkedStore, Parking, StorePointer};
