@@ -125,7 +125,7 @@ impl IgnoreList {
     }
 }
 
-impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
+impl<FS: Storage + Clone, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// The ignore list this workspace's graph implies, walking from
     /// `root_doc`.
     ///
@@ -134,6 +134,19 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// walk, what should not be taken. A subtree the graph reaches nothing in
     /// collapses to a single directory rule, so an unrelated project sitting
     /// beside the workspace costs one line rather than one per file.
+    ///
+    /// A directory holding a workspace of its own is judged by *that*
+    /// workspace's graph, not this one's: this graph reaches it only through a
+    /// foreign reference, which no walk follows, so by this graph alone every
+    /// file in it would be unreached. The nested workspace is opened, its own
+    /// list is taken from its own root, and each of its rules is spelled from
+    /// this root — so what it reaches is content, and its own bookkeeping,
+    /// declared directories and loose files are not. One that cannot be
+    /// opened is walked as any other directory.
+    ///
+    /// The workspace node is never on the list. It is reached by no walk, and
+    /// it is the policy the workspace runs under: a folder copied without it
+    /// is not the workspace it was.
     pub async fn ignore_list(&self, root_doc: &Path) -> Result<IgnoreList> {
         let scan = Scan {
             reachable: slashed(self.reachable_files(root_doc).await?),
@@ -148,9 +161,12 @@ impl<FS: Storage, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
                 .iter()
                 .filter_map(|path| slash(path))
                 .collect(),
+            nested_rules: std::cell::RefCell::new(Vec::new()),
+            node: self.workspace_node().await.node.as_deref().and_then(slash),
         };
 
         let (mut rules, _) = walk(self, &scan, String::new()).await?;
+        rules.extend(scan.nested_rules.into_inner());
         rules.sort_by(|a, b| order(a).cmp(&order(b)));
         Ok(IgnoreList { rules })
     }
@@ -181,6 +197,13 @@ struct Scan {
     reachable: BTreeSet<String>,
     bookkeeping: Vec<String>,
     declared: Vec<String>,
+    /// The rules each nested workspace's own list asks for, spelled from this
+    /// root. Gathered beside the walk rather than through it, so a nested
+    /// workspace never collapses into its parent's `Unreached` rule.
+    nested_rules: std::cell::RefCell<Vec<Ignore>>,
+    /// The workspace node, which is policy rather than content and is never
+    /// on the list, reached or not.
+    node: Option<String>,
 }
 
 impl Scan {
@@ -200,6 +223,12 @@ impl Scan {
         self.declared
             .iter()
             .any(|dir| rel == dir || under(rel, dir))
+    }
+
+    /// Whether the workspace node lies beneath the directory `rel` — a
+    /// `.config` holding it is walked, not ruled hidden whole.
+    fn holds_node(&self, rel: &str) -> bool {
+        self.node.as_deref().is_some_and(|node| under(node, rel))
     }
 
     /// Whether the graph reaches anything strictly beneath the directory
@@ -254,7 +283,7 @@ fn escaped(path: &str) -> String {
 /// Returns the rules the subtree asks for and whether the graph reaches
 /// anything in it — the fact the caller needs to collapse a wholly-unreached
 /// subtree into a single rule.
-fn walk<'a, FS: Storage, Id, Ix: IndexStore>(
+fn walk<'a, FS: Storage + Clone, Id, Ix: IndexStore>(
     workspace: &'a Workspace<FS, Id, Ix>,
     scan: &'a Scan,
     rel_dir: String,
@@ -308,8 +337,15 @@ fn walk<'a, FS: Storage, Id, Ix: IndexStore>(
                     rules.push(dir(rel, Reason::Claimed));
                     continue;
                 }
-                if name.starts_with('.') && !scan.reaches_under(&rel) {
+                if name.starts_with('.') && !scan.reaches_under(&rel) && !scan.holds_node(&rel) {
                     rules.push(dir(rel, Reason::Hidden));
+                    continue;
+                }
+                if let Some(inner) = nested_list(workspace, &rel).await? {
+                    scan.nested_rules.borrow_mut().extend(inner);
+                    // Content of the library, by the nested workspace's own
+                    // say: the directory travels, and is not collapsed.
+                    any_reachable = true;
                     continue;
                 }
                 let (sub, sub_reachable) = walk(workspace, scan, rel.clone()).await?;
@@ -336,7 +372,7 @@ fn walk<'a, FS: Storage, Id, Ix: IndexStore>(
                     Reason::Declared
                 } else if scan.bookkeeping_covers(&rel) {
                     Reason::Bookkeeping
-                } else if scan.reachable.contains(&rel) {
+                } else if scan.reachable.contains(&rel) || scan.node.as_deref() == Some(&rel) {
                     any_reachable = true;
                     continue;
                 } else if name.starts_with('.') {
@@ -357,6 +393,46 @@ fn walk<'a, FS: Storage, Id, Ix: IndexStore>(
 
         Ok((rules, any_reachable))
     })
+}
+
+/// The ignore list of the workspace nested at `rel`, spelled from the outer
+/// root — or `None` when `rel` holds no workspace node, or holds one that will
+/// not open.
+async fn nested_list<FS: Storage + Clone, Id, Ix: IndexStore>(
+    workspace: &Workspace<FS, Id, Ix>,
+    rel: &str,
+) -> Result<Option<Vec<Ignore>>> {
+    let graph = workspace.graph();
+    let Ok(entries) = graph.listing(Path::new(rel)).await else {
+        return Ok(None);
+    };
+    if !graph.nests_workspace(Path::new(rel), &entries).await {
+        return Ok(None);
+    }
+    let at = workspace.root().join(rel);
+    let Ok(crate::discovery::Discovery::Found(found)) =
+        crate::discovery::discover(workspace.fs(), &at).await
+    else {
+        return Ok(None);
+    };
+    // A node whose root document lives elsewhere — a node that only names
+    // policy, with the root above it — is not a workspace rooted here.
+    if prov_graph::link::normalize(&found.root_dir) != prov_graph::link::normalize(&at) {
+        return Ok(None);
+    }
+    let Ok(inner) = crate::crossing::open_discovered(workspace.fs(), &found).await else {
+        return Ok(None);
+    };
+    let list = Box::pin(inner.ignore_list(&found.root_doc)).await?;
+    Ok(Some(
+        list.rules
+            .into_iter()
+            .map(|rule| Ignore {
+                path: format!("{rel}/{}", rule.path),
+                ..rule
+            })
+            .collect(),
+    ))
 }
 
 /// A rule covering a directory whole.

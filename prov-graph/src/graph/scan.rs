@@ -104,6 +104,87 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         Ok(index)
     }
 
+    /// Whether the workspace-relative directory `rel_dir`, whose listing is
+    /// `entries`, is the root of a workspace nested inside this one.
+    ///
+    /// It is when it holds a workspace node ([`crate::node::holds_node`]). The
+    /// root itself never is, and neither is a top-level `config` or `.config`
+    /// directory, since those are where this workspace keeps its own node.
+    ///
+    /// Every flat scan here stops at one: a nested workspace names its own
+    /// documents, titles them in its own terms and keeps its own registry, so
+    /// an id or title found inside it is not this workspace's. The census
+    /// needed nothing new — the edge into a nested workspace is a foreign
+    /// reference, which it already never descends.
+    pub async fn nests_workspace(&self, rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> bool {
+        if rel_dir.as_os_str().is_empty() {
+            return false;
+        }
+        if rel_dir.parent() == Some(Path::new(""))
+            && crate::node::NODE_DIRS[1..]
+                .iter()
+                .any(|dir| rel_dir == Path::new(dir))
+        {
+            return false;
+        }
+        crate::node::holds_node(self.fs(), &self.root().join(rel_dir), entries).await
+    }
+
+    /// Every workspace nested inside this one, by the workspace-relative
+    /// directory that is its root, in path order.
+    ///
+    /// A walk of the folder that stops at each one it finds — so a workspace
+    /// nested inside a nested one is the inner workspace's to report — and
+    /// skips hidden directories and the graph's parked ones, as the scans
+    /// beside it do.
+    pub async fn nested_workspaces(&self) -> Result<Vec<PathBuf>> {
+        let parked = self.with_declared(&[]);
+        let mut found = Vec::new();
+        self.scan_nested(PathBuf::new(), &parked, &mut found)
+            .await?;
+        found.sort();
+        Ok(found)
+    }
+
+    fn scan_nested<'a>(
+        &'a self,
+        rel_dir: PathBuf,
+        parked: &'a [PathBuf],
+        found: &'a mut Vec<PathBuf>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            if parked.iter().any(|p| rel_dir.starts_with(p)) {
+                return Ok(());
+            }
+            let Ok(entries) = self.listing(&rel_dir).await else {
+                return Ok(());
+            };
+            if self.nests_workspace(&rel_dir, &entries).await {
+                found.push(rel_dir);
+                return Ok(());
+            }
+            for entry in entries {
+                let Some(name) = entry
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                if name.starts_with('.') || !entry.file_type().is_dir() {
+                    continue;
+                }
+                let rel = if rel_dir.as_os_str().is_empty() {
+                    PathBuf::from(&name)
+                } else {
+                    rel_dir.join(&name)
+                };
+                self.scan_nested(rel, parked, found).await?;
+            }
+            Ok(())
+        })
+    }
+
     /// The directories the workspace occupies, reached from `start` by following
     /// path/id links — spanning links drive descent, and every relation's (and
     /// body wikilink's) path/id target contributes its directory, so an alias can
@@ -198,6 +279,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// deliberately independent of link resolution (so it can bootstrap the very
     /// index that id links resolve through, with no chicken-and-egg).
     ///
+    /// A directory holding a workspace node of its own is another workspace
+    /// ([`nests_workspace`](Self::nests_workspace)): its ids are its own
+    /// registry's, so the scan does not go in.
+    ///
     /// [`IdStorage::FrontmatterOnly`]: crate::identity::IdStorage::FrontmatterOnly
     pub async fn scan_ids(&self) -> Result<Vec<(crate::identity::Id, PathBuf)>> {
         let mut ids = Vec::new();
@@ -278,6 +363,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
+            if self.nests_workspace(&rel_dir, &entries).await {
+                return Ok(());
+            }
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -317,6 +405,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
+            if self.nests_workspace(&rel_dir, &entries).await {
+                return Ok(());
+            }
             let probe = shadow_probe(&rel_dir, &entries);
             for entry in entries {
                 let Some(name) = entry
@@ -377,6 +468,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Ok(entries) = self.listing(&rel_dir).await else {
                 return Ok(());
             };
+            if self.nests_workspace(&rel_dir, &entries).await {
+                return Ok(());
+            }
             let probe = shadow_probe(&rel_dir, &entries);
             for entry in entries {
                 let Some(name) = entry
@@ -446,4 +540,93 @@ fn shadow_probe(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> ShadowProbe 
         })
         .collect();
     ShadowProbe::over(files.iter())
+}
+
+#[cfg(all(test, feature = "yaml"))]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::exec::block_on;
+    use crate::fs::StdFs;
+    use crate::graph::{Graph, ReadSettings};
+    use crate::index::NoIndex;
+
+    use prov_testkit::write;
+
+    /// A library holding a book somebody else wrote, as a workspace of its
+    /// own: its node, root and chapter, each with an id and a title.
+    fn library() -> PathBuf {
+        let dir = prov_testkit::scratch("scan", "nested");
+        write(&dir, "prov.yaml", "workspace_id: library\n");
+        write(&dir, "config/notes.md", "---\nid: kept\ntitle: Kept\n---\n");
+        write(&dir, "index.md", "---\nid: home\ntitle: Home\n---\n");
+        write(
+            &dir,
+            "journal/today.md",
+            "---\nid: today\ntitle: Faith\n---\n",
+        );
+        write(
+            &dir,
+            "shelf/book/prov.yaml",
+            "workspace_id: book\nroot: README.md\n",
+        );
+        write(
+            &dir,
+            "shelf/book/README.md",
+            "---\nid: home\ntitle: The Book\n---\n",
+        );
+        write(
+            &dir,
+            "shelf/book/one.md",
+            "---\nid: ch1\ntitle: Faith\n---\n",
+        );
+        write(&dir, "other/config/prov.yaml", "workspace_id: other\n");
+        write(
+            &dir,
+            "other/index.md",
+            "---\nid: other\ntitle: Other\n---\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn the_flat_scans_stop_at_a_nested_workspace() {
+        let dir = library();
+        let graph = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+
+        assert_eq!(
+            block_on(graph.nested_workspaces()).unwrap(),
+            [PathBuf::from("other"), PathBuf::from("shelf/book")]
+        );
+
+        let mut ids: Vec<_> = block_on(graph.scan_ids())
+            .unwrap()
+            .into_iter()
+            .map(|(id, path)| (id.0, path))
+            .collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            [
+                ("home".to_owned(), PathBuf::from("index.md")),
+                ("kept".to_owned(), PathBuf::from("config/notes.md")),
+                ("today".to_owned(), PathBuf::from("journal/today.md")),
+            ],
+            "the book's `home` would have collided with the library's"
+        );
+
+        let titles = block_on(graph.title_index()).unwrap();
+        assert_eq!(
+            titles.resolve("Faith"),
+            crate::title::TitleMatch::Unique(PathBuf::from("journal/today.md")),
+            "a search of the library is not a search of the book"
+        );
+
+        let docs = block_on(graph.content_documents()).unwrap();
+        assert!(
+            docs.iter().all(|doc| !doc.starts_with("shelf/book")),
+            "{docs:?}"
+        );
+        assert!(docs.iter().all(|doc| !doc.starts_with("other")), "{docs:?}");
+    }
 }
