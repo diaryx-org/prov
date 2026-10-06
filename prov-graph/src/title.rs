@@ -109,8 +109,18 @@ pub fn title_text(value: &crate::meta::Value) -> Option<String> {
 /// with no path separator and no file extension (`My File`, `intro`), as
 /// opposed to a path (`notes/a.md`, `README.md`) or a scheme'd id. Only such
 /// targets are looked up in the title index; everything else resolves as a path.
+///
+/// An `id:` target (or the legacy `colophon:` spelling) is never a name, even
+/// though a local one (`id:ajp7eq`) has neither a separator nor an extension.
+/// It resolves through the registry. Every walk asks this question to decide
+/// whether to *build* the title index, which is a scan, and the bounded scope
+/// gives up bounding the moment a spanning link is alias-shaped. Reading an id
+/// as a name therefore sent a library whose `contents` are id links into the
+/// full, unbounded scan of every directory under the root, to answer a
+/// question the registry had already answered.
 pub fn is_alias_shaped(target: &str) -> bool {
     !target.is_empty()
+        && crate::link::strip_id_scheme(target).is_none()
         && !target.contains('/')
         && !target.contains('\\')
         && Path::new(target).extension().is_none()
@@ -158,5 +168,17 @@ mod tests {
         assert!(!is_alias_shaped("notes/a.md"));
         assert!(!is_alias_shaped("README.md"));
         assert!(!is_alias_shaped(""));
+    }
+
+    /// A local id has no separator and no extension, which was every test the
+    /// shape check made, so it used to read as a name.
+    #[test]
+    fn alias_shape_excludes_id_references() {
+        assert!(!is_alias_shaped("id:ajp7eq"));
+        assert!(!is_alias_shaped("id:ajp7eq#v2"));
+        assert!(!is_alias_shaped("colophon:ajp7eq"));
+        assert!(!is_alias_shaped("id:"));
+        // A title may hold a colon; only the id schemes are excluded.
+        assert!(is_alias_shaped("Note: a draft"));
     }
 }
