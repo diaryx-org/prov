@@ -311,6 +311,13 @@ that gets no key at all — no date, or one no grain can cut — is in the
 entries have all quietly stopped grouping is indistinguishable from an empty
 archive and the difference is the whole diagnosis.
 
+A value of a field declared `type: ref` groups by **the document it links
+to**, not by how the link is spelled: `[Ruth Harris](id:abc1234)` and
+`[Grandma](id:abc1234)` are one group, keyed by that document's path and
+labelled by its title, so relabelling a link does not move anything between
+groups. A reference that resolves to nothing groups by its text, as any other
+value does. Groups are ordered by label, which for every other key is the key.
+
 An expression can fail on one document and not another — `size(nickname)` on
 a document without one, a comparison between text and a number. Such a
 document is neither shown nor silently dropped: `prov views <name>` lists it

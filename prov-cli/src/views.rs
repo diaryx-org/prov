@@ -145,7 +145,7 @@ fn print_grouped(selection: &prov::views::Selection, key: &prov::views::Expressi
         return;
     }
     for group in &rows.groups {
-        println!("{} ({})", group.key, group.rows.len());
+        println!("{} ({})", group.label, group.rows.len());
         for row in &group.rows {
             print_view_row(row);
         }
