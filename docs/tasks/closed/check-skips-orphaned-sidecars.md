@@ -3,12 +3,17 @@ title: check skips orphaned sidecars
 description: "The orphan sweep and the missing-containment pass consider only files with a prose extension, so an attachment sidecar nothing lists, or one whose parent has dropped it, is never reported"
 author: adammharris
 created: 2026-10-05
-updated: 2026-10-05
-status: open
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-06
+status: done
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # check skips orphaned sidecars
+
+**Status.** Done, in `fix(validate): report an attachment sidecar nothing
+reaches` (2026-10-06). Both passes now take whole-file documents too and keep
+the ones that read as attachment sidecars; machinery stays out, and on 20,000
+documents and 2,000 cards `check` timed the same as before.
 
 `spec.md` §4 calls an attachment's sidecar "an ordinary content node", and a
 content node is orphan-checked. `check` does not check this one. Both passes
