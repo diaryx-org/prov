@@ -15,15 +15,26 @@
 //! survives a rename, a move and a retitle-by-id for the reason the old
 //! `under:` did: the ancestry is recomputed from the spine on every run, never
 //! matched against a path prefix.
+//!
+//! # The census resolves references
+//!
+//! A field declared `type: ref` holds links, and the same person linked as
+//! `[Ruth Harris](id:…)` in one document and `[Grandma](id:…)` in another is
+//! one person. Grouping is pure and cannot resolve a link, so the census does
+//! it once, here, and hands each row its [`references`](Row::references) —
+//! which is how [`group`](fn@crate::group) files both documents under the
+//! record they point at rather than under two spellings of it.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use prov_graph::fs::ReadStorage;
-use prov_graph::graph::{Graph, NodeKind, TreeOptions};
+use prov_graph::graph::{Graph, NodeKind, Target, TreeOptions};
 use prov_graph::index::IdIndex;
+use prov_graph::link::Link;
 use prov_graph::meta::Value;
+use prov_graph::title::TitleIndex;
 
 use crate::error::Result;
 use crate::expr::Evaluator;
@@ -48,6 +59,10 @@ pub struct Row {
     pub ancestors: Vec<Ancestor>,
     /// The document's parsed metadata block.
     pub meta: Value,
+    /// The values of the document's `type: ref` fields that resolve to a
+    /// document, each once. A value that resolves to nothing is not here, and
+    /// groups by its text as any other value does.
+    pub references: Vec<Reference>,
 }
 
 impl Row {
@@ -59,6 +74,21 @@ impl Row {
             .get("title")
             .and_then(prov_graph::title::title_text)
     }
+}
+
+/// A `type: ref` value a row carries, and the document it resolves to.
+///
+/// Recorded by the census so that grouping, which never goes back to disk, can
+/// key a reference by what it names instead of how it was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    /// The value exactly as written — `[Grandma](id:abc1234)` — which is what
+    /// an expression over the field sees, and so what a key comes out as.
+    pub raw: String,
+    /// The workspace-relative path of the document it resolves to.
+    pub target: PathBuf,
+    /// That document's `title`, when it declares one.
+    pub title: Option<String>,
 }
 
 /// A document above a row in the spine — `doc.ancestors` in an expression.
@@ -247,9 +277,61 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
             id: id_of(path, &meta),
             ancestors: above.iter().map(ancestor).collect(),
             meta,
+            references: Vec::new(),
         });
     }
+    if !graph.references().is_empty() {
+        resolve_references(graph, &mut rows).await;
+    }
     Ok(rows)
+}
+
+/// Fill in each row's [`references`](Row::references).
+///
+/// A `[[Name]]` resolves against the titles and file stems of the documents
+/// the census reached — the documents a view can show — so a name two of them
+/// claim is ambiguous and stays text. A target outside the census is read for
+/// its title; one that cannot be read resolves to nothing, as a dead link does.
+async fn resolve_references<FS: ReadStorage, Ix: IdIndex>(graph: &Graph<FS, Ix>, rows: &mut [Row]) {
+    let mut titles = TitleIndex::new();
+    let mut title_of: HashMap<PathBuf, Option<String>> = HashMap::with_capacity(rows.len());
+    for row in rows.iter() {
+        if let Some(stem) = row.path.file_stem().and_then(|s| s.to_str()) {
+            titles.insert(stem, row.path.clone());
+        }
+        if let Some(title) = row.title() {
+            titles.insert(title, row.path.clone());
+        }
+        title_of.insert(row.path.clone(), row.title());
+    }
+
+    for row in rows.iter_mut() {
+        let mut references: Vec<Reference> = Vec::new();
+        for field in graph.references() {
+            for (_, raw) in prov_graph::field::strings_at(&row.meta, field) {
+                if references.iter().any(|r| r.raw == raw) {
+                    continue;
+                }
+                let link = Link::parse(raw.trim());
+                let Target::Path(target) = graph.resolve_link_with(&row.path, &link, Some(&titles))
+                else {
+                    continue;
+                };
+                let title = match title_of.get(&target) {
+                    Some(title) => title.clone(),
+                    None => match graph.document(&target).await {
+                        Ok(doc) => doc
+                            .meta
+                            .get("title")
+                            .and_then(prov_graph::title::title_text),
+                        Err(_) => continue,
+                    },
+                };
+                references.push(Reference { raw, target, title });
+            }
+        }
+        row.references = references;
+    }
 }
 
 /// Flatten the readable documents of a spanning tree into `out`, each with
@@ -510,6 +592,90 @@ mod tests {
         assert_eq!(rows.len(), 3, "documents, not placements");
         assert_eq!(rows.groups.len(), 2);
         assert_eq!(rows.ungrouped.len(), 1, "the year index carries no date");
+    }
+
+    /// The People lens over references: one person, linked by id under two
+    /// labels and once by name, is one group titled by the person's record. A
+    /// reference to nothing still groups, by its text.
+    #[test]
+    fn a_reference_field_groups_by_the_document_it_names() {
+        let dir = tempdir("refs");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\ncontents:\n- people/ruth.md\n- a.md\n- b.md\n- c.md\n---\n",
+        );
+        write(
+            &dir,
+            "people/ruth.md",
+            "---\ntitle: Ruth Harris\nid: rth0001\npart_of: ../index.md\n---\n",
+        );
+        write(
+            &dir,
+            "a.md",
+            "---\ntitle: Letter\npart_of: index.md\npeople:\n- '[Ruth Harris](id:rth0001)'\n---\n",
+        );
+        write(
+            &dir,
+            "b.md",
+            "---\ntitle: Recipe\npart_of: index.md\npeople:\n- '[Grandma](id:rth0001)'\n- '[Nan](people/ruth.md)'\n---\n",
+        );
+        write(
+            &dir,
+            "c.md",
+            "---\ntitle: Photo\npart_of: index.md\npeople:\n- '[[Ruth Harris]]'\n- '[Walter](id:wlt0001)'\n---\n",
+        );
+        // The registry, as far as this workspace needs one: the record's id.
+        struct Ruth;
+        impl IdIndex for Ruth {
+            fn resolve(&self, id: &prov_graph::identity::Id) -> Option<PathBuf> {
+                (id.0 == "rth0001").then(|| PathBuf::from("people/ruth.md"))
+            }
+            fn id_for_path(&self, path: &Path) -> Option<prov_graph::identity::Id> {
+                (path == Path::new("people/ruth.md"))
+                    .then(|| prov_graph::identity::Id("rth0001".into()))
+            }
+        }
+        let graph = Graph::new(
+            StdFs,
+            &dir,
+            Ruth,
+            ReadSettings {
+                references: vec![prov_graph::field::FieldPath::parse("people")],
+                ..ReadSettings::default()
+            },
+        );
+        let spec = ViewSpec::new("people", Expression::parse("people").unwrap());
+        let selection = block_on(select(&graph, &spec, "index.md")).unwrap();
+        let rows = crate::group(&selection, &spec.key);
+        let groups: Vec<_> = rows
+            .groups
+            .iter()
+            .map(|g| {
+                let paths: Vec<_> = g
+                    .rows
+                    .iter()
+                    .map(|r| r.path.display().to_string())
+                    .collect();
+                (g.key.as_str(), g.label.as_str(), paths)
+            })
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                (
+                    "people/ruth.md",
+                    "Ruth Harris",
+                    vec!["a.md".to_string(), "b.md".into(), "c.md".into()]
+                ),
+                (
+                    "[Walter](id:wlt0001)",
+                    "[Walter](id:wlt0001)",
+                    vec!["c.md".to_string()]
+                ),
+            ],
+            "one group per person, the recipe in it once"
+        );
     }
 
     /// Selecting twice over an unchanged workspace produces the identical set —

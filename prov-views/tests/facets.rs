@@ -182,6 +182,7 @@ fn a_field_named_date_is_an_ordinary_field() {
         id: None,
         ancestors: Vec::new(),
         meta: Value::Mapping(meta),
+        references: Vec::new(),
     };
     let keys = Evaluator::new()
         .keys(&Expression::parse("date").unwrap(), &row)

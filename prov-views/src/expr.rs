@@ -935,6 +935,7 @@ mod tests {
                 },
             ],
             meta: Value::Mapping(meta),
+            references: Vec::new(),
         }
     }
 

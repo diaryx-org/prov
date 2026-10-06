@@ -7,11 +7,6 @@ updated: 2026-10-06
 part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
-- '[A body link reads a covered payload as a document](/docs/tasks/a-body-link-reads-a-covered-payload-as-a-document.md)'
-- '[A card''s backlinks leave out the references to its payload](/docs/tasks/a-cards-backlinks-leave-out-its-payloads.md)'
-- '[A manifest has no add-only verb](/docs/tasks/a-manifest-has-no-add-only-verb.md)'
-- '[check skips orphaned sidecars](/docs/tasks/check-skips-orphaned-sidecars.md)'
-- '[A nested workspace is walked as the outer one''s](/docs/tasks/a-nested-workspace-is-walked-as-the-outer-ones.md)'
 ---
 
 # Tasks

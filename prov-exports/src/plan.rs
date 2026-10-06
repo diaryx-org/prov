@@ -311,6 +311,7 @@ mod tests {
             id: None,
             ancestors: Vec::new(),
             meta: Value::Mapping(meta),
+            references: Vec::new(),
         }
     }
 

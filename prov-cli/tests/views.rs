@@ -369,8 +369,8 @@ fn filing_by_reference_is_checked_and_a_view_reads_the_path() {
     let (ok, out) = run(&dir, &["views", "journal"]);
     assert!(ok, "{out}");
     assert!(
-        out.contains("d17.md (1)"),
-        "groups by the link as written: {out}"
+        out.contains("17 (1)") && !out.contains("d17.md (1)"),
+        "groups by the document the link names, titled by it: {out}"
     );
 
     write(&dir, "index.md", &index("string"));
@@ -379,6 +379,57 @@ fn filing_by_reference_is_checked_and_a_view_reads_the_path() {
     assert!(
         out.contains("filing.journal.nest") && out.contains("not declared `type: ref`"),
         "{out}"
+    );
+}
+
+/// A People lens over a `type: ref` field: one person linked under two labels
+/// is one group, titled by the person's own page, and relabelling a link does
+/// not move a document out of it. The key is the page; the label is its title.
+#[test]
+fn a_reference_field_groups_by_the_record_it_names() {
+    let dir = scratch("people-ref");
+    write(
+        &dir,
+        "index.md",
+        "---\ntitle: Home\nprov:\n  fields:\n    people:\n      type: ref\n  views:\n    \
+         people:\n      key: people\ncontents:\n- ruth.md\n- letter.md\n- recipe.md\n---\n",
+    );
+    write(
+        &dir,
+        "ruth.md",
+        "---\ntitle: Ruth Harris\npart_of: index.md\n---\n",
+    );
+    let entries = |id: &str| {
+        write(
+            &dir,
+            "letter.md",
+            &format!(
+                "---\ntitle: Letter\npart_of: index.md\npeople:\n- '[Ruth Harris]({id})'\n---\n"
+            ),
+        );
+        write(
+            &dir,
+            "recipe.md",
+            &format!("---\ntitle: Recipe\npart_of: index.md\npeople:\n- '[Grandma]({id})'\n---\n"),
+        );
+    };
+    // The workspace is whole before an id is minted in it, then the two
+    // entries link the person by that id under their two labels.
+    entries("ruth.md");
+    let (ok, id, err) = run_split(&dir, &["id", "ruth.md"]);
+    assert!(ok, "{err}");
+    entries(id.trim());
+
+    let (ok, out) = run(&dir, &["views", "people"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("Ruth Harris (2)"), "one group: {out}");
+    assert!(!out.contains("Grandma"), "not a group of its own: {out}");
+
+    let (ok, json, _) = run_split(&dir, &["views", "people", "--json"]);
+    assert!(ok, "{json}");
+    assert!(
+        json.contains("\"key\": \"ruth.md\",\n      \"label\": \"Ruth Harris\","),
+        "{json}"
     );
 }
 
@@ -479,7 +530,7 @@ fn an_executed_view_carries_each_row_s_whole_metadata() {
     assert!(out.starts_with("{\n  \"view\": \"daily\",\n"), "{out}");
     assert!(
         out.contains(
-            "\"key\": \"2026-07\",\n      \"rows\": [\n        {\n          \
+            "\"key\": \"2026-07\",\n      \"label\": \"2026-07\",\n      \"rows\": [\n        {\n          \
              \"path\": \"daily/07-24.md\",\n          \"title\": \"July 24\",\n          \
              \"id\": null,\n          \"ancestors\": [\n"
         ),

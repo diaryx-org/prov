@@ -3,12 +3,15 @@ title: A body link reads a covered payload as a document
 description: "A file under a manifest is opaque bytes, but a body link to it makes `check` parse it — so a captured text file that happens to contain a metadata block, `content_hash` included, reports a fixity mismatch against a checksum it never had"
 author: adammharris
 created: 2026-09-30
-updated: 2026-09-30
-status: open
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-06
+status: done
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A body link reads a covered payload as a document
+
+Fixed in `documents_among` leaving out an opaque file under a reachable
+manifest's root; the commit is the one that closes this file.
 
 A manifest claims every file under its root that prov cannot read as text,
 and `manifests.md` §3 says a covered file "is not a document". `check` agrees

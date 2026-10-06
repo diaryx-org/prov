@@ -642,6 +642,7 @@ pub fn view_result(selection: &Selection, rows: &RowSet<'_>) -> J {
     let group = |g: &prov::views::Group<'_>| {
         J::Obj(vec![
             ("key", s(&g.key)),
+            ("label", s(&g.label)),
             ("rows", J::Arr(g.rows.iter().map(|r| view_row(r)).collect())),
         ])
     };
