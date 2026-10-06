@@ -87,6 +87,7 @@
 pub mod census;
 pub mod load;
 pub mod manifest;
+pub mod parking;
 pub mod probe;
 pub mod resolve;
 pub mod scan;
@@ -97,6 +98,7 @@ pub use census::{
     Backlink, CensusEntry, FrontmatterLink, LinkSite, Resolution, StructuralFact, inbound, invert,
 };
 pub use census::{Walk, reachable_set};
+pub use parking::{ParkedStore, Parking, StorePointer};
 pub use resolve::Target;
 pub use shadow::{ShadowProbe, sidecar_candidates};
 pub use tree::{Node, NodeKind, TreeOptions};
@@ -122,6 +124,9 @@ use crate::relation::RelationSet;
 /// frontmatter is a place an id can be found. The other seven — link style,
 /// reference style, embed format and style, fixity, history — govern how prov
 /// *writes*, and a reader that never writes has no use for any of them.
+/// [`parking`](Self::parking) is the same kind of setting: it decides which
+/// documents a `[[name]]` can resolve to, by keeping a store's interior out
+/// of the title index.
 #[derive(Debug, Clone)]
 pub struct ReadSettings {
     /// The relation vocabulary: which metadata fields are links, and which one
@@ -141,6 +146,12 @@ pub struct ReadSettings {
     /// Where a document's stable id is persisted, and so where resolution may
     /// look for one.
     pub id_storage: IdStorage,
+    /// The directories no walk indexes titles inside — a declared
+    /// `out_of_scope` store, a retired store's interior. Every walk applies
+    /// it, including the ones a caller reaches through the bare graph, so a
+    /// view or an export sees the same workspace the workspace's own walks
+    /// do. Empty by default. See [`parking`].
+    pub parking: Parking,
 }
 
 impl Default for ReadSettings {
@@ -150,6 +161,7 @@ impl Default for ReadSettings {
             references: Vec::new(),
             workspace_id: String::new(),
             id_storage: IdStorage::default(),
+            parking: Parking::default(),
         }
     }
 }

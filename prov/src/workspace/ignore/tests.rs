@@ -293,3 +293,87 @@ fn a_declaration_covers_even_a_reachable_document() {
     assert_eq!(lines(&list), ["/vendor/"]);
     assert_eq!(list.rules[0].reason, Reason::Declared);
 }
+
+/// A held copy of somebody else's book: a workspace of its own inside this
+/// one, its own node and root, its own unlinked draft and its own history
+/// store.
+fn nest_a_book(dir: &Path) {
+    write(
+        dir,
+        "book/prov.yaml",
+        "workspace_id: book\nroot: README.md\nout_of_scope:\n- history\n",
+    );
+    write(
+        dir,
+        "book/README.md",
+        "---\ntitle: The Book\ncontents:\n- chapter-1.md\n---\nthe book\n",
+    );
+    write(
+        dir,
+        "book/chapter-1.md",
+        "---\ntitle: Chapter 1\npart_of: README.md\n---\nIn the beginning\n",
+    );
+    loose(dir, "book/notes-to-self.md", "Notes");
+    write(dir, "book/history/historica.txt", "historica\n");
+    write(dir, "book/history/revisions/one.rev.txt", "a revision\n");
+}
+
+/// The outer graph reaches the book only through a foreign reference, which
+/// no walk follows, so by the outer graph alone the whole book would be one
+/// `Unreached` rule — left out of whatever is being told. The book is judged
+/// by its own graph instead: what it reaches travels, and what it declares or
+/// leaves loose does not.
+#[test]
+fn a_nested_workspace_is_judged_by_its_own_graph() {
+    let dir = tempdir("nested");
+    root(&dir, &["notes/a.md"]);
+    child(&dir, "notes/a.md", "A");
+    nest_a_book(&dir);
+
+    let list = list(&dir);
+
+    assert_eq!(
+        lines(&list),
+        ["/book/history/", "/book/notes-to-self.md"],
+        "{:?}",
+        list.rules
+    );
+    assert_eq!(list.rules[0].reason, Reason::Declared);
+    assert_eq!(list.rules[1].reason, Reason::Unreached);
+}
+
+/// A directory with a node that will not open is no workspace this list can
+/// ask, and is walked as any other directory was.
+#[test]
+fn a_nested_node_that_will_not_open_is_walked_as_before() {
+    let dir = tempdir("nested-broken");
+    root(&dir, &[]);
+    // Two root candidates and a node that names neither: no root to open.
+    write(&dir, "odd/prov.yaml", "workspace_id: odd\n");
+    loose(&dir, "odd/one.md", "One");
+    loose(&dir, "odd/two.md", "Two");
+
+    assert_eq!(lines(&list(&dir)), ["/odd/"]);
+}
+
+/// The node is the policy the workspace runs under, read whatever any walk
+/// reaches: a tool told to leave it behind would hand over a folder that is
+/// no longer the workspace it was.
+#[test]
+fn the_workspace_node_is_never_on_the_list() {
+    let dir = tempdir("node");
+    root(&dir, &[]);
+    write(&dir, "prov.yaml", "workspace_id: top\n");
+
+    assert!(list(&dir).is_empty(), "{:?}", lines(&list(&dir)));
+}
+
+#[test]
+fn a_node_in_a_hidden_config_directory_is_not_ruled_with_it() {
+    let dir = tempdir("node-hidden");
+    root(&dir, &[]);
+    write(&dir, ".config/prov.yaml", "workspace_id: top\n");
+    write(&dir, ".config/editor.json", "{}\n");
+
+    assert_eq!(lines(&list(&dir)), ["/.config/editor.json"]);
+}

@@ -25,20 +25,9 @@
 
 use std::path::{Path, PathBuf};
 
-use prov_graph::document;
 use prov_graph::fs::ReadStorage;
 
-/// The stem of a workspace node, in every location.
-pub const NODE_STEM: &str = "prov";
-
-/// Where a node may live, in precedence order: the top level, then a `config`
-/// directory, then a hidden one.
-///
-/// The empty string is the root directory itself. Top level is first because it
-/// is what a workspace that has never thought about this already writes; the
-/// other two exist for a workspace that wants its listing clean, which is a
-/// presentation preference and so loses to the plain answer.
-pub const NODE_DIRS: [&str; 3] = ["", "config", ".config"];
+pub use prov_graph::node::{NODE_DIRS, NODE_STEM, is_node_file};
 
 /// Extension precedence within one directory.
 ///
@@ -67,19 +56,6 @@ impl Located {
     pub fn all(&self) -> impl Iterator<Item = &PathBuf> {
         self.node.iter().chain(&self.shadowed)
     }
-}
-
-/// Whether `path` is shaped like a workspace node: stem `prov`, in a metadata
-/// format this build can parse.
-///
-/// A format whose feature is off is not a node, which is the honest answer —
-/// prov cannot read it, so it cannot be the policy this workspace runs under.
-fn is_node_file(path: &Path) -> bool {
-    let stem_matches = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .is_some_and(|s| s.eq_ignore_ascii_case(NODE_STEM));
-    stem_matches && document::whole_file_format(path).is_some()
 }
 
 /// Rank a node file by [`NODE_EXTS`], so a directory holding two resolves the
