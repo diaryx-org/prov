@@ -26,7 +26,8 @@ use prov_graph::document::{Body, Document};
 use prov_graph::field::FieldPath;
 use prov_graph::fs::{DirEntry, Metadata};
 use prov_graph::graph::{
-    Backlink, CensusEntry, FrontmatterLink, Graph, Node, ReadSettings, TreeOptions, Walk,
+    Backlink, CensusEntry, FrontmatterLink, Graph, Node, ParkedStore, Parking, ReadSettings,
+    StorePointer, TreeOptions, Walk,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -61,6 +62,47 @@ pub use ignore::{Ignore, IgnoreList, Reason};
 /// the retired history store's archive did too.
 fn store_dir(store_index: &Path) -> PathBuf {
     store_index.parent().unwrap_or(Path::new("")).to_path_buf()
+}
+
+/// What the workspace's walks never index titles inside, stated for the
+/// [`Graph`] — see [`Workspace::parked_dirs`] for why each is there.
+///
+/// The declared scope first: it is the cheapest (no read at all) and the only
+/// one the workspace states rather than prov deriving. Then a retired prov
+/// event store the root still points at: the `history` pointer and this
+/// parking survive the store's retirement so an unmigrated workspace keeps
+/// its scans out of the event archive. Then a recycle bin the root still
+/// points at. The deletion log that replaced it parks nothing — a delete
+/// destroys the bytes and records that it did — so `deletions` is tried
+/// first and parks nothing, and only a root still pointing at a legacy bin
+/// parks its `items/`: a binned document keeps its title, and indexing
+/// `items/` would resolve `[[Some Note]]` to a copy of a note its author
+/// deleted.
+fn parking(settings: &Settings) -> Parking {
+    let relations = &settings.relations;
+    let pointer = |relation: &str, parks: &[&str]| StorePointer {
+        relation: relation.to_string(),
+        parks: parks.iter().map(PathBuf::from).collect(),
+    };
+    let mut stores = Vec::new();
+    if let Some(history) = relations.history_relation() {
+        stores.push(ParkedStore {
+            pointers: vec![pointer(history, &["events", "blobs"])],
+        });
+    }
+    let deletions = [
+        relations.deletions_relation().map(|r| pointer(r, &[])),
+        relations.recycle_relation().map(|r| pointer(r, &["items"])),
+    ];
+    if relations.recycle_relation().is_some() {
+        stores.push(ParkedStore {
+            pointers: deletions.into_iter().flatten().collect(),
+        });
+    }
+    Parking {
+        dirs: settings.out_of_scope.clone(),
+        stores,
+    }
 }
 
 /// The workspace's **policy knobs**, as one value.
@@ -841,33 +883,13 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// its author forgot to link, so the difference is a statement only the
     /// workspace can make. Until it makes one, such a directory is ordinary
     /// unreached content — which is the honest answer, not an oversight.
+    ///
+    /// The answer is the graph's ([`Graph::parked_dirs`]): the workspace
+    /// states its parking once, when it is built ([`parking`]), so that a walk
+    /// a caller makes through the bare [`graph`](Self::graph) — a view, an
+    /// export plan — is bounded exactly as the workspace's own walks are.
     pub(crate) async fn parked_dirs(&self, root_doc: &Path) -> Result<Vec<PathBuf>> {
-        // The declared scope first: it is the cheapest of the three (no read
-        // at all) and the only one the workspace states rather than prov
-        // deriving, so a walk bounded by it is bounded before any pointer is
-        // followed.
-        let mut dirs: Vec<PathBuf> = self.settings.out_of_scope.clone();
-        // A retired prov event store the root still points at. The `history`
-        // pointer and this parking survive the store's retirement so an
-        // unmigrated workspace keeps its scans out of the event archive; both
-        // go when nothing declares such a store any more.
-        if let Some(index) = self.history_path(root_doc).await? {
-            dirs.push(store_dir(&index).join("events"));
-            dirs.push(store_dir(&index).join("blobs"));
-        }
-        // A recycle bin the root still points at. The deletion log that replaced
-        // it parks nothing — a delete destroys the bytes and records that it
-        // did — so this is only ever the bin of an unmigrated workspace, whose
-        // parked items must stay out of every walk for exactly the reason above:
-        // a binned document keeps its title, and indexing `items/` would resolve
-        // `[[Some Note]]` to a copy of a note its author deleted. A `deletions/`
-        // store has no `items/`, so the parking costs it nothing.
-        if let Some((index, relation)) = self.deletions_pointer(root_doc).await?
-            && Some(relation.as_str()) == self.relations().recycle_relation()
-        {
-            dirs.push(store_dir(&index).join("items"));
-        }
-        Ok(dirs)
+        self.graph.parked_dirs(root_doc).await
     }
 
     /// The generated `about.md` this root declares via the about-pointer
@@ -2092,6 +2114,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
             references: self.settings.references.clone(),
             workspace_id: self.settings.workspace_id.clone(),
             id_storage: self.settings.id_storage,
+            parking: parking(&self.settings),
         };
         let mut graph = Graph::new(self.fs, self.root, self.index, read);
         if let Some(hook) = self.bulk {

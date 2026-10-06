@@ -36,9 +36,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// filesystem scan, deliberately independent of link resolution so that
     /// alias links can themselves be *spanning* (`contents: alias`) without a
     /// chicken-and-egg between "walk the tree" and "resolve the walk's links."
+    ///
+    /// The graph's declared [`Parking::dirs`](super::Parking::dirs) are not
+    /// descended into. Its store pointers are not followed: with no start
+    /// document there is no root to read them from, so a caller that knows
+    /// the root asks [`title_index_scoped`](Self::title_index_scoped).
     pub async fn title_index(&self) -> Result<TitleIndex> {
         let mut index = TitleIndex::new();
-        self.scan_titles(PathBuf::new(), &[], &mut index).await?;
+        let parked = self.with_declared(&[]);
+        self.scan_titles(PathBuf::new(), &parked, &mut index)
+            .await?;
         Ok(index)
     }
 
@@ -63,7 +70,12 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// version — silently, since neither is anywhere the reader can see. The
     /// caller supplies them because *which* directories those are is a question
     /// about prov's storage layout, and this crate has no opinion about it.
+    ///
+    /// The graph's declared [`Parking::dirs`](super::Parking::dirs) are parked
+    /// as well as `parked`.
     pub async fn title_index_scoped(&self, start: &Path, parked: &[PathBuf]) -> Result<TitleIndex> {
+        let parked = self.with_declared(parked);
+        let parked = parked.as_slice();
         let (dirs, needs_full) = self.title_scope(start, parked).await?;
         if needs_full {
             // The unbounded fallback still owes the same exclusion: falling back

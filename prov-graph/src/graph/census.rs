@@ -394,7 +394,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// [`reachable_files_within`](Self::reachable_files_within) is the same walk
     /// bounded away from directories prov parks its own bytes in.
     pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
-        self.reachable_files_within(start, &[]).await
+        let _scope = self.read_scope();
+        let start = link::normalize(start);
+        let parked = self.walk_parking(&start).await;
+        self.reachable_files_within(start, &parked).await
     }
 
     /// [`reachable_files`](Self::reachable_files), told which directories are
@@ -428,8 +431,14 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// (via `mutate`) inbound-rename maintenance are all views over. Because it
     /// is read from the documents, it is ground truth: a stored backlink index
     /// heals *toward* the census, never the reverse.
+    ///
+    /// Bounded by the graph's [`Parking`](super::Parking) as seen from `start`
+    /// — see [`tree_with`](Self::tree_with).
     pub async fn census(&self, start: impl AsRef<Path>) -> Result<Vec<CensusEntry>> {
-        self.census_within(start, &[]).await
+        let _scope = self.read_scope();
+        let start = link::normalize(start);
+        let parked = self.walk_parking(&start).await;
+        self.census_within(start, &parked).await
     }
 
     /// [`census`](Self::census), told which directories are parked — see
@@ -481,7 +490,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// memos still gets a walk that reads each document once, and a caller that
     /// already opened one (`check`, a `mutate` verb) nests inside it and keeps
     /// everything the walk read.
+    ///
+    /// `parked` is joined by the graph's declared
+    /// [`Parking::dirs`](super::Parking::dirs), as in
+    /// [`tree_within`](Self::tree_within).
     pub async fn walk(&self, start: &Path, parked: &[PathBuf]) -> Result<Walk> {
+        let parked = self.with_declared(parked);
+        let parked = parked.as_slice();
         let _scope = self.read_scope();
         // Declared after the memo scope so it is dropped before it: the
         // backend's scope closes when the walk's reads are done, and what the

@@ -138,18 +138,32 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// Materialize the spanning tree rooted at `start`, as [`tree`](Self::tree),
     /// with [`TreeOptions`] controlling how an unresolved spanning target is
     /// represented. `TreeOptions::default()` is exactly `tree()`'s behavior.
+    ///
+    /// Bounded by the graph's [`Parking`](super::Parking) as seen from `start`
+    /// ([`parked_dirs`](Self::parked_dirs)): no title inside a parked directory
+    /// answers a `[[name]]`, and a fallback title scan never descends into one.
     pub async fn tree_with(&self, start: impl AsRef<Path>, options: TreeOptions) -> Result<Node> {
-        self.tree_within(start, options, &[]).await
+        // Opened here as well as in `tree_within` so the read of `start` that
+        // finds its store pointers is the same read the walk begins with.
+        let _scope = self.read_scope();
+        let start = link::normalize(start);
+        let parked = self.walk_parking(&start).await;
+        self.tree_within(start, options, &parked).await
     }
 
     /// [`tree_with`](Self::tree_with), told which directories are parked — see
-    /// [`title_index_scoped`](Self::title_index_scoped).
+    /// [`title_index_scoped`](Self::title_index_scoped). The graph's declared
+    /// [`Parking::dirs`](super::Parking::dirs) are parked as well; its store
+    /// pointers are not followed, since `parked` is the caller's answer to
+    /// that.
     pub async fn tree_within(
         &self,
         start: impl AsRef<Path>,
         options: TreeOptions,
         parked: &[PathBuf],
     ) -> Result<Node> {
+        let parked = self.with_declared(parked);
+        let parked = parked.as_slice();
         // Two passes over the same documents whenever the workspace uses
         // `[[alias]]` links: the descent reads each node, and the title index it
         // builds on meeting the first alias reads every document in the reached

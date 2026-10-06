@@ -720,7 +720,10 @@ What the declaration buys, everywhere at once:
   not read a claim written inside it;
 - `attach --all --recursive` no longer mints a sidecar beside every file in it;
 - the title index does not resolve a nominal `[[Some Note]]` to a copy living
-  inside it;
+  inside it, and a walk that falls back to a full title scan does not read the
+  directory's files. That holds for walks made through the bare graph too — a
+  view, `search`, an export plan — because the workspace hands the declaration
+  to its graph when it is built (`ReadSettings::parking`);
 - `prov ignore` names the directory as **one rule**, labelled *declared out of
   scope* rather than *unreached* — a statement, not an oversight.
 
