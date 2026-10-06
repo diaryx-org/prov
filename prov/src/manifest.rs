@@ -1080,6 +1080,39 @@ mod tests {
     }
 
     #[test]
+    fn a_body_link_reaches_a_covered_file_without_reading_it() {
+        // Captured shell output: a `.txt` payload whose bytes hold an HTML data
+        // island that looks like a metadata block, `content_hash` and all.
+        // Linking it from a body must not make it a document, or `check` reads
+        // that hash as the payload's own and calls the payload corrupt.
+        let dir = photos("body-link");
+        write(
+            &dir,
+            "photos/out.txt",
+            b"$ cat page.html\n\n<script type=\"application/yaml\">\ntitle: X\ncontent_hash: sha256:00\n</script>\n",
+        );
+        block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        assert!(read(&dir, "photos.manifest.yaml").contains("path: out.txt"));
+
+        let index = read(&dir, "index.md");
+        write(
+            &dir,
+            "index.md",
+            format!("{index}\n[out](/photos/out.txt) and [gone](/photos/gone.txt)\n").as_bytes(),
+        );
+        let findings = block_on(ws(&dir).check("index.md")).unwrap();
+        // The covered file is reached and not read; a link to one that is not
+        // there is still broken.
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [Finding::BrokenLink { target, .. }] if target == "/photos/gone.txt"
+            ),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
     fn a_manifest_node_has_no_copy() {
         let dir = photos("duplicate");
         block_on(ws(&dir).attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
