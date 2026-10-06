@@ -1782,6 +1782,23 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         ))
     }
 
+    /// The inbound references to the node at `target` through either handle —
+    /// an attachment's sidecar or its payload, those naming the payload marked
+    /// `via_payload`; see [`Graph::backlinks_to_node`].
+    pub async fn backlinks_to_node(
+        &self,
+        start: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+    ) -> Result<Vec<Backlink>> {
+        let census = self.census(start).await?;
+        let (sidecar, payload) = self.graph.attachment_handles(target.as_ref()).await;
+        Ok(prov_graph::graph::inbound_node(
+            census,
+            &sidecar,
+            payload.as_deref(),
+        ))
+    }
+
     /// Every file the workspace reaches from `start` that is actually on disk.
     /// Scoped for the reason [`census`](Self::census) is.
     pub async fn reachable_files(&self, start: impl AsRef<Path>) -> Result<BTreeSet<PathBuf>> {
@@ -1897,6 +1914,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// Every prose document under the root.
     pub async fn content_documents(&self) -> Result<Vec<PathBuf>> {
         self.graph.content_documents().await
+    }
+
+    /// Every prose and whole-file metadata document under the root; see
+    /// [`Graph::all_documents`].
+    pub(crate) async fn all_documents(&self) -> Result<Vec<PathBuf>> {
+        self.graph.all_documents().await
     }
 
     /// The files directly inside `dirs` — the bounded listing the scans share.

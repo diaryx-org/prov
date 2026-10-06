@@ -263,9 +263,9 @@ pub mod views {
     pub use prov_views::{
         Ancestor, Clause, Corpus, Error, Evaluator, Excluded, Expression, ExpressionError,
         FUNCTIONS, Failure, Group, Hit, IndexedDoc, KeyShape, Passage, Query, RETIRED_VIEW_KEYS,
-        Row, RowSet, Selection, Site, Translation, VIEW_KEYS, VIEWS_KEY, ViewIssue, ViewIssueKind,
-        ViewSpec, corpus, diagnose_view, diagnose_views, documents, fold, group, narrow, search,
-        select, translate, views_from,
+        Reference, Row, RowSet, Selection, Site, Translation, VIEW_KEYS, VIEWS_KEY, ViewIssue,
+        ViewIssueKind, ViewSpec, corpus, diagnose_view, diagnose_views, documents, fold, group,
+        narrow, search, select, translate, views_from,
     };
 }
 /// Where a new record goes — the `filing:` config axis, and the route a

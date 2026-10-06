@@ -3,12 +3,15 @@ title: A manifest has no add-only verb
 description: "Putting files into a covered directory leaves `update_manifest` as the only way to record them, which drops rows for files that have gone and re-hashes every file under the root"
 author: adammharris
 created: 2026-10-02
-updated: 2026-10-02
-status: open
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-06
+status: done
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A manifest has no add-only verb
+
+**Done** (2026-10-06), by `Workspace::extend_manifest(node, paths)` and
+`prov manifest TARGET --add FILE...` ([Manifests §5](/docs/manifests.md)).
 
 A host that writes new files into a manifest-covered directory, such as a
 photo album that grows, has one way to record them: `update_manifest`. That

@@ -7,15 +7,25 @@
 //!
 //! # Ordering
 //!
-//! Groups sort ascending by key, and rows within a group sort by path. Both are
-//! lexical and both are total, so grouping the same selection twice produces
-//! the identical row set.
+//! Groups sort ascending by label, then by key, and rows within a group sort by
+//! path. All are lexical and all are total, so grouping the same selection
+//! twice produces the identical row set. A group's label is its key except
+//! under a reference (below), so for every other key this is ascending by key.
 //!
 //! Ascending is the honest default rather than the convenient one: it is right
 //! for `people` and `tags`, and wrong for a date view, where a reader wants the
 //! newest first. There is deliberately no `sort:` axis yet — ordering is a
 //! place the format grows teeth, and a consumer that wants newest-first
 //! reverses a `Vec` it already has.
+//!
+//! # References group by what they name
+//!
+//! A key that is, character for character, a `type: ref` value the document
+//! carries and the census resolved ([`Row::references`]) is keyed by the
+//! document it resolves to — its workspace path — and labelled by that
+//! document's title. `[Ruth Harris](id:…)` and `[Grandma](id:…)` are one
+//! person, and relabelling a link must not move a document between groups. A
+//! reference that resolves to nothing groups by its text, as it always did.
 
 use std::collections::BTreeMap;
 
@@ -25,8 +35,12 @@ use crate::select::{Clause, Failure, Row, Selection};
 /// One group of a view's result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group<'a> {
-    /// The group key — one of the values the view's `key:` gave.
+    /// The group key — one of the values the view's `key:` gave, or, for a
+    /// value that is a resolved reference, the path of the document it names.
     pub key: String,
+    /// What a person calls the group: the key, or a referenced document's
+    /// title (its file stem, when it has none).
+    pub label: String,
     /// The documents under this key, ordered by path.
     pub rows: Vec<&'a Row>,
 }
@@ -93,13 +107,14 @@ impl RowSet<'_> {
 /// way to being displayed.
 pub fn group<'a>(selection: &'a Selection, key: &Expression) -> RowSet<'a> {
     let evaluator = Evaluator::new();
-    let mut grouped: BTreeMap<String, Vec<&'a Row>> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, (String, Vec<&'a Row>)> = BTreeMap::new();
     let mut ungrouped: Vec<&'a Row> = Vec::new();
     let mut failures = Vec::new();
 
     for row in &selection.rows {
         // Deduplicated by the evaluator: a field may repeat a value
         // (`people: [Ada, Ada]`), and one document belongs to a group once.
+        // Two labels for one reference are deduplicated below, once resolved.
         let keys = match evaluator.keys(key, row) {
             Ok(keys) => keys,
             Err(message) => {
@@ -116,16 +131,22 @@ pub fn group<'a>(selection: &'a Selection, key: &Expression) -> RowSet<'a> {
             continue;
         }
         for key in keys {
-            grouped.entry(key).or_default().push(row);
+            let (key, label) = resolved(row, key);
+            let (_, rows) = grouped.entry(key).or_insert_with(|| (label, Vec::new()));
+            if !rows.last().is_some_and(|last| std::ptr::eq(*last, row)) {
+                rows.push(row);
+            }
         }
     }
 
-    // `BTreeMap` ordered the keys; the selection was already in path order, so
-    // each bucket is too.
-    let groups = grouped
+    // The selection was in path order, so each bucket is too; the groups are
+    // put in label order here, `BTreeMap` having ordered the keys that break a
+    // tie between two labels.
+    let mut groups: Vec<Group<'a>> = grouped
         .into_iter()
-        .map(|(key, rows)| Group { key, rows })
+        .map(|(key, (label, rows))| Group { key, label, rows })
         .collect();
+    groups.sort_by(|a, b| a.label.cmp(&b.label));
 
     RowSet {
         view: selection.view.clone(),
@@ -133,6 +154,22 @@ pub fn group<'a>(selection: &'a Selection, key: &Expression) -> RowSet<'a> {
         ungrouped,
         failures,
     }
+}
+
+/// The key and label a key's text files `row` under: the referenced
+/// document's path and title where the text is one of the row's resolved
+/// references, else the text for both.
+fn resolved(row: &Row, key: String) -> (String, String) {
+    let Some(reference) = row.references.iter().find(|r| r.raw == key) else {
+        return (key.clone(), key);
+    };
+    let label = reference.title.clone().unwrap_or_else(|| {
+        reference
+            .target
+            .file_stem()
+            .map_or_else(|| key.clone(), |s| s.to_string_lossy().into_owned())
+    });
+    (prov_graph::manifest::slash_path(&reference.target), label)
 }
 
 #[cfg(test)]
@@ -159,6 +196,7 @@ mod tests {
                         id: None,
                         ancestors: Vec::<Ancestor>::new(),
                         meta: Value::Mapping(meta),
+                        references: Vec::new(),
                     }
                 })
                 .collect(),
@@ -327,5 +365,40 @@ mod tests {
         assert!(rows.ungrouped.is_empty());
         assert_eq!(rows.failures.len(), 1);
         assert_eq!(rows.failures[0].clause, Clause::Key);
+    }
+
+    /// Two labels for one record are one group, keyed by the record and
+    /// titled by it, and a document carrying both is in it once. A reference
+    /// the census could not resolve keeps its text, and sorts among the
+    /// titles by it.
+    #[test]
+    fn a_resolved_reference_groups_by_its_target_and_is_titled_by_it() {
+        let ruth = |raw: &str| crate::select::Reference {
+            raw: raw.into(),
+            target: PathBuf::from("people/ruth.md"),
+            title: Some("Ruth Harris".into()),
+        };
+        let mut sel = selection(&[
+            ("a.md", &[("people", seq(&["[Ruth Harris](id:rth0001)"]))]),
+            (
+                "b.md",
+                &[(
+                    "people",
+                    seq(&["[Grandma](id:rth0001)", "[Nan](people/ruth.md)", "Ada"]),
+                )],
+            ),
+        ]);
+        sel.rows[0].references = vec![ruth("[Ruth Harris](id:rth0001)")];
+        sel.rows[1].references = vec![ruth("[Grandma](id:rth0001)"), ruth("[Nan](people/ruth.md)")];
+
+        let rows = group(&sel, &key("people"));
+        assert_eq!(
+            rows.groups
+                .iter()
+                .map(|g| (g.key.as_str(), g.label.as_str(), g.rows.len()))
+                .collect::<Vec<_>>(),
+            [("Ada", "Ada", 1), ("people/ruth.md", "Ruth Harris", 2)]
+        );
+        assert_eq!(rows.placements(), 3);
     }
 }

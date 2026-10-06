@@ -137,3 +137,21 @@ fn an_edited_row_is_repinned_by_an_update() {
     assert_eq!(read(&dir, "album.manifest.yaml"), text);
     ok(&dir, &["check"]);
 }
+
+#[test]
+fn an_add_records_the_named_file_and_keeps_a_missing_ones_row() {
+    let dir = workspace("add");
+    ok(&dir, &["gather", "a.jpg", "b.jpg", "--into", "album"]);
+    std::fs::remove_file(dir.join("album/a.jpg")).unwrap();
+    std::fs::write(dir.join("album/c.jpg"), [0xff, 0xd8, 3]).unwrap();
+
+    let (out, err) = ok(&dir, &["manifest", "album", "--add", "album/c.jpg"]);
+    assert_eq!(out.trim(), "album.manifest.yaml");
+    assert!(err.contains("1 added"), "{err}");
+    let manifest = read(&dir, "album.manifest.yaml");
+    assert!(manifest.contains("path: a.jpg"), "{manifest}");
+    assert!(manifest.contains("path: c.jpg"), "{manifest}");
+
+    let (refused, _, err) = run(&dir, &["manifest", "album", "--add", "album/c.jpg"]);
+    assert!(!refused && err.contains("already listed"), "{err}");
+}

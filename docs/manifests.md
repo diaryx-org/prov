@@ -188,6 +188,16 @@ When the rows already agree and only the manifest's text has changed — a
 caption edited by hand — the manifest is left as written and the node is
 re-pinned over it.
 
+**`--add` records only what it is told.** A host that has just written files
+into a covered directory names them: `prov manifest TARGET --add FILE...`
+(`Workspace::extend_manifest` in the library) appends a row for each, hashing
+only those when the manifest is hashed, and re-pins the node in the same change
+set. Every other row is left as it was — a listed file that is missing may be
+gone or merely not synced to this device yet, and an add is no place to decide
+which — so a partly-synced archive can still grow, and adding two photographs
+to two thousand reads two. It refuses a file outside the covered directory, a
+document, one the directory scan would never list, or one already listed.
+
 **The repair is never automatic.** Rebuilding a manifest accepts the directory as
 it stands — including a file that has *vanished*, which it writes out of the
 record as though the loss were intended. That is the judgment `FixityMismatch`
@@ -278,6 +288,7 @@ Each verb is one change set: moved, written and removed together.
 | `attach DIR --manifest [--in P] [--no-hash]` | cover a directory: mint the node and the manifest, link the node under a parent |
 | `manifest TARGET` | what the manifest says, and whether the directory still agrees (no file reads) |
 | `manifest TARGET --update` | rebuild the rows from the directory as it is now, keeping each row's fields, re-stamping the node |
+| `manifest TARGET --add FILE...` | append rows for the named files only, checksumming just those; every other row stays, its file present or not (§5) |
 | `manifest TARGET --verify` | re-read every listed file and compare its checksum |
 | `gather ATTACHMENT... --into DIR [--title T] [--discard FIELD] [--dry-run]` | attachments of one index into one manifest over `DIR` (§7) |
 | `scatter TARGET [--into INDEX] [--discard FIELD] [--dry-run]` | a manifest back into one attachment per file (§7) |

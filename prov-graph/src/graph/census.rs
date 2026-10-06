@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Graph;
+use crate::document::is_opaque_payload;
 use crate::error::Result;
 use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
@@ -209,6 +210,14 @@ pub struct Backlink {
     /// `true` when the link is a `prov:<id>` reference (location-independent),
     /// `false` when it is a path.
     pub by_id: bool,
+    /// `true` when the reference names an attachment's **payload** rather
+    /// than its sidecar — a `![](photo.jpg)` embed rather than a `contents`
+    /// entry or an `id:` reference to `photo.jpg.yaml`. Only
+    /// [`backlinks_to_node`](Graph::backlinks_to_node) asks about both handles
+    /// at once, so only it sets this; the per-path
+    /// [`backlinks`](Graph::backlinks) and [`backlinks_to`](Graph::backlinks_to)
+    /// answer for the one path they were given and leave it `false`.
+    pub via_payload: bool,
 }
 
 enum NameMatch {
@@ -338,7 +347,8 @@ pub fn reachable_set(
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// [`reachable_set`], minus any **shadowed attachment payload**
-    /// (`attach --opaque`) — the population a pass may parse *as a document*.
+    /// (`attach --opaque`) and any **covered payload** (an opaque file under a
+    /// manifest's root) — the population a pass may parse *as a document*.
     ///
     /// A shadowed payload is still reachable (it must not be reported as an
     /// orphan, and it is still fixity-checked *through its sidecar*), but its
@@ -353,6 +363,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// `prov`'s `orphans` builds one: the direct children of every
     /// directory the reachable set occupies, so a shadow check costs a set
     /// lookup per candidate extension rather than a stat.
+    ///
+    /// A covered payload arrives here when a document links it from its body.
+    /// It is still reached — the link resolves, and a missing file is still
+    /// broken — but `manifests.md` §3 says it is not a document, so whatever
+    /// metadata block its bytes happen to hold (a captured HTML page's data
+    /// island, `content_hash` and all) is never taken as its own. Its fixity is
+    /// the manifest's row, checked by `check`'s manifest pass.
     pub async fn reachable_documents(
         &self,
         start: &Path,
@@ -373,8 +390,24 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     ) -> Result<BTreeSet<PathBuf>> {
         let reached_dirs = Self::reached_dirs(reachable);
         let probe = super::ShadowProbe::over(self.direct_child_files(&reached_dirs).await?.iter());
+        // The covered roots, asked only of the paths that can be documents: a
+        // payload's own bytes must not get to declare a manifest either. Asked
+        // at all only when an opaque path was reached, which is rare.
+        let covered = if reachable.iter().any(|p| is_opaque_payload(p)) {
+            let readable: BTreeSet<PathBuf> = reachable
+                .iter()
+                .filter(|p| !is_opaque_payload(p))
+                .cloned()
+                .collect();
+            self.manifest_roots(&readable).await
+        } else {
+            BTreeSet::new()
+        };
         let mut documents = BTreeSet::new();
         for path in reachable {
+            if is_opaque_payload(path) && covered.iter().any(|root| path.starts_with(root)) {
+                continue;
+            }
             if !self.is_shadowed_payload(path, &probe).await {
                 documents.insert(path.clone());
             }
@@ -472,6 +505,28 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         target: impl AsRef<Path>,
     ) -> Result<Vec<Backlink>> {
         Ok(inbound(self.census(start).await?, target.as_ref()))
+    }
+
+    /// The inbound references to the **node** at `target`, through whichever
+    /// handle they name. For a document this is
+    /// [`backlinks_to`](Self::backlinks_to). An attachment is one node with two
+    /// handles — the sidecar a relation or an `id:` reference names, and the
+    /// payload a body embed or a download link names — and `target` may be
+    /// either: the answer holds the references to both, each reference to the
+    /// payload marked [`via_payload`](Backlink::via_payload). "Used in" for a
+    /// card, in one call.
+    ///
+    /// `backlinks_to` stays per path on purpose: `plan_scatter` counts what a
+    /// scatter would leave pointing at one path, and `prov backlinks` prints
+    /// the references to exactly the path it was given.
+    pub async fn backlinks_to_node(
+        &self,
+        start: impl AsRef<Path>,
+        target: impl AsRef<Path>,
+    ) -> Result<Vec<Backlink>> {
+        let census = self.census(start).await?;
+        let (sidecar, payload) = self.attachment_handles(target.as_ref()).await;
+        Ok(inbound_node(census, &sidecar, payload.as_deref()))
     }
 
     /// The shared spanning-tree walk: gathers the forward-link census and the
@@ -1145,6 +1200,7 @@ pub fn invert(census: Vec<CensusEntry>) -> BTreeMap<PathBuf, Vec<Backlink>> {
             source: entry.source,
             site: entry.site,
             by_id,
+            via_payload: false,
         });
     }
     for links in map.values_mut() {
@@ -1156,19 +1212,46 @@ pub fn invert(census: Vec<CensusEntry>) -> BTreeMap<PathBuf, Vec<Backlink>> {
 /// The inbound references to one `target` within an already-taken census,
 /// sorted by source — [`invert`] focused on a single entry.
 pub fn inbound(census: Vec<CensusEntry>, target: &Path) -> Vec<Backlink> {
+    inbound_node(census, target, None)
+}
+
+/// The inbound references to one node within an already-taken census, through
+/// either of its handles: `target`, and — for an attachment — its `payload`,
+/// each reference through the payload marked
+/// [`via_payload`](Backlink::via_payload). Sorted by source, then path before
+/// id, then sidecar before payload. With no payload this is [`inbound`].
+pub fn inbound_node(
+    census: Vec<CensusEntry>,
+    target: &Path,
+    payload: Option<&Path>,
+) -> Vec<Backlink> {
     let target = link::normalize(target);
+    let payload = payload.map(link::normalize);
     let mut links: Vec<Backlink> = census
         .into_iter()
-        .filter(|entry| entry.resolution.resolved_path() == Some(&target))
-        .map(|entry| {
+        .filter_map(|entry| {
+            let resolved = entry.resolution.resolved_path()?;
+            let via_payload = if *resolved == target {
+                false
+            } else if Some(resolved) == payload.as_ref() {
+                true
+            } else {
+                return None;
+            };
             let by_id = matches!(entry.resolution, Resolution::Id { .. });
-            Backlink {
+            Some(Backlink {
                 source: entry.source,
                 site: entry.site,
                 by_id,
-            }
+                via_payload,
+            })
         })
         .collect();
-    links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
+    links.sort_by(|a, b| {
+        a.source
+            .cmp(&b.source)
+            .then(a.by_id.cmp(&b.by_id))
+            .then(a.via_payload.cmp(&b.via_payload))
+    });
     links
 }

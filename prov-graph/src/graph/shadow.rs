@@ -169,6 +169,35 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         doc.content_path(&path)
     }
 
+    /// The sidecar that claims `payload` under the `<payload>.<ext>`
+    /// convention ([`sidecar_candidates`], confirmed by
+    /// [`sidecar_claims`](Self::sidecar_claims)), or `None` when it has none —
+    /// the reverse of [`attachment_payload`](Self::attachment_payload).
+    pub async fn attachment_sidecar(&self, payload: &Path) -> Option<PathBuf> {
+        let payload = link::normalize(payload);
+        for candidate in sidecar_candidates(&payload) {
+            if self.sidecar_claims(&candidate, &payload).await {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Both handles of the node at `path`: `(sidecar, Some(payload))` when
+    /// `path` is either half of an attachment, `(path, None)` for anything
+    /// else. What [`backlinks_to_node`](Self::backlinks_to_node) inverts the
+    /// census at.
+    pub async fn attachment_handles(&self, path: &Path) -> (PathBuf, Option<PathBuf>) {
+        let path = link::normalize(path);
+        if let Some(payload) = self.attachment_payload(&path).await {
+            return (path, Some(payload));
+        }
+        match self.attachment_sidecar(&path).await {
+            Some(sidecar) => (sidecar, Some(path)),
+            None => (path, None),
+        }
+    }
+
     /// Resolve `link` (written in the document at `doc`) to the **file it
     /// stands for**: [`resolve_link`](Self::resolve_link), and then, when the
     /// target is an attachment sidecar, its payload

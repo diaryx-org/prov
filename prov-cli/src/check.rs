@@ -344,7 +344,7 @@ fn collect_refusals(node: &prov::crossing::Node, out: &mut Vec<String>) {
     }
 }
 
-/// Show, refresh or deeply verify the manifest covering a directory.
+/// Show, refresh, extend or deeply verify the manifest covering a directory.
 ///
 /// `target` is whichever handle the caller has — the covered directory, the
 /// node describing it, or the manifest document itself — because after a
@@ -352,11 +352,29 @@ fn collect_refusals(node: &prov::crossing::Node, out: &mut Vec<String>) {
 /// be requiring the user to know which.
 ///
 /// Narration to stderr; stdout carries the machine value, which is the manifest
-/// document's path (bare/`--update`) or one line per failing file (`--verify`).
-pub(crate) fn cmd_manifest(target: &Path, update: bool, verify: bool) -> CmdResult {
+/// document's path (bare/`--update`/`--add`) or one line per failing file
+/// (`--verify`).
+pub(crate) fn cmd_manifest(
+    target: &Path,
+    update: bool,
+    verify: bool,
+    add: &[PathBuf],
+) -> CmdResult {
     let mut session = Session::open()?;
     let target_rel = ws_rel(&session.ctx, target)?;
     let node = resolve_manifest_node(&session.ws, &target_rel)?;
+
+    if !add.is_empty() {
+        let paths = add
+            .iter()
+            .map(|p| ws_rel(&session.ctx, p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let added = block_on(session.ws.extend_manifest(&node, &paths))?;
+        session.commit()?;
+        eprintln!("{}: {} added", added.manifest.display(), added.added.len());
+        println!("{}", added.manifest.display());
+        return Ok(ExitCode::SUCCESS);
+    }
 
     if update {
         let changed = block_on(session.ws.update_manifest(&node))?;

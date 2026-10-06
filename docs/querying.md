@@ -294,6 +294,12 @@ Walter (1)
 
 That is why the summary gives two numbers: four documents, drawn five times.
 
+If `people` is declared a reference field (`type: ref`) and holds links, the
+groups are the people's own pages rather than the link text: a letter naming
+`[Ruth Harris](id:abc1234)` and a recipe naming `[Grandma](id:abc1234)` are
+both under one group, titled by Ruth's page. A link that leads nowhere still
+groups, by what is written.
+
 ---
 
 ## 8. Grouping by date

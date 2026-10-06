@@ -160,7 +160,8 @@ fn main() -> ExitCode {
             target,
             update,
             verify,
-        } => check::cmd_manifest(&target, update, verify),
+            add,
+        } => check::cmd_manifest(&target, update, verify, &add),
         Command::Gather {
             cards,
             into,

@@ -2252,16 +2252,27 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // Scan only the directories the reachable set occupies (their direct
         // children), never descending into unreached subdirectories.
         let reached_dirs = Self::reached_dirs(reachable);
-        let mut docs: Vec<PathBuf> = self
-            .direct_child_files(&reached_dirs)
-            .await?
-            .into_iter()
-            .filter(|p| {
-                ContentFormat::from_extension(p).is_some()
-                    && !reachable.contains(p)
-                    && !island.contains(p)
-            })
-            .collect();
+        let mut docs: Vec<PathBuf> = Vec::new();
+        let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
+        for path in self.direct_child_files(&reached_dirs).await? {
+            if reachable.contains(&path) || island.contains(&path) {
+                continue;
+            }
+            if ContentFormat::from_extension(&path).is_some() {
+                docs.push(path);
+            } else if let Some(payload) = self.attachment_payload(&path).await {
+                // An attachment sidecar is a content node (spec §4), so it is
+                // orphaned like a document. Any other whole-file document here
+                // — a config, the registry, a vocabulary, a manifest store — is
+                // machinery, which nothing is expected to link. The read that
+                // tells them apart is paid only for the unreached ones.
+                payloads.insert(payload);
+                docs.push(path);
+            }
+        }
+        // A payload prov can parse (`attach --opaque` on a `.md`) goes with its
+        // card: adopting the card brings it back, so it is not a second orphan.
+        docs.retain(|doc| !payloads.contains(doc));
         docs.sort();
         Ok(docs
             .into_iter()
@@ -2309,16 +2320,30 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         };
         let parked = self.parked_dirs(start).await?;
 
-        // Every unreached content document that names a parent, in path order so
-        // the closure below and the findings it produces are deterministic.
+        // Every unreached content node that names a parent, in path order so the
+        // closure below and the findings it produces are deterministic. That is
+        // every prose document, and every whole-file document that turns out to
+        // be an attachment sidecar (spec §4: "an ordinary content node"); the
+        // rest of the whole-file documents are machinery and claim nothing.
         let mut claims: Vec<(PathBuf, PathBuf)> = Vec::new();
-        for doc in self.content_documents().await? {
+        let mut payloads: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for doc in self.all_documents().await? {
             if reachable.contains(&doc) || parked.iter().any(|dir| doc.starts_with(dir)) {
                 continue;
             }
             let Ok((_, parsed)) = self.load(&doc).await else {
                 continue;
             };
+            if ContentFormat::from_extension(&doc).is_none() {
+                let Some(payload) = parsed
+                    .is_attachment()
+                    .then(|| parsed.content_path(&doc))
+                    .flatten()
+                else {
+                    continue;
+                };
+                payloads.push((doc.clone(), payload));
+            }
             if let Some(parent) = self.single_target(&parsed, &inverse, &doc) {
                 claims.push((doc, parent));
             }
@@ -2367,6 +2392,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 doc: doc.clone(),
                 parent: parent.clone(),
             });
+        }
+        // A member card's payload comes back with the card, so the orphan sweep
+        // must not report it either.
+        for (card, payload) in payloads {
+            if island.contains(&card) {
+                island.insert(payload);
+            }
         }
         Ok((findings, island))
     }
@@ -4456,6 +4488,78 @@ mod tests {
                 parent: PathBuf::from("index.md"),
             }],
             "reported as the missing link it is, and not twice: {findings:?}"
+        );
+    }
+
+    /// The attachment card `prov attach photo.jpg` writes, minus its hash.
+    const PHOTO_CARD: &str = "title: Photo\npart_of: '[Home](/index.md)'\n\
+        content: photo.jpg\nattachment: true\n";
+
+    #[test]
+    fn a_sidecar_its_parent_dropped_is_missing_containment() {
+        // spec §4 calls a sidecar "an ordinary content node", and a `.md` in the
+        // same place is reported — so a card the parent stopped listing must be
+        // too, with the same derived repair. Both passes used to choose their
+        // population by prose extension, and `photo.jpg.yaml` is not prose.
+        let dir = tempdir("sidecar-dropped");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        std::fs::write(dir.join("photo.jpg"), b"\xff\xd8\x01").unwrap();
+        write(&dir, "photo.jpg.yaml", PHOTO_CARD);
+
+        let mut ws = Workspace::builder(StdFs).root(&dir).build();
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::MissingContainment {
+                doc: PathBuf::from("photo.jpg.yaml"),
+                parent: PathBuf::from("index.md"),
+            }],
+            "the card, once, and not its payload: {findings:?}"
+        );
+
+        let remedies = block_on(ws.remedies(&findings[0])).unwrap();
+        assert_eq!(remedies.len(), 1);
+        assert_eq!(remedies[0].warrant, Warrant::Derived);
+        block_on(ws.apply_fix(&remedies[0].fix)).unwrap();
+        assert_eq!(block_on(ws.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_sidecar_nothing_links_is_an_orphan_and_machinery_is_not() {
+        // A card that names no parent is an orphan like any document. The
+        // whole-file documents around it that are *not* cards — a config, a
+        // manifest store, a vocabulary — are machinery, unlinked by design, and
+        // stay out of both passes.
+        let dir = tempdir("sidecar-orphan");
+        write(&dir, "index.md", "---\ntitle: Home\n---\n");
+        std::fs::write(dir.join("photo.jpg"), b"\xff\xd8\x01").unwrap();
+        write(
+            &dir,
+            "photo.jpg.yaml",
+            "title: Photo\ncontent: photo.jpg\nattachment: true\n",
+        );
+        write(&dir, "prov.yaml", "workspace_id: notes\n");
+        write(
+            &dir,
+            "photos.manifest.yaml",
+            "title: Photos\nroot: photos/\nfiles: []\n",
+        );
+        write(&dir, "sub/terms.yaml", "- term: draft\n");
+
+        let findings = block_on(
+            Workspace::builder(StdFs)
+                .root(&dir)
+                .build()
+                .check("index.md"),
+        )
+        .unwrap();
+        assert_eq!(
+            findings,
+            vec![Finding::Orphan {
+                doc: PathBuf::from("photo.jpg.yaml"),
+                root: PathBuf::from("index.md"),
+            }],
+            "{findings:?}"
         );
     }
 
