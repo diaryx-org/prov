@@ -3766,6 +3766,117 @@ mod tests {
         assert_eq!(findings, vec![], "{findings:?}");
     }
 
+    /// The walks a caller makes through the bare graph — the census every view
+    /// narrows, an export plan, the term holds — are bounded by the
+    /// workspace's parking as the workspace's own walks are.
+    ///
+    /// The regression: `prov_views::documents` walked with `Graph::tree_with`,
+    /// which parked nothing, so a spanning `[[alias]]` forced a full title scan
+    /// that read every revision in a declared-out-of-scope store (historica's
+    /// `history/operations/` in a diaryx library, read on every publish) and
+    /// every item in a legacy recycle bin — and then found each document
+    /// twice, so the alias it was building the index for came out ambiguous.
+    #[test]
+    fn a_walk_through_the_graph_reads_nothing_the_workspace_parks() {
+        use crate::fs_faults::CountingFs;
+
+        let dir = tempdir("graph-walk-parked");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\nrecycle_bin: bin/index.md\ncontents:\n- '[[Tasks]]'\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "title: prov config\nfields:\n  status:\n    - values: closed\n      vocabulary: /statuses.yaml\n",
+        );
+        write(
+            &dir,
+            "statuses.yaml",
+            "title: Statuses\nvocabulary: { field: status, values: closed }\nterms:\n  draft: { holds: true }\n  done: {}\n",
+        );
+        write(
+            &dir,
+            "tasks.md",
+            "---\ntitle: Tasks\npart_of: index.md\ncontents:\n- '[[Sketch]]'\n- '[[Shipped]]'\n---\n",
+        );
+        write(
+            &dir,
+            "sketch.md",
+            "---\ntitle: Sketch\npart_of: tasks.md\naudience: public\nstatus: draft\n---\n",
+        );
+        write(
+            &dir,
+            "shipped.md",
+            "---\ntitle: Shipped\npart_of: tasks.md\naudience: public\nstatus: done\n---\n",
+        );
+        // Another tool's store, declared out of scope, holding an old revision
+        // under the same title.
+        let revision = "history/operations/0001/sketch.md";
+        write(&dir, revision, "---\ntitle: Sketch\n---\n");
+        // A legacy recycle bin, parked by the pointer on the root, holding a
+        // binned copy under the same title.
+        write(&dir, "bin/index.md", "---\ntitle: Recycle bin\n---\n");
+        let binned = "bin/items/0001/shipped.md";
+        write(&dir, binned, "---\ntitle: Shipped\n---\n");
+
+        let fs = CountingFs::default();
+        let ws = Workspace::builder(fs.clone())
+            .root(&dir)
+            .out_of_scope([PathBuf::from("history")])
+            .build();
+        let root = Path::new("index.md");
+        let reads = |what: &str| {
+            assert_eq!(fs.doc_reads(&dir, revision), 0, "{what} read the history");
+            assert_eq!(fs.doc_reads(&dir, binned), 0, "{what} read the bin");
+        };
+
+        let rows = block_on(prov_views::documents(ws.graph(), root)).unwrap();
+        reads("prov_views::documents");
+        let paths: Vec<_> = rows.iter().map(|r| r.path.to_str().unwrap()).collect();
+        assert_eq!(
+            paths,
+            ["index.md", "shipped.md", "sketch.md", "tasks.md"],
+            "each alias names one document"
+        );
+
+        let spec = prov_exports::ExportSpec {
+            name: "www".into(),
+            label: None,
+            gate: prov_exports::Gate {
+                field: "audience".into(),
+                value: "public".into(),
+            },
+            hold: Some("status".into()),
+            view: None,
+        };
+        let holds = block_on(ws.term_holds(root, &spec)).unwrap();
+        reads("term_holds");
+        assert!(holds.contains(Path::new("sketch.md")));
+
+        let plan = block_on(ws.export_plan(root, &spec, &[])).unwrap();
+        reads("export_plan");
+        let held: Vec<_> = plan.held.iter().map(|d| d.path.to_str().unwrap()).collect();
+        let entries: Vec<_> = plan
+            .entries
+            .iter()
+            .map(|d| d.path.to_str().unwrap())
+            .collect();
+        assert_eq!(held, ["sketch.md"]);
+        assert_eq!(entries, ["shipped.md"]);
+
+        // The bare graph's census and its own title index, for good measure.
+        block_on(ws.graph().census(root)).unwrap();
+        reads("Graph::census");
+        block_on(ws.graph().title_index()).unwrap();
+        assert_eq!(
+            fs.doc_reads(&dir, revision),
+            0,
+            "the full title index read the declared store"
+        );
+    }
+
     // Real-world regression: a fenced code block containing Python list
     // comprehensions (`[[float('inf')] * width ...]`) must never be mistaken
     // for a `[[…]]` wikilink — DESIGN §8's motivating example, life-sized.

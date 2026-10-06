@@ -221,13 +221,18 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             Ok(anchor) => anchor,
             Err(why) => return Ok(Err(why)),
         };
+        // Parked as seen from the root, not from the anchor: the store
+        // pointers live on the root, and an anchor's subtree is no less the
+        // workspace's for starting lower down.
+        let parked = self.parked_dirs(root_doc).await?;
         let tree = self
             .graph
-            .tree_with(
+            .tree_within(
                 &anchor,
                 TreeOptions {
                     ignore_missing: true,
                 },
+                &parked,
             )
             .await?;
         if !matches!(tree.kind, NodeKind::Doc) {
