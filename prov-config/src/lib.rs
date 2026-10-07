@@ -12,9 +12,9 @@ pub mod upgrade;
 pub mod vocabulary;
 
 pub use config::{
-    About, ConfigIssue, ConfigIssueKind, ConfirmationBinding, FIELD_TYPES, FieldSpec, Fixity,
-    IdStorage, OpenClosed, ROOT_CONFIG_KEY, RelationDef, RelationStyleConfig, SPEC_VERSION, Stamp,
-    WorkspaceConfig, diagnose, field_type_as_config_str, field_type_from_config_str,
+    About, ActorBinding, ConfigIssue, ConfigIssueKind, ConfirmationBinding, FIELD_TYPES, FieldSpec,
+    Fixity, IdStorage, OpenClosed, ROOT_CONFIG_KEY, RelationDef, RelationStyleConfig, SPEC_VERSION,
+    Stamp, WorkspaceConfig, diagnose, field_type_as_config_str, field_type_from_config_str,
     is_valid_scope_path, is_valid_workspace_id, metadata_format_from_str, metadata_format_str,
     spec_ahead,
 };

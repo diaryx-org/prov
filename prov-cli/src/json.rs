@@ -517,6 +517,22 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("by", s(by)));
             fields.push(("at", s(at)));
         }
+        Finding::BareActor {
+            doc,
+            field,
+            actor,
+            persons,
+            sealed,
+        } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("field", s(field)));
+            fields.push(("actor", s(actor)));
+            fields.push((
+                "persons",
+                J::Arr(persons.iter().map(|person| p(person)).collect()),
+            ));
+            fields.push(("sealed", J::Bool(*sealed)));
+        }
         Finding::FieldScopeUnresolved {
             doc,
             field,

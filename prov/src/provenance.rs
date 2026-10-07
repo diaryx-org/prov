@@ -16,7 +16,9 @@
 //! - **`confirmed: [{by, at, of?}]`** — an append-only list of dated,
 //!   attributed statements that someone read the document and found it
 //!   correct. [`Workspace::confirm`](crate::Workspace::confirm) appends one;
-//!   nothing else writes the list, and nothing ever rewrites or drops an entry.
+//!   nothing else writes the list, and nothing rewrites or drops an entry
+//!   beyond naming a declared person by their link (`actors: declared`, and
+//!   never an entry carrying another tool's keys).
 //!
 //! This is the **keeper's own ledger**: a line inside the document, written by
 //! whoever can edit it, and exactly as trustworthy as the `author` field beside
@@ -142,6 +144,70 @@ impl std::fmt::Display for Actor {
             Actor::Process(id) => write!(f, "{PROCESS_PREFIX}{id}"),
         }
     }
+}
+
+/// The fields that name an actor, as field paths: who generated a document,
+/// and who confirmed it. Under `actors: declared` each value is either
+/// prefixed (`agent:`, `process:`) or a link to a person document.
+pub const ACTOR_FIELDS: &[&str] = &["generated.by", "confirmed[].by"];
+
+/// The field a person document lists the strings that stood for that person
+/// in: `handles: [amh, Adam Harris]`.
+pub const HANDLES: &str = "handles";
+
+/// The strings a document's `handles:` lists, trimmed, in order. A document
+/// whose list is empty or absent is not a person document.
+pub fn handles_of(meta: &Value) -> Vec<String> {
+    prov_graph::field::strings_at(
+        meta,
+        &prov_graph::field::FieldPath::parse(&format!("{HANDLES}[]")),
+    )
+    .into_iter()
+    .map(|(_, handle)| handle.trim().to_string())
+    .filter(|handle| !handle.is_empty())
+    .collect()
+}
+
+/// Every actor value a document states: the field path it sits at, the value,
+/// and whether it is **sealed** — in a confirmation entry that carries keys
+/// beside prov's own `by`, `at` and `of`, which another tool may have signed
+/// over the entry as written.
+pub fn actors_of(meta: &Value) -> Vec<(&'static str, String, bool)> {
+    let mut out = Vec::new();
+    if let Some(by) = meta
+        .get(GENERATED)
+        .and_then(|generated| generated.get("by"))
+        .and_then(Value::as_str)
+    {
+        out.push((ACTOR_FIELDS[0], by.to_string(), false));
+    }
+    for entry in meta
+        .get(CONFIRMED)
+        .and_then(Value::as_sequence)
+        .unwrap_or_default()
+    {
+        let Some(by) = entry.get("by").and_then(Value::as_str) else {
+            continue;
+        };
+        let sealed = entry.as_mapping().is_some_and(|map| {
+            map.keys()
+                .any(|key| !matches!(key.as_str(), "by" | "at" | "of"))
+        });
+        out.push((ACTOR_FIELDS[1], by.to_string(), sealed));
+    }
+    out
+}
+
+/// Whether an actor value names a person by a bare string rather than by a
+/// link: not prefixed, and not written as a link (`[label](target)`,
+/// `[[target]]`) or an id reference (`id:<id>`).
+pub fn is_bare_person(raw: &str) -> bool {
+    let raw = raw.trim();
+    if raw.is_empty() || !Actor::parse(raw).is_person() {
+        return false;
+    }
+    let link = prov_graph::link::Link::parse(raw);
+    link.label.is_none() && !link.wikilink && link.id_ref().is_none()
 }
 
 /// How a document came to exist — the `generated` mapping.
