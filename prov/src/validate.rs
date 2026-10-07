@@ -567,6 +567,36 @@ pub enum Finding {
         by: String,
         at: String,
     },
+    /// An actor field names a person by a bare string — `confirmed[].by: amh` —
+    /// in a workspace that sets `actors: declared`, where a person is a link to
+    /// a **person document**: one whose `handles:` lists the strings that stood
+    /// for them. A bare string ties the act to nobody in particular, and two
+    /// spellings of one person read as two people.
+    ///
+    /// `field` is the field path the value sits at (`generated.by`,
+    /// `confirmed[].by`), and `persons` the person documents whose `handles:`
+    /// list `actor`. **Autofixed** when exactly one does
+    /// ([`Fix::DeclareActor`](crate::remedy::Fix::DeclareActor)): the value is
+    /// rewritten to a link to that document in the workspace's reference style.
+    /// Two or more is a judgment between them; none is diagnosis-only — the
+    /// repair is to declare the person, which prov cannot do for you.
+    ///
+    /// Rewriting `confirmed[].by` is the one edit prov makes to a confirmation
+    /// entry, and it moves no standing: the content digest leaves out the
+    /// `confirmed` list, and the entry still names the same person. An entry
+    /// carrying another tool's keys is the exception, and is never rewritten
+    /// (`sealed`).
+    BareActor {
+        doc: PathBuf,
+        field: String,
+        actor: String,
+        persons: Vec<PathBuf>,
+        /// The value sits in a confirmation entry that carries another tool's
+        /// keys — a signature, perhaps, over `by` as written — so it is never
+        /// rewritten: a fix would break what the other tool vouched for. The
+        /// repair is a new confirmation, by the person's link.
+        sealed: bool,
+    },
     /// A scoped field declaration (`fields.<field>` with an `under:`) whose
     /// anchor names no document, so the declaration governs nothing: no
     /// document is held to its vocabulary and none opens with its default.
@@ -736,6 +766,7 @@ impl Finding {
             Finding::LegacyBodyHash { root, .. } => root,
             Finding::AboutStale { path, .. } => path,
             Finding::ConfirmationStale { doc, .. } => doc,
+            Finding::BareActor { doc, .. } => doc,
             Finding::FieldScopeUnresolved { doc, .. } => doc,
             Finding::ViewScopeUnresolved { doc, .. } => doc,
             Finding::ManifestDrift { node, .. } => node,
@@ -769,7 +800,9 @@ impl Finding {
             | Finding::LegacyBodyHash { .. }
             // An edit after a review is the ordinary course of events; the
             // document is unconfirmed again, and says so.
-            | Finding::ConfirmationStale { .. } => Severity::Warning,
+            | Finding::ConfirmationStale { .. }
+            // Every act still happened; what is missing is whose it was.
+            | Finding::BareActor { .. } => Severity::Warning,
             Finding::BrokenLink { .. }
             | Finding::DuplicateContainment { .. }
             | Finding::MissingInverse { .. }
@@ -840,6 +873,7 @@ impl Finding {
             Finding::LegacyBodyHash { .. } => "legacy_body_hash",
             Finding::AboutStale { .. } => "about_stale",
             Finding::ConfirmationStale { .. } => "confirmation_stale",
+            Finding::BareActor { .. } => "bare_actor",
             Finding::FieldScopeUnresolved { .. } => "field_scope_unresolved",
             Finding::ViewScopeUnresolved { .. } => "view_scope_unresolved",
             Finding::ManifestConflict { .. } => "manifest_conflict",
@@ -1254,6 +1288,52 @@ impl fmt::Display for Finding {
                  (`prov confirm` to confirm it again)",
                 doc.display()
             ),
+            Finding::BareActor {
+                doc,
+                field,
+                actor,
+                sealed: true,
+                ..
+            } => write!(
+                f,
+                "{}: {field} names {actor:?} by a bare string, in an entry another \
+                 tool's keys may vouch for as written — confirm it again as the \
+                 person's link",
+                doc.display()
+            ),
+            Finding::BareActor {
+                doc,
+                field,
+                actor,
+                persons,
+                ..
+            } => match persons.as_slice() {
+                [] => write!(
+                    f,
+                    "{}: {field} names {actor:?}, which no person document lists in \
+                     its `handles:` — declare the person, then `prov check --fix`",
+                    doc.display()
+                ),
+                [person] => write!(
+                    f,
+                    "{}: {field} names {actor:?} by a bare string — it is {}'s handle \
+                     (`prov check --fix` links it)",
+                    doc.display(),
+                    person.display()
+                ),
+                several => write!(
+                    f,
+                    "{}: {field} names {actor:?}, which {} person documents list in \
+                     their `handles:` ({}) — say which one it is",
+                    doc.display(),
+                    several.len(),
+                    several
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            },
             Finding::FieldScopeUnresolved {
                 doc,
                 field,
@@ -1437,6 +1517,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         findings.extend(self.date_findings(start, &documents).await?);
         findings.extend(self.stale_label_findings(&census).await?);
         findings.extend(self.confirmation_findings(&documents).await?);
+        findings.extend(self.actor_findings(&documents).await?);
         findings.extend(self.nested_findings(&census).await?);
         Ok(findings)
     }
@@ -1522,6 +1603,49 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         Ok(findings)
     }
 
+    /// Report every bare person string in an actor field, in a workspace that
+    /// sets `actors: declared` — [`Finding::BareActor`], one per value.
+    ///
+    /// Two passes over the same documents: the first collects every person
+    /// document's `handles:`, the second reads every actor field against them.
+    /// A value written as a link (`[Adam](id:4kq20b1)`, `[[adam]]`, `id:4kq20b1`)
+    /// is a reference and is not judged here; a prefixed actor (`agent:`,
+    /// `process:`) is not a person and is never judged at all.
+    async fn actor_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
+        if self.actor_binding() != crate::config::ActorBinding::Declared {
+            return Ok(Vec::new());
+        }
+        let mut loaded = Vec::new();
+        let mut handles: std::collections::BTreeMap<String, Vec<PathBuf>> =
+            std::collections::BTreeMap::new();
+        for path in documents {
+            let Ok((_, doc)) = self.load(path).await else {
+                continue;
+            };
+            for handle in crate::provenance::handles_of(&doc.meta) {
+                handles.entry(handle).or_default().push(path.clone());
+            }
+            loaded.push((path.clone(), doc));
+        }
+
+        let mut findings = Vec::new();
+        for (path, doc) in &loaded {
+            for (field, actor, sealed) in crate::provenance::actors_of(&doc.meta) {
+                if !crate::provenance::is_bare_person(&actor) {
+                    continue;
+                }
+                findings.push(Finding::BareActor {
+                    doc: path.clone(),
+                    field: field.to_string(),
+                    persons: handles.get(actor.trim()).cloned().unwrap_or_default(),
+                    actor,
+                    sealed,
+                });
+            }
+        }
+        Ok(findings)
+    }
+
     /// Flag every **id-addressed** link whose display label has drifted from the
     /// current title of the document it resolves to — a target retitled out of
     /// band. Only id links are checked: their label is decorative (the id is the
@@ -1561,7 +1685,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 
     /// The `title` a document declares, or `None` when it is missing or the file
     /// cannot be read.
-    async fn title_of(&self, path: &Path) -> Result<Option<String>> {
+    pub(crate) async fn title_of(&self, path: &Path) -> Result<Option<String>> {
         let text = match self.read_text(path).await {
             Ok(text) => text,
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

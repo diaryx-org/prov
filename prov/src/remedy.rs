@@ -181,6 +181,17 @@ pub enum Fix {
         from: String,
         to: String,
     },
+    /// Repair a [`Finding::BareActor`]: replace the bare actor `from` in
+    /// `doc`'s actor `field` with a link to `person`, rendered when the fix is
+    /// applied in the workspace's reference style (registering `person` for an
+    /// id link), and labelled with `title`.
+    LinkActor {
+        doc: PathBuf,
+        field: String,
+        from: String,
+        person: PathBuf,
+        title: String,
+    },
     /// Add `term` to the vocabulary at `store` with a null value — one of the
     /// shapes [`Vocabulary::from_meta`](crate::vocabulary::Vocabulary::from_meta)
     /// reads as a live term carrying no metadata (a bare `term:` in hand-written
@@ -319,6 +330,18 @@ impl fmt::Display for Fix {
                 from,
                 to,
             } => write!(f, "set {field} from {from} to {to} in {}", doc.display()),
+            Fix::LinkActor {
+                doc,
+                field,
+                from,
+                person,
+                ..
+            } => write!(
+                f,
+                "name {from} in {field} by a link to {} in {}",
+                person.display(),
+                doc.display()
+            ),
             Fix::AddTerm { store, term } => {
                 write!(f, "add the term {term} to {}", store.display())
             }
@@ -424,6 +447,8 @@ pub enum RemedyKind {
     Rebuild,
     /// Regenerate a derived page from the configuration behind it.
     Regenerate,
+    /// Name a person by a link to their person document rather than a handle.
+    LinkActor,
 }
 
 impl RemedyKind {
@@ -440,6 +465,7 @@ impl RemedyKind {
             RemedyKind::TrustDocument => "trust-document",
             RemedyKind::Restamp => "restamp",
             RemedyKind::SetTerm => "set-term",
+            RemedyKind::LinkActor => "link-actor",
             RemedyKind::AddTerm => "add-term",
             RemedyKind::SetDate => "set-date",
             RemedyKind::SetConfigKey => "set-config-key",
@@ -1307,6 +1333,43 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     )])
                 }
             },
+            // One person document claims the handle: the link is determined,
+            // so it is applied unattended. Several: each is a real reading.
+            // A sealed entry is never rewritten: the repair is a new one.
+            Finding::BareActor { sealed: true, .. } => Ok(Vec::new()),
+            Finding::BareActor {
+                doc,
+                field,
+                actor,
+                persons,
+                ..
+            } => {
+                let warrant = if persons.len() == 1 {
+                    Warrant::Derived
+                } else {
+                    Warrant::Judgment
+                };
+                let mut out = Vec::new();
+                for person in persons {
+                    let title = self
+                        .title_of(person)
+                        .await?
+                        .unwrap_or_else(|| link::path_to_title(person));
+                    out.push(Remedy::new(
+                        RemedyKind::LinkActor,
+                        warrant,
+                        format!("link it to {}", person.display()),
+                        Fix::LinkActor {
+                            doc: doc.clone(),
+                            field: field.clone(),
+                            from: actor.clone(),
+                            person: person.clone(),
+                            title,
+                        },
+                    ));
+                }
+                Ok(out)
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -1579,6 +1642,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 let kept = link.label.clone().unwrap_or_else(|| link.target.clone());
                 let updated = maintain::splice_body_span(&text, &parsed.body, span, from, &kept)?;
                 cs.write(doc, updated);
+            }
+            // A person named by a link in the workspace's own style, so the
+            // repaired value reads like every other reference beside it.
+            Fix::LinkActor {
+                doc,
+                field,
+                from,
+                person,
+                title,
+            } => {
+                let target = self
+                    .authored_target(field, doc, person, title, true)
+                    .await?;
+                let (text, parsed) = self.load(doc).await?;
+                if let Some(updated) =
+                    maintain::replace_written_entry(&text, &parsed, field, from, &target)?
+                {
+                    cs.write(doc, updated);
+                }
             }
             // Correct a controlled value in place. Not a link, so the replacement
             // is written verbatim rather than rendered through the link seam.
@@ -2373,6 +2455,180 @@ mod tests {
                 .iter()
                 .any(|f| matches!(f, Finding::UnknownTerm { .. })),
             "{findings:?}"
+        );
+    }
+
+    /// A workspace that sets `actors: declared`, with a note confirmed and
+    /// generated by handles, and the person documents `people` names.
+    fn declared(dir: &Path, actors: crate::config::ActorBinding) -> Workspace<StdFs> {
+        Workspace::builder(StdFs)
+            .root(dir)
+            .settings(crate::workspace::Settings {
+                actors,
+                ..Default::default()
+            })
+            .build()
+    }
+
+    fn declared_actors(name: &str, people: &[(&str, &str)]) -> PathBuf {
+        let dir = tempdir(name);
+        let mut contents = String::from("- note.md\n");
+        for (file, _) in people {
+            contents.push_str(&format!("- {file}\n"));
+        }
+        write(
+            &dir,
+            "index.md",
+            format!("---\ntitle: Root\nconfig: prov.yaml\ncontents:\n{contents}---\n"),
+        );
+        write(&dir, "prov.yaml", "spec: 1\n");
+        for (file, handles) in people {
+            write(
+                &dir,
+                file,
+                format!("---\ntitle: Adam\npart_of: index.md\nhandles: [{handles}]\n---\n"),
+            );
+        }
+        write(
+            &dir,
+            "note.md",
+            "---\ntitle: Note\npart_of: index.md\ngenerated:\n  by: agent:claude\n  at: 2026-10-07T01:00:00Z\nconfirmed:\n- by: amh\n  at: 2026-10-07T02:00:00Z\n- by: '[Adam](adam.md)'\n  at: 2026-10-07T03:00:00Z\n---\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn a_bare_actor_one_person_claims_is_linked_unattended() {
+        let dir = declared_actors("remedy-bare-actor", &[("adam.md", "amh, Adam Harris")]);
+        let mut ws = declared(&dir, crate::config::ActorBinding::Declared);
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        // The agent is not a person and the link is already a reference: only
+        // the handle is reported.
+        let bare = sole(&findings, |f| matches!(f, Finding::BareActor { .. }));
+        let Finding::BareActor {
+            field,
+            actor,
+            persons,
+            sealed: false,
+            ..
+        } = bare
+        else {
+            unreachable!()
+        };
+        assert_eq!((field.as_str(), actor.as_str()), ("confirmed[].by", "amh"));
+        assert_eq!(persons, &vec![PathBuf::from("adam.md")]);
+
+        let remedies = block_on(ws.remedies(bare)).unwrap();
+        assert_eq!(kinds(&remedies), vec![RemedyKind::LinkActor]);
+        assert_eq!(remedies[0].warrant, Warrant::Derived);
+        let fix = block_on(ws.suggest_fix(bare)).unwrap().expect("a fix");
+        block_on(ws.apply_fix(&fix)).unwrap();
+
+        let text = read(&dir, "note.md");
+        assert!(
+            text.contains("- by: '[Adam](/adam.md)'\n  at: 2026-10-07T02:00:00Z"),
+            "{text}"
+        );
+        assert!(!text.contains("by: amh"), "{text}");
+        assert!(
+            !block_on(ws.check("index.md"))
+                .unwrap()
+                .iter()
+                .any(|f| matches!(f, Finding::BareActor { .. })),
+            "and nothing is bare any more"
+        );
+    }
+
+    #[test]
+    fn linking_an_actor_leaves_its_confirmation_standing() {
+        // The repair rewrites who confirmed, not what was confirmed: it must
+        // not bump the edit stamp the confirmation is measured against.
+        let dir = declared_actors("remedy-bare-actor-stamp", &[("adam.md", "amh")]);
+        let note = read(&dir, "note.md").replace(
+            "title: Note\n",
+            "title: Note\nupdated: 2026-10-07T00:30:00Z\n",
+        );
+        write(&dir, "note.md", &note);
+        let mut ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .settings(crate::workspace::Settings {
+                actors: crate::config::ActorBinding::Declared,
+                updated: "updated".into(),
+                ..Default::default()
+            })
+            .build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let bare = sole(&findings, |f| matches!(f, Finding::BareActor { .. }));
+        let fix = block_on(ws.suggest_fix(bare)).unwrap().expect("a fix");
+        block_on(ws.apply_fix(&fix)).unwrap();
+
+        let text = read(&dir, "note.md");
+        assert!(text.contains("updated: 2026-10-07T00:30:00Z"), "{text}");
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::ConfirmationStale { .. })),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_signed_entry_is_reported_and_never_rewritten() {
+        let dir = declared_actors("remedy-bare-actor-sealed", &[("adam.md", "amh")]);
+        let note = read(&dir, "note.md").replace(
+            "- by: amh\n  at: 2026-10-07T02:00:00Z\n",
+            "- by: amh\n  at: 2026-10-07T02:00:00Z\n  signature: RWQ…\n",
+        );
+        write(&dir, "note.md", &note);
+        let ws = declared(&dir, crate::config::ActorBinding::Declared);
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let bare = sole(&findings, |f| matches!(f, Finding::BareActor { .. }));
+        assert!(matches!(bare, Finding::BareActor { sealed: true, .. }));
+        assert!(block_on(ws.remedies(bare)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_handle_two_people_claim_is_a_choice() {
+        let dir = declared_actors(
+            "remedy-bare-actor-shared",
+            &[("adam.md", "amh"), ("andrew.md", "amh")],
+        );
+        let ws = declared(&dir, crate::config::ActorBinding::Declared);
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let bare = sole(&findings, |f| matches!(f, Finding::BareActor { .. }));
+        let remedies = block_on(ws.remedies(bare)).unwrap();
+        assert_eq!(
+            kinds(&remedies),
+            vec![RemedyKind::LinkActor, RemedyKind::LinkActor]
+        );
+        // A choice: nothing here is applied unattended.
+        assert!(remedies.iter().all(|r| r.warrant == Warrant::Judgment));
+    }
+
+    #[test]
+    fn a_handle_nobody_claims_is_diagnosis_only() {
+        let dir = declared_actors("remedy-bare-actor-nobody", &[("adam.md", "adam")]);
+        let ws = declared(&dir, crate::config::ActorBinding::Declared);
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let bare = sole(&findings, |f| matches!(f, Finding::BareActor { .. }));
+        assert!(block_on(ws.remedies(bare)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_free_workspace_reports_no_bare_actor() {
+        let dir = declared_actors("remedy-bare-actor-free", &[("adam.md", "amh")]);
+        let ws = declared(&dir, crate::config::ActorBinding::Free);
+        assert!(
+            !block_on(ws.check("index.md"))
+                .unwrap()
+                .iter()
+                .any(|f| matches!(f, Finding::BareActor { .. }))
         );
     }
 

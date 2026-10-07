@@ -435,6 +435,46 @@ impl ConfirmationBinding {
     }
 }
 
+/// Who an actor field may name — the `actors` config axis.
+///
+/// An actor field (`generated.by`, `confirmed[].by`) names who did something.
+/// A bare string there — `amh`, `Adam Harris` — is a person by prov's actor
+/// rule, and nothing ties it to anyone: two spellings of one person are two
+/// people, and a workspace several people write cannot say which `amh` it
+/// meant. `declared` (the setting a shared workspace takes) requires a person
+/// to be named by a link to a **person document** — one that lists the
+/// strings standing for them in `handles:` — and reports every bare person
+/// string as a finding, repaired by rewriting it to that link wherever exactly
+/// one person document claims it. Prefixed actors (`agent:`, `process:`) are
+/// never persons and are left alone under either value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActorBinding {
+    /// Any string names a person (`free`, the default).
+    #[default]
+    Free,
+    /// A person is a link to a person document (`declared`).
+    Declared,
+}
+
+impl ActorBinding {
+    /// Parse the `actors` config spelling; unknown → `None`.
+    pub fn from_config_str(value: &str) -> Option<Self> {
+        match value {
+            "free" => Some(Self::Free),
+            "declared" => Some(Self::Declared),
+            _ => None,
+        }
+    }
+
+    /// The `actors` config spelling.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Declared => "declared",
+        }
+    }
+}
+
 /// The workspace-wide policy a config declares.
 ///
 /// `PartialEq` without `Eq`, for the reason [`FieldSpec`] gives: a field's
@@ -549,6 +589,9 @@ pub struct WorkspaceConfig {
     /// What a confirmation is measured against — the edit stamp (the
     /// default) or the document's content digest. See [`ConfirmationBinding`].
     pub confirmations: ConfirmationBinding,
+    /// Who an actor field may name — any string (the default) or a declared
+    /// person. See [`ActorBinding`].
+    pub actors: ActorBinding,
     /// What this workspace calls **itself** — the qualifier a cross-workspace
     /// reference (`id:<workspace>/<id>`) names it by. Empty (the default) means
     /// the workspace is anonymous: it can still *hold* foreign references, but
@@ -677,6 +720,7 @@ impl Default for WorkspaceConfig {
             fixity: Fixity::On,
             about: About::Structure,
             confirmations: ConfirmationBinding::Stamp,
+            actors: ActorBinding::Free,
             workspace_id: String::new(),
             root: None,
             out_of_scope: Vec::new(),
@@ -1232,6 +1276,13 @@ impl WorkspaceConfig {
         {
             self.confirmations = v;
         }
+        if let Some(v) = meta
+            .get("actors")
+            .and_then(Value::as_str)
+            .and_then(ActorBinding::from_config_str)
+        {
+            self.actors = v;
+        }
         // The declared scope. Replaced whole rather than merged, unlike `views`
         // and `fields`: those are keyed collections where a later surface adds
         // an entry, and this is one statement about one workspace — a surface
@@ -1449,6 +1500,10 @@ impl WorkspaceConfig {
             Value::String(self.confirmations.as_config_str().into()),
         );
         map.insert(
+            "actors".into(),
+            Value::String(self.actors.as_config_str().into()),
+        );
+        map.insert(
             "workspace_id".into(),
             Value::String(self.workspace_id.clone()),
         );
@@ -1636,6 +1691,7 @@ const TOP_KEYS: &[&str] = &[
     "recycle_bin",
     "about",
     "confirmations",
+    "actors",
     "out_of_scope",
 ];
 /// Keys inside the `metadata:` block.
@@ -1728,6 +1784,15 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     value,
                     |s| ConfirmationBinding::from_config_str(s).is_some(),
                     &["stamp", "content"],
+                );
+            }
+            "actors" => {
+                enum_axis(
+                    &mut issues,
+                    key,
+                    value,
+                    |s| ActorBinding::from_config_str(s).is_some(),
+                    &["free", "declared"],
                 );
             }
             // A sequence of workspace-relative directory paths. Each entry is
@@ -3116,6 +3181,8 @@ mod tests {
             about: About::Off,
             // Non-default, for the same reason.
             confirmations: ConfirmationBinding::Content,
+            // And again.
+            actors: ActorBinding::Declared,
             // Non-default (the default is anonymous), so the round trip proves
             // the name survives rather than being silently dropped.
             workspace_id: "notes".to_string(),
@@ -3482,6 +3549,19 @@ mod tests {
         let mut unchanged = WorkspaceConfig::default();
         unchanged.apply(&config_doc(&[("about", "structrue")]));
         assert_eq!(unchanged.about, About::Structure);
+    }
+
+    #[test]
+    fn actors_default_to_free_and_accept_only_their_two_spellings() {
+        assert_eq!(WorkspaceConfig::default().actors, ActorBinding::Free);
+        let mut cfg = WorkspaceConfig::default();
+        cfg.apply(&config_doc(&[("actors", "declared")]));
+        assert_eq!(cfg.actors, ActorBinding::Declared);
+        assert!(diagnose(&config_doc(&[("actors", "declared")])).is_empty());
+        assert!(!diagnose(&config_doc(&[("actors", "people")])).is_empty());
+        let mut unchanged = WorkspaceConfig::default();
+        unchanged.apply(&config_doc(&[("actors", "people")]));
+        assert_eq!(unchanged.actors, ActorBinding::Free);
     }
 
     #[test]

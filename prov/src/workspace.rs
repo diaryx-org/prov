@@ -177,6 +177,8 @@ pub struct Settings {
     /// What a confirmation is measured against — see
     /// [`Workspace::confirmation_binding`].
     pub confirmations: crate::config::ConfirmationBinding,
+    /// Who an actor field may name — see [`Workspace::actor_binding`].
+    pub actors: crate::config::ActorBinding,
 }
 
 impl Default for Settings {
@@ -197,6 +199,7 @@ impl Default for Settings {
             root: None,
             updated: String::new(),
             confirmations: crate::config::ConfirmationBinding::Stamp,
+            actors: crate::config::ActorBinding::Free,
         }
     }
 }
@@ -234,6 +237,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
             root: config.root.as_deref().map(PathBuf::from),
             updated: config.updated_field().unwrap_or_default().to_string(),
             confirmations: config.confirmations,
+            actors: config.actors,
             ..Self::default()
         }
     }
@@ -607,6 +611,13 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// `content_hash` is bound to that digest under either value.
     pub fn confirmation_binding(&self) -> crate::config::ConfirmationBinding {
         self.settings.confirmations
+    }
+
+    /// Who an actor field may name: any string, or — under `actors: declared` —
+    /// a link to a person document, every bare person string a
+    /// [`Finding::BareActor`](crate::validate::Finding::BareActor).
+    pub fn actor_binding(&self) -> crate::config::ActorBinding {
+        self.settings.actors
     }
 
     /// How this workspace embeds metadata — the family (`delimited`,
@@ -2236,6 +2247,7 @@ mod tests {
             root: Some(PathBuf::from("home.md")),
             updated: "updated".into(),
             confirmations: crate::config::ConfirmationBinding::Content,
+            actors: crate::config::ActorBinding::Declared,
         };
         let ws = Workspace::builder(DummyFs)
             .root("vault")
