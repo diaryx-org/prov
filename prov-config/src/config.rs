@@ -606,6 +606,20 @@ pub struct WorkspaceConfig {
     /// Must be [well-formed](is_valid_workspace_id): a malformed value is
     /// reported by [`diagnose`] and ignored rather than half-honored.
     pub workspace_id: String,
+    /// The digest of this workspace's **genesis**: the first signed revision of
+    /// its history that founded its membership, as the host that keeps that
+    /// history judged it. 64 lowercase hexadecimal characters, or `None`.
+    ///
+    /// prov never computes or verifies it — it has no history to read. It
+    /// *compares* it: a device's peer file records a peer's genesis the first
+    /// time it confirms the peer, as SSH's `known_hosts` records a host key, and
+    /// a peer that later answers to the same name with a different genesis is
+    /// refused ([`PeerLookup::Replaced`](prov_graph::PeerLookup::Replaced)).
+    /// A name only has to be unique among one reader's peers; this is what
+    /// tells the workspace that had the name from one that took it.
+    ///
+    /// Malformed values are reported by [`diagnose`] and ignored.
+    pub genesis: Option<String>,
     /// The document this workspace calls its **root**, named by the workspace
     /// node so that a directory prov cannot otherwise choose in does not have to
     /// be guessed at (spec §1 rule 1).
@@ -661,6 +675,7 @@ pub struct WorkspaceConfig {
 /// `id:<workspace>/<id>` target parses, which is `prov-graph`'s business, not
 /// policy this crate gets a say in.
 pub use prov_graph::link::is_valid_workspace_id;
+pub use prov_graph::peer::is_genesis_digest;
 
 /// Whether `path` is a usable [`out_of_scope`](WorkspaceConfig::out_of_scope)
 /// entry: a directory named relative to the workspace root.
@@ -722,6 +737,7 @@ impl Default for WorkspaceConfig {
             confirmations: ConfirmationBinding::Stamp,
             actors: ActorBinding::Free,
             workspace_id: String::new(),
+            genesis: None,
             root: None,
             out_of_scope: Vec::new(),
         }
@@ -1029,6 +1045,15 @@ impl WorkspaceConfig {
             .filter(|v| is_valid_workspace_id(v))
         {
             self.workspace_id = v.to_string();
+        }
+        // Whose history this is. Malformed values are ignored and reported,
+        // like `workspace_id`.
+        if let Some(v) = meta
+            .get("genesis")
+            .and_then(Value::as_str)
+            .filter(|v| is_genesis_digest(v))
+        {
+            self.genesis = Some(v.to_string());
         }
         // Which document is the root. Malformed values are ignored and reported,
         // like `workspace_id` — half-honoring a path here would put the root in
@@ -1507,6 +1532,11 @@ impl WorkspaceConfig {
             "workspace_id".into(),
             Value::String(self.workspace_id.clone()),
         );
+        // Written only when the host has judged one: there is no default
+        // genesis for a key to spell.
+        if let Some(genesis) = &self.genesis {
+            map.insert("genesis".into(), Value::String(genesis.clone()));
+        }
         // Written only when the workspace names one, like `out_of_scope`: the
         // default is "scan for it", which no key spells.
         if let Some(root) = &self.root {
@@ -1645,6 +1675,9 @@ pub enum ConfigIssueKind {
     /// [`InvalidValue`](Self::InvalidValue) there is no list of accepted
     /// spellings: the name is the user's to choose and only its shape is fixed.
     MalformedRoot { value: String },
+    /// `genesis` is not 64 lowercase hexadecimal characters. `apply` ignored
+    /// it, so a peer file comparing against this workspace sees none.
+    MalformedGenesis { value: String },
     /// A field declared `type: ref` also says `under:`. Whether a key holds
     /// links is a fact about the vocabulary — like a relation's name, it
     /// holds everywhere — so the scope does not narrow it: the field is read
@@ -1682,6 +1715,7 @@ const TOP_KEYS: &[&str] = &[
     "exports",
     "id_storage",
     "workspace_id",
+    "genesis",
     "root",
     "identity",
     "fixity",
@@ -1842,6 +1876,17 @@ pub fn diagnose(meta: &Value) -> Vec<ConfigIssue> {
                     issues.push(ConfigIssue {
                         key: key.clone(),
                         kind: ConfigIssueKind::MalformedWorkspaceId {
+                            value: value_summary(value),
+                        },
+                    });
+                }
+            }
+            // A digest's shape. prov cannot check more than that.
+            "genesis" => {
+                if !value.as_str().is_some_and(is_genesis_digest) {
+                    issues.push(ConfigIssue {
+                        key: key.clone(),
+                        kind: ConfigIssueKind::MalformedGenesis {
                             value: value_summary(value),
                         },
                     });
@@ -3186,6 +3231,7 @@ mod tests {
             // Non-default (the default is anonymous), so the round trip proves
             // the name survives rather than being silently dropped.
             workspace_id: "notes".to_string(),
+            genesis: None,
             // Sorted here rather than as authored: `apply` normalizes, so a
             // list written in any other order would fail this round trip for
             // the right reason.
@@ -3549,6 +3595,32 @@ mod tests {
         let mut unchanged = WorkspaceConfig::default();
         unchanged.apply(&config_doc(&[("about", "structrue")]));
         assert_eq!(unchanged.about, About::Structure);
+    }
+
+    #[test]
+    fn genesis_applies_when_it_is_a_digest_and_is_reported_when_not() {
+        let digest = "3f9a000000000000000000000000000000000000000000000000000000000c2a";
+        assert_eq!(WorkspaceConfig::default().genesis, None);
+        let mut cfg = WorkspaceConfig::default();
+        cfg.apply(&config_doc(&[("genesis", digest)]));
+        assert_eq!(cfg.genesis.as_deref(), Some(digest));
+        assert!(diagnose(&config_doc(&[("genesis", digest)])).is_empty());
+        for bad in ["3F9A", "", "not a digest"] {
+            let mut unchanged = WorkspaceConfig::default();
+            unchanged.apply(&config_doc(&[("genesis", bad)]));
+            assert_eq!(unchanged.genesis, None, "{bad:?}");
+            assert!(matches!(
+                diagnose(&config_doc(&[("genesis", bad)]))[0].kind,
+                ConfigIssueKind::MalformedGenesis { .. }
+            ));
+        }
+        let cfg = WorkspaceConfig {
+            genesis: Some(digest.to_string()),
+            ..Default::default()
+        };
+        let mut round = WorkspaceConfig::default();
+        round.apply(&Value::Mapping(cfg.to_mapping()));
+        assert_eq!(round.genesis, cfg.genesis);
     }
 
     #[test]

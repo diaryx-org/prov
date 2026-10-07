@@ -85,6 +85,15 @@ impl std::fmt::Display for PeerLocation {
     }
 }
 
+/// Whether `value` is spelled as a genesis digest: 64 lowercase hexadecimal
+/// characters, the SHA-256 a historica revision is named by.
+pub fn is_genesis_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Why a location on record could not be confirmed to be the workspace that was
 /// asked for.
 ///
@@ -150,6 +159,24 @@ pub enum PeerLookup {
         /// The name the workspace found there actually declares.
         declares: String,
     },
+    /// A location occupied by a workspace with the right name and a different
+    /// history: the genesis this device pinned for the name the first time it
+    /// confirmed the peer is not the genesis the workspace there declares now.
+    ///
+    /// The name check cannot catch this, because a name only has to be unique
+    /// among one reader's peers: another workspace that took the name — or the
+    /// same directory replaced by another library — answers to it as readily as
+    /// the one that had it. Never followable, like
+    /// [`Mismatched`](PeerLookup::Mismatched). Recording the peer again is how
+    /// a reader accepts that it really is the workspace they meant.
+    Replaced {
+        /// Where the host says the workspace is.
+        location: PeerLocation,
+        /// The genesis pinned for the name.
+        pinned: String,
+        /// The genesis the workspace there declares, if any.
+        declares: Option<String>,
+    },
     /// No location on record. The ordinary state — most workspaces have never
     /// heard of most other workspaces.
     Unknown,
@@ -185,6 +212,27 @@ impl PeerLookup {
         }
     }
 
+    /// Hold a confirmation to the genesis pinned for the peer: a confirmed
+    /// lookup whose workspace declares a genesis other than `pinned` becomes
+    /// [`Replaced`](PeerLookup::Replaced). Nothing pinned, or an answer that
+    /// was not a confirmation, is returned as it was.
+    ///
+    /// prov compares the digests and never verifies one: what a genesis is,
+    /// and whether the workspace's history really starts there, is the host's
+    /// to judge before it writes the peer's `genesis` key.
+    pub fn pinned(self, pinned: Option<&str>, declares: Option<&str>) -> Self {
+        match (self, pinned) {
+            (Self::Confirmed(location), Some(pinned)) if declares != Some(pinned) => {
+                Self::Replaced {
+                    location,
+                    pinned: pinned.to_string(),
+                    declares: declares.map(str::to_string),
+                }
+            }
+            (lookup, _) => lookup,
+        }
+    }
+
     /// A location whose workspace could not be opened at all.
     pub fn unreadable(location: PeerLocation) -> Self {
         Self::Unconfirmed {
@@ -217,12 +265,13 @@ impl PeerLookup {
     /// The location to follow when the reader has accepted an unconfirmed one —
     /// an anonymous peer, or a URL nothing local can check.
     ///
-    /// Still `None` for [`Mismatched`](PeerLookup::Mismatched). The escape is
-    /// for *absent* evidence, never for evidence pointing the other way.
+    /// Still `None` for [`Mismatched`](PeerLookup::Mismatched) and
+    /// [`Replaced`](PeerLookup::Replaced). The escape is for *absent* evidence,
+    /// never for evidence pointing the other way.
     pub fn followable_unverified(&self) -> Option<&PeerLocation> {
         match self {
             Self::Confirmed(location) | Self::Unconfirmed { location, .. } => Some(location),
-            Self::Mismatched { .. } | Self::Unknown => None,
+            Self::Mismatched { .. } | Self::Replaced { .. } | Self::Unknown => None,
         }
     }
 
@@ -233,7 +282,8 @@ impl PeerLookup {
         match self {
             Self::Confirmed(location)
             | Self::Unconfirmed { location, .. }
-            | Self::Mismatched { location, .. } => Some(location),
+            | Self::Mismatched { location, .. }
+            | Self::Replaced { location, .. } => Some(location),
             Self::Unknown => None,
         }
     }
@@ -410,5 +460,43 @@ mod tests {
         }
         assert!(ask(erased));
         assert!(ask(&One));
+    }
+
+    const ONE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const TWO: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_peer_with_another_genesis_than_the_one_pinned_is_replaced_and_never_followed() {
+        let confirmed = || PeerLookup::confirm("notes", dir("/vaults/notes"), "notes");
+        assert_eq!(
+            confirmed().pinned(Some(ONE), Some(ONE)),
+            PeerLookup::Confirmed(dir("/vaults/notes"))
+        );
+        assert_eq!(
+            confirmed().pinned(None, Some(TWO)),
+            PeerLookup::Confirmed(dir("/vaults/notes")),
+            "nothing pinned yet"
+        );
+        for declares in [Some(TWO), None] {
+            let replaced = confirmed().pinned(Some(ONE), declares);
+            assert!(
+                matches!(replaced, PeerLookup::Replaced { .. }),
+                "{replaced:?}"
+            );
+            assert_eq!(replaced.followable(), None);
+            assert_eq!(replaced.followable_unverified(), None);
+            assert_eq!(replaced.location(), Some(&dir("/vaults/notes")));
+        }
+        // A lookup that was not a confirmation keeps its own answer.
+        let mismatched = PeerLookup::confirm("notes", dir("/vaults/notes"), "journal");
+        assert_eq!(mismatched.clone().pinned(Some(ONE), Some(TWO)), mismatched);
+    }
+
+    #[test]
+    fn a_genesis_is_a_lowercase_sha256() {
+        assert!(is_genesis_digest(ONE));
+        assert!(!is_genesis_digest(&ONE.to_uppercase().replace('1', "A")));
+        assert!(!is_genesis_digest(&ONE[1..]));
+        assert!(!is_genesis_digest(""));
     }
 }

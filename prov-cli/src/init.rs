@@ -906,6 +906,7 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         // that happens later, to a minority of workspaces. `prov config
         // workspace_id <name>` is the moment it becomes true.
         workspace_id: workspace_id.unwrap_or_default(),
+        genesis: None,
         // Nothing declared out of scope, and not prompted for the same reason
         // `views` is not: at `init` there is nothing beside the root yet to
         // have decided about. It is a thing the workspace learns later, when

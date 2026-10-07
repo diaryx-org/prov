@@ -437,6 +437,11 @@ pub(crate) fn cmd_config(
                             "prov: `{value}` is not a valid workspace name — it cannot be empty or contain `/`, `:` or whitespace"
                         );
                     }
+                    prov::ConfigIssueKind::MalformedGenesis { value } => {
+                        eprintln!(
+                            "prov: `{value}` is not a genesis — it is the 64 lowercase hexadecimal characters of a revision's digest, written by the program that keeps the workspace's history"
+                        );
+                    }
                     prov::ConfigIssueKind::MalformedRoot { value } => {
                         eprintln!(
                             "prov: `{value}` is not a valid root name — name the root as a bare file name in the node's own directory, with no `/`"
