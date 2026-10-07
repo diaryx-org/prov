@@ -77,7 +77,8 @@ chosen so an entry could take it later without renaming.
 
 **`confirmed`** is an append-only list of dated, attributed statements that
 someone read the document and found it correct. `prov confirm <doc>` appends
-one. Nothing else writes the list, and nothing ever rewrites or drops an entry:
+one. Nothing else writes the list, and nothing rewrites or drops an entry
+beyond naming a declared person by their link (§2):
 a second confirmation by the same person is a second fact, and an entry the
 document has since moved out from under is history.
 
@@ -128,6 +129,41 @@ one-line `actor` file beside the device-local peer map (`prov peer list` prints
 where that is). With none of those it refuses rather than writing an
 unattributed entry, because an unattributed assurance is exactly what this
 family exists to replace.
+
+### Declared people
+
+A bare string ties an act to nobody in particular: `amh` and `Adam Harris`
+read as two people, and a workspace several people write cannot say which
+`amh` it meant. A workspace that needs to say sets
+
+```yaml
+# prov.yaml
+actors: declared        # free (the default) | declared
+```
+
+and names every person by a link to a **person document**: one that lists, in
+`handles:`, the strings that have stood for that person.
+
+```yaml
+# people/adam.md
+title: Adam Harris
+handles: [amh, Adam Harris]
+```
+
+```yaml
+confirmed:
+- by: '[Adam Harris](id:4kq20b1)'
+  at: 2026-10-07T02:00:00.000000Z
+```
+
+A prefixed actor is never a person and is left as it is. Under `declared`,
+every bare person string in `generated.by` or `confirmed[].by` is a
+`bare_actor` finding (§5), and where exactly one person document lists it,
+`prov check --fix` rewrites it to that document's link. That is the one edit
+prov makes to a confirmation entry, and it moves nothing: the content digest
+leaves out the `confirmed` list (§3), and the entry names the same person. An
+entry carrying another tool's keys is the exception — a signature over the
+entry may cover `by` as written — and is reported and never rewritten.
 
 ## 3. What a confirmation is bound to
 
@@ -247,6 +283,11 @@ present, the way trust is derived everywhere else in prov, and `prov confirm
 <doc> --show` prints it along with each entry and whether it stands.
 
 ## 5. What `check` says
+
+**`bare_actor`** — under `actors: declared` (§2), an actor field names a person
+by a bare string. Where one person document's `handles:` lists it the fix is
+determined and applied by `check --fix`; where several do, it is a choice
+between them; where none does, the repair is to declare the person.
 
 **`confirmation_stale`** — the document's newest confirmation was made against
 a version that no longer exists, and nothing has confirmed it since. Someone
