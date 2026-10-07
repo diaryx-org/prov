@@ -133,6 +133,7 @@ impl Preset {
                         format!("`{value}` is not a workspace name")
                     }
                     K::MalformedRoot { value } => format!("`{value}` is not a root name"),
+                    K::MalformedGenesis { value } => format!("`{value}` is not a genesis digest"),
                     K::NestNotSingleValued { field } => {
                         format!("nests by `{field}`, which is declared `type: seq`")
                     }

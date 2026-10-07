@@ -1265,6 +1265,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // root is elsewhere, and rewriting it to `index.md` would
                 // silently agree to a root this directory may not even hold.
                 crate::config::ConfigIssueKind::MalformedRoot { .. } => Ok(Vec::new()),
+                // The genesis is the host's to judge; prov has nothing to
+                // put in its place.
+                crate::config::ConfigIssueKind::MalformedGenesis { .. } => Ok(Vec::new()),
                 // Dropping the scope and dropping the type are both defensible
                 // and mean different things — one says the vocabulary holds
                 // everywhere, the other that the field is not a link. Diagnosis

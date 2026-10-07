@@ -215,6 +215,17 @@ pub enum Refusal {
         /// The name the workspace found there actually declares.
         declares: String,
     },
+    /// A location occupied by a workspace with the right name and another
+    /// genesis than the one this device pinned for it. Refused under every
+    /// trust level, like [`Mismatched`](Refusal::Mismatched).
+    Replaced {
+        /// Where the host said the workspace was.
+        location: PeerLocation,
+        /// The genesis pinned for the name.
+        pinned: String,
+        /// The genesis the workspace there declares, if any.
+        declares: Option<String>,
+    },
     /// The location is a URL. prov does no network I/O, so this is refused
     /// however confidently the host asserted it.
     Url(String),
@@ -258,6 +269,18 @@ impl std::fmt::Display for Refusal {
             Self::Mismatched { location, declares } => {
                 write!(f, "{location} calls itself `{declares}`")
             }
+            Self::Replaced {
+                location, declares, ..
+            } => match declares {
+                Some(_) => write!(
+                    f,
+                    "{location} answers to the name with another history than the one pinned for it"
+                ),
+                None => write!(
+                    f,
+                    "{location} answers to the name and no longer declares the history pinned for it"
+                ),
+            },
             Self::Url(url) => write!(f, "{url} is a URL, and prov reads nothing over the network"),
             Self::Unopenable { location, reason } => {
                 write!(f, "{location} could not be opened: {reason}")
@@ -369,6 +392,15 @@ pub async fn open_peer<FS: Storage + Clone>(
             PeerLookup::Mismatched { location, declares } => {
                 Refusal::Mismatched { location, declares }
             }
+            PeerLookup::Replaced {
+                location,
+                pinned,
+                declares,
+            } => Refusal::Replaced {
+                location,
+                pinned,
+                declares,
+            },
             // `Confirmed` is followable under both trust levels, so it never
             // reaches here; naming it beats an `unreachable!` on a value a host
             // supplied.
