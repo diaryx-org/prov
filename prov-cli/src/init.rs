@@ -898,6 +898,9 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         // The stamp, and not prompted: binding confirmations to content is for
         // a workspace whose history checks them, which `init` cannot know of.
         confirmations: prov::ConfirmationBinding::Stamp,
+        // Free, and not prompted: a workspace one person writes has nobody to
+        // tell their `amh` apart from.
+        actors: prov::ActorBinding::Free,
         // Anonymous unless asked for, and not prompted: a name only earns its
         // keep once some *other* workspace refers to this one, which is a thing
         // that happens later, to a minority of workspaces. `prov config
