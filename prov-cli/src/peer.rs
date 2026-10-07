@@ -353,8 +353,11 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
                              rather than follow it",
                             dir.display()
                         ),
-                        prov::PeerLookup::Unknown => {
-                            unreachable!("confirm never answers Unknown — it is given a location")
+                        prov::PeerLookup::Refused { .. } | prov::PeerLookup::Unknown => {
+                            unreachable!(
+                                "confirm never answers Unknown or Refused — it is given a \
+                                 location, and only a host refuses"
+                            )
                         }
                     }
                 }
@@ -410,6 +413,9 @@ pub(crate) fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> Strin
             "the peer map says `{location}`, but that workspace calls itself \
              `{declares}` — not followed (`prov peer add {workspace} <dir>` to correct it)"
         ),
+        prov::PeerLookup::Refused { location, why } => {
+            format!("the peer map says `{location}`, but it was refused: {why} — not followed")
+        }
         prov::PeerLookup::Unknown => format!(
             "no peer named `{workspace}` on this device (`prov peer add {workspace} <dir>`)"
         ),

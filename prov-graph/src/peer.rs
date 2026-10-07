@@ -150,6 +150,21 @@ pub enum PeerLookup {
         /// The name the workspace found there actually declares.
         declares: String,
     },
+    /// A location the host refused for a reason of its own, after whatever
+    /// prov checks.
+    ///
+    /// A host can know more about a peer than its name: one that keeps the
+    /// peer's history can tell the workspace that had the name from another
+    /// that took it, or the same directory replaced by another library that
+    /// answers to it. prov has no view on what the reason is. It only
+    /// guarantees that a refusal is never followed, by either accessor, like
+    /// [`Mismatched`](PeerLookup::Mismatched).
+    Refused {
+        /// Where the host says the workspace is.
+        location: PeerLocation,
+        /// Why the host refused it, in words a reader can act on.
+        why: String,
+    },
     /// No location on record. The ordinary state — most workspaces have never
     /// heard of most other workspaces.
     Unknown,
@@ -185,6 +200,20 @@ impl PeerLookup {
         }
     }
 
+    /// Refuse a location the host would otherwise have answered with, for a
+    /// reason of its own. Anything but a location on record is returned as it
+    /// was: there is nothing to refuse in [`Unknown`](PeerLookup::Unknown), and
+    /// [`Mismatched`](PeerLookup::Mismatched) is already the stronger answer.
+    pub fn refuse(self, why: impl Into<String>) -> Self {
+        match self {
+            Self::Confirmed(location) | Self::Unconfirmed { location, .. } => Self::Refused {
+                location,
+                why: why.into(),
+            },
+            lookup => lookup,
+        }
+    }
+
     /// A location whose workspace could not be opened at all.
     pub fn unreadable(location: PeerLocation) -> Self {
         Self::Unconfirmed {
@@ -217,12 +246,13 @@ impl PeerLookup {
     /// The location to follow when the reader has accepted an unconfirmed one —
     /// an anonymous peer, or a URL nothing local can check.
     ///
-    /// Still `None` for [`Mismatched`](PeerLookup::Mismatched). The escape is
-    /// for *absent* evidence, never for evidence pointing the other way.
+    /// Still `None` for [`Mismatched`](PeerLookup::Mismatched) and
+    /// [`Refused`](PeerLookup::Refused). The escape is for *absent* evidence,
+    /// never for evidence pointing the other way.
     pub fn followable_unverified(&self) -> Option<&PeerLocation> {
         match self {
             Self::Confirmed(location) | Self::Unconfirmed { location, .. } => Some(location),
-            Self::Mismatched { .. } | Self::Unknown => None,
+            Self::Mismatched { .. } | Self::Refused { .. } | Self::Unknown => None,
         }
     }
 
@@ -233,7 +263,8 @@ impl PeerLookup {
         match self {
             Self::Confirmed(location)
             | Self::Unconfirmed { location, .. }
-            | Self::Mismatched { location, .. } => Some(location),
+            | Self::Mismatched { location, .. }
+            | Self::Refused { location, .. } => Some(location),
             Self::Unknown => None,
         }
     }
@@ -410,5 +441,29 @@ mod tests {
         }
         assert!(ask(erased));
         assert!(ask(&One));
+    }
+
+    #[test]
+    fn a_location_the_host_refused_is_never_followed() {
+        let confirmed = PeerLookup::confirm("notes", dir("/vaults/notes"), "notes");
+        let refused = confirmed.refuse("another history answers to `notes` there");
+        assert_eq!(
+            refused,
+            PeerLookup::Refused {
+                location: dir("/vaults/notes"),
+                why: "another history answers to `notes` there".into(),
+            }
+        );
+        assert_eq!(refused.followable(), None);
+        assert_eq!(refused.followable_unverified(), None);
+        assert_eq!(refused.location(), Some(&dir("/vaults/notes")));
+        // An unconfirmed location is refused too; the reader's say-so cannot
+        // follow it afterwards.
+        let anonymous = PeerLookup::confirm("notes", dir("/vaults/notes"), "");
+        assert_eq!(anonymous.refuse("no").followable_unverified(), None);
+        // Nothing to refuse, or a stronger answer already, stays as it was.
+        assert_eq!(PeerLookup::Unknown.refuse("no"), PeerLookup::Unknown);
+        let mismatched = PeerLookup::confirm("notes", dir("/vaults/notes"), "journal");
+        assert_eq!(mismatched.clone().refuse("no"), mismatched);
     }
 }

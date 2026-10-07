@@ -215,6 +215,15 @@ pub enum Refusal {
         /// The name the workspace found there actually declares.
         declares: String,
     },
+    /// A location the host refused for a reason of its own
+    /// ([`PeerLookup::Refused`]). Refused under every trust level, like
+    /// [`Mismatched`](Refusal::Mismatched).
+    Refused {
+        /// Where the host said the workspace was.
+        location: PeerLocation,
+        /// Why the host refused it.
+        why: String,
+    },
     /// The location is a URL. prov does no network I/O, so this is refused
     /// however confidently the host asserted it.
     Url(String),
@@ -258,6 +267,7 @@ impl std::fmt::Display for Refusal {
             Self::Mismatched { location, declares } => {
                 write!(f, "{location} calls itself `{declares}`")
             }
+            Self::Refused { location, why } => write!(f, "{location} was refused: {why}"),
             Self::Url(url) => write!(f, "{url} is a URL, and prov reads nothing over the network"),
             Self::Unopenable { location, reason } => {
                 write!(f, "{location} could not be opened: {reason}")
@@ -369,6 +379,7 @@ pub async fn open_peer<FS: Storage + Clone>(
             PeerLookup::Mismatched { location, declares } => {
                 Refusal::Mismatched { location, declares }
             }
+            PeerLookup::Refused { location, why } => Refusal::Refused { location, why },
             // `Confirmed` is followable under both trust levels, so it never
             // reaches here; naming it beats an `unreachable!` on a value a host
             // supplied.
