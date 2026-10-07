@@ -115,19 +115,15 @@ pub(crate) fn path() -> Option<&'static Path> {
     PATH.get_or_init(|| None).as_deref()
 }
 
-/// Every peer this device knows, name → workspace root, and the genesis
-/// pinned for each that has one.
+/// Every peer this device knows, name → workspace root.
 ///
 /// The parsing is the library's ([`prov::PeerFile`]), so this binary and any
 /// other host following the same map read it the same way; what is this
 /// binary's is only *which* file, per [`path`].
-pub(crate) fn load_pinned() -> (BTreeMap<String, PathBuf>, BTreeMap<String, String>) {
+pub(crate) fn load() -> BTreeMap<String, PathBuf> {
     match path() {
-        Some(file) => {
-            let file = prov::PeerFile::load(file);
-            (file.peers().clone(), file.pins().clone())
-        }
-        None => (BTreeMap::new(), BTreeMap::new()),
+        Some(file) => prov::PeerFile::load(file).peers().clone(),
+        None => BTreeMap::new(),
     }
 }
 
@@ -137,7 +133,7 @@ pub(crate) fn load_pinned() -> (BTreeMap<String, PathBuf>, BTreeMap<String, Stri
 /// this. Following a peer means going through [`PeerResolver::locate`], and a
 /// convenience that skipped the confirmation would be the shortest path for
 /// every future call site — which is exactly how the check stops happening.
-/// Commands that only *report* the map read [`load_pinned`] directly.
+/// Commands that only *report* the map read [`load`] directly.
 ///
 /// Loaded once and held, so a command that meets a dozen foreign references
 /// reads the file once rather than a dozen times — and, more to the point, so
@@ -247,10 +243,7 @@ impl PeerResolver for PeerMap {
 /// write in so many words (`prov peer add`), so silently not doing it would be
 /// a lie. Goes through a temporary sibling and a rename for the usual reason —
 /// an interrupted write leaves the previous map rather than a truncated one.
-pub(crate) fn store(
-    peers: &BTreeMap<String, PathBuf>,
-    pins: &BTreeMap<String, String>,
-) -> Result<(), AnyError> {
+pub(crate) fn store(peers: &BTreeMap<String, PathBuf>) -> Result<(), AnyError> {
     let Some(file) = path() else {
         return Err(
             "no peer-map location on this device — pass --peers <FILE> or set PROV_PEERS"
@@ -261,13 +254,13 @@ pub(crate) fn store(
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let out = prov::PeerFile::render(
-        "# prov peer map — workspace name (and `:genesis`, once pinned), then where it\n\
-         # lives on this device. Managed by `prov peer add` / `prov peer remove`;\n\
-         # safe to hand-edit.\n",
-        peers,
-        pins,
+    let mut out = String::from(
+        "# prov peer map — workspace name, then where it lives on this device.\n\
+         # Managed by `prov peer add` / `prov peer remove`; safe to hand-edit.\n",
     );
+    for (name, root) in peers {
+        out.push_str(&format!("{name} {}\n", root.display()));
+    }
     let tmp = file.with_extension("tmp");
     std::fs::write(&tmp, out)?;
     if let Err(e) = std::fs::rename(&tmp, file) {
@@ -296,14 +289,11 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
                 );
                 return Ok(ExitCode::SUCCESS);
             };
-            let (peers, pins) = load_pinned();
+            let peers = load();
             // The entries to stdout and the commentary to stderr, so `prov peer
             // list` pipes cleanly — the convention the other commands follow.
             for (name, root) in &peers {
-                match pins.get(name) {
-                    Some(pin) => println!("{name}\t{}\t{pin}", root.display()),
-                    None => println!("{name}\t{}", root.display()),
-                }
+                println!("{name}\t{}", root.display());
             }
             if peers.is_empty() {
                 eprintln!(
@@ -340,10 +330,6 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
             // the time it is followed — so this is advice, given early, and the
             // entry is recorded either way.
             let location = prov::PeerLocation::Path(dir.clone());
-            // The genesis the peer declares, pinned when it answers to the
-            // name: recording a peer is the first confirmation, and this is
-            // where a device learns which history the name belongs to.
-            let mut genesis: Option<String> = None;
             match find_root_quiet_at(&dir) {
                 Ok(peer_ctx) => {
                     // The same constructor the resolver uses, so `add` and
@@ -351,9 +337,7 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
                     // same directory.
                     match prov::PeerLookup::confirm(&name, location, &peer_ctx.config.workspace_id)
                     {
-                        prov::PeerLookup::Confirmed(_) => {
-                            genesis = peer_ctx.config.genesis.clone();
-                        }
+                        prov::PeerLookup::Confirmed(_) => {}
                         prov::PeerLookup::Unconfirmed { .. } => eprintln!(
                             "warning: the workspace at {} does not name itself — set \
                              `workspace_id` there\n  (`prov -C {} config workspace_id {name}`), \
@@ -369,10 +353,10 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
                              rather than follow it",
                             dir.display()
                         ),
-                        prov::PeerLookup::Replaced { .. } | prov::PeerLookup::Unknown => {
+                        prov::PeerLookup::Refused { .. } | prov::PeerLookup::Unknown => {
                             unreachable!(
-                                "confirm never answers Unknown or Replaced — it is given a \
-                                 location and nothing is pinned"
+                                "confirm never answers Unknown or Refused — it is given a \
+                                 location, and only a host refuses"
                             )
                         }
                     }
@@ -384,23 +368,9 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
                     eprintln!("warning: {}: {e}", dir.display());
                 }
             }
-            let (mut peers, mut pins) = load_pinned();
+            let mut peers = load();
             let previous = peers.insert(name.clone(), dir.clone());
-            let was_pinned = match &genesis {
-                Some(genesis) => pins.insert(name.clone(), genesis.clone()),
-                None => pins.remove(&name),
-            };
-            if let Some(was) = &was_pinned
-                && genesis.as_ref() != Some(was)
-            {
-                eprintln!(
-                    "warning: `{name}` was pinned to genesis {was}; the workspace at {} \
-                     declares {} — recorded as you asked, so references to `{name}` follow it now",
-                    dir.display(),
-                    genesis.as_deref().unwrap_or("none")
-                );
-            }
-            store(&peers, &pins)?;
+            store(&peers)?;
             match previous {
                 Some(old) if old != dir => {
                     eprintln!("{name} → {} (was {})", dir.display(), old.display())
@@ -410,13 +380,12 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
             Ok(ExitCode::SUCCESS)
         }
         PeerAction::Remove { name } => {
-            let (mut peers, mut pins) = load_pinned();
+            let mut peers = load();
             if peers.remove(&name).is_none() {
                 eprintln!("no peer named `{name}`");
                 return Ok(ExitCode::FAILURE);
             }
-            pins.remove(&name);
-            store(&peers, &pins)?;
+            store(&peers)?;
             eprintln!("removed `{name}` — references to it are still carried, just not followable");
             Ok(ExitCode::SUCCESS)
         }
@@ -444,13 +413,9 @@ pub(crate) fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> Strin
             "the peer map says `{location}`, but that workspace calls itself \
              `{declares}` — not followed (`prov peer add {workspace} <dir>` to correct it)"
         ),
-        prov::PeerLookup::Replaced {
-            location, pinned, ..
-        } => format!(
-            "the peer map says `{location}`, and the workspace there answers to `{workspace}` \
-             with another history than the one pinned for it ({pinned}) — not followed \
-             (`prov peer add {workspace} <dir>` if it really is the workspace you mean)"
-        ),
+        prov::PeerLookup::Refused { location, why } => {
+            format!("the peer map says `{location}`, but it was refused: {why} — not followed")
+        }
         prov::PeerLookup::Unknown => format!(
             "no peer named `{workspace}` on this device (`prov peer add {workspace} <dir>`)"
         ),

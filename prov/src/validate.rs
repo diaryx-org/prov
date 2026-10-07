@@ -1036,11 +1036,6 @@ impl fmt::Display for Finding {
                     "{}: config `workspace_id` is `{value}` — a workspace name cannot be empty or contain `/`, `:` or whitespace (ignored; the workspace stays anonymous)",
                     doc.display(),
                 ),
-                crate::config::ConfigIssueKind::MalformedGenesis { value } => write!(
-                    f,
-                    "{}: config `genesis` is `{value}` — a genesis is the 64 lowercase hexadecimal characters of a revision's digest (ignored; peers comparing against this workspace see none)",
-                    doc.display(),
-                ),
                 crate::config::ConfigIssueKind::MalformedRoot { value } => write!(
                     f,
                     "{}: config `root` is `{value}` — the root must be named as a bare file name in this directory, with no `/` (ignored; the root is chosen by the usual `index`/`readme` scan)",

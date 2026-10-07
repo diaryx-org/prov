@@ -36,22 +36,6 @@
 //! a workspace that calls itself something else is reported as
 //! [`Mismatched`](PeerLookup::Mismatched) rather than followed.
 //!
-//! ## A name is pinned to a history
-//!
-//! A name only has to be unique among one reader's peers, so another workspace
-//! can take it — or the directory can be replaced by another library that
-//! answers to it. So a peer may carry the genesis its workspace declared when it
-//! was recorded ([`WorkspaceConfig::genesis`](crate::WorkspaceConfig::genesis)),
-//! written after the name with a colon, which no name can hold:
-//!
-//! ```text
-//! notes:3f9a…c2   /Users/me/vaults/notes
-//! ```
-//!
-//! A peer that later answers to the name with another genesis, or with none, is
-//! [`Replaced`](PeerLookup::Replaced) and never followed. prov compares the
-//! digests and never verifies one, as SSH compares a host key it recorded.
-//!
 //! ## What is not here
 //!
 //! Writing. `prov peer add` and `remove` stay in the CLI, which is the one
@@ -64,7 +48,7 @@ use std::path::{Path, PathBuf};
 use prov_graph::fs::StdFs;
 use prov_graph::{Id, IdIndex, PeerLocation, PeerLookup, PeerResolver, block_on};
 
-use crate::config::{is_genesis_digest, is_valid_workspace_id};
+use crate::config::is_valid_workspace_id;
 use crate::crossing::open_discovered;
 use crate::discovery::{Discovery, discover};
 
@@ -116,7 +100,6 @@ pub fn default_path() -> Option<PathBuf> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PeerFile {
     peers: BTreeMap<String, PathBuf>,
-    pins: BTreeMap<String, String>,
 }
 
 impl PeerFile {
@@ -124,7 +107,6 @@ impl PeerFile {
     /// skipped.
     pub fn parse(text: &str) -> Self {
         let mut peers = BTreeMap::new();
-        let mut pins = BTreeMap::new();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -136,39 +118,12 @@ impl PeerFile {
                 continue;
             };
             let root = root.trim();
-            // `name:genesis` — a colon is the one thing a name cannot hold.
-            let (name, pin) = match name.split_once(':') {
-                Some((name, pin)) if is_genesis_digest(pin) => (name, Some(pin)),
-                Some(_) => continue,
-                None => (name, None),
-            };
             if !is_valid_workspace_id(name) || root.is_empty() {
                 continue;
             }
             peers.insert(name.to_string(), PathBuf::from(root));
-            match pin {
-                Some(pin) => pins.insert(name.to_string(), pin.to_string()),
-                None => pins.remove(name),
-            };
         }
-        Self { peers, pins }
-    }
-
-    /// The file's text for `peers`, each with its pinned genesis when it has
-    /// one, after `header` (comment lines, each starting `#`).
-    pub fn render(
-        header: &str,
-        peers: &BTreeMap<String, PathBuf>,
-        pins: &BTreeMap<String, String>,
-    ) -> String {
-        let mut out = header.to_string();
-        for (name, root) in peers {
-            match pins.get(name) {
-                Some(pin) => out.push_str(&format!("{name}:{pin} {}\n", root.display())),
-                None => out.push_str(&format!("{name} {}\n", root.display())),
-            }
-        }
-        out
+        Self { peers }
     }
 
     /// Read the file at `path`. A missing or unreadable file is an empty map.
@@ -190,11 +145,6 @@ impl PeerFile {
     /// The map as written: name → workspace root, for reporting.
     pub fn peers(&self) -> &BTreeMap<String, PathBuf> {
         &self.peers
-    }
-
-    /// The genesis pinned for each peer that has one.
-    pub fn pins(&self) -> &BTreeMap<String, String> {
-        &self.pins
     }
 
     /// Whether the file names nobody.
@@ -228,10 +178,7 @@ impl PeerResolver for PeerFile {
         // written down, so failing to open it is a state, not an error.
         match block_on(discover(&StdFs, root)) {
             Ok(Discovery::Found(found)) => {
-                PeerLookup::confirm(workspace, location, &found.config.workspace_id).pinned(
-                    self.pins.get(workspace).map(String::as_str),
-                    found.config.genesis.as_deref(),
-                )
+                PeerLookup::confirm(workspace, location, &found.config.workspace_id)
             }
             _ => PeerLookup::unreadable(location),
         }
@@ -294,54 +241,6 @@ mod tests {
             }
             other => panic!("expected an unconfirmed lookup, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    const GENESIS: &str = "3f9a000000000000000000000000000000000000000000000000000000000c2a";
-
-    #[test]
-    fn a_name_carries_its_pinned_genesis_after_a_colon() {
-        let file = PeerFile::parse(&format!(
-            "notes:{GENESIS} /Users/me/vaults/notes\n\
-             journal /Users/me/journal\n\
-             broken:nothex /x\n"
-        ));
-        assert_eq!(file.peers().len(), 2, "a malformed pin skips the line");
-        assert_eq!(file.pins().get("notes").map(String::as_str), Some(GENESIS));
-        assert_eq!(file.pins().get("journal"), None);
-        let text = PeerFile::render("# map\n", file.peers(), file.pins());
-        assert_eq!(PeerFile::parse(&text), file, "{text}");
-    }
-
-    #[test]
-    fn a_peer_answering_to_the_name_with_another_genesis_is_replaced() {
-        let dir = std::env::temp_dir().join(format!("prov-peers-pinned-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("index.md"), "---\ntitle: Notes\n---\n").unwrap();
-        let write_config = |genesis: &str| {
-            std::fs::write(
-                dir.join("prov.yaml"),
-                format!("root: index.md\nworkspace_id: notes\n{genesis}"),
-            )
-            .unwrap();
-        };
-        let file = PeerFile::parse(&format!("notes:{GENESIS} {}\n", dir.display()));
-
-        write_config(&format!("genesis: {GENESIS}\n"));
-        assert!(matches!(file.locate("notes"), PeerLookup::Confirmed(_)));
-
-        let other = GENESIS.replace('3', "4");
-        write_config(&format!("genesis: {other}\n"));
-        match file.locate("notes") {
-            PeerLookup::Replaced { declares, .. } => assert_eq!(declares, Some(other)),
-            lookup => panic!("expected a replaced peer, got {lookup:?}"),
-        }
-
-        write_config("");
-        assert!(matches!(
-            file.locate("notes"),
-            PeerLookup::Replaced { declares: None, .. }
-        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
