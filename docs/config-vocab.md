@@ -174,7 +174,6 @@ prov:
       view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
-  genesis: 3f9a…0c2a          # the digest of the history's founding revision, written by the program that keeps the history (omit = none)
   root: home.md               # which document is the root — read only from the workspace node (omit = found by the `index`/`readme` scan)
 
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
@@ -192,7 +191,7 @@ prov:
 Every axis is optional; an absent key keeps its default. Defaults:
 `content_format: markdown`, `metadata.format: yaml`, `metadata.embed: delimited`,
 `references: { notation: markdown, path_style: root, target: path, label: false }`,
-`id_storage: both`, `workspace_id: ""`, `genesis:` unset, `root:` unset,
+`id_storage: both`, `workspace_id: ""`, `root:` unset,
 `identity: lazy`, `fixity: on`, `record_deletions: true`, `about: structure`,
 `confirmations: stamp`, `actors: free`,
 `out_of_scope: []`. Absent `spanning`/`relations` **definitions** ⇒ the built-in

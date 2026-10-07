@@ -247,7 +247,7 @@ carries the check:
 | `Confirmed` | the workspace there declares the name asked for | ✅ |
 | `Unconfirmed` | anonymous, unreadable, or not checked (a URL) | on the reader's say-so |
 | `Mismatched` | it calls itself something else | ❌ never |
-| `Replaced` | it answers to the name with another genesis than the one pinned | ❌ never |
+| `Refused` | the host refused it for a reason of its own | ❌ never |
 | `Unknown` | no location on record | ❌ |
 
 `PeerLookup::confirm(asked, location, declares)` is the only way to reach
@@ -257,16 +257,11 @@ variant out of. `Mismatched` is refused by both accessors: the escape hatch
 (`followable_unverified`, `prov peer resolve --unverified`) is for *absent*
 evidence, never for evidence pointing the other way.
 
-**A name is pinned to a history.** A name only has to be unique among one
-reader's peers, so another workspace can take it, or the directory can be
-replaced by another library that answers to it. A workspace whose history is
-kept by a program that judges who founded it declares that founding revision's
-digest as `genesis:`. The peer file records it after the name the first time the
-peer is confirmed (`notes:3f9a…0c2a /path`, written by `prov peer add`), as SSH's
-`known_hosts` records a host key, and `PeerLookup::pinned` turns a confirmation
-whose peer now declares another genesis, or none, into `Replaced`. prov compares
-the digests and never verifies one; recording the peer again is how a reader
-accepts the new one.
+A host can know more about a peer than prov does. One that keeps the peer's
+history can tell the workspace that had a name from another that took it, since
+a name only has to be unique among one reader's peers. `PeerLookup::refuse(why)`
+turns its answer into `Refused`, which neither accessor follows. prov does not
+say what the reason is.
 
 The check happens where the reference is **used**, not where the entry was
 recorded. `prov peer add` still warns early — catching it there is kinder — but a
