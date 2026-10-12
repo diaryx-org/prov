@@ -82,6 +82,7 @@ fn finding_for(entry: &CensusEntry) -> Option<Finding> {
             Resolution::DanglingId { id, tombstoned } => Some(Finding::DanglingId {
                 doc,
                 site,
+                target,
                 id: id.clone(),
                 tombstoned: *tombstoned,
             }),
@@ -248,10 +249,13 @@ pub enum Finding {
     /// A well-formed `id:<id>` reference with no live registry entry.
     /// `tombstoned` distinguishes "that document was deleted" from "this ID
     /// was never issued here" (an out-of-band reference the registry has not
-    /// reconciled — DESIGN §4's known hazard).
+    /// reconciled — DESIGN §4's known hazard). `target` is the reference
+    /// exactly as written (`id:<id>`, a qualified `id:<ws>/<id>`, or the
+    /// legacy `colophon:<id>`) — the handle a repair addresses the entry by.
     DanglingId {
         doc: PathBuf,
         site: LinkSite,
+        target: String,
         id: Id,
         tombstoned: bool,
     },
@@ -928,6 +932,7 @@ impl fmt::Display for Finding {
                 site,
                 id,
                 tombstoned,
+                ..
             } => write!(
                 f,
                 "{}: dangling {site} ID: id:{id} ({})",

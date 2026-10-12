@@ -265,11 +265,13 @@ pub fn finding(f: &Finding) -> J {
         Finding::DanglingId {
             doc,
             site,
+            target,
             id,
             tombstoned,
         } => {
             fields.push(("doc", p(doc)));
             self::site(site, &mut fields);
+            fields.push(("target", s(target)));
             fields.push(("id", J::Str(id.to_string())));
             fields.push(("tombstoned", J::Bool(*tombstoned)));
         }

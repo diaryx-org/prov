@@ -745,6 +745,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 Resolution::Id { id, .. } => Finding::DanglingId {
                     doc: e.source,
                     site: e.site,
+                    target: e.target_text,
                     id,
                     tombstoned: true,
                 },

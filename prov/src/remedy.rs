@@ -1013,8 +1013,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // tombstoned case is deliberately not treated differently — "that
             // document was deleted" is a reason to *keep* the dangling reference
             // as a record of intent at least as often as it is a reason to cut it.
-            Finding::DanglingId { doc, site, id, .. } => {
-                self.link_remedies(doc, site, &format!("prov:{id}"), &[], Warrant::Judgment)
+            Finding::DanglingId {
+                doc, site, target, ..
+            } => {
+                self.link_remedies(doc, site, target, &[], Warrant::Judgment)
                     .await
             }
             // Several documents answer to the name, and the finding already lists
@@ -1880,6 +1882,45 @@ mod tests {
             block_on(ws.check("index.md")).unwrap().is_empty(),
             "and the workspace is clean"
         );
+    }
+
+    #[test]
+    fn removing_a_dangling_id_removes_the_entry_as_it_is_written() {
+        // The removal addresses the entry by its written target, so the remedy
+        // must carry the target exactly as written — `id:`, the legacy
+        // `colophon:`, or self-qualified — and never a spelling rebuilt from
+        // the id, which matches nothing and makes the fix a silent no-op.
+        for (tag, written) in [
+            ("id", "id:0vn4182"),
+            ("colophon", "colophon:0vn4182"),
+            ("qualified", "id:notes/0vn4182"),
+        ] {
+            let dir = tempdir(&format!("remedy-dangling-{tag}"));
+            write(
+                &dir,
+                "index.md",
+                format!("---\ntitle: Root\ncontents:\n- a.md\n- '[Gone]({written})'\n---\n"),
+            );
+            write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+            let mut ws = Workspace::builder(StdFs)
+                .root(&dir)
+                .workspace_id("notes")
+                .build();
+
+            let findings = block_on(ws.check("index.md")).unwrap();
+            let dangling = sole(&findings, |f| matches!(f, Finding::DanglingId { .. }));
+            let remedies = block_on(ws.remedies(dangling)).unwrap();
+            assert_eq!(kinds(&remedies), vec![RemedyKind::RemoveLink], "{tag}");
+            block_on(ws.apply_fix(&remedies[0].fix)).unwrap();
+
+            let text = read(&dir, "index.md");
+            assert!(!text.contains(written), "{tag}: the entry is gone: {text}");
+            assert!(text.contains("a.md"), "{tag}: {text}");
+            assert!(
+                block_on(ws.check("index.md")).unwrap().is_empty(),
+                "{tag}: and the workspace is clean"
+            );
+        }
     }
 
     #[test]
