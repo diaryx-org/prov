@@ -582,6 +582,18 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         None => Placement::Exists(session.ctx.root_doc.clone()),
         Some(t) => plan_placement(&session, t, parents, layout, false)?,
     };
+    // The library's own refusals of the payload, asked before the placement
+    // builds anything: an attach it refuses — a payload already attached, a
+    // prov document without `--opaque`, a file where a manifest wants a
+    // directory — used to be found only once a route had built its nodes.
+    // (`--all` attaches what it finds, reporting each refusal and going on.)
+    if let Some(payload_rel) = &payload_rel {
+        if manifest {
+            block_on(session.ws.check_attach_manifest(payload_rel))?;
+        } else {
+            block_on(session.ws.check_attach(payload_rel, opaque))?;
+        }
+    }
     let parent_rel = apply_placement(&mut session, placement)?;
 
     if all {

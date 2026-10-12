@@ -260,21 +260,18 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.attach_titled(payload, parent, None, true).await
     }
 
-    /// [`attach`](Self::attach) with an explicit sidecar title (else the payload's
-    /// titleized stem). Authoring the title here keeps the parent's spanning-entry
-    /// *label* in step with it, exactly as [`create_titled`](Self::create_titled).
-    /// `opaque` waives the readable-payload refusal (see
-    /// [`attach_opaque`](Self::attach_opaque)).
-    pub(crate) async fn attach_titled(
-        &mut self,
-        payload: &Path,
-        parent: &Path,
-        title_override: Option<&str>,
-        opaque: bool,
-    ) -> Result<PathBuf> {
+    /// Every refusal [`attach`](Self::attach) makes of the payload itself, made
+    /// without writing: `payload` must exist, must be opaque unless `opaque`
+    /// waives it, must not already be covered by a manifest, and must not
+    /// already have a sidecar.
+    ///
+    /// `attach` asks this itself, so a caller that only attaches need not. It
+    /// is for a caller that writes something *first* — a route that builds the
+    /// parent the payload is to be attached under — and so must know before
+    /// that write whether the attach would refuse. The parent is not asked
+    /// about: it may be one the caller has yet to build.
+    pub async fn check_attach(&self, payload: &Path, opaque: bool) -> Result<()> {
         let payload = link::normalize(payload);
-        let parent = link::normalize(parent);
-
         if !self.exists(&payload).await? {
             return Err(Error::NotFound(payload.to_path_buf()));
         }
@@ -301,12 +298,32 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         }
 
-        let (spanning, inverse) = self.spanning_pair()?;
-        let format = self.default_embed_format();
-        let node = sidecar_path(&payload, format);
+        let node = sidecar_path(&payload, self.default_embed_format());
         if self.exists(&node).await? {
             return Err(Error::AlreadyExists(node.to_path_buf()));
         }
+        Ok(())
+    }
+
+    /// [`attach`](Self::attach) with an explicit sidecar title (else the payload's
+    /// titleized stem). Authoring the title here keeps the parent's spanning-entry
+    /// *label* in step with it, exactly as [`create_titled`](Self::create_titled).
+    /// `opaque` waives the readable-payload refusal (see
+    /// [`attach_opaque`](Self::attach_opaque)).
+    pub(crate) async fn attach_titled(
+        &mut self,
+        payload: &Path,
+        parent: &Path,
+        title_override: Option<&str>,
+        opaque: bool,
+    ) -> Result<PathBuf> {
+        let payload = link::normalize(payload);
+        let parent = link::normalize(parent);
+        self.check_attach(&payload, opaque).await?;
+
+        let (spanning, inverse) = self.spanning_pair()?;
+        let format = self.default_embed_format();
+        let node = sidecar_path(&payload, format);
 
         let (parent_text, parent_doc) = self.load(&parent).await?;
         let title = title_override

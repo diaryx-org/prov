@@ -574,24 +574,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         self.attach_manifest_titled(dir, parent, None, hash).await
     }
 
-    /// [`attach_manifest`](Self::attach_manifest) with an explicit title and an
-    /// explicit choice about hashing.
-    ///
-    /// `hash` is worth its own parameter rather than following the fixity axis
-    /// alone: hashing is a per-directory cost (one full read of the archive, now
-    /// and at every refresh), and a directory of a hundred thousand scans is a
-    /// place someone may reasonably want the inventory without the baseline
-    /// while still wanting checksums everywhere else.
-    pub async fn attach_manifest_titled(
-        &mut self,
-        dir: &Path,
-        parent: &Path,
-        title_override: Option<&str>,
-        hash: bool,
-    ) -> Result<PathBuf> {
+    /// Every refusal [`attach_manifest`](Self::attach_manifest) makes of the
+    /// directory itself, made without writing: `dir` must be a directory, not
+    /// already covered, and neither the node nor the manifest beside it may
+    /// exist yet. For a caller that writes something first, as
+    /// [`check_attach`](Self::check_attach) is.
+    pub async fn check_attach_manifest(&self, dir: &Path) -> Result<()> {
         let dir = link::normalize(dir);
-        let parent = link::normalize(parent);
-
         if !self
             .graph()
             .stat(&dir)
@@ -613,15 +602,39 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         }
 
-        let (spanning, inverse) = self.spanning_pair()?;
-        let format = self.default_embed_format();
-        let node = crate::attach::sidecar_path(&dir, format);
+        let node = crate::attach::sidecar_path(&dir, self.default_embed_format());
         let manifest_doc = manifest_sibling(&node);
         for path in [&node, &manifest_doc] {
             if self.exists(path).await? {
                 return Err(Error::AlreadyExists(path.to_path_buf()));
             }
         }
+        Ok(())
+    }
+
+    /// [`attach_manifest`](Self::attach_manifest) with an explicit title and an
+    /// explicit choice about hashing.
+    ///
+    /// `hash` is worth its own parameter rather than following the fixity axis
+    /// alone: hashing is a per-directory cost (one full read of the archive, now
+    /// and at every refresh), and a directory of a hundred thousand scans is a
+    /// place someone may reasonably want the inventory without the baseline
+    /// while still wanting checksums everywhere else.
+    pub async fn attach_manifest_titled(
+        &mut self,
+        dir: &Path,
+        parent: &Path,
+        title_override: Option<&str>,
+        hash: bool,
+    ) -> Result<PathBuf> {
+        let dir = link::normalize(dir);
+        let parent = link::normalize(parent);
+        self.check_attach_manifest(&dir).await?;
+
+        let (spanning, inverse) = self.spanning_pair()?;
+        let format = self.default_embed_format();
+        let node = crate::attach::sidecar_path(&dir, format);
+        let manifest_doc = manifest_sibling(&node);
 
         let (parent_text, parent_doc) = self.load(&parent).await?;
         let title = title_override

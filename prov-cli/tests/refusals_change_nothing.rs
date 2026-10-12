@@ -335,3 +335,22 @@ fn new_dry_run_through_a_filing_entry_refuses_what_the_create_would() {
     args.extend(["--as", "a.md"]);
     refuses_cleanly(&dir, &args);
 }
+
+#[test]
+fn attach_refused_by_the_library_builds_no_route() {
+    // These refusals are made inside the library's attach, which used to be
+    // reached only once the route had built its nodes.
+    let dir = workspace("attach-library");
+    std::fs::write(dir.join("photo.png"), b"png").unwrap();
+    ok(&dir, &["attach", "photo.png", "--in", "index.md"]);
+    // Already attached: its sidecar exists.
+    refuses_cleanly(&dir, &["attach", "photo.png", "--in", "@Fresh", "-p"]);
+    // A prov document, not an opaque payload.
+    refuses_cleanly(&dir, &["attach", "a.md", "--in", "@Fresh", "-p"]);
+    // A manifest covers a directory, not a file.
+    std::fs::write(dir.join("scan.png"), b"png").unwrap();
+    refuses_cleanly(
+        &dir,
+        &["attach", "scan.png", "--manifest", "--in", "@Fresh", "-p"],
+    );
+}
