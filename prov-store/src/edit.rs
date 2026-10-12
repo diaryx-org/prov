@@ -119,13 +119,59 @@ impl MetaEditor {
         Ok(())
     }
 
-    /// Remove the item at `index` from the sequence at `path`.
+    /// Remove the item at `index` from the sequence at `path`. A list that
+    /// loses its last item stays, written as `[]`: the key is kept because a
+    /// document's spanning key is what says it is an index, even with no
+    /// children, and fig already empties a flow list, a JSON array and a TOML
+    /// array to `[]`. A YAML block list alone would be left as a bare key,
+    /// which reads as null.
     pub fn remove_item(&mut self, path: &[Segment], index: usize) -> Result<()> {
         match self {
             MetaEditor::Fenced(e) => e.delete_item(path, index)?,
             MetaEditor::Whole(e) => e.delete_item(path, index)?,
         }
+        if self.is_null_at(path)? {
+            self.replace_value(path, fig::Value::Seq(Vec::new()))?;
+        }
         Ok(())
+    }
+
+    /// Whether the value at `path` in the edited metadata now reads as null —
+    /// the trace an emptied YAML block list leaves. The whole-file editor does
+    /// not say its format, so its text is read as YAML: the only format that
+    /// leaves the null, and one a JSON document also parses as, where an
+    /// emptied array reads as `[]`.
+    fn is_null_at(&mut self, path: &[Segment]) -> Result<bool> {
+        let meta = match self {
+            MetaEditor::Fenced(e) => {
+                let text = e.render()?;
+                let Some((MetaCarrier::Fenced(kind), content, _, _)) =
+                    prov_graph::document::Document::split(text)
+                else {
+                    return Ok(false);
+                };
+                prov_graph::meta::parse_value(content, kind.inner_format()).ok()
+            }
+            #[cfg(feature = "yaml")]
+            MetaEditor::Whole(e) => {
+                prov_graph::meta::parse_value(e.source()?, fig::Format::Yaml).ok()
+            }
+            #[cfg(not(feature = "yaml"))]
+            MetaEditor::Whole(_) => None,
+        };
+        let Some(meta) = meta else { return Ok(false) };
+        let mut value = &meta;
+        for segment in path {
+            let next = match segment {
+                Segment::Key(key) => value.get(key),
+                Segment::Index(i) => value.as_sequence().and_then(|s| s.get(*i)),
+            };
+            match next {
+                Some(next) => value = next,
+                None => return Ok(false),
+            }
+        }
+        Ok(value.is_null())
     }
 
     /// Reorder the mapping entries at `path` (empty path = root) so `keys`
@@ -455,6 +501,38 @@ mod tests {
         let out = unset_in_text(text, carrier_of("x.md", text), "draft").unwrap();
         assert_eq!(out, "---\ntitle: T\n---\nbody\n");
         assert!(unset_in_text("no meta\n", None, "x").is_err());
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn removing_the_last_item_of_a_block_list_leaves_an_empty_list() {
+        // fig empties a flow list, a JSON array and a TOML array to `[]`, but
+        // a block list to `contents:` with nothing under it — a null, not a
+        // list. Every shape now ends the same way.
+        for (name, text, want) in [
+            (
+                "x.md",
+                "---\ntitle: T\ncontents:\n- a.md\nnext: 1\n---\nbody\n",
+                "---\ntitle: T\ncontents: []\nnext: 1\n---\nbody\n",
+            ),
+            (
+                "x.md",
+                "---\ntitle: T\ncontents: [a.md]\n---\nbody\n",
+                "---\ntitle: T\ncontents: []\n---\nbody\n",
+            ),
+            (
+                "x.yaml",
+                "title: T\ncontents:\n  - a.md\nnext: 1\n",
+                "title: T\ncontents: []\nnext: 1\n",
+            ),
+        ] {
+            let out = unset_in_text(text, carrier_of(name, text), "contents[0]").unwrap();
+            assert_eq!(out, want, "{name}");
+        }
+        // A list that keeps an item is untouched beyond the one removed.
+        let text = "---\ncontents:\n- a.md\n- b.md\n---\n";
+        let out = unset_in_text(text, carrier_of("x.md", text), "contents[0]").unwrap();
+        assert_eq!(out, "---\ncontents:\n- b.md\n---\n");
     }
 
     #[test]

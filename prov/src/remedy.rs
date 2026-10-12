@@ -1924,6 +1924,33 @@ mod tests {
     }
 
     #[test]
+    fn removing_the_only_entry_of_a_relation_leaves_an_empty_list() {
+        // A block list that loses its last item used to leave `links:` with
+        // nothing under it, which YAML reads as null rather than as a list.
+        let dir = tempdir("remedy-dangling-sole");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- a.md\nlinks:\n- id:0vn4182\n---\n",
+        );
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        let mut ws = Workspace::builder(StdFs)
+            .root(&dir)
+            .workspace_id("notes")
+            .build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        let dangling = sole(&findings, |f| matches!(f, Finding::DanglingId { .. }));
+        let remedies = block_on(ws.remedies(dangling)).unwrap();
+        assert_eq!(kinds(&remedies), vec![RemedyKind::RemoveLink]);
+        block_on(ws.apply_fix(&remedies[0].fix)).unwrap();
+
+        let text = read(&dir, "index.md");
+        assert!(text.contains("\nlinks: []\n"), "{text}");
+        assert!(block_on(ws.check("index.md")).unwrap().is_empty(), "{text}");
+    }
+
+    #[test]
     fn a_case_mismatch_is_derived_and_never_offers_removal() {
         // The exact on-disk name is in the finding, so nothing is being chosen —
         // the one link repair a sweep may apply unattended. And the link is not
