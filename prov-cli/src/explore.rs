@@ -11,9 +11,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use prov::{Document, Id, IdIndex, PeerResolver, StdFs, Target, Value, block_on, link};
+use prov::{Document, Id, IdIndex, StdFs, Target, Value, block_on, link};
 
-use crate::peer::{self, describe_peer};
+use crate::peer;
 use crate::session::{Ctx, Session, find_root, find_root_quiet_at, load, ws_rel};
 use crate::term::{edit_file, page_text};
 use crate::tree::trust;
@@ -61,6 +61,10 @@ struct ExploreWs {
     backlinks: std::collections::BTreeMap<PathBuf, Vec<prov::Backlink>>,
     /// What to call this workspace on a screen inside it.
     label: String,
+    /// The workspaces nested in its folder, which answer a foreign reference
+    /// ahead of this device's peer map. Read once: they move with the folder,
+    /// not between screens.
+    nested: prov::NestedPeers,
 }
 
 impl ExploreWs {
@@ -80,11 +84,13 @@ impl ExploreWs {
         } else {
             name.to_string()
         };
+        let nested = peer::nested_in(&session)?;
         Ok(Self {
             session,
             titles,
             backlinks,
             label,
+            nested,
         })
     }
 }
@@ -162,7 +168,7 @@ pub(crate) fn cmd_explore(file: Option<&Path>, unverified: bool) -> CmdResult {
                 // The map is read again per crossing for the same reason a
                 // screen reads it per screen: one edited between screens should
                 // take effect on the next one.
-                let peers = peer::PeerMap::load();
+                let peers = peer::PeerMap::around(open[&here].nested.clone());
                 let crossing = match block_on(prov::open_peer(
                     &StdFs,
                     &peers,
@@ -255,7 +261,7 @@ fn explore_screen(
     // Once per screen, not once per link: every foreign reference on this
     // document is answered against the same map, and a map edited between
     // screens is picked up on the next one.
-    let peers = peer::PeerMap::load();
+    let peers = peer::PeerMap::around(state.nested.clone());
     for relation in state.session.ws.relations().relations() {
         let Some(value) = doc.meta.get(&relation.name) else {
             continue;
@@ -304,7 +310,7 @@ fn explore_screen(
                     // says which of those is missing when it is not.
                     Target::Foreign { workspace, id } => (
                         format!("{}: {id} → workspace {workspace}", relation.name),
-                        describe_peer(&peers.locate(&workspace), &workspace),
+                        peers.describe(&workspace),
                         ExploreAction::Cross { workspace, id },
                     ),
                 };

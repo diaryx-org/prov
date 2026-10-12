@@ -222,7 +222,7 @@ fn check_across(
     unverified: bool,
     ignore_warnings: bool,
 ) -> CmdResult {
-    let peers = peer::PeerMap::load();
+    let peers = peer::PeerMap::for_session(session)?;
     let federation = block_on(prov::descend(
         &session.ws,
         root,

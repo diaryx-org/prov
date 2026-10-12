@@ -68,7 +68,7 @@ use std::sync::OnceLock;
 use prov::{Id, IdIndex, PeerLocation, PeerLookup, PeerResolver, link};
 
 use crate::cli::PeerAction;
-use crate::session::{Session, find_root_quiet_at};
+use crate::session::{Session, find_root_quiet, find_root_quiet_at};
 use crate::{AnyError, CmdResult};
 
 /// The file's name inside whichever directory holds it.
@@ -138,19 +138,65 @@ pub(crate) fn load() -> BTreeMap<String, PathBuf> {
 /// Loaded once and held, so a command that meets a dozen foreign references
 /// reads the file once rather than a dozen times — and, more to the point, so
 /// every one of those references is answered against the same map.
+///
+/// In front of the file sit the workspaces nested in the folder of the one
+/// being read ([`prov::NestedPeers`]), consulted first: a nested workspace's
+/// directory is a fact about the library rather than the device, so it needs
+/// no entry here, and a name it declares is answered by it even where this
+/// file records the same name somewhere else — nearest first, as
+/// `docs/reference-styles.md` has it.
 pub(crate) struct PeerMap {
+    nested: prov::NestedPeers,
     file: prov::PeerFile,
 }
 
 impl PeerMap {
-    /// Read this device's map.
+    /// Read this device's map alone — for a command standing in no workspace.
     pub(crate) fn load() -> Self {
+        Self::around(prov::NestedPeers::default())
+    }
+
+    /// This device's map behind the workspaces nested in `session`'s folder.
+    /// Every command that reads *from* a workspace resolves through this.
+    pub(crate) fn for_session(session: &Session) -> Result<Self, AnyError> {
+        Ok(Self::around(nested_in(session)?))
+    }
+
+    /// This device's map behind `nested`, already read.
+    pub(crate) fn around(nested: prov::NestedPeers) -> Self {
         Self {
+            nested,
             file: match path() {
                 Some(file) => prov::PeerFile::load(file),
                 None => prov::PeerFile::default(),
             },
         }
+    }
+
+    /// One line saying where a peer is, or why it is not somewhere prov will
+    /// go — [`describe_peer`], told which of the two maps answered.
+    pub(crate) fn describe(&self, workspace: &str) -> String {
+        self.explain(&self.locate(workspace), workspace)
+    }
+
+    /// [`describe`](Self::describe), for a `lookup` already in hand.
+    fn explain(&self, lookup: &PeerLookup, workspace: &str) -> String {
+        if let Some((_, roots)) = self.nested.ambiguous().find(|(name, _)| *name == workspace) {
+            return format!(
+                "{} workspaces nested here are named `{workspace}` — not followed",
+                roots.len()
+            );
+        }
+        match lookup {
+            prov::PeerLookup::Confirmed(location) if self.nests(workspace) => {
+                format!("`{location}`, nested in this workspace")
+            }
+            _ => describe_peer(lookup, workspace),
+        }
+    }
+
+    fn nests(&self, workspace: &str) -> bool {
+        self.nested.pairs().any(|(name, _)| name == workspace)
     }
 
     /// Resolve a whole `id:<workspace>/<id>` reference to the file it names.
@@ -221,11 +267,17 @@ pub(crate) enum DocumentError {
     Unregistered(PathBuf),
 }
 
+/// The workspaces nested in `session`'s folder, by the names they declare.
+pub(crate) fn nested_in(session: &Session) -> Result<prov::NestedPeers, AnyError> {
+    Ok(prov::block_on(session.ws.nested_peers())?)
+}
+
 impl PeerResolver for PeerMap {
-    /// The peer file, checked against the archive it points at — the
-    /// library's [`prov::PeerFile`] answer, unchanged.
+    /// A workspace nested here first, then the peer file checked against the
+    /// archive it points at — the library's [`prov::NestedPeers::before`] over
+    /// its [`prov::PeerFile`], unchanged.
     fn locate(&self, workspace: &str) -> PeerLookup {
-        self.file.locate(workspace)
+        self.nested.before(&self.file).locate(workspace)
     }
 
     fn locate_document(&self, workspace: &str, id: &Id) -> Option<PeerLocation> {
@@ -274,8 +326,9 @@ pub(crate) fn store(peers: &BTreeMap<String, PathBuf>) -> Result<(), AnyError> {
 ///
 /// Deliberately does **not** need a workspace root: the map is a property of the
 /// machine, and a user setting one up has often not `cd`'d anywhere in
-/// particular. `peer resolve` is the one action that opens a workspace, and the
-/// one it opens is the *peer*, never the current directory.
+/// particular. `peer resolve` is the one action that opens a workspace: the
+/// *peer*, and — when it is run inside one — the current workspace too, only
+/// to read which workspaces are nested in its folder.
 pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
     match action {
         PeerAction::List => {
@@ -401,7 +454,7 @@ pub(crate) fn cmd_peer(action: PeerAction) -> CmdResult {
 /// Every case names the location it found, including the ones it refuses: a
 /// reader told only "cannot follow" has no way to see that the entry points at
 /// the workspace next door.
-pub(crate) fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> String {
+fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> String {
     match lookup {
         prov::PeerLookup::Confirmed(location) => {
             format!("`{location}`, per this device's peer map")
@@ -426,8 +479,9 @@ pub(crate) fn describe_peer(lookup: &prov::PeerLookup, workspace: &str) -> Strin
 ///
 /// The whole cross-workspace design in one command: the library parsed the
 /// reference and stopped at "workspace `notes`, id `ajp7eq`"; everything past
-/// that point is this device's peer map plus the *peer's own* registry. Nothing
-/// here consults the current workspace at all.
+/// that point is where the peer is — a workspace nested in the current one's
+/// folder, or else this device's peer map — plus the *peer's own* registry. The
+/// current workspace is consulted for nothing but its nested workspaces.
 ///
 /// The map is checked here rather than trusted here. A line recorded when it was
 /// true and stale by now points at a directory that is some *other* workspace,
@@ -448,12 +502,18 @@ fn cmd_peer_resolve(reference: &str, unverified: bool) -> CmdResult {
         )
         .into());
     };
-    match PeerMap::load().resolve_document(&peer_name, &id, unverified) {
+    // Standing in a workspace, the ones nested in its folder answer first; a
+    // directory that is none still has the device's map.
+    let peers = match find_root_quiet().ok().map(Session::over) {
+        Some(session) => PeerMap::for_session(&session?)?,
+        None => PeerMap::load(),
+    };
+    match peers.resolve_document(&peer_name, &id, unverified) {
         Ok(path) => {
             println!("{}", path.display());
             Ok(ExitCode::SUCCESS)
         }
-        Err(DocumentError::Unfollowable(lookup)) => Err(describe_peer(&lookup, &peer_name).into()),
+        Err(DocumentError::Unfollowable(lookup)) => Err(peers.explain(&lookup, &peer_name).into()),
         Err(DocumentError::Unopenable(root, why)) => {
             Err(format!("{}: {why}", root.display()).into())
         }

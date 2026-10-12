@@ -106,8 +106,10 @@ Working in a workspace:
 
   Another workspace is referenced as `id:<name>/<id>`, never by path, even one
   nested inside this directory; `prov -C <dir> id <file>` prints the id to
-  write. `tree --follow` and `check --follow` cross such a reference only where
-  `prov peer` records the workspace on this device.
+  write. `tree --follow` and `check --follow` cross such a reference into a
+  workspace nested in this one's folder as it stands, and into any other only
+  where `prov peer` records it on this device. A nested workspace answers its
+  name ahead of the peer map.
 
   A sub-workspace whose root has a `part_of` into an outer workspace needs
   `root: <file>` in its own config (`prov config root <file>`). Without it,
@@ -175,7 +177,8 @@ pub(crate) enum PeerAction {
         name: String,
     },
     /// Resolve a cross-workspace reference (`id:<name>/<id>`) to a file on this
-    /// device, by looking the id up in that workspace's own registry. The peer
+    /// device, by looking the id up in that workspace's own registry. Run
+    /// inside a workspace, one nested in its folder is found with no entry. The peer
     /// is asked what it calls itself first: a directory that turns out to be a
     /// different workspace is reported, never followed.
     Resolve {
@@ -210,6 +213,10 @@ pub(crate) enum Command {
     /// Nothing depends on this map: a cross-workspace reference is carried, left
     /// alone by moves, and never reported broken, whether or not a peer is
     /// recorded. The map only makes such a reference *followable*.
+    ///
+    /// A workspace nested in the current one's folder needs no entry: its
+    /// directory travels with the folder, so it is found there, and it answers
+    /// its name ahead of anything recorded here.
     Peer {
         #[command(subcommand)]
         action: PeerAction,
@@ -480,8 +487,9 @@ pub(crate) enum Command {
         /// own initiative would cost every invocation the size of the whole
         /// federation.
         ///
-        /// Only a peer this device's map records *and* the peer itself confirms
-        /// is followed. Every other boundary stays the leaf it is without the
+        /// Only a peer that is nested in this workspace's folder, or that this
+        /// device's map records, *and* that the peer itself confirms is
+        /// followed; a nested workspace answers its name ahead of the map. Every other boundary stays the leaf it is without the
         /// flag, now carrying the reason it was not followed.
         #[arg(long, value_name = "DEPTH", num_args = 0..=1, default_missing_value = DEFAULT_FOLLOW_DEPTH)]
         follow: Option<usize>,
@@ -495,9 +503,9 @@ pub(crate) enum Command {
     /// Interactively explore the workspace: view a document and follow any of its
     /// links — or its backlinks — moving through the graph from the terminal.
     ///
-    /// A cross-workspace reference is a step like any other when this device's
-    /// peer map records where the workspace is and the peer confirms its own
-    /// name: the screen moves into that workspace, and Back comes home.
+    /// A cross-workspace reference is a step like any other when the workspace
+    /// is nested in this one's folder or this device's peer map records where
+    /// it is, and the peer confirms its own name: the screen moves into that workspace, and Back comes home.
     Explore {
         /// The document to start from (default: the workspace root).
         file: Option<PathBuf>,

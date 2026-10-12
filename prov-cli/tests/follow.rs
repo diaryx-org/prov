@@ -306,3 +306,115 @@ fn explore_takes_unverified() {
     );
     assert!(err.contains("cannot open nope.md"), "{err}");
 }
+
+/// An `org` workspace with a workspace of its own nested in its folder, linked
+/// from the root by foreign id — and an empty peer map.
+struct Nested {
+    root: PathBuf,
+    peers: PathBuf,
+    org: PathBuf,
+    nested: PathBuf,
+}
+
+impl Nested {
+    fn new(tag: &str) -> Self {
+        let root = std::env::temp_dir().join(format!("prov-nested-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let peers = root.join("peers");
+        std::fs::write(&peers, "# prov peer map\n").unwrap();
+        let org = Federation::workspace(
+            &root,
+            "org",
+            "workspace_id: org\nroot: README.md\nid_storage: frontmatter\n",
+            "---\nid: org1\ntitle: Org\ncontents:\n- 'id:nested/nested1'\n---\n",
+        );
+        let nested = Federation::workspace(
+            &org,
+            "nested",
+            "workspace_id: nested\nroot: README.md\nid_storage: frontmatter\n",
+            "---\nid: nested1\ntitle: Nested\npart_of: 'id:org/org1'\ncontents:\n- inner.md\n---\n",
+        );
+        std::fs::write(
+            nested.join("inner.md"),
+            "---\nid: nested2\ntitle: Nested inner\npart_of: README.md\n---\n",
+        )
+        .unwrap();
+        let scratch = Self {
+            root,
+            peers,
+            org,
+            nested,
+        };
+        for ws in [&scratch.nested, &scratch.org] {
+            let (ok, _, err) = scratch.run(ws, &["about"]);
+            assert!(ok, "about: {err}");
+        }
+        scratch
+    }
+
+    fn run(&self, dir: &Path, args: &[&str]) -> (bool, String, String) {
+        run(dir, &self.peers, args)
+    }
+}
+
+impl Drop for Nested {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn a_nested_workspace_is_followed_with_no_peer_map_entry() {
+    // The directory travels with the folder, so the route does not depend on
+    // what this device has recorded.
+    let s = Nested::new("tree");
+    let (ok, out, err) = s.run(&s.org, &["tree", "--follow"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(&format!(
+            "README.md — Nested  ⇒ workspace nested ({})",
+            s.nested.display()
+        )),
+        "{out}"
+    );
+    assert!(out.contains("inner.md — Nested inner"), "{out}");
+
+    let (ok, out, err) = s.run(&s.org, &["check", "--follow"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        err.contains(&format!("── workspace nested ({}) ──", s.nested.display())),
+        "{err}"
+    );
+    assert!(err.contains("no findings across 2 workspace(s)"), "{err}");
+
+    let (ok, out, err) = s.run(&s.org, &["peer", "resolve", "id:nested/nested2"]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(PathBuf::from(out.trim()), s.nested.join("inner.md"));
+}
+
+#[test]
+fn a_nested_workspace_answers_before_the_peer_map() {
+    // Nearest first: the folder's own copy, not whatever this device recorded
+    // under the same name.
+    let s = Nested::new("precedence");
+    let elsewhere = Federation::workspace(
+        &s.root,
+        "elsewhere",
+        "workspace_id: nested\nroot: README.md\nid_storage: frontmatter\n",
+        "---\nid: nested1\ntitle: Elsewhere\n---\n",
+    );
+    std::fs::write(
+        &s.peers,
+        format!("# prov peer map\nnested {}\n", elsewhere.display()),
+    )
+    .unwrap();
+    let (ok, out, err) = s.run(&s.org, &["tree", "--follow"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(&format!("⇒ workspace nested ({})", s.nested.display())),
+        "{out}"
+    );
+    assert!(!out.contains("Elsewhere"), "{out}");
+}

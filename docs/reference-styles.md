@@ -366,7 +366,8 @@ rather than off the links:
 - `Workspace::nested_peers` maps each nested workspace's `workspace_id` to its
   directory, as a `PeerResolver` a host consults ahead of its device-local one
   (`NestedPeers::before`): the directory travels with the library, so the
-  route holds on every device the library reaches. Two nested workspaces
+  route holds on every device the library reaches — the CLI's `--follow`,
+  `explore` and `peer resolve` all resolve through it. Two nested workspaces
   declaring one name are refused rather than guessed, and `check` reports them
   (`nested_workspace_name_shared`).
 
