@@ -754,6 +754,18 @@ pub(crate) fn cmd_reparent(
     // before there is a parent to reparent under — so the refusal is asked
     // first, while nothing has been built.
     placement.check_reparent(&session, &path_rel)?;
+    // A route's dry run stopped in `plan_placement`, having printed its plan;
+    // a path or an id names a parent that already exists, so there is nothing
+    // to plan and the preview is made here, after the refusals and before the
+    // first write. It used to fall through to the reparent and commit it.
+    if dry_run {
+        eprintln!(
+            "would reparent {} -> in {}",
+            path_rel.display(),
+            placement.parent().display()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     let parent_rel = apply_placement(&mut session, placement)?;
     let path_rel = ws_rel(&session.ctx, &resolve_target(path)?)?;
     let outcome = block_on(session.ws.reparent(&path_rel, &parent_rel))?;

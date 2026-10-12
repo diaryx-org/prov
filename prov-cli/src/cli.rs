@@ -782,7 +782,8 @@ pub(crate) enum Command {
         /// never the graph.
         #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
         layout: LayoutArg,
-        /// Show what the route resolves to without changing anything.
+        /// Show what `--in` resolves to, and refuse what the reparent would
+        /// refuse, without changing anything.
         #[arg(long, requires = "in_target")]
         dry_run: bool,
     },

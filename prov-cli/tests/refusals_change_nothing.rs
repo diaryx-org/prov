@@ -59,27 +59,47 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
+/// Assert `after` is byte-for-byte `before`, naming `args` and what it said.
+fn assert_unchanged(
+    before: &BTreeMap<PathBuf, Vec<u8>>,
+    after: &BTreeMap<PathBuf, Vec<u8>>,
+    args: &[&str],
+    out: &str,
+    what: &str,
+) {
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>(),
+        "`prov {}` {what} but changed which files exist:\n{out}",
+        args.join(" ")
+    );
+    for (path, bytes) in before {
+        assert!(
+            after[path] == *bytes,
+            "`prov {}` {what} but rewrote {}:\n{out}",
+            args.join(" "),
+            path.display()
+        );
+    }
+}
+
 /// Run `args`, which must refuse, and assert nothing on disk changed. The
 /// refusal's text is returned for the caller to check what it said.
 fn refuses_cleanly(dir: &Path, args: &[&str]) -> String {
     let before = snapshot(dir);
     let (success, out) = run(dir, args);
     assert!(!success, "`prov {}` should refuse:\n{out}", args.join(" "));
-    let after = snapshot(dir);
-    assert_eq!(
-        before.keys().collect::<Vec<_>>(),
-        after.keys().collect::<Vec<_>>(),
-        "`prov {}` refused but changed which files exist:\n{out}",
-        args.join(" ")
-    );
-    for (path, bytes) in &before {
-        assert!(
-            after[path] == *bytes,
-            "`prov {}` refused but rewrote {}:\n{out}",
-            args.join(" "),
-            path.display()
-        );
-    }
+    assert_unchanged(&before, &snapshot(dir), args, &out, "refused");
+    out
+}
+
+/// Run `args`, a `--dry-run` that must succeed, and assert nothing on disk
+/// changed. Its text is returned for the caller to check what it previewed.
+fn previews_cleanly(dir: &Path, args: &[&str]) -> String {
+    let before = snapshot(dir);
+    let (success, out) = run(dir, args);
+    assert!(success, "`prov {}` failed:\n{out}", args.join(" "));
+    assert_unchanged(&before, &snapshot(dir), args, &out, "was a dry run");
     out
 }
 
@@ -184,4 +204,54 @@ fn mv_of_a_directory_into_a_parent_moves_nothing() {
     ok(&dir, &["new", "Deep", "--in", "@Fresh", "-p"]);
     let out = refuses_cleanly(&dir, &["mv", "fresh", "elsewhere", "--in", "a.md"]);
     assert!(out.contains("is a directory"), "{out}");
+}
+
+/// The id the registry gives `path`, as an `id:` target.
+fn id_of(dir: &Path, path: &str) -> String {
+    let (success, out) = run(dir, &["id", path]);
+    assert!(success, "`prov id {path}` failed:\n{out}");
+    out.lines()
+        .find(|l| l.starts_with("id:"))
+        .unwrap_or_else(|| panic!("`prov id` prints an id target: {out}"))
+        .to_string()
+}
+
+#[test]
+fn reparent_dry_run_writes_nothing_for_any_parent() {
+    // A route `--in` only ever printed its plan; a path or an id went on to
+    // reparent and commit, dry run or not. Every spelling of the parent is a
+    // preview, and the preview still says what the reparent would do.
+    let dir = workspace("reparent-dry-run");
+    ok(&dir, &["new", "B", "--in", "index.md"]);
+    let b = id_of(&dir, "b.md");
+    for parent in ["b.md", b.as_str(), "@B", "@B/Below"] {
+        let mut args = vec!["reparent", "child.md", "--in", parent, "--dry-run"];
+        let out = previews_cleanly(&dir, &args);
+        if !parent.starts_with('@') {
+            assert!(out.contains("would reparent child.md -> in b.md"), "{out}");
+        }
+        args.push("-p");
+        previews_cleanly(&dir, &args);
+    }
+}
+
+#[test]
+fn reparent_dry_run_still_refuses_a_cycle() {
+    let dir = workspace("reparent-dry-run-cycle");
+    let out = refuses_cleanly(&dir, &["reparent", "a.md", "--in", "child.md", "--dry-run"]);
+    assert!(out.contains("detach"), "{out}");
+}
+
+#[test]
+fn new_dry_run_writes_nothing_for_any_parent() {
+    let dir = workspace("new-dry-run");
+    let a = id_of(&dir, "a.md");
+    for parent in ["a.md", a.as_str(), "@A", "@A/Below"] {
+        let mut args = vec!["new", "Other", "--in", parent, "--dry-run"];
+        previews_cleanly(&dir, &args);
+        args.push("-p");
+        previews_cleanly(&dir, &args);
+    }
+    // The leaf-idempotent `-p` path, which previews an existing document.
+    previews_cleanly(&dir, &["new", "Child", "--in", "a.md", "-p", "--dry-run"]);
 }
