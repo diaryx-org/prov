@@ -359,10 +359,13 @@ how a workspace is opened.
 outer root *also* reaches the inner directory by a path link, the inner
 documents are censused by both roots and neither census is wrong. The outer
 `check` reports it (`link_into_nested_workspace`): a directory holding a node
-of its own is a nested workspace whether or not anything links into it, so
+of its own and a root document — the one the node names, or one shaped like
+a root — is a nested workspace whether or not anything links into it, so
 the test is one ancestor comparison per resolved link and needs no
-reachability. The rest of the boundary is held the same way, off the node
-rather than off the links:
+reachability. A node with no root beside it is not one: a preset directory
+(`presets/tasks/`) is laid out like a root, but it is configuration to be
+applied, and a link to its node is an ordinary local link. The rest of the
+boundary is held the same way, off the node rather than off the links:
 
 - The flat scans — `scan_ids`, the full title scan, the content-document scan —
   stop at a nested node, so the inner registry's ids and the inner titles are

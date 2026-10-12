@@ -2661,6 +2661,40 @@ mod tests {
         );
     }
 
+    /// A preset directory is laid out like a workspace's root — a node and the
+    /// stores beside it — but holds no root document, so it is configuration
+    /// to be applied and not a workspace. A link to its node is an ordinary
+    /// local link, as `docs/config-vocab.md`'s to `/presets/tasks/prov.yaml`
+    /// is in prov's own repository.
+    #[test]
+    fn a_link_into_a_preset_directory_is_not_reported() {
+        let dir = tempdir("preset-not-nested");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Home\n---\nSee [the preset](presets/tasks/prov.yaml).\n",
+        );
+        write(
+            &dir,
+            "presets/tasks/prov.yaml",
+            "fields:\n  status:\n    values: closed\n    vocabulary: '[Statuses](/vocab/statuses.yaml)'\n",
+        );
+        write(
+            &dir,
+            "presets/tasks/vocab/statuses.yaml",
+            "terms:\n  open: {}\n  done: {}\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+
+        let findings = block_on(ws.check("index.md")).unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, Finding::LinkIntoNestedWorkspace { .. })),
+            "{findings:?}"
+        );
+    }
+
     #[test]
     fn two_nested_workspaces_declaring_one_name_are_reported() {
         let dir = tempdir("nested-shared-name");

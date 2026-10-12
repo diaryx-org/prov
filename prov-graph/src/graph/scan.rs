@@ -115,7 +115,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// Whether the workspace-relative directory `rel_dir`, whose listing is
     /// `entries`, is the root of a workspace nested inside this one.
     ///
-    /// It is when it holds a workspace node ([`crate::node::holds_node`]). The
+    /// It is when it holds a workspace node and a root document
+    /// ([`crate::node::holds_workspace`]) — a node alone, as a preset
+    /// directory has, is configuration to be applied, not a workspace. The
     /// root itself never is, and neither is a top-level `config` or `.config`
     /// directory, since those are where this workspace keeps its own node.
     ///
@@ -135,7 +137,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         {
             return false;
         }
-        crate::node::holds_node(self.fs(), &self.root().join(rel_dir), entries).await
+        crate::node::holds_workspace(self.fs(), &self.root().join(rel_dir), entries).await
     }
 
     /// Every workspace nested inside this one, by the workspace-relative
@@ -611,6 +613,14 @@ mod tests {
             "other/index.md",
             "---\nid: other\ntitle: Other\n---\n",
         );
+        // A preset: a node and a store beside it, laid out like a root, but
+        // no root document — configuration to apply, not a workspace.
+        write(&dir, "presets/tasks/prov.yaml", "views: {}\n");
+        write(
+            &dir,
+            "presets/tasks/notes.md",
+            "---\nid: preset-note\ntitle: Preset note\npart_of: '[Home](/index.md)'\n---\n",
+        );
         dir
     }
 
@@ -635,9 +645,14 @@ mod tests {
             [
                 ("home".to_owned(), PathBuf::from("index.md")),
                 ("kept".to_owned(), PathBuf::from("config/notes.md")),
+                (
+                    "preset-note".to_owned(),
+                    PathBuf::from("presets/tasks/notes.md")
+                ),
                 ("today".to_owned(), PathBuf::from("journal/today.md")),
             ],
-            "the book's `home` would have collided with the library's"
+            "the book's `home` would have collided with the library's, \
+             and the preset's note is the library's own"
         );
 
         let titles = block_on(graph.title_index()).unwrap();
