@@ -418,3 +418,45 @@ fn a_nested_workspace_answers_before_the_peer_map() {
     );
     assert!(!out.contains("Elsewhere"), "{out}");
 }
+
+#[test]
+fn a_workspace_nested_in_a_crossed_one_is_followed_with_no_peer_map_entry() {
+    // `org` holds `nested`, which holds `inner`. Each crossed-into workspace
+    // brings its own folder's nested workspaces, so the second hop is found
+    // from `nested`'s folder — not from `org`'s, and not from the empty map.
+    let s = Nested::new("deeper");
+    std::fs::write(
+        s.nested.join("README.md"),
+        "---\nid: nested1\ntitle: Nested\npart_of: 'id:org/org1'\ncontents:\n\
+         - inner.md\n- 'id:inner/inner1'\n---\n",
+    )
+    .unwrap();
+    let inner = Federation::workspace(
+        &s.nested,
+        "inner",
+        "workspace_id: inner\nroot: README.md\nid_storage: frontmatter\n",
+        "---\nid: inner1\ntitle: Innermost\npart_of: 'id:nested/nested1'\n---\n",
+    );
+    for ws in [&inner, &s.nested, &s.org] {
+        let (ok, _, err) = s.run(ws, &["about"]);
+        assert!(ok, "about: {err}");
+    }
+
+    let (ok, out, err) = s.run(&s.org, &["tree", "--follow"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        out.contains(&format!(
+            "README.md — Innermost  ⇒ workspace inner ({})",
+            inner.display()
+        )),
+        "{out}"
+    );
+
+    let (ok, out, err) = s.run(&s.org, &["check", "--follow"]);
+    assert!(ok, "{out}{err}");
+    assert!(
+        err.contains(&format!("── workspace inner ({}) ──", inner.display())),
+        "{err}"
+    );
+    assert!(err.contains("no findings across 3 workspace(s)"), "{err}");
+}

@@ -107,9 +107,9 @@ Working in a workspace:
   Another workspace is referenced as `id:<name>/<id>`, never by path, even one
   nested inside this directory; `prov -C <dir> id <file>` prints the id to
   write. `tree --follow` and `check --follow` cross such a reference into a
-  workspace nested in this one's folder as it stands, and into any other only
-  where `prov peer` records it on this device. A nested workspace answers its
-  name ahead of the peer map.
+  workspace nested in the folder of the one it is written in, as it stands,
+  and into any other only where `prov peer` records it on this device. A
+  nested workspace answers its name ahead of the peer map.
 
   A directory with its own `prov.yaml` (what `prov init` writes) is a
   workspace, and discovery from inside it stops there even when its root has a
@@ -493,8 +493,8 @@ pub(crate) enum Command {
         /// own initiative would cost every invocation the size of the whole
         /// federation.
         ///
-        /// Only a peer that is nested in this workspace's folder, or that this
-        /// device's map records, *and* that the peer itself confirms is
+        /// Only a peer that is nested in the folder of the workspace the
+        /// reference is written in, or that this device's map records, *and* that the peer itself confirms is
         /// followed; a nested workspace answers its name ahead of the map. Every other boundary stays the leaf it is without the
         /// flag, now carrying the reason it was not followed.
         #[arg(long, value_name = "DEPTH", num_args = 0..=1, default_missing_value = DEFAULT_FOLLOW_DEPTH)]

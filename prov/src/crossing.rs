@@ -100,6 +100,7 @@ use prov_store::fs::Storage;
 use prov_store::index::{FileIndex, IndexStore};
 
 use crate::discovery::{Discovered, Discovery, discover};
+use crate::nested::NestedPeers;
 use crate::workspace::{Settings, Workspace};
 
 /// How many boundaries a [`descend`] crosses before it stops, when the caller
@@ -552,6 +553,14 @@ pub struct Federation {
 /// [`tree`](Workspace::tree) with every foreign leaf carrying
 /// [`Refusal::Unknown`], which is why no existing caller changes behaviour.
 ///
+/// `peers` answers for the origin. A peer the walk crosses into answers for
+/// itself first: the workspaces nested in *its* folder
+/// ([`Workspace::nested_peers`]) are consulted ahead of `peers`
+/// ([`NestedPeers::before`]), nearest first, so a workspace nested in one the
+/// walk reached is followed with no entry in the host's map. The origin's own
+/// nested workspaces are the host's to put in `peers`, since it has already
+/// read them.
+///
 /// Read-only throughout: nothing here writes, in the origin or in any peer.
 pub async fn descend<FS, IdP, Ix>(
     ws: &Workspace<FS, IdP, Ix>,
@@ -581,6 +590,9 @@ where
             root_doc,
         }],
         opened: vec![None],
+        // The origin's nested workspaces are already in `peers`, if the host
+        // wants them there.
+        nested: vec![Some(NestedPeers::default())],
         memo: BTreeMap::new(),
         // The origin is on the path before anything is walked, so a peer that
         // lists it back stops there.
@@ -607,12 +619,21 @@ struct Walk<'a, FS> {
     /// Aligned with `workspaces`; `None` at index 0, which is the origin and was
     /// never opened as a peer.
     opened: Vec<Option<Peer<FS>>>,
+    /// Aligned with `workspaces`: the workspaces nested in each one's folder,
+    /// which answer a foreign reference met there ahead of `peers`. Read the
+    /// first time a reference is crossed from that workspace, so a peer that
+    /// is only ever a leaf costs nothing.
+    nested: Vec<Option<NestedPeers>>,
     /// What each name asked for resolved to, so a name met a dozen times is
     /// located and opened once — and, on a second sighting, walked again rather
     /// than refused. Only outcomes that are facts *about the peer* are recorded:
     /// [`Refusal::TooDeep`] and [`Refusal::Cycle`] are facts about where in the
     /// walk the reference was met, and are decided at every sighting.
-    memo: BTreeMap<String, std::result::Result<usize, Refusal>>,
+    ///
+    /// Keyed by who answered as well as the name: `Some(ws)` when the
+    /// workspaces nested in `ws` declare it, `None` when `peers` did. A name
+    /// one workspace nests may mean another directory, or nothing, elsewhere.
+    memo: BTreeMap<(Option<usize>, String), std::result::Result<usize, Refusal>>,
     /// The workspaces on the current path from the origin — normalized root
     /// directory and declared name, the same pair
     /// [`open_peer`](crate::crossing::open_peer) checks identity with. Pushed on
@@ -672,7 +693,7 @@ impl<'w, FS: Storage + Clone> Walk<'w, FS> {
             if crossings >= self.options.depth {
                 return Ok(refused(node, ws, Refusal::TooDeep));
             }
-            let peer = match self.reach(&name).await? {
+            let peer = match self.reach(&name, ws).await? {
                 Ok(peer) => peer,
                 Err(refusal) => return Ok(refused(node, ws, refusal)),
             };
@@ -745,8 +766,10 @@ impl<'w, FS: Storage + Clone> Walk<'w, FS> {
         })
     }
 
-    /// The index into `workspaces` of the peer called `name`, opening it the
-    /// first time this walk asks for it and answering from the memo afterwards.
+    /// The index into `workspaces` of the peer called `name` from workspace
+    /// `from`, opening it the first time this walk asks for it and answering
+    /// from the memo afterwards. `from`'s nested workspaces answer the name
+    /// first, then the host's resolver.
     ///
     /// Says nothing about whether the peer may be *entered* from here — that is
     /// the trail's question, asked by the caller, because it depends on the
@@ -759,11 +782,25 @@ impl<'w, FS: Storage + Clone> Walk<'w, FS> {
     /// [`Federation::workspaces`] is the set of workspaces reached rather than
     /// the list of names followed — and a peer that turns out to *be* the origin
     /// is index 0, which is what makes the trail recognize it.
-    async fn reach(&mut self, name: &str) -> Result<std::result::Result<usize, Refusal>> {
-        if let Some(outcome) = self.memo.get(name) {
+    async fn reach(
+        &mut self,
+        name: &str,
+        from: usize,
+    ) -> Result<std::result::Result<usize, Refusal>> {
+        if self.nested[from].is_none() {
+            let peer = self.opened[from]
+                .as_ref()
+                .expect("a workspace crossed from is the origin or an opened peer");
+            self.nested[from] = Some(peer.workspace.nested_peers().await?);
+        }
+        let nested = self.nested[from].as_ref().expect("read above");
+        let answers_here = nested.pairs().any(|(declared, _)| declared == name);
+        let key = (answers_here.then_some(from), name.to_string());
+        if let Some(outcome) = self.memo.get(&key) {
             return Ok(outcome.clone());
         }
-        let outcome = match open_peer(self.fs, self.peers, name, self.options.trust).await? {
+        let resolver = nested.before(self.peers);
+        let outcome = match open_peer(self.fs, &resolver, name, self.options.trust).await? {
             Crossing::Refused(refusal) => Err(refusal),
             Crossing::Opened(peer) => {
                 let dir = link::normalize(&peer.discovered.root_dir);
@@ -792,12 +829,13 @@ impl<'w, FS: Storage + Clone> Walk<'w, FS> {
                             root_doc: peer.discovered.root_doc.clone(),
                         });
                         self.opened.push(Some(peer));
+                        self.nested.push(None);
                         Ok(self.workspaces.len() - 1)
                     }
                 }
             }
         };
-        self.memo.insert(name.to_string(), outcome.clone());
+        self.memo.insert(key, outcome.clone());
         Ok(outcome)
     }
 }
@@ -1000,6 +1038,56 @@ mod tests {
             assert_eq!(child.workspace, 0);
             assert_eq!(child.boundary, Some(Boundary::Refused(Refusal::Unknown)));
         }
+    }
+
+    #[test]
+    fn a_peer_answers_for_the_workspaces_nested_in_its_own_folder() {
+        // `inner` is nested in `alpha`, and the host's map knows only `alpha`:
+        // the reference `alpha` makes is answered by alpha's folder. The same
+        // name written in the origin is not — the origin's folder holds no
+        // `inner`, and what a peer nests is no answer for anyone else.
+        let dir = tmp("nested-in-peer");
+        org(&dir, &["id:alpha/alpha1", "id:inner/inner1"]);
+        sub(
+            &dir,
+            "alpha",
+            Some("alpha"),
+            "alpha1",
+            "Alpha",
+            &["id:inner/inner1"],
+        );
+        write(
+            &dir,
+            "alpha/inner/prov.yaml",
+            "workspace_id: inner\nroot: README.md\nid_storage: frontmatter\n",
+        );
+        write(
+            &dir,
+            "alpha/inner/README.md",
+            "---\nid: inner1\ntitle: Inner\npart_of: 'id:alpha/alpha1'\n---\n",
+        );
+        let ws = open(&dir.join("org"));
+        let map = peers(vec![("alpha", At::Dir(dir.join("alpha")))]);
+        let federated = block_on(descend(
+            &ws,
+            Path::new("README.md"),
+            &map,
+            &Descent::default(),
+        ))
+        .unwrap();
+
+        assert_eq!(names(&federated), ["org", "alpha", "inner"]);
+        assert_eq!(federated.workspaces[2].root_dir, dir.join("alpha/inner"));
+        let alpha = &federated.tree.children[0];
+        assert_eq!(alpha.boundary, Some(Boundary::Followed { into: 1 }));
+        let inner = &alpha.children[0];
+        assert_eq!(inner.boundary, Some(Boundary::Followed { into: 2 }));
+        assert_eq!(inner.title.as_deref(), Some("Inner"));
+        let from_origin = &federated.tree.children[1];
+        assert_eq!(
+            from_origin.boundary,
+            Some(Boundary::Refused(Refusal::Unknown))
+        );
     }
 
     #[test]

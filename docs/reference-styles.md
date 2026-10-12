@@ -379,7 +379,9 @@ boundary is held the same way, off the node rather than off the links:
   directory, as a `PeerResolver` a host consults ahead of its device-local one
   (`NestedPeers::before`): the directory travels with the library, so the
   route holds on every device the library reaches — the CLI's `--follow`,
-  `explore` and `peer resolve` all resolve through it. Two nested workspaces
+  `explore` and `peer resolve` all resolve through it. `descend` asks each
+  workspace it crosses into for its own, so a workspace nested in a peer is
+  followed as one nested in the origin is. Two nested workspaces
   declaring one name are refused rather than guessed, and `check` reports them
   (`nested_workspace_name_shared`).
 
