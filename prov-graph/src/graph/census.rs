@@ -125,12 +125,12 @@ pub enum Resolution {
     CaseMismatch { got: PathBuf, actual: String },
     /// A path target with nothing on disk.
     Broken,
-    /// A `prov:<id>` target the registry resolves to the live path `to`.
+    /// A `id:<id>` target the registry resolves to the live path `to`.
     Id { id: Id, to: PathBuf },
-    /// A well-formed `prov:<id>` target with no live registry entry;
+    /// A well-formed `id:<id>` target with no live registry entry;
     /// `tombstoned` separates "deleted" from "never issued here" (§4 hazard).
     DanglingId { id: Id, tombstoned: bool },
-    /// A `prov:<id>` target failing its check character — a typo.
+    /// A `id:<id>` target failing its check character — a typo.
     MalformedId,
     /// A nominal (alias) target several documents claim — unresolvable.
     /// `candidates` are the sharers, sorted.
@@ -207,7 +207,7 @@ pub struct Backlink {
     pub source: PathBuf,
     /// Where in `source` the link is written.
     pub site: LinkSite,
-    /// `true` when the link is a `prov:<id>` reference (location-independent),
+    /// `true` when the link is a `id:<id>` reference (location-independent),
     /// `false` when it is a path.
     pub by_id: bool,
     /// `true` when the reference names an attachment's **payload** rather

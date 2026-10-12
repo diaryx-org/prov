@@ -397,7 +397,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// itself stays, still linked from the root, holding an empty list.
     ///
     /// ID tombstones are untouched: an id retired at deletion stays retired, so
-    /// a `colophon:<id>` reference to a forgotten document remains diagnosable
+    /// a `id:<id>` reference to a forgotten document remains diagnosable
     /// rather than silently reissuable.
     ///
     /// A workspace still on the **recycle bin** this replaced has bytes parked

@@ -77,7 +77,7 @@ pub const BLADE_LEN: usize = BLADE_RANDOM_LEN + 1;
 
 /// Whether `id` is a well-formed prov ID: correct length, alphabet-only,
 /// and a matching trailing check character. This is what catches a typo'd
-/// `prov:` link before it dangles silently.
+/// `id:` link before it dangles silently.
 pub fn verify(id: &str) -> bool {
     canonical_minter().validate(id).is_ok()
 }

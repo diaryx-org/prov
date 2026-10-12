@@ -68,7 +68,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     ///
     /// Returns the inbound references *left* dangling by the delete: every
     /// other document's overlay link or body wikilink that resolved to `path`
-    /// (as [`Finding::BrokenLink`]), plus any `colophon:<id>` reference now
+    /// (as [`Finding::BrokenLink`]), plus any `id:<id>` reference now
     /// pointing at the tombstone (as [`Finding::DanglingId`]), plus the
     /// `content` pointer of a node whose body was forced away. The parent's
     /// spanning entry is *not* reported — it is removed here — and a delete that

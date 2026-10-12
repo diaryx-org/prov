@@ -192,7 +192,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// the same way. So converting body prose is a transcode *and* a rename, and
     /// the rename drags the workspace's inbound links with it: every reference
     /// that resolved to `notes.md` is retargeted to `notes.dj`, exactly as
-    /// [`rename`](Workspace::rename) would. `colophon:<id>` references are left
+    /// [`rename`](Workspace::rename) would. `id:<id>` references are left
     /// alone — the registry's `id → path` update keeps those resolving.
     ///
     /// **Per-file by default (DESIGN §8)**, like its sibling axes: a mixed-grammar
@@ -378,7 +378,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             cs.expect(&source, rw.read);
             cs.write(source, rw.text);
         }
-        // The registry follows each moved node, so every `colophon:<id>` pointing
+        // The registry follows each moved node, so every `id:<id>` pointing
         // at one survives the conversion untouched — the point of an id link.
         for (from, to) in &moves {
             if let Some(id) = self.index().id_for_path(from) {
@@ -1319,7 +1319,7 @@ mod tests {
 
     #[test]
     fn convert_content_format_carries_the_registry_so_id_links_keep_resolving() {
-        // The move is a rename, so the registry has to follow it — a `colophon:<id>`
+        // The move is a rename, so the registry has to follow it — a `id:<id>`
         // reference is deliberately *not* rewritten (that is the point of linking
         // by id), and only the id → path update keeps it resolving.
         let dir = tempdir("convert-content-registry");

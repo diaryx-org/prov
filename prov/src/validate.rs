@@ -24,7 +24,7 @@
 //!   whose `part_of` names a parent that does not list it, which is how a whole
 //!   unlinked subtree becomes visible to a walk that by construction cannot
 //!   reach it;
-//! - **malformed / dangling ID** — a `prov:<id>` reference (in a relation
+//! - **malformed / dangling ID** — a `id:<id>` reference (in a relation
 //!   or a wikilink) that fails its check character, or that no live registry
 //!   entry resolves;
 //! - **unreadable** — a document that exists but cannot be read or parsed.
@@ -238,7 +238,7 @@ pub enum Finding {
     },
     /// A document that exists but could not be read or parsed.
     Unreadable { doc: PathBuf, error: String },
-    /// A `prov:<id>` reference whose ID fails the shape/check-character
+    /// A `id:<id>` reference whose ID fails the shape/check-character
     /// test — almost certainly a typo, caught before it dangles silently.
     MalformedId {
         doc: PathBuf,

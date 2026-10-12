@@ -18,7 +18,7 @@
 //! DESIGN's open question #1 ("does the registry ever need to survive without
 //! its documents?") is answered **yes, minimally**: deleting a document leaves
 //! a *tombstone* — the ID stops resolving but is never forgotten, so it can
-//! never be reminted to mean something else. A dangling `prov:` reference
+//! never be reminted to mean something else. A dangling `id:` reference
 //! then stays *diagnosable* (validation can say "that document was deleted")
 //! instead of becoming a silent re-resolution hazard. [`is_known`] is the
 //! question that tells the two apart.

@@ -100,6 +100,38 @@ fn a_subject_can_be_addressed_by_id() {
 }
 
 #[test]
+fn resolve_accepts_every_id_spelling_a_subject_does() {
+    // `resolve` once stripped only the current `id:` scheme by hand, so the
+    // legacy `colophon:` spelling — which every subject slot accepts through
+    // the shared target grammar — reached the registry with its scheme still on
+    // and was reported as not registered. `resolve` also takes a bare id, which
+    // no other slot can (a bare string there is a path).
+    let dir = journal("resolve-spellings");
+    let (ok, out) = run(&dir, &["id", "daily/2026/07/2026-07-14.md"]);
+    assert!(ok, "{out}");
+    let target = out
+        .lines()
+        .find(|l| l.starts_with("id:"))
+        .unwrap_or_else(|| panic!("id command prints an id target: {out}"))
+        .to_string();
+    let bare = target.trim_start_matches("id:");
+
+    for spelling in [target.clone(), format!("colophon:{bare}"), bare.to_string()] {
+        let (ok, out) = run(&dir, &["resolve", &spelling]);
+        assert!(ok, "`prov resolve {spelling}` failed: {out}");
+        assert_eq!(
+            out.trim(),
+            "daily/2026/07/2026-07-14.md",
+            "`prov resolve {spelling}`"
+        );
+        if spelling != bare {
+            let (ok, shown) = run(&dir, &["get", &spelling, "title"]);
+            assert!(ok, "a subject takes {spelling} too: {shown}");
+        }
+    }
+}
+
+#[test]
 fn a_bare_path_needs_no_workspace() {
     // Root discovery is lazy: `show`/`meta`/`get`/`body` read a *file*, and only
     // @ and id: make the argument mean a *node*. Losing that would have made every

@@ -11,7 +11,7 @@
 //!
 //! Deleting a document leaves a *tombstone*: the ID stops resolving but is
 //! never forgotten, so it can never be reminted to mean something else. A
-//! dangling `prov:` reference then stays *diagnosable* ("that document was
+//! dangling `id:` reference then stays *diagnosable* ("that document was
 //! deleted") instead of becoming a silent re-resolution hazard.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -90,7 +90,7 @@ pub trait IndexStore: IdIndex {
     //
     // A mutation's registry update has to land in the *same* unit as its
     // document edits (§ the module docs): a rename that repoints three links but
-    // loses its `id → path` update leaves every `prov:<id>` reference to the
+    // loses its `id → path` update leaves every `id:<id>` reference to the
     // moved document resolving to nothing — the exact failure IDs exist to
     // prevent, and the one the documents cannot self-heal from, because the
     // registry is authoritative rather than derived (DESIGN §5).

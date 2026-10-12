@@ -14,7 +14,9 @@ use prov::{Id, IdIndex, Trigger, Value, block_on, link};
 use crate::CmdResult;
 use crate::about::refresh_about;
 use crate::config::write_config_setting;
-use crate::session::{Session, ensure_registry, entropy_seed, find_root, ws_rel};
+use crate::session::{
+    Session, TargetSpec, ensure_registry, entropy_seed, find_root, parse_target, ws_rel,
+};
 
 pub(crate) fn cmd_id(file: &Path) -> CmdResult {
     let mut ctx = find_root()?;
@@ -122,7 +124,16 @@ pub(crate) fn cmd_backlinks(file: &Path) -> CmdResult {
 
 pub(crate) fn cmd_resolve(id: &str) -> CmdResult {
     let session = Session::open()?;
-    let id = Id(id.strip_prefix(link::ID_SCHEME).unwrap_or(id).to_string());
+    // Through the target grammar every other document argument uses, so any
+    // scheme spelling a subject accepts (`id:`, the legacy `colophon:`) is
+    // accepted here too. Anything that is not an id there — which is a path to
+    // the other commands — is taken as a bare id: this argument names nothing
+    // else.
+    let id = match parse_target(id) {
+        TargetSpec::Id(id) => id,
+        TargetSpec::Path(_) | TargetSpec::Route(_) => id,
+    };
+    let id = Id(id.to_string());
     match session.ws.index().resolve(&id) {
         Some(path) => {
             println!("{}", path.display());

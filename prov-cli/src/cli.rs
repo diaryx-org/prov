@@ -930,8 +930,8 @@ pub(crate) enum Command {
         )]
         workspace: Option<Option<String>>,
     },
-    /// Resolve a stable ID (with or without the `id:` prefix) to its
-    /// current path. An id in another workspace (`id:<workspace>/<id>`) is
+    /// Resolve a stable ID (`id:<id>`, the legacy `colophon:<id>`, or the bare
+    /// id) to its current path. An id in another workspace (`id:<workspace>/<id>`) is
     /// `prov peer resolve`'s.
     Resolve {
         /// The ID to resolve.

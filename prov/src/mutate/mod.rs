@@ -13,7 +13,7 @@
 //! Everything below operates on paths and never *requires* an ID. When a
 //! registry is present, each op additionally keeps it true — create registers
 //! (if the policy's `on_create` fires), rename updates `id → path`, delete
-//! tombstones — and a `colophon:<id>` entry in another document's metadata is
+//! tombstones — and a `id:<id>` entry in another document's metadata is
 //! deliberately **not** rewritten by a move: the registry update is what keeps
 //! it resolving, which is the entire point of linking by ID. With
 //! [`crate::identity::NoIdentity`]/[`prov_graph::index::NoIndex`] these hooks

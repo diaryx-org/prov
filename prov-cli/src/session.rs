@@ -334,7 +334,7 @@ fn persist(ctx: &Ctx, ws: &mut Workspace<StdFs, Minter, FileIndex>) -> Result<()
 pub(crate) enum TargetSpec<'a> {
     /// A filesystem path — the default, and the only mode that needs no workspace.
     Path(&'a str),
-    /// `id:<id>` (or the legacy `prov:<id>`) — resolved through the registry.
+    /// `id:<id>` (or the legacy `colophon:<id>`) — resolved through the registry.
     Id(&'a str),
     /// `@Daily/2026/08` — a route of titles walked from the workspace root. Bare
     /// `@` is the root document itself.

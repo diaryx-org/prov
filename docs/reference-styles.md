@@ -43,9 +43,9 @@ style says *how a path is resolved* (root / relative).
   title — cosmetic, refreshable. `check` can flag a stale one (`StaleLabel`,
   staged) and refresh it, turning "fallible cache" into "maintained cache."
 
-The `id:` scheme replaces the older `prov:` spelling (de-branded, shorter,
+The `id:` scheme replaces the older `colophon:` spelling (de-branded, shorter,
 still explicit and diagnosable, and — unlike a `prov://` URL — it does not
-collide with `is_external`'s `://` check). `prov:` is still recognized on
+collide with `is_external`'s `://` check). `colophon:` is still recognized on
 read for backward compatibility.
 
 `alias` implies `wikilink` (neither `markdown` nor `bare` can address by bare
@@ -444,7 +444,7 @@ re-relativize, restyle and `check --fix` all preserve locators.
   `Notation` (`markdown`/`wikilink`/`bare`) and `PathStyle`
   (`root`/`relative`) axes compose to the internal `Wrapper` +
   extended `LinkStyle` (the 2×2 cross-product); `id:` scheme with legacy
-  `prov:` read.
+  `colophon:` read.
 - ✅ Per-relation `style` on `Relation` (`relation.rs`).
 - ✅ Workspace default + config keys (`config.rs`), authoring seam
   (`authored_target`) resolves per-relation style.

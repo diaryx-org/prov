@@ -9,7 +9,7 @@
 //! This is prov's *link-syntax layer* — the analogue of `fig`'s format
 //! layer: it recognizes the conventions a real workspace mixes and round-trips
 //! them on write (spaces re-acquire their brackets). A [`Wikilink`] is the
-//! body-text counterpart (`[[notes/a.md]]`, `[[colophon:ajp7eq|My file]]`).
+//! body-text counterpart (`[[notes/a.md]]`, `[[id:ajp7eq|My file]]`).
 //! Everything here is *lexical*: no filesystem
 //! access, no symlink resolution, and no markdown-structure awareness (a `[[…]]`
 //! inside a code span is still scanned) — resolution and code-fence discipline

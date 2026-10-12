@@ -1059,7 +1059,7 @@ grammar is declared by its **filename** — that is the only place prov reads it
 from, and the only place every other tool on the machine reads it from too. So
 `prov convert notes.md content_format djot` transcodes the prose *and* moves
 `notes.md` → `notes.dj`, retargeting every inbound reference exactly as a rename
-would (`colophon:<id>` references are left alone; the registry's `id → path`
+would (`id:<id>` references are left alone; the registry's `id → path`
 update is what keeps those resolving). A recursive sweep lands as one change set,
 so a document that links to another document in the same sweep comes out pointing
 at where that one actually went.

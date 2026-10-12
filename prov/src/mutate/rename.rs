@@ -33,7 +33,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// retargeted to `to`; and, when the directory changes, every relative link
     /// the moved document itself declares (frontmatter and body alike) is
     /// recomputed. Labels on `[label](path)` links and `[[target|label]]`
-    /// wikilinks are preserved. `colophon:<id>` references are left untouched:
+    /// wikilinks are preserved. `id:<id>` references are left untouched:
     /// where a registry is present its `id → path` update keeps them resolving
     /// (the point of an ID link), and in a path-only (Diaryx-style) workspace
     /// they never appear.
@@ -238,7 +238,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
 
         // Identity hook — the registry follows the move, so every
-        // `colophon:<id>` reference to this document survives untouched. Staged
+        // `id:<id>` reference to this document survives untouched. Staged
         // with the documents: a move whose links are maintained but whose
         // registry is not is the one tear IDs exist to prevent. `to` was
         // already cleared of a foreign registration above.
@@ -396,7 +396,7 @@ struct BodyMove {
 }
 
 /// Recompute every relative link `doc` declares so it still resolves after the
-/// document moves from `from` to `to`. External and `colophon:<id>` targets
+/// document moves from `from` to `to`. External and `id:<id>` targets
 /// are untouched — neither depends on where the document lives. A target that
 /// `moves` relocates too — a fellow mover in a directory move, the body beside
 /// a node — is spelled for where *it* lands.
@@ -1427,7 +1427,7 @@ mod tests {
         // The tear this exists to prevent, and the one the documents cannot
         // self-heal from: the registry is authoritative, not derived, so an
         // `id → path` that moved while the documents did not would resolve every
-        // `colophon:<id>` reference to a file that is not there.
+        // `id:<id>` reference to a file that is not there.
         //
         // Swept across every write the op makes rather than aimed at one, because
         // the interesting failure is the *last* — the registry's own write, with

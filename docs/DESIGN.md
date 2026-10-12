@@ -261,7 +261,7 @@ Consequences the implementation must honor:
 - **The registry's write belongs in the same unit as the documents it describes.**
   This falls straight out of the two natures. A derived cache may lag: if it is
   stale, rebuild it. Authoritative state may not — a mutation that maintains three
-  documents' links but loses its `id → path` update leaves every `prov:<id>`
+  documents' links but loses its `id → path` update leaves every `id:<id>`
   reference to the moved document resolving to nothing, and *nothing in the
   workspace can repair it*, because the mapping was never in the documents to
   begin with. So a mutation stages its registry write into the same `ChangeSet`
@@ -503,7 +503,7 @@ not yet ported.
 | Registry reachability | `relation`/`workspace` | ✅ the root links its registry via the `registry` relation (in the diaryx preset); `Workspace::registry_path` discovers it by following the link — never an app-private sidecar path |
 | Config files as documents | `document`/`edit` | ✅ `.yaml`/`.yml`/`.json`/`.fig`/`.figl` parse as whole-file-metadata documents (`MetaCarrier::WholeFile`); carrier-aware `MetaEditor` edits both shapes preserving comments/format |
 | Config vocabulary + homes | `config`/CLI | ✅ one nested namespace (`docs/config-vocab.md`) with two homes — nested under `prov:` in the root's frontmatter (the description home) or top-level in the dedicated config document (the policy home), precedence *config doc > root block > default*; the `config`/`registry`/`deletions` **pointer relations** stay top-level as structure. Reference style is the orthogonal `references: { notation (markdown\|wikilink\|bare) × path_style (root\|relative), target, label }` (internally `LinkStyle`, the 2×2 cross-product; a `canonical` path style was retired because a bare workspace-relative path resolves directory-relative and so never named what it meant — `docs/config-vocab.md`); `metadata: { format, embed }`; `id_storage: registry\|frontmatter\|both`; a `spec` version marker. `prov config <k> <v>` addresses nested axes by dotted key and refuses to write a setting `check` would flag |
-| ID links (`prov:<id>` targets) | `link`/`tree`/`validate`/`mutate` | ✅ resolve through the registry everywhere paths do; never rewritten by moves (the registry update is the maintenance); findings: `MalformedId` (check char), `DanglingId` (tombstoned vs never-issued) |
+| ID links (`id:<id>` targets) | `link`/`tree`/`validate`/`mutate` | ✅ resolve through the registry everywhere paths do; never rewritten by moves (the registry update is the maintenance); findings: `MalformedId` (check char), `DanglingId` (tombstoned vs never-issued) |
 | Workspace composition + builder | `workspace` | ✅ type-flipping builder |
 | Traverse (spanning tree from a root) | `tree` | ✅ `Workspace::tree`; missing/cyclic/unreadable targets are marked nodes |
 | Scan (directory-driven discovery) | `workspace`/`intake` | ✅ the orphan check is **reachability-bounded** (`direct_child_files` over reached directories, §8) — quiet inside a larger repo; the recursive `Workspace::content_documents` survives for explicit imports (`plan_mirror` → a `StructurePlan`, `attach --all --recursive`) and for the one bounded-scan blind spot that had to be closed: *"what does the workspace fail to reach?"* is the question a reachability bound cannot answer, so a subtree nothing links into is never scanned and produces no finding at all — `check` reports clean **because** it cannot see it. `validate::missing_containment` scans unbounded and reports only what *claims membership*: a document whose own `part_of` names a document the tree does reach, which that parent does not list (`MissingContainment`). A vendored tree, a nested workspace and a `scratch/` folder claim nothing and stay invisible, so §8's trade is kept where it was protecting something; membership is a **closure** (an island's interior claims the island, not the tree), and only each island's *entry point* is reported, so four hundred unlinked notes are one finding and one repair |
@@ -538,7 +538,7 @@ not yet ported.
    **Answered: yes, minimally — tombstones, not history.** Deleting a document
    retires its ID to a tombstone (`id: null` in the snapshot): the ID stops
    resolving but is never forgotten, so mint-by-rejection can never reissue it
-   and a dangling `prov:` reference stays *diagnosable* ("that document was
+   and a dangling `id:` reference stays *diagnosable* ("that document was
    deleted" vs "never issued here"). This is cheaper than an append-only log —
    the registry stays a sorted, diff-friendly snapshot — while still refusing to
    let an ID silently change meaning. Full history/event-log stores remain

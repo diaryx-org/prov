@@ -65,7 +65,7 @@ use prov_store::index::IndexStore;
 pub enum Fix {
     /// Repair a [`Finding::MissingInverse`]: declare `relation` in `doc` pointing
     /// back at `parent`. The concrete target — a path in the workspace's link
-    /// style, or a `prov:<id>` when the workspace authors id links — is
+    /// style, or a `id:<id>` when the workspace authors id links — is
     /// produced when the fix is applied (which may register `parent`), so the
     /// repair matches how the workspace authors every other link.
     AddInverse {

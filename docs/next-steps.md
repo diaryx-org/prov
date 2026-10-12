@@ -68,7 +68,7 @@ fully-after" quantified over generated change sets rather than the hand-placed
 ## Identity & backlinks
 
 - **Step 4 — gated malformed-id autofix.** The one document-repairing heal: when
-  the census finds a malformed `prov:<id>` near an edge the registry resolves
+  the census finds a malformed `id:<id>` near an edge the registry resolves
   uniquely, offer to restore it. Directional invariant: forward links are ground
   truth; the index heals *toward* them; it rewrites a document *only* for a
   dangling id it can resolve from its own record. Everything else: report.
@@ -236,7 +236,7 @@ defaults. `link_format` precedence: config doc > root frontmatter (diaryx compat
   `prov new` authors id links under Obsidian and a move leaves them
   untouched (registry does the maintenance). `prov config` prints all knobs.
 - ✅ **id-link authoring** (`Workspace::authored_target`): `create` and autofix
-  author `prov:<id>` (registering the target) when `id_links` is on and
+  author `id:<id>` (registering the target) when `id_links` is on and
   identity registers on a link, else a path in the link style. `create` mints
   IDs → `cmd_new` bootstraps the registry first when it will mint.
 - ✅ **`default_embed_format`** wired into `create` (new-doc archetype default).
@@ -504,7 +504,7 @@ document argument now declares its addressing mode in the **value**:
 | --- | --- | --- |
 | `daily.md` | path | no |
 | `@Daily/2026/08` | route of titles from the root (bare `@` = the root) | yes |
-| `id:fpk38j` (or legacy `prov:`) | registry handle | yes |
+| `id:fpk38j` (or legacy `colophon:`) | registry handle | yes |
 
 This is not a new idea — it is the library's own. `Addressing::{Path, Id, Alias}`
 and `Link::parse` have always disambiguated a target by its syntax; the CLI had
