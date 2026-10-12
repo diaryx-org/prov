@@ -943,12 +943,12 @@ impl fmt::Display for Finding {
             Finding::DanglingId {
                 doc,
                 site,
-                id,
+                target,
                 tombstoned,
                 ..
             } => write!(
                 f,
-                "{}: dangling {site} ID: id:{id} ({})",
+                "{}: dangling {site} ID: {target} ({})",
                 doc.display(),
                 if *tombstoned {
                     "document was deleted"
@@ -3885,6 +3885,35 @@ mod tests {
             )),
             "the id is ours, and it resolves to nothing: {findings:?}"
         );
+    }
+
+    #[test]
+    fn a_dangling_id_message_shows_the_target_as_written() {
+        // The message is what a reader searches the file for, so it names the
+        // reference as the file spells it, never one rebuilt from the id.
+        for written in ["id:0vn4182", "colophon:0vn4182", "id:notes/0vn4182"] {
+            let dir = tempdir("dangling-message");
+            write(
+                &dir,
+                "index.md",
+                format!("---\ntitle: Root\nlinks:\n- {written}\n---\n"),
+            );
+            let ws = Workspace::builder(StdFs)
+                .root(&dir)
+                .workspace_id("notes")
+                .build();
+
+            let findings = block_on(ws.check("index.md")).unwrap();
+            let message = findings
+                .iter()
+                .find(|f| matches!(f, Finding::DanglingId { .. }))
+                .unwrap_or_else(|| panic!("{written}: {findings:?}"))
+                .to_string();
+            assert!(
+                message.contains(&format!(" ID: {written} (")),
+                "{written}: {message}"
+            );
+        }
     }
 
     #[test]
