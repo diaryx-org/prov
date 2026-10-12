@@ -1290,7 +1290,7 @@ pub(crate) struct NewArgs {
     #[arg(long, value_enum, default_value_t = LayoutArg::Nested, requires = "parents")]
     pub(crate) layout: LayoutArg,
     /// Print what `--in` or `--filing` resolves to and what would be
-    /// created, then stop.
+    /// created, refusing what the real run would refuse, then stop.
     #[arg(long)]
     pub(crate) dry_run: bool,
     /// Use this exact workspace path instead of a title-derived name (the

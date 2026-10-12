@@ -255,3 +255,83 @@ fn new_dry_run_writes_nothing_for_any_parent() {
     // The leaf-idempotent `-p` path, which previews an existing document.
     previews_cleanly(&dir, &["new", "Child", "--in", "a.md", "-p", "--dry-run"]);
 }
+
+#[test]
+fn reparent_dry_run_through_a_route_refuses_what_the_reparent_would() {
+    // A route `--in` used to print its plan and stop, so a dry run through a
+    // route reported success for a reparent the real run refuses.
+    let dir = workspace("reparent-dry-run-route");
+    for args in [
+        // A cycle through a route that resolves whole.
+        &["reparent", "a.md", "--in", "@A/Child", "--dry-run"][..],
+        // A cycle through the nodes a route would build.
+        &["reparent", "a.md", "--in", "@A/Below", "-p", "--dry-run"],
+        &["reparent", "a.md", "--in", "@A/Below", "--dry-run"],
+        // A document that is not there.
+        &[
+            "reparent",
+            "missing.md",
+            "--in",
+            "@Fresh",
+            "-p",
+            "--dry-run",
+        ],
+    ] {
+        refuses_cleanly(&dir, args);
+    }
+}
+
+#[test]
+fn new_dry_run_through_a_route_refuses_what_the_create_would() {
+    let dir = workspace("new-dry-run-route");
+    for args in [
+        &[
+            "new",
+            "Other",
+            "--in",
+            "@Fresh",
+            "-p",
+            "--as",
+            "a.md",
+            "--dry-run",
+        ][..],
+        &[
+            "new",
+            "Other",
+            "--in",
+            "@A",
+            "--as",
+            "child.md",
+            "--dry-run",
+        ],
+        &[
+            "new",
+            "Other",
+            "--in",
+            "@Fresh",
+            "-p",
+            "--as",
+            "../outside.md",
+            "--dry-run",
+        ],
+    ] {
+        refuses_cleanly(&dir, args);
+    }
+}
+
+#[test]
+fn new_dry_run_through_a_filing_entry_refuses_what_the_create_would() {
+    let dir = workspace("new-dry-run-filing");
+    ok(&dir, &["new", "Daily", "--in", "index.md"]);
+    let config = std::fs::read_to_string(dir.join("prov.yaml")).unwrap()
+        + "filing:\n  daily:\n    under: '[[Daily]]'\n    field: [date_of_document, created]\n    nest: month\n";
+    std::fs::write(dir.join("prov.yaml"), config).unwrap();
+    ok(&dir, &["about"]);
+    let dated = ["--filing", "daily", "--set", "date_of_document=2025-03-04"];
+    let mut args = vec!["new", "Tuesday"];
+    args.extend(dated);
+    args.push("--dry-run");
+    previews_cleanly(&dir, &args);
+    args.extend(["--as", "a.md"]);
+    refuses_cleanly(&dir, &args);
+}

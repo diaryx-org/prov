@@ -83,8 +83,12 @@ impl Placement {
 }
 
 /// Resolve a `--in DOC` / `--under ROUTE` placement to the parent document it
-/// names, writing nothing. `Ok(None)` means the caller should stop having
-/// already printed something the user asked for (a `--dry-run` preview).
+/// names, writing nothing. A `--dry-run` prints the route's plan here and
+/// still hands back the placement — as if `-p` had been given, since the
+/// preview is of what `-p` would build — so the caller makes every refusal
+/// the real run would make before saying what it would do. It used to stop
+/// once the plan was printed, so a dry run through a route reported success
+/// for a command the real run refuses.
 ///
 /// Shared by `new`, `attach`, `reparent`, and `mv`, because a route is only
 /// ever another way to *name* a parent — never a different kind of operation.
@@ -101,7 +105,7 @@ fn plan_placement(
     parents: bool,
     layout: Layout,
     dry_run: bool,
-) -> Result<Option<Placement>, AnyError> {
+) -> Result<Placement, AnyError> {
     let route = match parse_target(target) {
         // A path or an id names a parent that must already exist — it has no
         // segments to synthesize. `-p` still applies to the *leaf* (idempotent
@@ -119,7 +123,7 @@ fn plan_placement(
                 )
                 .into());
             }
-            return Ok(Some(Placement::Exists(parent)));
+            return Ok(Placement::Exists(parent));
         }
         TargetSpec::Route(route) => route,
     };
@@ -142,12 +146,11 @@ fn plan_placement(
                 plan.synthesize.len()
             );
         }
-        return Ok(None);
     }
     if plan.is_complete() {
-        return Ok(Some(Placement::Exists(plan.terminal)));
+        return Ok(Placement::Exists(plan.terminal));
     }
-    if !parents {
+    if !parents && !dry_run {
         // Name the first missing segment and where the walk got to: the useful
         // half of the error is *how far* the route resolved.
         let missing = &plan.synthesize[0];
@@ -159,7 +162,7 @@ fn plan_placement(
         )
         .into());
     }
-    Ok(Some(Placement::Route(plan)))
+    Ok(Placement::Route(plan))
 }
 
 /// Build what a [`Placement`] still lacks and return the parent it names.
@@ -218,7 +221,8 @@ fn filing_entry_for_kind(session: &Session, kind: prov::RecordKind) -> Result<St
 /// Where `new --filing <name>` puts the document: the container the
 /// workspace's filing entry names for it, found or made
 /// ([`Workspace::file`](prov::Workspace::file)), planned and not yet
-/// made — [`apply_placement`] makes it.
+/// made — [`apply_placement`] makes it. A `--dry-run` prints the plan and
+/// hands it back, for the caller's refusals to be made of it.
 ///
 /// The value it is filed by is the one the document is about to open with —
 /// its creation stamp and every `--set` — since that is what the entry's
@@ -231,7 +235,7 @@ fn file_placement(
     sets: &[(String, Value)],
     now: &prov::Now,
     dry_run: bool,
-) -> Result<Option<Placement>, AnyError> {
+) -> Result<Placement, AnyError> {
     let Some(spec) = session
         .ctx
         .config
@@ -278,9 +282,8 @@ fn file_placement(
             );
         }
         eprintln!("  files in {}", plan.parent.display());
-        return Ok(None);
     }
-    Ok(Some(Placement::Filed(plan)))
+    Ok(Placement::Filed(plan))
 }
 
 /// Print a route plan without applying it: what resolved, what is missing, and
@@ -353,7 +356,7 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
     } else {
         None
     };
-    let placed = match (
+    let placement = match (
         in_target.as_deref(),
         filing.as_deref().or(by_kind.as_deref()),
     ) {
@@ -364,9 +367,6 @@ pub(crate) fn cmd_new(args: NewArgs) -> CmdResult {
                 "name a parent with --in, or a filing entry with --filing or --filed".into(),
             );
         }
-    };
-    let Some(placement) = placed else {
-        return Ok(ExitCode::SUCCESS);
     };
     let parent_rel = placement.parent().to_path_buf();
 
@@ -577,16 +577,10 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
             };
             let entry = filing_entry_for_kind(&session, kind)?;
             let now = crate::clock::now();
-            match file_placement(&session, &entry, &[], &now, false)? {
-                Some(p) => p,
-                None => return Ok(ExitCode::SUCCESS),
-            }
+            file_placement(&session, &entry, &[], &now, false)?
         }
         None => Placement::Exists(session.ctx.root_doc.clone()),
-        Some(t) => match plan_placement(&session, t, parents, layout, false)? {
-            Some(p) => p,
-            None => return Ok(ExitCode::SUCCESS),
-        },
+        Some(t) => plan_placement(&session, t, parents, layout, false)?,
     };
     let parent_rel = apply_placement(&mut session, placement)?;
 
@@ -689,9 +683,7 @@ pub(crate) fn cmd_mv(
     // every link that decides whether it would refuse.
     let placement = match in_target {
         Some(target) => {
-            let Some(placement) = plan_placement(&session, target, parents, layout, false)? else {
-                return Ok(ExitCode::SUCCESS);
-            };
+            let placement = plan_placement(&session, target, parents, layout, false)?;
             if session.ws.fs_path(&from_rel).is_dir() {
                 return Err(format!(
                     "--in {target}: {} is a directory, and only a document has a parent",
@@ -746,18 +738,16 @@ pub(crate) fn cmd_reparent(
     } else {
         Session::open_for_mutation()?
     };
-    let Some(placement) = plan_placement(&session, in_target, parents, layout, dry_run)? else {
-        return Ok(ExitCode::SUCCESS);
-    };
+    let placement = plan_placement(&session, in_target, parents, layout, dry_run)?;
     let path_rel = ws_rel(&session.ctx, &path_resolved)?;
     // `reparent` refuses before it writes, but a route `-p` builds its nodes
     // before there is a parent to reparent under — so the refusal is asked
     // first, while nothing has been built.
     placement.check_reparent(&session, &path_rel)?;
-    // A route's dry run stopped in `plan_placement`, having printed its plan;
-    // a path or an id names a parent that already exists, so there is nothing
-    // to plan and the preview is made here, after the refusals and before the
-    // first write. It used to fall through to the reparent and commit it.
+    // The preview is made here, after the refusals and before the first
+    // write, however the parent was named. A path or an id used to fall
+    // through to the reparent and commit it; a route used to stop once its
+    // plan was printed, before the refusals.
     if dry_run {
         eprintln!(
             "would reparent {} -> in {}",
