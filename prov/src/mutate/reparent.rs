@@ -43,6 +43,62 @@ pub enum Reparented {
 }
 
 impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Every refusal [`reparent`](Self::reparent) makes, made without writing:
+    /// `child` and `parent` must both exist, must differ, and `parent` must not
+    /// sit beneath `child`, or the move would detach both from the tree.
+    ///
+    /// `reparent` asks this itself before it writes, so a caller that only
+    /// reparents need not. It is for a caller that changes something *first*:
+    /// `mv --in` renames before it reparents, and a route builds its missing
+    /// nodes before there is a parent to reparent under. Each asks this before
+    /// its first write, so a reparent that is going to refuse refuses while
+    /// nothing has changed. Asked of a route's deepest existing node, the cycle
+    /// half still holds for the nodes the route would build beneath it.
+    pub async fn check_reparent(&self, child: &Path, parent: &Path) -> Result<()> {
+        let _scope = self.read_scope();
+        let child = link::normalize(child);
+        let parent = link::normalize(parent);
+        if child == parent {
+            return Err(Error::Structure(format!(
+                "{} cannot contain itself",
+                parent.display()
+            )));
+        }
+        let (_, inverse) = self.spanning_pair()?;
+        for existing in [&child, &parent] {
+            if !self.exists(existing).await? {
+                return Err(Error::NotFound(existing.to_path_buf()));
+            }
+        }
+
+        // Refuse a cycle: walking up from the *new* parent must not arrive at the
+        // child. Reparenting a node beneath its own descendant would sever the
+        // pair from the tree entirely — both would still claim each other, so
+        // nothing would look broken from inside the loop, and a spanning walk from
+        // the root would simply never reach them again.
+        let mut rung = parent.clone();
+        let mut seen = BTreeSet::new();
+        while seen.insert(rung.clone()) {
+            if rung == child {
+                return Err(Error::Structure(format!(
+                    "cannot reparent {} into {} — {} is contained by it, so the move would \
+                     detach both from the tree",
+                    child.display(),
+                    parent.display(),
+                    parent.display(),
+                )));
+            }
+            let Ok((_, doc)) = self.load(&rung).await else {
+                break;
+            };
+            match self.single_target(&doc, &inverse, &rung) {
+                Some(up) => rung = up,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+
     /// Move the document at `child` to a different `parent` in the containment
     /// tree, leaving the file exactly where it is.
     ///
@@ -113,44 +169,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let _scope = self.read_scope();
         let child = link::normalize(child);
         let parent = link::normalize(parent);
-        if child == parent {
-            return Err(Error::Structure(format!(
-                "{} cannot contain itself",
-                parent.display()
-            )));
-        }
+        self.check_reparent(&child, &parent).await?;
         let (spanning, inverse) = self.spanning_pair()?;
-        for existing in [&child, &parent] {
-            if !self.exists(existing).await? {
-                return Err(Error::NotFound(existing.to_path_buf()));
-            }
-        }
-
-        // Refuse a cycle: walking up from the *new* parent must not arrive at the
-        // child. Reparenting a node beneath its own descendant would sever the
-        // pair from the tree entirely — both would still claim each other, so
-        // nothing would look broken from inside the loop, and a spanning walk from
-        // the root would simply never reach them again.
-        let mut rung = parent.clone();
-        let mut seen = BTreeSet::new();
-        while seen.insert(rung.clone()) {
-            if rung == child {
-                return Err(Error::Structure(format!(
-                    "cannot reparent {} into {} — {} is contained by it, so the move would \
-                     detach both from the tree",
-                    child.display(),
-                    parent.display(),
-                    parent.display(),
-                )));
-            }
-            let Ok((_, doc)) = self.load(&rung).await else {
-                break;
-            };
-            match self.single_target(&doc, &inverse, &rung) {
-                Some(up) => rung = up,
-                None => break,
-            }
-        }
 
         let (child_text, child_doc) = self.load(&child).await?;
         let old_parent = self.single_target(&child_doc, &inverse, &child);
