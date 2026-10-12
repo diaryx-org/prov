@@ -68,6 +68,54 @@ pub(crate) fn sidecar_name(stem: &str, format: Format) -> String {
 /// the flag's cannot drift apart.
 pub(crate) const DEFAULT_FOLLOW_DEPTH: &str = "8";
 
+/// What `prov help --oneline` prints: what prov is for and when to reach for
+/// it, in one line, for a tool that lists every command-line tool it may use
+/// and fetches the full help only for the one it picks.
+pub(crate) const ONELINE: &str = "prov: maintains a graph of Markdown documents linked through \
+     frontmatter; use it to add, move or delete a document without breaking links, edit its \
+     fields, and check the links. More: `prov help`.";
+
+/// The working guide `prov help` and `prov --help` print after the command
+/// list: the facts about prov that decide *which* command to use, which no
+/// single command's help is the place for.
+const GUIDE: &str = "\
+Working in a workspace:
+
+  A workspace is a tree of documents whose structure lives in their own
+  frontmatter: a parent lists its children in `contents`, and each child names
+  its parent in `part_of`. The root is found by walking up from the current
+  directory (or `-C`) to a document with metadata and no parent, unless the
+  workspace's config names it with `root`.
+
+  Change the tree through prov, not the filesystem. A plain `mv`, `rm` or new
+  file leaves links broken or a document unreached; `prov new`, `prov mv`,
+  `prov reparent` and `prov rm` update both ends of every link and every
+  inbound reference.
+
+  `prov set` and `prov unset` stamp `updated` and restate the checksum. After
+  changing a document's bytes any other way (an editor, a script, another
+  tool), run `prov stamp <file>`.
+
+  `prov check` reports broken links, missing inverse links and orphans, and
+  exits 1 on any finding. A workspace can have findings before you start, so
+  judge one change with `prov check --only <file>`. `--fix mechanical`
+  applies only the unambiguous repairs; bare `--fix` prompts on stdin.
+
+  A field's closed vocabulary (a `status` with fixed values, say) is enforced
+  only by `check`: `set` and `new --set` accept any value.
+
+  Another workspace is referenced as `id:<name>/<id>`, never by path, even one
+  nested inside this directory; `prov -C <dir> id <file>` prints the id to
+  write. `tree --follow` and `check --follow` cross such a reference only where
+  `prov peer` records the workspace on this device.
+
+  A sub-workspace whose root has a `part_of` into an outer workspace needs
+  `root: <file>` in its own config (`prov config root <file>`). Without it,
+  discovery from inside walks up and opens the outer workspace.
+
+`prov help <command>` prints any command's full help, and `prov help --oneline`
+one line saying what prov is for.";
+
 /// What `prov --version` prints.
 ///
 /// The package version on a clean build of the release tag, and the package
@@ -79,7 +127,13 @@ pub(crate) const VERSION: &str = env!("PROV_VERSION");
 
 /// A self-describing plaintext workspace, from the command line.
 #[derive(Parser)]
-#[command(name = "prov", version = VERSION, about, long_about = None)]
+#[command(
+    name = "prov",
+    version = VERSION,
+    about,
+    long_about = None,
+    after_long_help = GUIDE
+)]
 pub(crate) struct Cli {
     /// Run as if started in this directory — discover the workspace root from
     /// here instead of the current directory (like `git -C`, this goes *before*
@@ -222,6 +276,10 @@ pub(crate) enum Command {
     /// recorded content checksum is restated, in one crash-safe write. Setting
     /// the `updated` field itself keeps the value you gave. Outside a
     /// workspace the file is simply rewritten.
+    ///
+    /// A value outside a field's closed vocabulary is written all the same;
+    /// `prov check` is what reports it. After changing a document's bytes some
+    /// other way than `set`, `unset` or `edit`, run `prov stamp`.
     Set {
         /// Path to a document.
         #[arg(value_name = "TARGET")]
@@ -451,8 +509,14 @@ pub(crate) enum Command {
         unverified: bool,
     },
     /// Check workspace integrity from a root: broken links, case mismatches,
-    /// duplicate containment, missing inverse links, dangling IDs. Exits 1 on
-    /// findings — or, with `--ignore-warnings`, on errors.
+    /// duplicate containment, missing inverse links, dangling IDs, orphans,
+    /// fixity drift, and values outside a closed vocabulary (the one place
+    /// that is enforced). Exits 1 on findings — or, with `--ignore-warnings`,
+    /// on errors.
+    ///
+    /// The verdict is the whole workspace's, so one that already had findings
+    /// exits 1 before any change of yours. To judge one change, filter with
+    /// `--only <file>`, or compare the output before and after.
     Check(CheckArgs),
     /// Record that a document changed **outside prov** — restamp its content
     /// checksum, and stamp the workspace's `updated` field with the current
@@ -536,6 +600,10 @@ pub(crate) enum Command {
     /// parent's directory, and records the title in the document's metadata,
     /// where structure lives. Override the derived filename with `--as` (an exact
     /// path) or just its extension with `--ext`.
+    ///
+    /// Use this rather than writing the file yourself: a file nothing lists in
+    /// its `contents` is not reached, and `check` reports it as an orphan. The
+    /// new document's path is printed on stdout.
     New(NewArgs),
     /// Give an arbitrary file (an image, a PDF, any binary) workspace-linked
     /// metadata: write a sidecar `<file>.yaml` beside it carrying its title,
@@ -640,6 +708,11 @@ pub(crate) enum Command {
     /// Moves the *file* and preserves the document's place in the tree. To change
     /// its place in the tree instead, see `reparent` — or pass `--in`
     /// here to do both at once.
+    ///
+    /// Use this rather than `mv` or `git mv`, which leave every link to the old
+    /// path broken. Each rewritten link keeps the spelling it had: a root-style
+    /// link stays root-style. A document cannot move into another workspace;
+    /// copy it there, link it in, and `prov rm` the original.
     Mv {
         /// The document to move: a path, a title route (`@Daily/2026/07`), or an
         /// id (`id:fpk38j`).
@@ -731,6 +804,9 @@ pub(crate) enum Command {
     /// deleted, and `prov restore` uses that record to put the document back
     /// into the graph once you have the file again. Recording is governed by the
     /// `record_deletions` config axis (on unless opted out).
+    ///
+    /// Use this rather than `rm`, which leaves the parent's entry, and every
+    /// other link to the document, pointing at nothing.
     Rm {
         /// The document to delete: a path, a title route (`@Daily/2026/07`), or an
         /// id (`id:fpk38j`).
@@ -820,10 +896,15 @@ pub(crate) enum Command {
         #[arg(value_name = "TARGET")]
         source: String,
     },
-    /// Ensure a document has a stable ID and print its `prov:<id>` target.
+    /// Ensure a document has a stable ID and print its `id:<id>` target.
     /// Registers it in the workspace's registry document (bootstrapping
     /// registry.yaml + the root's `registry` pointer on first use) — link that
     /// target from any document and it survives moves.
+    ///
+    /// From another workspace, link it as `id:<workspace>/<id>`, where
+    /// `<workspace>` is this one's `workspace_id`; run `prov -C <dir> id
+    /// <file>` to get the id without leaving the workspace you are in. A path
+    /// link into a workspace nested inside this one is a `check` finding.
     ///
     /// With `--workspace`, names the *workspace* instead of a document: the
     /// `workspace_id` other archives reference this one by (`id:<name>/<id>`).
@@ -849,8 +930,9 @@ pub(crate) enum Command {
         )]
         workspace: Option<Option<String>>,
     },
-    /// Resolve a stable ID (with or without the `prov:` prefix) to its
-    /// current path.
+    /// Resolve a stable ID (with or without the `id:` prefix) to its
+    /// current path. An id in another workspace (`id:<workspace>/<id>`) is
+    /// `prov peer resolve`'s.
     Resolve {
         /// The ID to resolve.
         id: String,
@@ -1071,9 +1153,9 @@ pub(crate) struct CheckArgs {
     #[arg(value_name = "TARGET")]
     pub(crate) root: Option<String>,
     /// Repair findings. Bare `--fix` (or `--fix ask`) walks them and offers
-    /// each finding's repairs to choose from; `--fix mechanical` applies only
-    /// the repairs that are pure functions of an authority — no prompts, for
-    /// scripts. Structure edits only: prose is rewritten solely where the
+    /// each finding's repairs to choose from, reading the choice from stdin;
+    /// `--fix mechanical` applies only the repairs that are pure functions of
+    /// an authority — no prompts, for scripts and anything non-interactive. Structure edits only: prose is rewritten solely where the
     /// parser itself reported a link, so code that looks like one is never
     /// touched, and no fix ever deletes a file.
     #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "ask")]

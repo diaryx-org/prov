@@ -50,7 +50,17 @@ fn resolve_placement(
         // the parent.
         TargetSpec::Path(_) | TargetSpec::Id(_) => {
             let resolved = resolve_target(target)?;
-            return Ok(Some(ws_rel(&session.ctx, &resolved)?));
+            let parent = ws_rel(&session.ctx, &resolved)?;
+            // Named here rather than left to the write, which fails with a
+            // bare "No such file or directory" that does not say which file.
+            if !session.ws.fs_path(&parent).is_file() {
+                return Err(format!(
+                    "--in {target}: {} does not exist in this workspace",
+                    parent.display()
+                )
+                .into());
+            }
+            return Ok(Some(parent));
         }
         TargetSpec::Route(route) => route,
     };

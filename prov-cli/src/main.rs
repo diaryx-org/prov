@@ -81,6 +81,15 @@ fn main() -> ExitCode {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // `prov help --oneline`: one line saying what prov is for, for a listing
+    // of the tools at hand that fetches full help only for the one it picks.
+    // Answered before clap, whose generated `help` subcommand takes no flags;
+    // replacing that subcommand would mean re-creating it at every level that
+    // has subcommands (`prov peer help add`) to add one flag at the top.
+    if std::env::args_os().skip(1).eq(["help", "--oneline"]) {
+        println!("{}", cli::ONELINE);
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     // `-C <dir>` / `--root <dir>` (or `PROV_ROOT`, which it overrides) runs prov
     // as if it had started in that directory: chdir once, up front, so every

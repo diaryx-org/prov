@@ -809,10 +809,6 @@ Run `prov <command> --help` for the full options of any command.
 
 prov is young. Things a beginner will hit:
 
-- **`mv` doesn't yet honor the reference style.** A move currently rewrites the
-  parent's link as a *relative* path even when your `references.path_style` is
-  `root`. The link still resolves; only its style changes. (`new` and
-  `check --fix` do respect the style.)
 - **The root must be unambiguous.** If a directory has two documents with
   metadata and no `part_of`, prov can't tell which is the root and reports
   an ambiguity. Keep a single root per workspace (name it `index.md`), or
