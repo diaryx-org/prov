@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use prov::prov_graph::field::Step;
-use prov::{Format, RelationSet, Value, block_on, edit, meta};
+use prov::{Format, RelationSet, StdFs, Value, block_on, edit, meta};
 
 use crate::cli::MetaFormat;
 use crate::clock;
@@ -210,6 +210,7 @@ fn write_field_edit(file: &Path, key: &str, text: &str) -> Result<(), AnyError> 
         std::fs::write(file, text)?;
         return Ok(());
     };
+    let was_root = (ctx.root_dir.clone(), ctx.root_doc.clone());
     let mut session = Session::over(ctx)?;
     let now = clock::now();
     let machinery = machinery(&session.ctx, &session.ws)?;
@@ -231,7 +232,38 @@ fn write_field_edit(file: &Path, key: &str, text: &str) -> Result<(), AnyError> 
     if let Some(field) = stamped {
         eprintln!("{} — stamped `{field}`", rel.display());
     }
+    if rel == was_root.1 {
+        warn_if_root_lost(&was_root.0, &was_root.1);
+    }
     Ok(())
+}
+
+/// Say so when an edit to the root document means discovery no longer finds
+/// it — a `part_of` set on a root that only the candidate scan was finding, or
+/// its metadata removed. The file is written either way; what the warning saves
+/// is the next command silently opening some other workspace, or none.
+///
+/// A root named `index`/`readme` beside a workspace node, or named by the
+/// node's `root`, survives a `part_of` (see `prov::discover`), so this is
+/// quiet for the shape `prov init` writes.
+fn warn_if_root_lost(root_dir: &Path, root_doc: &Path) {
+    let now = block_on(prov::discover(&StdFs, root_dir));
+    let found = match &now {
+        Ok(prov::Discovery::Found(d)) if d.root_dir == root_dir && d.root_doc == root_doc => {
+            return;
+        }
+        Ok(prov::Discovery::Found(d)) => format!("{}", d.root_dir.join(&d.root_doc).display()),
+        Ok(prov::Discovery::Ambiguous { dir, .. }) => {
+            format!("an ambiguous root in {}", dir.display())
+        }
+        Ok(prov::Discovery::NotFound) | Err(_) => "no workspace at all".to_string(),
+    };
+    eprintln!(
+        "prov: warning: {} is no longer discovered as this workspace's root — commands run here will now open {found}. \
+Name it in the workspace's config with `prov config root {}` (a root that says what contains it is how a sub-workspace joins an outer one)",
+        root_doc.display(),
+        root_doc.display(),
+    );
 }
 
 pub(crate) fn cmd_edit(file: &Path) -> CmdResult {

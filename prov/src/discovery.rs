@@ -98,6 +98,11 @@ fn stem_is(name: &Path, want: &str) -> bool {
 /// only another guess, and does not settle a tie beneath it; when the climb
 /// ends with none the nearest ambiguity is the answer, as before.
 ///
+/// A directory holding a workspace node and no candidate is not passed over
+/// either: its `index`/`readme` with metadata is the root the node implies,
+/// even when that root says what contains it with `part_of` (see
+/// [`node_implied_root`]). That is a sub-workspace as `prov init` writes it.
+///
 /// `FS: Clone` because the effective config is read through a throwaway probe
 /// [`Workspace`] rooted at the found directory (its `registry_path`/`config_path`
 /// resolve the pointer relations) — the same machinery every command uses, so
@@ -175,10 +180,75 @@ pub async fn discover<FS: Storage + Clone>(fs: &FS, from: &Path) -> Result<Disco
                 }
                 continue;
             }
-            None => continue,
+            None => {
+                // No candidate at all. In a directory that holds a workspace
+                // node that is not the end of the question: the node declares a
+                // workspace here, and its conventional root may carry a
+                // `part_of` saying what contains it — see [`node_implied_root`].
+                if located.node.is_none() {
+                    continue;
+                }
+                let mut contained = Vec::new();
+                for path in shaped
+                    .iter()
+                    .filter(|path| stem_is(path, "index") || stem_is(path, "readme"))
+                {
+                    if let Some(name) = contained_root_name(fs, path).await {
+                        contained.push(name);
+                    }
+                }
+                if let Some(root_doc) = node_implied_root(&contained) {
+                    let discovered =
+                        build(fs, dir.to_path_buf(), PathBuf::from(root_doc), located).await?;
+                    return Ok(Discovery::Found(discovered));
+                }
+                continue;
+            }
         }
     }
     Ok(ambiguous.unwrap_or(Discovery::NotFound))
+}
+
+/// The filename when `path` is a document with metadata that says something
+/// contains it — the shape a sub-workspace's root takes — otherwise nothing.
+async fn contained_root_name<FS: Storage>(fs: &FS, path: &Path) -> Option<String> {
+    let text = fs.read_to_string(path).await.ok()?;
+    let doc = Document::parse(path, &text).ok()?;
+    is_contained_root_shape(&doc)
+        .then(|| path.file_name()?.to_str().map(str::to_owned))
+        .flatten()
+}
+
+/// A document that would be a root candidate but for its `part_of`.
+fn is_contained_root_shape(doc: &Document) -> bool {
+    doc.has_meta() && doc.meta.get("part_of").is_some() && !crate::about::is_generated(&doc.meta)
+}
+
+/// The root a **workspace node** implies when it names none and the directory
+/// holds no root candidate: the conventional `index`, then `readme`, document
+/// that carries metadata — `part_of` and all.
+///
+/// A directory holding a node is a workspace stated outright; the outer
+/// workspace already treats it as nested whether or not anything links into it
+/// (`docs/reference-styles.md`, "A workspace inside a workspace"). Its root
+/// saying what contains it, with `part_of`, is how a sub-workspace joins the
+/// outer tree, and `prov init` writes the node without a `root` key — so
+/// before this rule, setting `part_of` on a freshly made sub-workspace's root
+/// made discovery walk past the node and open the *outer* workspace from
+/// inside the inner one, or find nothing. The node already says "a workspace
+/// is here"; the conventional stem says which document roots it, exactly as
+/// the stem breaks ties everywhere else. `root:` still names any other file.
+///
+/// Consulted only when the directory holds *no* candidate, so it never turns a
+/// root the scan would have found into a different one, nor a settled
+/// directory into a tie. `names` are the directory's contained-root-shaped
+/// documents (see [`is_contained_root_shape`]).
+fn node_implied_root(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .find(|n| stem_is(Path::new(n), "index"))
+        .or_else(|| names.iter().find(|n| stem_is(Path::new(n), "readme")))
+        .cloned()
 }
 
 /// The filename when `path` is a readable root candidate, otherwise nothing.
@@ -236,7 +306,9 @@ pub fn can_be_root(path: &Path) -> bool {
 /// [`node_named_root`] — the node names the root, so nothing has to be guessed.
 /// Widening this test instead would hand every directory a candidate it did not
 /// have, turning a settled root into a tie; a document with a foreign parent
-/// that no node names is therefore not a candidate.
+/// that no node names is therefore not a candidate. Where a node names nothing
+/// and the directory holds no candidate, [`node_implied_root`] is the last
+/// resort, which by construction cannot create a tie.
 fn is_root_candidate(doc: &Document) -> bool {
     doc.has_meta() && doc.meta.get("part_of").is_none() && !crate::about::is_generated(&doc.meta)
 }
@@ -283,6 +355,7 @@ impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Worksp
             return Ok(Some(named));
         }
         let mut candidates = Vec::new();
+        let mut contained = Vec::new();
         for entry in self.listing(Path::new("")).await? {
             if entry.file_type().is_dir() {
                 continue;
@@ -302,9 +375,19 @@ impl<FS: prov_graph::fs::ReadStorage, Id, Ix: prov_graph::index::IdIndex> Worksp
             };
             if is_root_candidate(&doc) {
                 candidates.push(name.to_string());
+            } else if is_contained_root_shape(&doc) {
+                contained.push(name.to_string());
             }
         }
-        Ok(choose_root(&candidates).map(PathBuf::from))
+        if let Some(root) = choose_root(&candidates) {
+            return Ok(Some(PathBuf::from(root)));
+        }
+        // The rule `discover` applies in a directory holding a node and no
+        // candidate — see [`node_implied_root`].
+        if candidates.is_empty() && self.workspace_node().await.node.is_some() {
+            return Ok(node_implied_root(&contained).map(PathBuf::from));
+        }
+        Ok(None)
     }
 }
 
@@ -800,6 +883,59 @@ mod tests {
         // And without the node there is nothing here to be the root.
         let bare = nested_workspaces("nested-root-doc-bare", false).join("sub");
         assert_eq!(block_on(probe(&bare).root_document()).unwrap(), None);
+    }
+
+    #[test]
+    fn a_node_implies_its_conventional_root_when_that_root_says_what_contains_it() {
+        // The shape `prov init` writes, then `set part_of` on the root: a node
+        // with no `root` key, and an `index.md` that is no longer a candidate.
+        // The node declares a workspace here, so the walk stops here rather
+        // than climbing out and opening the outer one.
+        let outer = nested_workspaces("nested-implied", false);
+        std::fs::rename(outer.join("sub/README.md"), outer.join("sub/index.md")).unwrap();
+        std::fs::write(outer.join("sub/prov.yaml"), "workspace_id: inner\n").unwrap();
+        std::fs::create_dir_all(outer.join("sub/deep")).unwrap();
+
+        match block_on(discover(&StdFs, &outer.join("sub/deep"))).unwrap() {
+            Discovery::Found(d) => {
+                assert_eq!(d.root_dir, outer.join("sub"));
+                assert_eq!(d.root_doc, PathBuf::from("index.md"));
+                assert_eq!(d.config.workspace_id, "inner");
+            }
+            other => panic!("expected the inner root, got {other:?}"),
+        }
+        assert_eq!(
+            block_on(probe_with_node(&outer.join("sub")).root_document()).unwrap(),
+            Some(PathBuf::from("index.md")),
+            "a located workspace makes the same judgment"
+        );
+    }
+
+    #[test]
+    fn a_node_implies_a_root_only_where_the_scan_found_none() {
+        // A candidate the scan would have chosen still wins: the implied root is
+        // a last resort, never a second opinion.
+        let root = tmp("implied-last-resort");
+        std::fs::write(root.join("home.md"), "---\ntitle: Home\n---\n").unwrap();
+        std::fs::write(
+            root.join("readme.md"),
+            "---\ntitle: Readme\npart_of: home.md\n---\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("prov.yaml"), "workspace_id: w\n").unwrap();
+        match block_on(discover(&StdFs, &root)).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_doc, PathBuf::from("home.md")),
+            other => panic!("expected home.md, got {other:?}"),
+        }
+
+        // And a contained root under some other name is not implied.
+        let other = nested_workspaces("implied-other-name", false);
+        std::fs::rename(other.join("sub/README.md"), other.join("sub/home.md")).unwrap();
+        std::fs::write(other.join("sub/prov.yaml"), "workspace_id: inner\n").unwrap();
+        match block_on(discover(&StdFs, &other.join("sub"))).unwrap() {
+            Discovery::Found(d) => assert_eq!(d.root_dir, other),
+            other => panic!("expected the outer root, got {other:?}"),
+        }
     }
 
     #[test]

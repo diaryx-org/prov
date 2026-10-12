@@ -332,6 +332,15 @@ document with a foreign `part_of` that **no node names** is still not a root
 candidate: nothing about it changed, and a directory that had one root before
 still has exactly one.
 
+A node that names no root still declares a workspace, and that is what `prov
+init` writes. So where a directory holding a node has **no candidate at all**,
+its `index` (then `readme`) document with metadata is the root it implies,
+`part_of` and all. Discovery stops there rather than walking past the node into
+the outer workspace. It is a last resort and never a second opinion: a
+candidate the scan would have chosen still wins, and a contained root under any
+other name still needs `root:`, which `prov set` asks for when an edit hides the
+root. Without a node, the walk passes over the contained document as before.
+
 Everything downstream already behaves. The foreign parent resolves to
 `Target::Foreign`, so the spanning climb stops at the sub-root, the sub-root
 claims membership in nothing local, the census files the edge as

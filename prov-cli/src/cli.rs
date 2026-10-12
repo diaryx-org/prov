@@ -111,9 +111,12 @@ Working in a workspace:
   where `prov peer` records it on this device. A nested workspace answers its
   name ahead of the peer map.
 
-  A sub-workspace whose root has a `part_of` into an outer workspace needs
-  `root: <file>` in its own config (`prov config root <file>`). Without it,
-  discovery from inside walks up and opens the outer workspace.
+  A directory with its own `prov.yaml` (what `prov init` writes) is a
+  workspace, and discovery from inside it stops there even when its root has a
+  `part_of` into an outer workspace, provided the root is named `index` or
+  `readme`. A root named anything else needs `root: <file>` in that config
+  (`prov config root <file>`); without it discovery walks up and opens the
+  outer workspace.
 
 `prov help <command>` prints any command's full help, and `prov help --oneline`
 one line saying what prov is for.";

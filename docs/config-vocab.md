@@ -174,7 +174,7 @@ prov:
       view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
-  root: home.md               # which document is the root — read only from the workspace node (omit = found by the `index`/`readme` scan)
+  root: home.md               # which document is the root — read only from the workspace node (omit = found by the `index`/`readme` scan; with none, the node's `index`/`readme` even if it has a `part_of`)
 
   # ── policy: how prov behaves (conventionally in prov.yaml) ──
   identity: lazy              # none (a.k.a. off) | lazy | eager
