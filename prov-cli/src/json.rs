@@ -440,6 +440,10 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("node", p(node)));
             fields.push(("named", p(named)));
         }
+        Finding::ImpliedRootContained { node, root } => {
+            fields.push(("node", p(node)));
+            fields.push(("root", p(root)));
+        }
         Finding::LinkIntoNestedWorkspace {
             doc,
             site,

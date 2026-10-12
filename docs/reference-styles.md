@@ -350,7 +350,8 @@ about the edge. The one thing that *is* reported is a named root whose parent
 resolves **locally** — a path, an unresolved local id, or a reference qualified
 with this workspace's own name (which is local, per the rule above) — because
 that is a root saying something here contains it, and that is a contradiction
-(`named_root_contained`).
+(`named_root_contained`). A root nobody named, the `index`/`readme` a node
+implies, is judged the same way (`implied_root_contained`).
 
 Two rules come with it. The first is now a check; the second is a fact about
 how a workspace is opened.

@@ -438,6 +438,16 @@ pub enum Finding {
     /// reference qualified with this workspace's own name, which *is* local and
     /// so is a real parent.
     NamedRootContained { node: PathBuf, named: PathBuf },
+    /// The node names no `root`, and the root it implies — `root`, its
+    /// `index`/`readme` document, which discovery takes when the directory
+    /// holds no candidate — declares a spanning parent *in this workspace*.
+    ///
+    /// [`NamedRootContained`](Finding::NamedRootContained) for the root nobody
+    /// named: the same contradiction, judged the same way (a parent in another
+    /// workspace is a sub-workspace saying what contains it, and is not this),
+    /// and as invisible without it, since discovery stops at the node either
+    /// way.
+    ImpliedRootContained { node: PathBuf, root: PathBuf },
     /// A link written by path (or an id this registry maps to a path) that
     /// resolves into a workspace nested inside this one, at `workspace`.
     ///
@@ -756,7 +766,8 @@ impl Finding {
             Finding::ShadowedWorkspaceNode { node, .. }
             | Finding::ConfigHomesDisagree { node, .. }
             | Finding::NamedRootMissing { node, .. }
-            | Finding::NamedRootContained { node, .. } => node,
+            | Finding::NamedRootContained { node, .. }
+            | Finding::ImpliedRootContained { node, .. } => node,
             Finding::LinkIntoNestedWorkspace { doc, .. } => doc,
             // Every root is as much the subject as the others; the first,
             // sorted, so the grouping is stable.
@@ -825,6 +836,7 @@ impl Finding {
             | Finding::ConfigHomesDisagree { .. }
             | Finding::NamedRootMissing { .. }
             | Finding::NamedRootContained { .. }
+            | Finding::ImpliedRootContained { .. }
             | Finding::LinkIntoNestedWorkspace { .. }
             | Finding::NestedWorkspaceNameShared { .. }
             | Finding::MalformedStore { .. }
@@ -867,6 +879,7 @@ impl Finding {
             Finding::ConfigHomesDisagree { .. } => "config_homes_disagree",
             Finding::NamedRootMissing { .. } => "named_root_missing",
             Finding::NamedRootContained { .. } => "named_root_contained",
+            Finding::ImpliedRootContained { .. } => "implied_root_contained",
             Finding::LinkIntoNestedWorkspace { .. } => "link_into_nested_workspace",
             Finding::NestedWorkspaceNameShared { .. } => "nested_workspace_name_shared",
             Finding::MalformedStore { .. } => "malformed_store",
@@ -1173,6 +1186,12 @@ impl fmt::Display for Finding {
                 node.display(),
                 named.display(),
             ),
+            Finding::ImpliedRootContained { node, root } => write!(
+                f,
+                "{}: names no `root`, so {} is the root, and it declares a spanning parent in this workspace — a root is the document nothing contains, and this one says it is contained (a parent in *another* workspace, `id:<workspace>/<id>`, is how a sub-workspace says what contains it; `root: <file>` names a different root)",
+                node.display(),
+                root.display(),
+            ),
             Finding::LinkIntoNestedWorkspace {
                 doc,
                 site,
@@ -1464,6 +1483,39 @@ impl CheckDiff {
 }
 
 impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Whether `root_doc`, at `path`, declares a spanning parent that resolves
+    /// in this workspace — the contradiction a root cannot carry.
+    ///
+    /// Asked of the resolved target, not the spelling: a foreign
+    /// `id:<workspace>/<id>` parent names a document this workspace does not
+    /// hold, which is how a sub-workspace says what contains it without ceasing
+    /// to be one. A self-qualified reference resolves *locally* (see
+    /// `resolve_link_with`), so it is a real parent and still reported.
+    fn declares_local_parent(
+        &self,
+        path: &Path,
+        root_doc: &prov_graph::document::Document,
+    ) -> bool {
+        // The workspace's *own* spelling of the parent field, not the default:
+        // `is_root_candidate` hardcodes `part_of` because discovery runs before
+        // any config is known, and here it is known.
+        let parent_field = self
+            .spanning_pair()
+            .map(|(_, inverse)| inverse)
+            .unwrap_or_else(|_| "part_of".to_string());
+        root_doc.meta.get(&parent_field).is_some_and(|value| {
+            match value.link_strings().into_iter().next() {
+                Some(raw) => !matches!(
+                    self.resolve_link(path, &Link::parse(&raw)),
+                    Target::Foreign { .. }
+                ),
+                // The key is there and names nothing — a declaration of
+                // containment either way, and not a foreign one.
+                None => true,
+            }
+        })
+    }
+
     /// Check the workspace reachable from `start`, returning every finding.
     /// An empty result means the reachable graph holds its invariants. This is
     /// the findings view over [`census`](Workspace::census): each forward link
@@ -2088,41 +2140,13 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 config.apply(&doc.meta);
                 if let Some(named) = &config.root {
                     let named_path = PathBuf::from(named);
-                    // The workspace's *own* spelling of the parent field, not
-                    // the default: `is_root_candidate` hardcodes `part_of`
-                    // because discovery runs before any config is known, and
-                    // here it is known.
-                    let parent_field = self
-                        .spanning_pair()
-                        .map(|(_, inverse)| inverse)
-                        .unwrap_or_else(|_| "part_of".to_string());
                     match self.load(&named_path).await {
                         Ok((_, root_doc)) => {
                             // A root that says something *here* contains it.
                             // Discovery honors the name anyway — a stated root
                             // is not a guess to be overruled — so the
                             // contradiction is only ever visible here.
-                            //
-                            // Asked of the resolved target, not the spelling: a
-                            // foreign `id:<workspace>/<id>` parent names a
-                            // document this workspace does not hold, which is
-                            // how a sub-workspace says what contains it without
-                            // ceasing to be one. A self-qualified reference
-                            // resolves *locally* (see `resolve_link_with`), so
-                            // it is a real parent and still reported.
-                            let contained = root_doc.meta.get(&parent_field).is_some_and(|value| {
-                                match value.link_strings().into_iter().next() {
-                                    Some(raw) => !matches!(
-                                        self.resolve_link(&named_path, &Link::parse(&raw)),
-                                        Target::Foreign { .. }
-                                    ),
-                                    // The key is there and names nothing —
-                                    // a declaration of containment either
-                                    // way, and not a foreign one.
-                                    None => true,
-                                }
-                            });
-                            if contained {
+                            if self.declares_local_parent(&named_path, &root_doc) {
                                 findings.push(Finding::NamedRootContained {
                                     node: node.clone(),
                                     named: named_path,
@@ -2134,6 +2158,20 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                             named: named.clone(),
                         }),
                     }
+                } else if let Some(root) = self.root_document().await?
+                    && let Ok((_, root_doc)) = self.load(&root).await
+                    // Only the root the node implies: a candidate the scan
+                    // chose carries no `part_of` by construction.
+                    && crate::discovery::is_contained_root_shape(&root_doc)
+                    && self.declares_local_parent(&root, &root_doc)
+                {
+                    // The same contradiction with nothing named: discovery
+                    // stops at the node and takes its `index`/`readme` as the
+                    // root, `part_of` and all, so it is as invisible.
+                    findings.push(Finding::ImpliedRootContained {
+                        node: node.clone(),
+                        root,
+                    });
                 }
             }
         }
@@ -2841,6 +2879,59 @@ mod tests {
                         if node == Path::new("prov.yaml") && named == Path::new("home.md")
                 )),
                 "{tag}: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_implied_root_whose_parent_resolves_locally_is_reported() {
+        // No `root` key: the node implies `index.md` (discovery's last resort
+        // for a directory with a node and no candidate). A parent here is the
+        // same contradiction a named root's is, and as invisible without this.
+        for (tag, parent, reported) in [
+            ("implied-root-self-qualified", "id:inner/abc123", true),
+            ("implied-root-local-path", "'[Notes](/notes.md)'", true),
+            ("implied-root-foreign", "id:outer/abc123", false),
+        ] {
+            let dir = tempdir(tag);
+            write(
+                &dir,
+                "index.md",
+                format!(
+                    "---\ntitle: Home\npart_of: {parent}\ncontents:\n- '[Notes](/notes.md)'\n---\n"
+                ),
+            );
+            write(
+                &dir,
+                "notes.md",
+                "---\ntitle: Notes\npart_of: '[Home](/index.md)'\n---\n",
+            );
+            write(&dir, "prov.yaml", "workspace_id: inner\n");
+            let ws = Workspace::builder(StdFs)
+                .root(&dir)
+                .workspace_id("inner")
+                .build();
+            assert_eq!(
+                block_on(ws.root_document()).unwrap(),
+                Some(PathBuf::from("index.md")),
+                "{tag}: the node implies the root"
+            );
+
+            let findings = block_on(ws.check("index.md")).unwrap();
+            assert_eq!(
+                findings.iter().any(|f| matches!(
+                    f,
+                    Finding::ImpliedRootContained { node, root }
+                        if node == Path::new("prov.yaml") && root == Path::new("index.md")
+                )),
+                reported,
+                "{tag}: {findings:?}"
+            );
+            assert!(
+                !findings
+                    .iter()
+                    .any(|f| matches!(f, Finding::NamedRootContained { .. })),
+                "{tag}: nothing is named — {findings:?}"
             );
         }
     }

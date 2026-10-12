@@ -220,7 +220,7 @@ async fn contained_root_name<FS: Storage>(fs: &FS, path: &Path) -> Option<String
 }
 
 /// A document that would be a root candidate but for its `part_of`.
-fn is_contained_root_shape(doc: &Document) -> bool {
+pub(crate) fn is_contained_root_shape(doc: &Document) -> bool {
     doc.has_meta() && doc.meta.get("part_of").is_some() && !crate::about::is_generated(&doc.meta)
 }
 
