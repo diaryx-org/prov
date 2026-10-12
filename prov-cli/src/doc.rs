@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use prov::prov_graph::field::Step;
 use prov::{Format, RelationSet, Value, block_on, edit, meta};
 
 use crate::cli::MetaFormat;
@@ -98,11 +99,13 @@ pub(crate) fn cmd_meta(file: &Path, format: Option<MetaFormat>) -> CmdResult {
 
 pub(crate) fn cmd_get(file: &Path, key: &str) -> CmdResult {
     let (_, doc) = load(file)?;
+    let address = edit::key_path(key)?;
     let mut value = &doc.meta;
-    for part in key.split('.') {
-        value = match part.parse::<usize>() {
-            Ok(index) => value.as_sequence().and_then(|s| s.get(index)),
-            Err(_) => value.get(part),
+    for step in address.steps() {
+        value = match step {
+            Step::Key(k) => value.get(k),
+            Step::At(i) => value.as_sequence().and_then(|s| s.get(*i)),
+            Step::Each => unreachable!("an address has no `[]` step"),
         }
         .ok_or_else(|| format!("no `{key}` in {}", file.display()))?;
     }

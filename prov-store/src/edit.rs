@@ -13,6 +13,7 @@
 use fig::{Embed, EmbedType, Segment};
 
 use prov_graph::document::MetaCarrier;
+use prov_graph::field::Address;
 use prov_graph::meta::Mapping;
 use prov_graph::{Error, Result};
 
@@ -160,16 +161,16 @@ impl MetaEditor {
     }
 }
 
-/// Parse a dotted key path (`a.b.0.c`) into fig path segments. An all-digit
-/// segment indexes a sequence; anything else names a mapping key.
-pub fn key_path(dotted: &str) -> Vec<Segment<'_>> {
-    dotted
-        .split('.')
-        .map(|part| match part.parse::<usize>() {
-            Ok(index) => Segment::Index(index),
-            Err(_) => Segment::Key(part),
-        })
-        .collect()
+/// Parse a key path into the [`Address`] an edit is made at — the grammar of
+/// [`Address::parse_command_line`]: `a.b[0].c` or `a.b.0.c`, each naming item
+/// 0 of the list at `a.b`. An error when the path has a `[]` in it, which
+/// names every item of a list rather than one value.
+pub fn key_path(dotted: &str) -> Result<Address> {
+    Address::parse_command_line(dotted).ok_or_else(|| {
+        Error::Structure(format!(
+            "`{dotted}` names every item of a list; an edit takes one value, `[n]` for item n"
+        ))
+    })
 }
 
 /// Interpret a CLI-provided scalar: `true`/`false`, integers, floats, and
@@ -223,7 +224,8 @@ pub fn set_in_text(
     value: fig::Value,
 ) -> Result<String> {
     let mut editor = MetaEditor::open_or_init(text, carrier)?;
-    let path = key_path(dotted);
+    let address = key_path(dotted)?;
+    let path = address.segments();
     match path.last() {
         // fig's `set` upserts a trailing *key*; an index-terminated path is a
         // pure replacement (there is no "insert at absent index" to upsert).
@@ -284,14 +286,19 @@ fn value_at<'a>(
     Some(current)
 }
 
-/// Delete the entry at `dotted` from `text`'s metadata (carrier-aware).
+/// Delete the entry at `dotted` from `text`'s metadata (carrier-aware). A
+/// path ending in an index (`contents[0]`) takes that item out of its list.
 /// Returns the full re-rendered document text. Errors when the document has
 /// no metadata or the path does not exist.
 pub fn unset_in_text(text: &str, carrier: Option<MetaCarrier>, dotted: &str) -> Result<String> {
     let carrier = carrier
         .ok_or_else(|| Error::Structure("document has no embedded metadata block".into()))?;
     let mut editor = MetaEditor::open(text, carrier)?;
-    editor.delete(&key_path(dotted))?;
+    let address = key_path(dotted)?;
+    match address.as_item() {
+        Some((list, index)) => editor.remove_item(&list.segments(), index)?,
+        None => editor.delete(&address.segments())?,
+    }
     editor.render()
 }
 
@@ -497,7 +504,9 @@ mod tests {
     fn replace_key_renames_the_key_and_preserves_comments_elsewhere() {
         let text = "---\n# keep me\ntitle: Old\nauthor: me\n---\nbody\n";
         let mut editor = MetaEditor::open(text, carrier_of("x.md", text).unwrap()).unwrap();
-        editor.replace_key(&key_path("title"), "name").unwrap();
+        editor
+            .replace_key(&key_path("title").unwrap().segments(), "name")
+            .unwrap();
         let out = editor.render().unwrap();
         assert!(out.contains("name: Old"), "{out}");
         assert!(!out.contains("title:"), "{out}");
@@ -528,7 +537,7 @@ mod tests {
         let text = "---\ncontents:\n- a # keep a\n- b # keep b\n- c # keep c\n---\nbody\n";
         let mut editor = MetaEditor::open(text, carrier_of("x.md", text).unwrap()).unwrap();
         editor
-            .reorder_items(&key_path("contents"), &[2, 0])
+            .reorder_items(&key_path("contents").unwrap().segments(), &[2, 0])
             .unwrap();
         let out = editor.render().unwrap();
         assert!(out.contains("# keep a"), "comment lost: {out}");

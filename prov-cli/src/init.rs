@@ -985,11 +985,20 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
             MetaCarrier::Fenced(_) => {
                 let body = format!("\n{}", content.heading(&title));
                 let mut editor = edit::MetaEditor::open_or_init(&body, Some(carrier))?;
-                editor.set_value(&edit::key_path("title"), edit::infer_scalar(&title))?;
+                editor.set_value(
+                    &edit::key_path("title")?.segments(),
+                    edit::infer_scalar(&title),
+                )?;
                 if let Some(author) = &author {
-                    editor.set_value(&edit::key_path("author"), edit::infer_scalar(author))?;
+                    editor.set_value(
+                        &edit::key_path("author")?.segments(),
+                        edit::infer_scalar(author),
+                    )?;
                 }
-                editor.set_value(&edit::key_path("config"), edit::infer_scalar(&config_name))?;
+                editor.set_value(
+                    &edit::key_path("config")?.segments(),
+                    edit::infer_scalar(&config_name),
+                )?;
                 std::fs::write(dir.join(&content_name), editor.render()?)?;
                 content_name.clone()
             }

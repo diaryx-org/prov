@@ -99,6 +99,24 @@ impl Address {
         path.is_concrete().then_some(Self { steps: path.steps })
     }
 
+    /// Parse an address as a command line names one value: `contents[0]`,
+    /// as fig and a finding write it, or `contents.0`, the dotted spelling
+    /// `prov get`/`set`/`unset` took first. A dotted all-digit step after the
+    /// first is a list index; the first step is always a key, since the root
+    /// of a document's metadata is a mapping. `None` when the text has a `[]`
+    /// in it, which names every item rather than one.
+    pub fn parse_command_line(text: &str) -> Option<Self> {
+        let mut address = Self::parse(text)?;
+        for step in address.steps.iter_mut().skip(1) {
+            if let Step::Key(k) = step
+                && let Ok(n) = k.parse::<usize>()
+            {
+                *step = Step::At(n);
+            }
+        }
+        Some(address)
+    }
+
     /// The address of a top-level key.
     pub fn key(name: &str) -> Self {
         Self {
@@ -429,5 +447,21 @@ mod tests {
         assert!(matches!(segments[0], fig::Segment::Key("sources")));
         assert!(matches!(segments[1], fig::Segment::Index(2)));
         assert!(matches!(segments[2], fig::Segment::Key("resource")));
+    }
+
+    #[test]
+    fn a_command_line_address_takes_an_index_in_brackets_or_after_a_dot() {
+        for text in ["contents[0]", "contents.0"] {
+            let address = Address::parse_command_line(text).unwrap();
+            assert_eq!(address.to_string(), "contents[0]", "{text}");
+        }
+        let address = Address::parse_command_line("sources.2.resource").unwrap();
+        assert_eq!(address.to_string(), "sources[2].resource");
+        // The head is a key even when it is all digits.
+        assert_eq!(
+            Address::parse_command_line("0").unwrap().steps(),
+            &[Step::Key("0".into())]
+        );
+        assert!(Address::parse_command_line("contents[]").is_none());
     }
 }

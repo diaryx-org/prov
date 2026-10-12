@@ -1710,7 +1710,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         ))
                     })?,
                 )?;
-                editor.replace_key(&prov_store::edit::key_path(from), leaf)?;
+                editor.replace_key(&prov_store::edit::key_path(from)?.segments(), leaf)?;
                 cs.write(doc, editor.render()?);
             }
             Fix::SetConfigValue { doc, key, value } => {

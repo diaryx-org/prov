@@ -245,12 +245,13 @@ pub(crate) enum Command {
         #[arg(long, value_enum)]
         format: Option<MetaFormat>,
     },
-    /// Print one metadata field by dotted path (e.g. `title`, `contents.0`).
+    /// Print one metadata field by path (e.g. `title`, `contents[0]`).
     Get {
         /// Path to a document.
         #[arg(value_name = "TARGET")]
         file: String,
-        /// Dotted key path; an all-digit segment indexes a sequence.
+        /// Field path: keys joined by `.`, a list item as `[n]` (`contents[0]`,
+        /// `sources[1].resource`); `contents.0` names the same item.
         key: String,
     },
     /// Print a document's body (everything outside the metadata block).
@@ -291,7 +292,8 @@ pub(crate) enum Command {
         /// Path to a document.
         #[arg(value_name = "TARGET")]
         file: String,
-        /// Dotted key path.
+        /// Field path: keys joined by `.`, a list item as `[n]`
+        /// (`contents[0]`, or `contents.0`).
         key: String,
         /// Value; `true`/`false`, integers, floats, and `null` are typed,
         /// everything else is a string.
@@ -303,7 +305,8 @@ pub(crate) enum Command {
         /// Path to a document.
         #[arg(value_name = "TARGET")]
         file: String,
-        /// Dotted key path.
+        /// Field path: keys joined by `.`, a list item as `[n]`
+        /// (`contents[0]`, or `contents.0`).
         key: String,
     },
     /// List the views this workspace declares, or execute one.

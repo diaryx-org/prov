@@ -252,7 +252,7 @@ More single-document readers:
 | Command                    | Prints                                             |
 | -------------------------- | -------------------------------------------------- |
 | `prov meta FILE`       | the raw metadata block (no fences)                 |
-| `prov get FILE KEY`    | one field by dotted path (`title`, `contents.0`)   |
+| `prov get FILE KEY`    | one field by path (`title`, `contents[0]`)         |
 | `prov links FILE`      | every link as `relation⇥target`                    |
 | `prov body FILE`       | everything *outside* the metadata block            |
 | `prov backlinks FILE`  | who links *to* this document, across the workspace |
@@ -301,7 +301,7 @@ $ prov unset rust.md summary
 
 Values are typed by inference: `true`/`false`, integers, floats, and `null`
 become those types; everything else is a string. Dotted keys address nested
-fields and sequence indices (`contents.0`).
+fields, and `[n]` a list item (`contents[0]`, also written `contents.0`).
 
 ### Body prose and `render`
 
