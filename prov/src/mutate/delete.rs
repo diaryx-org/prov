@@ -154,12 +154,38 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         }
 
+        // The files the document owns through a `type: payload` field go with
+        // it, as a sidecar's payload goes with the sidecar (see
+        // [`crate::inline`]). Only opaque files that are there: a missing one
+        // is already a broken link, one prov can read is a document, with a
+        // place in the graph a delete of something else must not take, and one
+        // with a sidecar of its own is the card's, not this document's.
+        let mut payloads: Vec<PathBuf> = Vec::new();
+        for owned in
+            crate::inline::owned_payloads(self.payloads(), &path, &fig::Value::from(&doc.meta))
+        {
+            if owned.target != path
+                && !payloads.contains(&owned.target)
+                && prov_graph::document::is_opaque_payload(&owned.target)
+                && self.exists(&owned.target).await?
+                && self.attachment_for(&owned.target).await?.is_none()
+            {
+                payloads.push(owned.target);
+            }
+        }
+
         // What the delete breaks — the census, the walk up to the root it is
         // anchored to, and the forced-body case the census cannot see. All of it
         // behind `diagnosis`, so a caller that ignores the answer pays nothing
         // for it.
         let danglers = self
-            .removal_danglers(diagnosis, &path, parent.as_deref(), owner.as_deref())
+            .removal_danglers(
+                diagnosis,
+                &path,
+                parent.as_deref(),
+                owner.as_deref(),
+                &payloads,
+            )
             .await?;
 
         let mut parent_write: Option<(PathBuf, String)> = None;
@@ -196,6 +222,11 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let (Some(body), true) = (&body_file, body_exists) {
             cs.remove(body);
         }
+        for payload in &payloads {
+            if Some(payload) != body_file.as_ref() {
+                cs.remove(payload);
+            }
+        }
 
         // What this destroyed, written down — in the same change set, so the
         // record and the removal cannot come apart.
@@ -210,6 +241,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 from: path.clone(),
                 parent: parent.clone(),
                 body: body_exists.then(|| body_file.clone()).flatten(),
+                payloads: payloads.clone(),
                 at: at.map(str::to_owned),
             };
             let root = self.spanning_root(&path, &inverse).await?;

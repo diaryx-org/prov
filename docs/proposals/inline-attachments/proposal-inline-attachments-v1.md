@@ -3,7 +3,7 @@ title: inline attachments
 author: adammharris
 created: 2026-10-13
 updated: 2026-10-13
-status: draft
+status: accepted
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 derived_from:
 - '[path-valued fields](/docs/proposals/path-valued-fields/proposal-path-valued-fields-v1.md)'
@@ -12,9 +12,31 @@ derived_from:
 
 ## Status
 
-**Draft** (2026-10-13). Nothing here is built. §3 was checked against `main`
-at `c26378b` in a scratch workspace; everything after it is argued, not
-tried.
+**Accepted** (2026-10-13), and phase 1 of §9 is built on `main`, not yet
+released: `type: payload`, the owned-payload rules of §4, the spec §4 row,
+and `attach --inline`. Promotion and demotion (§6), diaryx's side (§7) and
+projection (§8.1) are not. The body is left as argued. Three things settled
+differently in the build:
+
+- **The checksum key is `content_hash`, not `sha256`.** It is the key a
+  sidecar uses, so a row and a card say the same thing the same way, and
+  promotion (§6) can copy a row's keys verbatim. The digest is spelled as a
+  sidecar's is, `sha256:…`.
+- **`rm` deletes an owned file even when another document links to it**, and
+  reports each such link among what the delete left dangling. §4.2 kept it.
+  But a sidecar's payload already goes with its sidecar however many pages
+  show it, and an owner whose file can outlive it is not one: keeping the
+  file would leave it owned by nothing, which no finding can see.
+- **`stamp` is the only verb besides `attach --inline` that writes a row's
+  checksum.** An ordinary save does not, because hashing every picture a
+  page owns on every keystroke is a cost no save should pay; a row's bytes
+  are not edited through prov, so nothing a save does can make its checksum
+  wrong. A mismatch is `PayloadFixityMismatch`, named at the checksum's own
+  address (`attachments[0].content_hash`), and its repair is a judgment, as
+  `FixityMismatch`'s is.
+
+The CLI spelling is `prov attach FILE --in DOC --inline`, with `--field
+PATH` when a workspace declares more than one `type: payload` path.
 
 ## Summary
 

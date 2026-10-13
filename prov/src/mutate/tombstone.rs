@@ -66,6 +66,11 @@ pub(crate) struct Deletion {
     pub parent: Option<PathBuf>,
     /// The prose body or record store that travelled with it, if one did.
     pub body: Option<PathBuf>,
+    /// The files it owned through a `type: payload` field, deleted with it.
+    /// Nothing `restore` needs — the rows that name them are in the document,
+    /// and come back with it — but what a person bringing the bytes back has
+    /// to know to bring.
+    pub payloads: Vec<PathBuf>,
     /// A caller-supplied deletion timestamp. The library takes it as an argument
     /// rather than reading a clock, so the op stays deterministic.
     pub at: Option<String>,
@@ -87,6 +92,17 @@ impl Deletion {
         }
         if let Some(body) = &self.body {
             put("body", body);
+        }
+        if !self.payloads.is_empty() {
+            record.insert(
+                "payloads".into(),
+                Value::Sequence(
+                    self.payloads
+                        .iter()
+                        .map(|p| Value::String(p.to_string_lossy().into_owned()))
+                        .collect(),
+                ),
+            );
         }
         record.insert("title".into(), Value::String(self.title.clone()));
         if let Some(id) = &self.id {

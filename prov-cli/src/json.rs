@@ -339,6 +339,32 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("recorded", s(recorded)));
             fields.push(("actual", s(actual)));
         }
+        Finding::PayloadFixityMismatch {
+            doc,
+            address,
+            payload,
+            recorded,
+            actual,
+        } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("address", s(address)));
+            fields.push(("payload", p(payload)));
+            fields.push(("recorded", s(recorded)));
+            fields.push(("actual", s(actual)));
+        }
+        Finding::PayloadOwnedTwice {
+            doc,
+            address,
+            payload,
+            owner,
+            owner_address,
+        } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("address", s(address)));
+            fields.push(("payload", p(payload)));
+            fields.push(("owner", p(owner)));
+            fields.push(("owner_address", s(owner_address)));
+        }
         Finding::ConfigIssue { doc, issue } => {
             fields.push(("doc", p(doc)));
             fields.push(("key", s(&issue.key)));

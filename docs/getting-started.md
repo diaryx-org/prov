@@ -778,6 +778,7 @@ rules as records for a program making it.
 | `attach FILE [--in P]`          | give a non-document file a metadata sidecar, linked in    |
 | `attach FILE --opaque`          | the same for a file prov *could* read — a specimen it must not interpret |
 | `attach DIR --manifest`         | cover a whole directory with one node and one file list, instead of a sidecar each |
+| `attach FILE --in P --inline`   | let P own the file: a row in P's metadata (a `type: payload` field) instead of a sidecar; it moves and is deleted with P |
 | `manifest DIR [--update\|--verify]` | what the list says / rebuild it from the directory / re-check every file's checksum |
 | `manifest DIR --add FILE...`    | list just these new files, leaving every other row as it is |
 | `tree [ROOT]`                   | print the containment tree                               |

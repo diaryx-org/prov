@@ -883,9 +883,10 @@ identically instead of agreeing by convention:
 | `local-datetime` | a date and time with no offset             |
 | `time`           | a time of day, `07:32:00`                  |
 | `ref`            | a link to another document — **read**, see below |
+| `payload`        | a link to a file the document **owns** — a `ref`, and more; see below |
 | `map` / `seq`    | a nested mapping or list                   |
 
-prov carries every type but two without interpreting it — nothing in `check`
+prov carries every type but three without interpreting it — nothing in `check`
 fails because a `str` or an `int` does not match its declared type. They are
 there so a frontend can parse and render the field faithfully (a `date` gets a
 date picker, not a text box).
@@ -912,6 +913,42 @@ that sits beside other facts about itself — `sources[].resource` with a
 `title` and a `page` in the same entry. Whether a key holds links holds
 workspace-wide, as a relation's name does; a `ref` that also says `under:`
 is reported (`ScopedReference`) and read as a link everywhere regardless.
+
+**`payload` is a `ref` that owns its target.** It is for an opaque file that
+is part of a document's text — a photograph in a journal entry — whose
+metadata the document carries in its own frontmatter, one row per file,
+instead of in a sidecar beside the file:
+
+```yaml
+prov:
+  fields:
+    attachments[].content:
+      type: payload
+---
+title: Fjord trip
+attachments:
+- content: fjord.jpg
+  content_hash: sha256:2c26b46b…
+  people: [Ada]
+```
+
+Everything `ref` does holds. Beyond that, the file goes where its document
+goes: `mv` to another folder takes each owned file under the document's own
+folder along, keeping its place relative to the document (one elsewhere stays,
+and its row is respelled); `rm` deletes it, lists it under `payloads:` in the
+deletion record, and reports any other document that still showed it. A
+`content_hash` written beside the value, in the same row, covers the file's
+bytes as a sidecar's covers its payload's: `attach --inline` writes it,
+`stamp` seeds and corrects it, and `check` reports a file whose bytes no longer
+match (`PayloadFixityMismatch`, repaired by re-stamping, with confirmation). A
+file has one owner: two values owning it is `PayloadOwnedTwice`, diagnosis-only,
+since dropping a row and giving the file a sidecar both documents link to say
+different things. Only an opaque file is moved or deleted this way — a value
+naming a document prov can read leaves it where it is. The rest of a row is
+carried, and declared like any other field when a workspace wants it governed
+(`attachments[].created: { type: date }`). A row is not a node: no id, no
+inverse, no place in the spanning tree, and no row of its own in a view. A file
+something must cite by id wants a sidecar.
 
 The date and time types map onto the underlying format's native scalars where it
 has them — a TOML `created = 2026-07-24` stays a date rather than becoming a

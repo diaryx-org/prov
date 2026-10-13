@@ -99,6 +99,15 @@ pub enum Fix {
     /// when the change was *not* intended, is the one thing prov cannot decide
     /// for you, which is why this is never applied without confirmation.
     RestampFixity { doc: PathBuf, hash: String },
+    /// Repair a [`Finding::PayloadFixityMismatch`] the same way: write `hash`
+    /// at `address` in `doc` — the `content_hash` beside an owned payload's
+    /// value. The same judgment as [`RestampFixity`](Fix::RestampFixity),
+    /// confirmed for the same reason.
+    RestampPayload {
+        doc: PathBuf,
+        address: String,
+        hash: String,
+    },
     /// Rewrite the generated page whole. Carries the content rather than
     /// recomputing it: the finding already generated it to detect the drift, and
     /// carrying it keeps `apply_fix` free of any dependency on configuration —
@@ -277,6 +286,13 @@ impl fmt::Display for Fix {
                 write!(
                     f,
                     "re-stamp the content checksum in {} to the current bytes",
+                    doc.display()
+                )
+            }
+            Fix::RestampPayload { doc, address, .. } => {
+                write!(
+                    f,
+                    "re-stamp the checksum at {address} in {} to the current bytes",
                     doc.display()
                 )
             }
@@ -921,6 +937,21 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 "accept the current bytes and re-record the checksum",
                 Fix::RestampFixity {
                     doc: doc.clone(),
+                    hash: actual.clone(),
+                },
+            )]),
+            Finding::PayloadFixityMismatch {
+                doc,
+                address,
+                actual,
+                ..
+            } => Ok(vec![Remedy::new(
+                RemedyKind::Restamp,
+                Warrant::Judgment,
+                "accept the payload's current bytes and re-record the checksum",
+                Fix::RestampPayload {
+                    doc: doc.clone(),
+                    address: address.clone(),
                     hash: actual.clone(),
                 },
             )]),
@@ -1576,6 +1607,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     fig::Value::Str(hash.clone()),
                 )?;
                 cs.write(doc, updated);
+            }
+            Fix::RestampPayload { doc, address, hash } => {
+                let at = prov_graph::field::Address::parse(address).ok_or_else(|| {
+                    prov_graph::error::Error::Structure(format!(
+                        "{address} names every item of a list, not one checksum"
+                    ))
+                })?;
+                let (text, parsed) = self.load(doc).await?;
+                let mut editor = prov_store::edit::MetaEditor::open(
+                    &text,
+                    parsed.carrier.ok_or_else(|| {
+                        prov_graph::error::Error::Structure(format!(
+                            "{} has no metadata",
+                            doc.display()
+                        ))
+                    })?,
+                )?;
+                editor.set_value(&at.segments(), fig::Value::Str(hash.clone()))?;
+                cs.write(doc, editor.render()?);
             }
             // Wholesale, like the index rebuild and for the same reason: the page
             // is derived, so the repaired file is byte-identical to one a fresh

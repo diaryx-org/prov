@@ -725,6 +725,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         path: &Path,
         parent: Option<&Path>,
         owner: Option<&Path>,
+        payloads: &[PathBuf],
     ) -> Result<Vec<Finding>> {
         if diagnosis == Diagnosis::Skip {
             return Ok(Vec::new());
@@ -735,7 +736,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             .census(&root)
             .await?
             .into_iter()
-            .filter(|e| e.resolution.resolved_path().map(PathBuf::as_path) == Some(path))
+            // The document, and every payload it owns and takes with it: a
+            // page elsewhere showing an owned picture is left showing nothing.
+            .filter(|e| {
+                e.resolution
+                    .resolved_path()
+                    .is_some_and(|target| target == path || payloads.contains(target))
+            })
             .filter(|e| {
                 e.source != path
                     && !(Some(e.source.as_path()) == parent

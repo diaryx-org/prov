@@ -108,6 +108,7 @@ fn a_reified_vocabulary_is_loadable_and_its_terms_are_reachable_as_nodes() {
         default: None,
         under: None,
         stamp: None,
+        payload: false,
     };
     // Nothing in the declaration says which kind of store this is: the store
     // does, by carrying no `vocabulary:` marker.

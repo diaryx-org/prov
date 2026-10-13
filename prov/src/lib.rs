@@ -64,6 +64,7 @@ pub mod discovery;
 pub use prov_graph::fixity;
 #[cfg(test)]
 mod fs_faults;
+pub mod inline;
 pub mod intake;
 pub mod landing;
 pub mod manifest;
@@ -239,10 +240,10 @@ pub mod journal {
 }
 pub use config::{
     About, ActorBinding, ConfigEdit, ConfigIssue, ConfigIssueKind, ConfirmationBinding,
-    FIELD_TYPES, FieldSpec, Fixity, Now, OpenClosed, RelationDef, RelationStyleConfig, Stamp,
-    WorkspaceConfig, diagnose, field_type_as_config_str, field_type_from_config_str,
-    is_valid_scope_path, is_valid_workspace_id, metadata_format_from_str, metadata_format_str,
-    spec_ahead,
+    FIELD_TYPES, FieldSpec, Fixity, Now, OpenClosed, PAYLOAD_TYPE, RelationDef,
+    RelationStyleConfig, Stamp, WorkspaceConfig, diagnose, field_type_as_config_str,
+    field_type_from_config_str, is_valid_scope_path, is_valid_workspace_id,
+    metadata_format_from_str, metadata_format_str, spec_ahead,
 };
 pub use crossing::{
     Boundary, Crossing, Descent, Federation, Peer, Reached, Refusal, Trust, descend, open_peer,

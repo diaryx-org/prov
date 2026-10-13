@@ -703,9 +703,11 @@ fn relations_section(
     // where a relation is a link that stands alone. Said here, beside the
     // relations, because a reader with `cat` sees the same thing in both — a
     // path — and the difference is what happens on the other end.
+    let payloads = config.payload_fields();
     let references: Vec<String> = config
         .reference_fields()
         .iter()
+        .filter(|path| !payloads.contains(path))
         .map(|path| code(&path.to_string()))
         .collect();
     if !references.is_empty() {
@@ -721,6 +723,30 @@ fn relations_section(
             join_list(&references),
             if one { "holds a link" } else { "hold links" },
             if one { "It is" } else { "They are" },
+        )));
+    }
+
+    // Owned payloads: the same link, read the same way, to a file that is part
+    // of the document rather than a document beside it.
+    let payloads: Vec<String> = payloads
+        .iter()
+        .map(|path| code(&path.to_string()))
+        .collect();
+    if !payloads.is_empty() {
+        s.push('\n');
+        let one = payloads.len() == 1;
+        s.push_str(&para(&format!(
+            "{} {} a file that belongs to the document holding {} — a picture \
+             that is part of a page's text — with what is known about the file \
+             written beside its name rather than in a file of its own. The file \
+             goes where its document goes: it moves when the document moves to \
+             another folder, it is deleted when the document is, and a checksum \
+             beside its name says whether its bytes are still the ones that were \
+             attached. One file belongs to one document; any other may still \
+             link to it.",
+            join_list(&payloads),
+            if one { "names" } else { "name" },
+            if one { "the field" } else { "the fields" },
         )));
     }
 
@@ -2031,6 +2057,7 @@ mod tests {
                         default: None,
                         under: None,
                         stamp: None,
+                        payload: false,
                     }],
                 ),
                 (
@@ -2042,6 +2069,7 @@ mod tests {
                         default: None,
                         under: None,
                         stamp: Some(crate::config::Stamp::Edit),
+                        payload: false,
                     }],
                 ),
             ]),
@@ -2258,6 +2286,7 @@ mod tests {
                     default: None,
                     under: None,
                     stamp: None,
+                    payload: false,
                 }],
             ),
             (
@@ -2269,6 +2298,7 @@ mod tests {
                     default: None,
                     under: None,
                     stamp: None,
+                    payload: false,
                 }],
             ),
         ]);

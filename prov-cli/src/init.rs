@@ -933,6 +933,7 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
                     default: None,
                     under: None,
                     stamp: Some(when),
+                    payload: false,
                 }],
             );
         }

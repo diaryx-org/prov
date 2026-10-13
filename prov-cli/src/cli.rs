@@ -1372,6 +1372,22 @@ pub(crate) struct AttachArgs {
     /// now and at each refresh, which is a real cost over an archive.
     #[arg(long = "no-hash", requires = "manifest")]
     pub(crate) no_hash: bool,
+    /// Attach the file *inline*: append a row naming it to the metadata of
+    /// the document `--in` names, in a field the workspace declares
+    /// `type: payload`, instead of minting a sidecar. The document then owns
+    /// the file — it moves with it, is deleted with it, and is checksummed in
+    /// the row. For a picture that is part of a page's text rather than a
+    /// record of its own.
+    #[arg(
+        long,
+        requires = "in_target",
+        conflicts_with_all = ["all", "opaque", "manifest", "filed", "parents"]
+    )]
+    pub(crate) inline: bool,
+    /// With `--inline`, the `type: payload` field the row goes in
+    /// (`attachments[].content`) — needed only when several are declared.
+    #[arg(long, value_name = "PATH", requires = "inline")]
+    pub(crate) field: Option<String>,
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

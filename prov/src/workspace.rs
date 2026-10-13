@@ -134,6 +134,10 @@ pub struct Settings {
     pub relations: RelationSet,
     /// The path-valued fields — see [`Workspace::references`].
     pub references: Vec<FieldPath>,
+    /// The path-valued fields that own their targets — see
+    /// [`Workspace::payloads`]. Each is also in
+    /// [`references`](Self::references).
+    pub payloads: Vec<FieldPath>,
     /// The path style links are authored in — see [`Workspace::link_style`].
     pub link_style: LinkStyle,
     /// The legacy "author links by id" axis, superseded by an explicit
@@ -186,6 +190,7 @@ impl Default for Settings {
         Self {
             relations: RelationSet::diaryx(),
             references: Vec::new(),
+            payloads: Vec::new(),
             link_style: LinkStyle::default(),
             id_links: false,
             reference_style: None,
@@ -225,6 +230,7 @@ impl From<&crate::config::WorkspaceConfig> for Settings {
         Self {
             relations: config.relation_set(),
             references: config.reference_fields(),
+            payloads: config.payload_fields(),
             link_style: config.link_format(),
             reference_style: Some(config.reference_style()),
             default_embed_format: config.default_embed_format,
@@ -494,6 +500,16 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// Read beside the relations wherever they are read.
     pub fn references(&self) -> &[FieldPath] {
         &self.settings.references
+    }
+
+    /// The path-valued fields declared `type: payload` — references whose
+    /// target is an opaque file the document **owns**. A document carries an
+    /// owned payload's metadata in its own frontmatter, one row per file,
+    /// where an attachment otherwise gets a sidecar of its own: the payload
+    /// moves with the document, is deleted with it, and is hashed in a
+    /// `content_hash` beside the value. See [`crate::inline`].
+    pub fn payloads(&self) -> &[FieldPath] {
+        &self.settings.payloads
     }
 
     /// Every frontmatter link site in `meta` — relation entries and
@@ -2009,6 +2025,19 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
         self
     }
 
+    /// Set the owned-payload fields — see [`Workspace::payloads`]. A payload
+    /// is a reference too, so each is added to the
+    /// [`references`](Self::references) it is missing from.
+    pub fn payloads(mut self, payloads: Vec<FieldPath>) -> Self {
+        for path in &payloads {
+            if !self.settings.references.contains(path) {
+                self.settings.references.push(path.clone());
+            }
+        }
+        self.settings.payloads = payloads;
+        self
+    }
+
     /// Set the link style this workspace authors in (typically read from the
     /// root's `link_format`).
     pub fn link_style(mut self, link_style: LinkStyle) -> Self {
@@ -2234,6 +2263,7 @@ mod tests {
         let settings = Settings {
             relations: RelationSet::diaryx(),
             references: vec![FieldPath::parse("sources[].resource")],
+            payloads: vec![FieldPath::parse("sources[].resource")],
             link_style: LinkStyle::PlainRelative,
             id_links: true,
             reference_style: None,
@@ -2271,6 +2301,7 @@ mod tests {
         assert_eq!(ws.out_of_scope(), [PathBuf::from("history")]);
         assert_eq!(ws.relations().spanning_relation(), Some("contents"));
         assert_eq!(ws.references(), [FieldPath::parse("sources[].resource")]);
+        assert_eq!(ws.payloads(), [FieldPath::parse("sources[].resource")]);
         // `id_links` has no field of its own on the far side — it is read back
         // through the reference style it feeds, which is the whole of what it
         // means.
@@ -2468,6 +2499,7 @@ mod reified_vocabulary_tests {
             default: None,
             under: None,
             stamp: None,
+            payload: false,
         }
     }
 
@@ -2669,6 +2701,7 @@ mod reified_vocabulary_tests {
             default: None,
             under: None,
             stamp: None,
+            payload: false,
         };
         assert!(
             block_on(ws.load_reified_vocabulary(Path::new("index.md"), "audience", &none))

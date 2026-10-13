@@ -315,6 +315,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **Content node** | a relation (`contents`/`part_of`/`links`/your vocabulary) | in the graph; two-way (inverse maintained); ID-able; rewritten on move; orphan-checked |
 | **Machinery** | a one-way pointer relation (`registry`, `config`, `deletions`, `history`, a *flat* `fields` `vocabulary`) | plaintext, reached *from the root only*; **no inverse, no `part_of` back-link, not ID'd as content, not orphan-checked, not in the spanning tree** |
 | **Opaque payload** | the `content` field | *not a node* — the bytes are the body of a sidecar node (an attachment); hashed for fixity, never parsed. A body reference to the payload (`![…](photo.jpg)`) is censused **by path** — a missing picture is a broken link, and the picture is reached — and **rewritten on move** as a reference to the sidecar: the payload travels with its node, and every reference to where it was is respelled for where it is. Never nominal: a bare name in an image is a file, not a title |
+| **Owned payload** | a `fields` value under `type: payload` | *not a node* — an opaque file a document carries in its own metadata, one row per file, where an attachment otherwise gets a sidecar of its own. A `ref` in every respect (censused, checked, rewritten on move), and also: **moved** with its owner when the owner changes folders (a file under the owner's folder keeps its place relative to it), **deleted** with its owner, **hashed** by a `content_hash` beside the value, and **owned once** — two owners of one file is a finding. No id, no inverse, not in the spanning tree, no row in a view |
 | **A directory of opaque payloads** | the `manifest` field (exclusive with `content`) | *not nodes* — one node stands for the whole set through a manifest store listing every opaque file under a directory it claims completely, each row optionally hashed; the node hashes the manifest. Not in the graph, not orphan-checked, never parsed. See [Manifests](/docs/manifests.md) |
 | **Controlled term** | a `fields` value | resolved by term *key* against the field's vocabulary, checked (§3) — not traversed, and no more traversed when the terms are nodes (below) than when they are rows |
 | **Path-valued field** | a `fields` value under `type: ref` | *not a new kind* — whichever of the kinds above or below the value spells (a content node, an external URL, a locator), reached through a field prov was told holds one (§3). One-way: censused, checked, rewritten on move, orphan-checked as a target; **no inverse, never spanning** |
@@ -323,7 +324,7 @@ is no such thing as "linking a non-content file directly." The kinds:
 | **External** | a URL | recognized by syntax, never resolved or validated |
 | **A place inside a document** | a `#locator` suffix on any target | *not a target of its own* — the document part resolves normally; the locator is carried, never resolved or validated, and preserved across moves |
 
-Four consequences worth stating outright:
+The consequences worth stating outright:
 
 - **A non-plaintext file is wrapped, not linked.** To bring an image or PDF into
   the workspace, `attach` mints a sidecar (`photo.jpg.yaml`) — an ordinary content
@@ -331,6 +332,13 @@ Four consequences worth stating outright:
   the binary rides along as a node's body. A reference to the sidecar names the
   node; a reader *drawing* that reference — an embed, a download link — draws the
   payload its `content` names.
+- **A file that is part of a document's text needs no wrapper of its own.**
+  A photograph dropped into a journal entry is not a record beside the entry
+  but part of it, so the entry owns it: a `type: payload` field names the file
+  in a row of the entry's own metadata, beside what is known about it. The rule
+  for choosing: *a file that is part of a document's text is owned by it; a
+  file that is a record of its own gets a sidecar.* It is §5's placement rule
+  applied to attachments — inline until it wants its own cadence.
 - **At scale, the wrapper is shared.** One sidecar per file is the right shape
   for the file you thought about and the wrong one for the archive you dumped:
   ten thousand photographs would mean ten thousand documents, which no editor can

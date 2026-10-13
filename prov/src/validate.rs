@@ -364,6 +364,36 @@ pub enum Finding {
         recorded: String,
         actual: String,
     },
+    /// A file a document owns through a `type: payload` field no longer hashes
+    /// to the `content_hash` recorded beside it — [`FixityMismatch`]
+    /// (Finding::FixityMismatch) for a row rather than a sidecar. Filed
+    /// against `doc`, the document that made the claim, at `address`, where
+    /// the checksum is written (`attachments[0].content_hash`), because that
+    /// is what a repair rewrites; `payload` is the file it covers.
+    PayloadFixityMismatch {
+        doc: PathBuf,
+        address: String,
+        payload: PathBuf,
+        recorded: String,
+        actual: String,
+    },
+    /// Two `type: payload` values own one file. A payload is moved and
+    /// deleted with its owner, so two owners would each take it somewhere
+    /// the other does not expect. `doc` at `address` is the second owner the
+    /// walk met, `owner` at `owner_address` the first; either may be the same
+    /// document.
+    ///
+    /// **Diagnosis only.** The repairs — drop one row, or give the file a
+    /// sidecar of its own that both documents link to — say different things
+    /// about the file, and are not prov's to pick between. Any number of
+    /// documents may still *link* to an owned file.
+    PayloadOwnedTwice {
+        doc: PathBuf,
+        address: String,
+        payload: PathBuf,
+        owner: PathBuf,
+        owner_address: String,
+    },
     /// Documents carrying a `content_hash` of their **own body** — the coverage
     /// the retired `fixity: all` tier wrote, which nothing writes now. `count` is
     /// how many were reached and `example` names one, because reporting each
@@ -749,6 +779,8 @@ impl Finding {
             | Finding::Orphan { doc, .. }
             | Finding::MissingContainment { doc, .. }
             | Finding::FixityMismatch { doc, .. }
+            | Finding::PayloadFixityMismatch { doc, .. }
+            | Finding::PayloadOwnedTwice { doc, .. }
             | Finding::ConfigIssue { doc, .. }
             | Finding::ConfigSpecAhead { doc, .. }
             | Finding::MalformedStore { doc, .. }
@@ -831,6 +863,8 @@ impl Finding {
             | Finding::Orphan { .. }
             | Finding::MissingContainment { .. }
             | Finding::FixityMismatch { .. }
+            | Finding::PayloadFixityMismatch { .. }
+            | Finding::PayloadOwnedTwice { .. }
             | Finding::ConfigIssue { .. }
             | Finding::ShadowedWorkspaceNode { .. }
             | Finding::ConfigHomesDisagree { .. }
@@ -873,6 +907,8 @@ impl Finding {
             Finding::Orphan { .. } => "orphan",
             Finding::MissingContainment { .. } => "missing_containment",
             Finding::FixityMismatch { .. } => "fixity_mismatch",
+            Finding::PayloadFixityMismatch { .. } => "payload_fixity_mismatch",
+            Finding::PayloadOwnedTwice { .. } => "payload_owned_twice",
             Finding::ConfigIssue { .. } => "config_issue",
             Finding::ConfigSpecAhead { .. } => "config_spec_ahead",
             Finding::ShadowedWorkspaceNode { .. } => "shadowed_workspace_node",
@@ -1029,6 +1065,32 @@ impl fmt::Display for Finding {
                 "{}: fixity mismatch — content changed since its checksum was recorded \
                  (bit-rot, or an out-of-band edit)",
                 doc.display()
+            ),
+            Finding::PayloadFixityMismatch {
+                doc,
+                address,
+                payload,
+                ..
+            } => write!(
+                f,
+                "{}: fixity mismatch at {address} — {} changed since its checksum was \
+                 recorded (bit-rot, or an out-of-band edit)",
+                doc.display(),
+                payload.display()
+            ),
+            Finding::PayloadOwnedTwice {
+                doc,
+                address,
+                payload,
+                owner,
+                owner_address,
+            } => write!(
+                f,
+                "{}: {address} owns {}, which {} already owns at {owner_address} — a file \
+                 has one owner; drop one row, or give the file a sidecar both can link",
+                doc.display(),
+                payload.display(),
+                owner.display()
             ),
             Finding::ConfigIssue { doc, issue } => match &issue.kind {
                 crate::config::ConfigIssueKind::UnknownKey { suggestion } => write!(
@@ -1565,6 +1627,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         findings.extend(islands);
         findings.extend(self.orphans(start, &reachable, &island_members).await?);
         findings.extend(self.fixity_findings(start, &documents).await?);
+        findings.extend(self.payload_findings(&documents).await?);
         findings.extend(self.manifest_findings(&documents).await?);
         findings.extend(self.config_findings(start).await?);
         findings.extend(self.store_findings(start).await?);
@@ -2229,6 +2292,66 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// checked: the sidecar beside it is an ordinary (unshadowed) document whose
     /// own `content_hash` covers the payload's bytes via `content_attr`, so that
     /// check runs the normal way, through the sidecar.
+    /// A [`Finding::PayloadFixityMismatch`] per owned payload whose bytes no
+    /// longer hash to the `content_hash` beside its value, and a
+    /// [`Finding::PayloadOwnedTwice`] per value naming a file another value
+    /// already owns — see [`crate::inline`]. Over the documents the census
+    /// reached, as [`fixity_findings`](Self::fixity_findings) is.
+    async fn payload_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
+        if self.payloads().is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut findings = Vec::new();
+        let mut owners: std::collections::BTreeMap<PathBuf, (PathBuf, String)> =
+            std::collections::BTreeMap::new();
+        for path in documents {
+            let Ok((_, doc)) = self.load(path).await else {
+                continue;
+            };
+            let meta = fig::Value::from(&doc.meta);
+            for owned in crate::inline::owned_payloads(self.payloads(), path, &meta) {
+                let address = owned.address.to_string();
+                match owners.get(&owned.target) {
+                    Some((owner, owner_address)) => {
+                        findings.push(Finding::PayloadOwnedTwice {
+                            doc: path.clone(),
+                            address,
+                            payload: owned.target.clone(),
+                            owner: owner.clone(),
+                            owner_address: owner_address.clone(),
+                        });
+                    }
+                    None => {
+                        owners.insert(owned.target.clone(), (path.clone(), address));
+                    }
+                }
+                // A hash on record is always verified, as a sidecar's is; one
+                // this build cannot compute is left alone, and a missing file
+                // is the broken link the census already reports.
+                let Some((at, recorded)) = owned.hash else {
+                    continue;
+                };
+                if !crate::fixity::is_recognized(&recorded) {
+                    continue;
+                }
+                let Ok(bytes) = self.read_bytes(&owned.target).await else {
+                    continue;
+                };
+                let actual = crate::fixity::digest(&bytes);
+                if actual != recorded {
+                    findings.push(Finding::PayloadFixityMismatch {
+                        doc: path.clone(),
+                        address: at.to_string(),
+                        payload: owned.target,
+                        recorded,
+                        actual,
+                    });
+                }
+            }
+        }
+        Ok(findings)
+    }
+
     async fn fixity_findings(
         &self,
         start: &Path,

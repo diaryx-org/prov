@@ -120,6 +120,20 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if let Some(mv) = &body_move {
             moves.insert(mv.from.clone(), mv.to.clone());
         }
+        // The files the document owns through a `type: payload` field travel
+        // with it, as a sidecar's payload does — planned here so that both the
+        // document's own rows and every other link to a payload are respelled
+        // for where it lands.
+        let payload_moves: Vec<(PathBuf, PathBuf)> = self
+            .plan_payload_moves(&from_doc, &from, &to)
+            .await?
+            .into_iter()
+            .filter(|(payload_from, _)| !moves.contains_key(payload_from))
+            .collect();
+        for (payload_from, payload_to) in &payload_moves {
+            cs.expect_absent(payload_to);
+            moves.insert(payload_from.clone(), payload_to.clone());
+        }
         let moves = Moves::Files(moves);
 
         // 1. Inbound references: every document that links *to* `from` — or to
@@ -232,6 +246,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 cs.write(&mv.to, text.clone());
             }
         }
+        for (payload_from, payload_to) in &payload_moves {
+            cs.rename(payload_from, payload_to);
+        }
         for (source, rw) in inbound_writes {
             cs.expect(&source, rw.read);
             cs.write(source, rw.text);
@@ -304,6 +321,59 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             text,
             key: "content",
         }))
+    }
+
+    /// Where each payload `doc` owns lands when the document moves from `from`
+    /// to `to` — see [`crate::inline`]. Only a move to another directory moves
+    /// anything, and only a payload under the document's own directory: it
+    /// keeps its path relative to the document, as a sidecar's payload keeps
+    /// its place beside the sidecar. A payload elsewhere was put there by
+    /// someone else, and moving it would surprise them; its row is respelled
+    /// and it stays. A payload that is missing is left to the broken link it
+    /// already is, and one prov can read as a document is not moved, because
+    /// a document has its own place in the graph to keep. Nor is one with a
+    /// sidecar of its own: the card is its node, and it stays beside the card.
+    ///
+    /// Refused when a destination is already taken: a rename overwrites, and
+    /// the bytes it would overwrite are not prov's.
+    async fn plan_payload_moves(
+        &self,
+        doc: &Document,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let from_dir = from.parent().unwrap_or(Path::new(""));
+        let to_dir = to.parent().unwrap_or(Path::new(""));
+        if from_dir == to_dir || self.payloads().is_empty() {
+            return Ok(Vec::new());
+        }
+        let owned =
+            crate::inline::owned_payloads(self.payloads(), from, &fig::Value::from(&doc.meta));
+        let mut planned: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for payload in owned {
+            let Ok(rest) = payload.target.strip_prefix(from_dir) else {
+                continue;
+            };
+            if payload.target == from
+                || !prov_graph::document::is_opaque_payload(&payload.target)
+                || planned.iter().any(|(p, _)| *p == payload.target)
+                || !self.exists(&payload.target).await?
+                || self.attachment_for(&payload.target).await?.is_some()
+            {
+                continue;
+            }
+            let dest = link::normalize(to_dir.join(rest));
+            if self.exists(&dest).await? {
+                return Err(Error::Structure(format!(
+                    "{} owns {}, which would move to {}, and that already exists",
+                    from.display(),
+                    payload.target.display(),
+                    dest.display()
+                )));
+            }
+            planned.push((payload.target, dest));
+        }
+        Ok(planned)
     }
 
     /// The manifest half of [`plan_body_move`](Self::plan_body_move): a manifest

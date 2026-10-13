@@ -69,6 +69,27 @@ impl FieldPath {
             .any(|s| matches!(s, Step::Each | Step::At(_)))
     }
 
+    /// The list a path of **rows** runs through, and the key each row holds
+    /// its value at: `attachments[].content` is the list at `attachments` and
+    /// the key `content`. `None` for any other shape — a path with no `[]`, or
+    /// more than one, or one that does not end in a key — because only this
+    /// shape says where a new row goes and what it holds.
+    pub fn row(&self) -> Option<(Address, &str)> {
+        let each = self.steps.iter().position(|s| matches!(s, Step::Each))?;
+        let (Some(Step::Key(key)), true) = (self.steps.last(), each + 2 == self.steps.len()) else {
+            return None;
+        };
+        let list = &self.steps[..each];
+        list.iter().all(|s| matches!(s, Step::Key(_))).then(|| {
+            (
+                Address {
+                    steps: list.to_vec(),
+                },
+                key.as_str(),
+            )
+        })
+    }
+
     /// The top-level key the path starts at.
     pub fn head(&self) -> &str {
         match &self.steps[0] {
@@ -133,6 +154,19 @@ impl Address {
     /// The steps, in order.
     pub fn steps(&self) -> &[Step] {
         &self.steps
+    }
+
+    /// The address of `key` in the mapping this address's value sits in:
+    /// `attachments[0].content` → `attachments[0].content_hash`. `None` for a
+    /// top-level key, whose mapping is the whole metadata block, and for a
+    /// value that is a list item rather than a key's.
+    pub fn sibling(&self, key: &str) -> Option<Address> {
+        if self.steps.len() < 2 || !matches!(self.steps.last(), Some(Step::Key(_))) {
+            return None;
+        }
+        let mut steps = self.steps.clone();
+        *steps.last_mut()? = Step::Key(key.to_string());
+        Some(Address { steps })
     }
 
     /// The top-level key the address starts at.
@@ -353,6 +387,36 @@ mod tests {
             Value::Sequence(vec![Value::Mapping(a), Value::Mapping(b), Value::Null]),
         );
         Value::Mapping(root)
+    }
+
+    #[test]
+    fn a_row_path_names_its_list_and_its_key() {
+        let path = FieldPath::parse("attachments[].content");
+        let (list, key) = path.row().unwrap();
+        assert_eq!(list.to_string(), "attachments");
+        assert_eq!(key, "content");
+        let (list, _) = FieldPath::parse("media.files[].src").row().unwrap();
+        assert_eq!(list.to_string(), "media.files");
+        for not_a_row in [
+            "attachments",
+            "attachments[]",
+            "a[].b[].c",
+            "a[].b.c",
+            "a[0].b",
+        ] {
+            assert!(FieldPath::parse(not_a_row).row().is_none(), "{not_a_row}");
+        }
+    }
+
+    #[test]
+    fn a_sibling_shares_the_mapping_and_not_a_top_level_key() {
+        let at = Address::parse("attachments[2].content").unwrap();
+        assert_eq!(
+            at.sibling("content_hash").unwrap().to_string(),
+            "attachments[2].content_hash"
+        );
+        assert!(Address::parse("cover").unwrap().sibling("x").is_none());
+        assert!(Address::parse("media[1]").unwrap().sibling("x").is_none());
     }
 
     #[test]

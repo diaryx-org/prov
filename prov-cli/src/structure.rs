@@ -530,6 +530,8 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         recursive,
         manifest,
         no_hash,
+        inline,
+        field,
     } = args;
     let (payload, in_target, layout) = (
         payload.as_deref(),
@@ -595,6 +597,28 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         }
     }
     let parent_rel = apply_placement(&mut session, placement)?;
+
+    // The inline form: the file is owned by the document `--in` names, as a
+    // row in its metadata, and gets no sidecar. `check_attach` above already
+    // refused what this would refuse of the payload itself.
+    if inline {
+        let Some(payload_rel) = &payload_rel else {
+            unreachable!("--inline conflicts with --all");
+        };
+        let at = block_on(
+            session
+                .ws
+                .attach_inline(payload_rel, &parent_rel, field.as_deref()),
+        )?;
+        session.commit()?;
+        eprintln!(
+            "attached {} inline (at {at} in {})",
+            payload_rel.display(),
+            parent_rel.display()
+        );
+        println!("{}", parent_rel.display());
+        return Ok(ExitCode::SUCCESS);
+    }
 
     if all {
         // Bounded to reached directories by default; `--recursive` sweeps the

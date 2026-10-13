@@ -172,7 +172,7 @@ impl OpenClosed {
 // `PartialEq` without `Eq`: a starting value is a [`Value`], and a float has no
 // total equality. What the equality is for — the config round-trip tests, a
 // frontend asking whether two configs differ — needs only the partial one.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FieldSpec {
     /// The type the field's values are expected to take, if declared. Drives
     /// type-directed parsing and widget choice in a frontend (a `date` field
@@ -206,6 +206,12 @@ pub struct FieldSpec {
     /// [`Stamp`]. Read from the unscoped declaration only: when a document
     /// changes is not a fact about where in the tree it sits.
     pub stamp: Option<Stamp>,
+    /// Whether the field is declared `type: payload` — a [`ref`](Self::is_reference)
+    /// whose target is an opaque file the document **owns**: moved with it,
+    /// deleted with it, and hashed in a `content_hash` beside the value. `ty`
+    /// is [`FieldType::Ref`] whenever this is set, so every reader of links
+    /// reads a payload as the link it also is.
+    pub payload: bool,
 }
 
 /// When prov writes the current time into a field — `fields.<f>.stamp`.
@@ -251,7 +257,18 @@ impl FieldSpec {
     pub fn is_reference(&self) -> bool {
         matches!(self.ty, Some(FieldType::Ref))
     }
+
+    /// Whether the field is declared `type: payload` — a reference that owns
+    /// its target. See [`payload`](Self::payload).
+    pub fn is_payload(&self) -> bool {
+        self.payload && self.is_reference()
+    }
 }
+
+/// The `type:` spelling of a reference that owns its target — see
+/// [`FieldSpec::payload`]. Not a [`FieldType`] of its own, because to every
+/// reader but the ones that move, delete and hash, it *is* a `ref`.
+pub const PAYLOAD_TYPE: &str = "payload";
 
 /// The config spellings of [`FieldType`], in the order a diagnostic offers them.
 ///
@@ -270,6 +287,7 @@ pub const FIELD_TYPES: &[&str] = &[
     "local-datetime",
     "time",
     "ref",
+    "payload",
     "map",
     "seq",
 ];
@@ -904,6 +922,18 @@ impl WorkspaceConfig {
             .collect()
     }
 
+    /// The fields declared `type: payload` — a subset of
+    /// [`reference_fields`](Self::reference_fields), each value an opaque file
+    /// the document owns: moved and deleted with it, hashed beside it. Read
+    /// workspace-wide for the reason a `ref` is.
+    pub fn payload_fields(&self) -> Vec<FieldPath> {
+        self.fields
+            .iter()
+            .filter(|(_, specs)| specs.iter().any(FieldSpec::is_payload))
+            .map(|(name, _)| FieldPath::parse(name))
+            .collect()
+    }
+
     pub fn relation_set(&self) -> RelationSet {
         let preset = RelationSet::diaryx();
         let mut set = preset.clone();
@@ -1134,10 +1164,13 @@ impl WorkspaceConfig {
                         .get("vocabulary")
                         .and_then(Value::as_str)
                         .map(str::to_string);
-                    let ty = spec
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .and_then(field_type_from_config_str);
+                    let spelled = spec.get("type").and_then(Value::as_str);
+                    let payload = spelled == Some(PAYLOAD_TYPE);
+                    let ty = if payload {
+                        Some(FieldType::Ref)
+                    } else {
+                        spelled.and_then(field_type_from_config_str)
+                    };
                     let default = spec.get("default").cloned();
                     let stamp = spec
                         .get("stamp")
@@ -1171,6 +1204,7 @@ impl WorkspaceConfig {
                         default,
                         under,
                         stamp,
+                        payload,
                     });
                 }
                 if !declarations.is_empty() {
@@ -1416,7 +1450,9 @@ impl WorkspaceConfig {
                         if let Some(under) = &spec.under {
                             entry.insert("under".into(), Value::String(under.clone()));
                         }
-                        if let Some(ty) = spec.ty.and_then(field_type_as_config_str) {
+                        if spec.is_payload() {
+                            entry.insert("type".into(), Value::String(PAYLOAD_TYPE.into()));
+                        } else if let Some(ty) = spec.ty.and_then(field_type_as_config_str) {
                             entry.insert("type".into(), Value::String(ty.into()));
                         }
                         // `values` describes a vocabulary, so it is only
@@ -2210,7 +2246,7 @@ fn diagnose_field_declaration(
                     issues,
                     &dotted,
                     v,
-                    |s| field_type_from_config_str(s).is_some(),
+                    |s| s == PAYLOAD_TYPE || field_type_from_config_str(s).is_some(),
                     FIELD_TYPES,
                 ),
                 "values" => enum_axis(
@@ -3071,6 +3107,7 @@ mod tests {
                         default: Some(Value::String("friends".to_string())),
                         under: None,
                         stamp: None,
+                        payload: false,
                     }],
                 ),
                 // A type with no vocabulary — the other half of a field
@@ -3084,6 +3121,7 @@ mod tests {
                         default: None,
                         under: None,
                         stamp: None,
+                        payload: false,
                     }],
                 ),
                 // A stamp alone is a complete declaration, under a name of the
@@ -3097,6 +3135,7 @@ mod tests {
                         default: None,
                         under: None,
                         stamp: Some(Stamp::Create),
+                        payload: false,
                     }],
                 ),
                 (
@@ -3108,6 +3147,7 @@ mod tests {
                         default: None,
                         under: None,
                         stamp: Some(Stamp::Edit),
+                        payload: false,
                     }],
                 ),
             ]),
@@ -3816,6 +3856,52 @@ mod tests {
         assert_eq!(issues.len(), 1, "{issues:?}");
     }
 
+    /// `type: payload` is a `ref` that owns its target: read as a reference by
+    /// every reader of links, listed apart for the ones that move, delete and
+    /// hash, written back as it was spelled, and clean under diagnosis.
+    #[test]
+    fn a_payload_field_is_a_reference_that_round_trips_as_a_payload() {
+        let mut content = Mapping::new();
+        content.insert("type".into(), Value::String("payload".into()));
+        let mut resource = Mapping::new();
+        resource.insert("type".into(), Value::String("ref".into()));
+        let mut fields = Mapping::new();
+        fields.insert("attachments[].content".into(), Value::Mapping(content));
+        fields.insert("sources[].resource".into(), Value::Mapping(resource));
+        let mut top = Mapping::new();
+        top.insert("fields".into(), Value::Mapping(fields));
+        let top = Value::Mapping(top);
+
+        assert!(diagnose(&top).is_empty(), "{:?}", diagnose(&top));
+        let config = WorkspaceConfig::from_meta(&top);
+        assert_eq!(
+            config.reference_fields(),
+            vec![
+                FieldPath::parse("attachments[].content"),
+                FieldPath::parse("sources[].resource"),
+            ]
+        );
+        assert_eq!(
+            config.payload_fields(),
+            vec![FieldPath::parse("attachments[].content")]
+        );
+
+        let written = Value::Mapping(config.to_mapping());
+        let spelled = written
+            .get("fields")
+            .and_then(|f| f.get("attachments[].content"))
+            .map(|d| match d {
+                Value::Sequence(items) => items[0].clone(),
+                one => one.clone(),
+            })
+            .and_then(|d| d.get("type").and_then(Value::as_str).map(str::to_string));
+        assert_eq!(spelled.as_deref(), Some("payload"));
+        assert_eq!(
+            WorkspaceConfig::from_meta(&written).payload_fields(),
+            config.payload_fields()
+        );
+    }
+
     /// The inverse guard: an entry that declares neither is not a description of
     /// anything, so it is not recorded as one.
     #[test]
@@ -4419,7 +4505,7 @@ mod tests {
 
     #[test]
     fn every_field_type_spelling_round_trips() {
-        for spelling in FIELD_TYPES {
+        for spelling in FIELD_TYPES.iter().filter(|s| **s != PAYLOAD_TYPE) {
             let ty = field_type_from_config_str(spelling)
                 .unwrap_or_else(|| panic!("{spelling} is offered but does not parse"));
             assert_eq!(field_type_as_config_str(ty), Some(*spelling));

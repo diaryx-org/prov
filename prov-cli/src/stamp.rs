@@ -142,7 +142,31 @@ pub(crate) fn cmd_stamp(
     let mut stamped = 0usize;
     let mut seeded = 0usize;
     let mut skipped = 0usize;
+    let mut rows = 0usize;
     for path in targets {
+        // The files the document owns through a `type: payload` field, each
+        // given the checksum its bytes now earn — seeded where a row has none,
+        // corrected where it drifted. Before the document's own stamps, and
+        // claiming no edit: a picture's bytes changing is not the page being
+        // written. A reached file that is not a document owns nothing.
+        let owed = block_on(session.ws.payload_restamps(&path)).unwrap_or_default();
+        if !owed.is_empty() {
+            let written: Vec<String> = if dry_run {
+                owed.iter().map(|(at, _)| at.to_string()).collect()
+            } else {
+                block_on(session.ws.restamp_payloads(&path))?
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            };
+            eprintln!(
+                "{}: {} {}",
+                path.display(),
+                if dry_run { "would stamp" } else { "stamped" },
+                written.join(", ")
+            );
+            rows += written.len();
+        }
         let state = match block_on(session.ws.content_state(&path)) {
             Ok(state) => state,
             // Under `--all` this is a reached file that is not a document (an
@@ -255,6 +279,9 @@ pub(crate) fn cmd_stamp(
             "{verb} {stamped} drifted document(s), seeded {seeded} that had no checksum; \
 {skipped} unchanged"
         );
+        if rows > 0 {
+            eprintln!("{verb} {rows} owned payload checksum(s)");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
