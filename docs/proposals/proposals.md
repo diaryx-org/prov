@@ -18,6 +18,7 @@ contents:
 - '[nest by reference](/docs/proposals/nest-by-ref/proposal-nest-by-ref-v1.md)'
 - '[term states, following views, and shelves](/docs/proposals/term-states/proposal-term-states-v1.md)'
 - '[views as queries](/docs/proposals/views-as-queries/proposal-views-as-queries-v1.md)'
+- '[inline attachments](/docs/proposals/inline-attachments/proposal-inline-attachments-v1.md)'
 ---
 
 This directory contains proposals for `prov` — documents that argue for a
