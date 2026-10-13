@@ -1,5 +1,5 @@
 ---
-part_of: id:org/kv2bv2m
+part_of: id:dx4hxn744/kv2bv2m
 title: prov
 author: adammharris
 created: 2026-07-06
@@ -26,6 +26,8 @@ config: prov.yaml
 about: about.md
 registry: registry.yaml
 id: 1ch2991
+slug: prov
+updated: 2026-10-13T23:51:28.854290Z
 ---
 
 # prov (Plaintext Records, Organized and Verifiable)

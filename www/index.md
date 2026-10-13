@@ -42,10 +42,10 @@ the whole organization.
 
 ## Where it fits
 
-prov is the vault engine underneath [Diaryx](id:org/80k72t9) — the
+prov is the vault engine underneath [Diaryx](id:dx4hxn744/80k72t9) — the
 part that makes a folder of Markdown behave like an archive. It
-stands on [fig](id:fig/gns15jg) for the frontmatter and
-[twig](id:twig/wxmq0ww) for the documents. Standalone, it's a
+stands on [fig](id:dx70bkt7z/gns15jg) for the frontmatter and
+[twig](id:dx94n1gx2/wxmq0ww) for the documents. Standalone, it's a
 Rust library anyone can build on.
 
 ## Status

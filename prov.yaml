@@ -60,7 +60,7 @@ views:
     label: All work
     where: present(status)
     key: status
-workspace_id: prov
+workspace_id: dx5tskw57
 
 # Define how prov files may be exported
 exports:
