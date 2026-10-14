@@ -1384,10 +1384,28 @@ pub(crate) struct AttachArgs {
         conflicts_with_all = ["all", "opaque", "manifest", "filed", "parents"]
     )]
     pub(crate) inline: bool,
-    /// With `--inline`, the `type: payload` field the row goes in
-    /// (`attachments[].content`) — needed only when several are declared.
-    #[arg(long, value_name = "PATH", requires = "inline")]
+    /// With `--inline` or `--demote`, the `type: payload` field the row goes
+    /// in (`attachments[].content`) — needed only when several are declared.
+    #[arg(long, value_name = "PATH")]
     pub(crate) field: Option<String>,
+    /// Fold an existing card into a row: the positional names the card
+    /// (`photo.jpg.yaml`) or its file, and the row goes into the document
+    /// `--in` names (default: the card's parent). The card's facts move into
+    /// the row, the sidecar and its parent's entry for it go, and the file
+    /// stays where it is. Refused while anything links to the card itself.
+    #[arg(
+        long,
+        conflicts_with_all = ["all", "opaque", "manifest", "filed", "parents", "inline", "promote"]
+    )]
+    pub(crate) demote: bool,
+    /// Give a file a document owns in a row a card of its own: mint its
+    /// sidecar from the row's facts, list it under `--in` (default: the
+    /// document that owned it), and remove the row.
+    #[arg(
+        long,
+        conflicts_with_all = ["all", "opaque", "manifest", "filed", "parents", "inline", "field"]
+    )]
+    pub(crate) promote: bool,
 }
 
 /// Which home the `config --home` conversion relocates workspace policy to. The

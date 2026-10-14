@@ -532,7 +532,20 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         no_hash,
         inline,
         field,
+        demote,
+        promote,
     } = args;
+    if field.is_some() && !(inline || demote) {
+        return Err("--field applies only with --inline or --demote".into());
+    }
+    if demote || promote {
+        return cmd_attach_move(
+            payload.as_deref(),
+            in_target.as_deref(),
+            field.as_deref(),
+            demote,
+        );
+    }
     let (payload, in_target, layout) = (
         payload.as_deref(),
         in_target.as_deref(),
@@ -689,6 +702,44 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         parent_rel.display()
     );
     println!("{}", node.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `attach --demote` and `attach --promote`: move a file between a card of
+/// its own and a row in the document that shows it.
+fn cmd_attach_move(
+    payload: Option<&Path>,
+    in_target: Option<&str>,
+    field: Option<&str>,
+    demote: bool,
+) -> CmdResult {
+    let Some(payload) = payload else {
+        return Err("name the card or file to move".into());
+    };
+    let mut session = Session::open_for_mutation()?;
+    let rel = ws_rel(&session.ctx, payload)?;
+    if !session.ws.fs_path(&rel).exists() {
+        return Err(prov::Error::NotFound(rel).into());
+    }
+    let target = match in_target {
+        Some(t) => Some(ws_rel(&session.ctx, &resolve_target(t)?)?),
+        None => None,
+    };
+    if demote {
+        let (into, at) = block_on(session.ws.demote(&rel, target.as_deref(), field))?;
+        session.commit()?;
+        eprintln!(
+            "demoted {} to a row (at {at} in {})",
+            rel.display(),
+            into.display()
+        );
+        println!("{}", into.display());
+    } else {
+        let node = block_on(session.ws.promote(&rel, target.as_deref()))?;
+        session.commit()?;
+        eprintln!("promoted {} to a card ({})", rel.display(), node.display());
+        println!("{}", node.display());
+    }
     Ok(ExitCode::SUCCESS)
 }
 

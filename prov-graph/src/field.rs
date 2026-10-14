@@ -189,6 +189,26 @@ impl Address {
             .collect()
     }
 
+    /// The address of the row a value sits in — `attachments[2].content` →
+    /// `attachments[2]` — when the value is at a key of a list item.
+    pub fn as_item_parent(&self) -> Option<Address> {
+        let n = self.steps.len();
+        (n >= 2
+            && matches!(self.steps[n - 1], Step::Key(_))
+            && matches!(self.steps[n - 2], Step::At(_)))
+        .then(|| Address {
+            steps: self.steps[..n - 1].to_vec(),
+        })
+    }
+
+    /// The key the address ends at, when it ends at one.
+    pub fn last_key(&self) -> Option<&str> {
+        match self.steps.last() {
+            Some(Step::Key(k)) => Some(k),
+            _ => None,
+        }
+    }
+
     /// The address of the list this one is an item of, and the item's
     /// position — `Some` only when the last step is an index. What a removal
     /// needs: an item is taken out of its list, not deleted at its own path.

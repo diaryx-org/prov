@@ -290,6 +290,459 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
+/// A link that keeps a card from becoming a row: a reference to the card
+/// itself, by path or by id, that a demotion would leave pointing at nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardLink {
+    /// The document that holds the link.
+    pub source: PathBuf,
+    /// Where in it the link is written.
+    pub site: LinkSite,
+    /// Whether it names the card by `id:`.
+    pub by_id: bool,
+}
+
+/// Remove item `index` of the `len`-item list at `path`, and the list with its
+/// last item. Where the format's editor will not delete the key — fig's
+/// refuses a figl `>` block list, and cannot leave one with no items either —
+/// the list is replaced by `[]`, as `remove_item` leaves one elsewhere.
+fn remove_entry(
+    editor: &mut MetaEditor,
+    path: &[fig::Segment],
+    index: usize,
+    len: usize,
+) -> Result<()> {
+    if len > 1 {
+        return editor.remove_item(path, index);
+    }
+    if editor.delete(path).is_ok() {
+        return Ok(());
+    }
+    editor.replace_value(path, fig::Value::Seq(Vec::new()))
+}
+
+/// The keys a sidecar holds as a node rather than as facts about its payload,
+/// beside the spanning inverse and `content`: a row has no id, and is not an
+/// attachment sidecar.
+const NODE_KEYS: [&str; 2] = ["id", "attachment"];
+
+impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// The documents that link to the attachment card at `card` itself — by
+    /// path or by id, not to its payload — other than its parent's spanning
+    /// entry for it: every link [`demote`](Self::demote) refuses over.
+    pub async fn card_links(&self, card: &Path) -> Result<Vec<CardLink>> {
+        let card = link::normalize(card);
+        let (spanning, inverse) = self.spanning_pair()?;
+        let (_, doc) = self.load(&card).await?;
+        let parent = self.single_target(&doc, &inverse, &card);
+        let root = self.spanning_root(&card, &inverse).await?;
+        let mut out = Vec::new();
+        for back in self.backlinks_to_node(&root, &card).await? {
+            if back.via_payload || back.source == card {
+                continue;
+            }
+            let spanning_entry = matches!(
+                &back.site,
+                LinkSite::Relation { field, .. } if *field == spanning
+            );
+            if spanning_entry && Some(&back.source) == parent.as_ref() {
+                continue;
+            }
+            out.push(CardLink {
+                source: back.source,
+                site: back.site,
+                by_id: back.by_id,
+            });
+        }
+        Ok(out)
+    }
+
+    /// **Demote** an attachment card to a row: fold the sidecar `card` — or
+    /// the sidecar of the payload `card` names — into a row of the document
+    /// `into` (default: the card's parent), in the `type: payload` field
+    /// `field` names (or the only one declared), and delete the sidecar. The
+    /// payload stays where it is; `into` now owns it.
+    ///
+    /// The row holds the link to the payload and every key of the sidecar
+    /// but the node's own: its `id`, its link to its parent, its `content`
+    /// pointer (which becomes the row's value) and its `attachment` marker.
+    /// A `title` is kept unless it is the one `attach` would have derived
+    /// from the file's name, so a promotion gives the card back the title it
+    /// had. A `content_hash` is copied as written; where the workspace records
+    /// checksums and the card had none, one is computed.
+    ///
+    /// One change set: the sidecar goes, the parent's entry for it goes, the
+    /// row is written, and the card's id is retired. Refuses a card anything
+    /// links to by path or id (each named — the link would dangle; a link to
+    /// the *payload* is fine, since the payload stays), a card with children
+    /// or any relation besides its parent link (a row carries neither), a
+    /// shadowed document (`attach --opaque`; a row owns only opaque files),
+    /// and a payload `into` already owns. Returns the document the row went
+    /// into and the new value's address.
+    pub async fn demote(
+        &mut self,
+        card: &Path,
+        into: Option<&Path>,
+        field: Option<&str>,
+    ) -> Result<(PathBuf, Address)> {
+        let mut card = link::normalize(card);
+        let payload = match self.attachment_payload(&card).await {
+            Some(payload) => payload,
+            None => match self.attachment_for(&card).await? {
+                Some(sidecar) => {
+                    let payload = card;
+                    card = sidecar;
+                    payload
+                }
+                None => {
+                    return Err(Error::Structure(format!(
+                        "{} is not an attachment card or a file that has one",
+                        card.display()
+                    )));
+                }
+            },
+        };
+        let path = self.row_field(field)?;
+        let Some((list, key)) = path.row() else {
+            unreachable!("row_field only returns paths of rows");
+        };
+        if !prov_graph::document::is_opaque_payload(&payload) {
+            return Err(Error::Structure(format!(
+                "{} shadows a document prov can read; a row owns only opaque files",
+                payload.display()
+            )));
+        }
+
+        let (spanning, inverse) = self.spanning_pair()?;
+        let (card_text, card_doc) = self.load(&card).await?;
+        let card_meta = fig::Value::from(&card_doc.meta);
+        let parent = self.single_target(&card_doc, &inverse, &card);
+        let into = match (into, &parent) {
+            (Some(into), _) => link::normalize(into),
+            (None, Some(parent)) => parent.clone(),
+            (None, None) => {
+                return Err(Error::Structure(format!(
+                    "{} has no parent to fold it into; name a document",
+                    card.display()
+                )));
+            }
+        };
+        if into == card || into == payload {
+            return Err(Error::Structure(format!(
+                "{} cannot own its own attachment",
+                into.display()
+            )));
+        }
+
+        let children = self.relations().children(&card_meta);
+        if !children.is_empty() {
+            return Err(Error::Structure(format!(
+                "{} contains {} document(s) ({}); a row cannot",
+                card.display(),
+                children.len(),
+                children.join(", ")
+            )));
+        }
+        let mapping = card_doc.meta.as_mapping().cloned().unwrap_or_default();
+        if let Some(relation) = self
+            .relations()
+            .relations()
+            .iter()
+            .map(|r| r.name.as_str())
+            .find(|name| *name != inverse && mapping.contains_key(*name))
+        {
+            return Err(Error::Structure(format!(
+                "{} holds `{relation}`, a relation a row cannot carry; it stays a card",
+                card.display()
+            )));
+        }
+        let links = self.card_links(&card).await?;
+        if !links.is_empty() {
+            let named: Vec<String> = links
+                .iter()
+                .map(|l| {
+                    format!(
+                        "{} ({}{})",
+                        l.source.display(),
+                        l.site,
+                        if l.by_id { ", by id" } else { "" }
+                    )
+                })
+                .collect();
+            return Err(Error::Structure(format!(
+                "{} is linked to as a card by {}; those links would dangle — \
+                 point them at {} instead, or keep the card",
+                card.display(),
+                named.join(", "),
+                payload.display()
+            )));
+        }
+
+        let (into_text, into_doc) = self.load(&into).await?;
+        let into_meta = fig::Value::from(&into_doc.meta);
+        if owned_payloads(self.payloads(), &into, &into_meta)
+            .iter()
+            .any(|owned| owned.target == payload)
+        {
+            return Err(Error::Structure(format!(
+                "{} already owns {}",
+                into.display(),
+                payload.display()
+            )));
+        }
+
+        // The row: the value first, then the card's facts in the card's order.
+        let value_address = list.to_string();
+        let site = LinkSite::Field {
+            path: value_address.clone(),
+        };
+        let spelled = link::path_text(self.site_path_style(&site), &into, &payload);
+        let derived_title = link::path_to_title(&payload);
+        let mut row = vec![(fig::Value::Str(key.to_string()), fig::Value::Str(spelled))];
+        for (k, v) in &mapping {
+            let node_key = NODE_KEYS.contains(&k.as_str()) || *k == inverse || k == "content";
+            let derived = k == "title"
+                && prov_graph::title::title_text(v).as_deref() == Some(derived_title.as_str());
+            if node_key || derived || k == key {
+                continue;
+            }
+            row.push((fig::Value::Str(k.clone()), fig::Value::from(v)));
+        }
+        if self.fixity().is_on() && !mapping.contains_key(HASH_KEY) {
+            let bytes = self.read_bytes(&payload).await?;
+            row.push((
+                fig::Value::Str(HASH_KEY.to_string()),
+                fig::Value::Str(crate::fixity::digest(&bytes)),
+            ));
+        }
+        let row = fig::Value::Map(row);
+
+        // The parent loses its entry for the card — in the same rendering as
+        // the row when the parent is the document the row goes into.
+        let entry = |ws: &Self, doc: &prov_graph::document::Document, at: &Path| {
+            ws.entry_index(doc, &spanning, at, &card)
+        };
+        // Its last entry takes the list with it, rather than leaving `[]`.
+        let unlist = |editor: &mut MetaEditor,
+                      doc: &prov_graph::document::Document,
+                      index: usize|
+         -> Result<()> {
+            let entries = doc
+                .meta
+                .get(&spanning)
+                .map_or(0, |v| v.link_strings().len());
+            remove_entry(editor, &[fig::Segment::Key(&spanning)], index, entries)
+        };
+        let mut into_editor = MetaEditor::open_or_init(&into_text, into_doc.carrier)?;
+        if parent.as_ref() == Some(&into)
+            && let Some(index) = entry(self, &into_doc, &into)
+        {
+            unlist(&mut into_editor, &into_doc, index)?;
+        }
+        let existing = field::values_at(&into_meta, &FieldPath::parse(&value_address))
+            .into_iter()
+            .next()
+            .map(|(_, v)| v.items().map_or(0, <[fig::Value]>::len));
+        let segments = list.segments();
+        let index = match existing {
+            Some(len) => {
+                into_editor.append_value(&segments, row)?;
+                len
+            }
+            None => {
+                into_editor.set_value(&segments, fig::Value::Seq(vec![row]))?;
+                0
+            }
+        };
+        let into_out = into_editor.render()?;
+
+        let mut parent_write = None;
+        if let Some(parent) = parent.as_ref().filter(|p| **p != into) {
+            let (parent_text, parent_doc) = self.load(parent).await?;
+            if let (Some(index), Some(carrier)) =
+                (entry(self, &parent_doc, parent), parent_doc.carrier)
+            {
+                let mut editor = MetaEditor::open(&parent_text, carrier)?;
+                unlist(&mut editor, &parent_doc, index)?;
+                parent_write = Some((parent.clone(), parent_text, editor.render()?));
+            }
+        }
+
+        let id = self.index().id_for_path(&card);
+        let mut cs = self.change();
+        cs.expect(&card, card_text);
+        cs.remove(&card);
+        cs.expect(&into, into_text);
+        cs.write(&into, into_out);
+        if let Some((parent, before, after)) = parent_write {
+            cs.expect(&parent, before);
+            cs.write(&parent, after);
+        }
+        if let Some(id) = id {
+            self.index_mut().unregister(&id);
+        }
+        self.commit(cs).await?;
+        let at = Address::parse(&format!("{value_address}[{index}].{key}"))
+            .expect("a row address has no `[]`");
+        Ok((into, at))
+    }
+
+    /// The document that owns `payload` through a `type: payload` value, and
+    /// the value's address — found by a census from the workspace root.
+    /// `None` when nothing owns it; refused when more than one document does
+    /// (`PayloadOwnedTwice`), since which row to promote is then a choice.
+    pub async fn payload_owner(&self, payload: &Path) -> Result<Option<(PathBuf, Address)>> {
+        let payload = link::normalize(payload);
+        if self.payloads().is_empty() {
+            return Ok(None);
+        }
+        let Some(root) = self.root_document().await? else {
+            return Ok(None);
+        };
+        let mut owners: Vec<(PathBuf, Address)> = Vec::new();
+        for back in self.backlinks_to(&root, &payload).await? {
+            if !matches!(back.site, LinkSite::Field { .. })
+                || owners.iter().any(|(doc, _)| *doc == back.source)
+            {
+                continue;
+            }
+            for owned in self.owned_payloads(&back.source).await? {
+                if owned.target == payload {
+                    owners.push((back.source.clone(), owned.address));
+                }
+            }
+        }
+        match owners.len() {
+            0 | 1 => Ok(owners.pop()),
+            _ => {
+                let named: Vec<String> = owners
+                    .iter()
+                    .map(|(doc, at)| format!("{} ({at})", doc.display()))
+                    .collect();
+                Err(Error::Structure(format!(
+                    "{} is owned more than once ({}); drop all but one row first",
+                    payload.display(),
+                    named.join(", ")
+                )))
+            }
+        }
+    }
+
+    /// **Promote** an owned payload to a card: mint the sidecar beside
+    /// `payload` that [`attach`](Self::attach) would, carrying every other key
+    /// of the row that owns it (a `title` among them becomes the card's), list
+    /// it under `parent` (default: the document that owned it), and remove
+    /// the row. One change set. The payload stays where it is, and every link
+    /// to it — the owner's own `![](…)` — still resolves. Returns the
+    /// sidecar's path.
+    ///
+    /// Refuses a payload no document owns, or more than one does, and what
+    /// [`attach`](Self::attach) refuses of a payload — one that already has a
+    /// sidecar among them.
+    pub async fn promote(&mut self, payload: &Path, parent: Option<&Path>) -> Result<PathBuf> {
+        let payload = link::normalize(payload);
+        let Some((owner, address)) = self.payload_owner(&payload).await? else {
+            return Err(Error::Structure(format!(
+                "no document owns {} through a `type: payload` field",
+                payload.display()
+            )));
+        };
+        self.check_attach(&payload, false).await?;
+        let parent = parent.map(link::normalize).unwrap_or_else(|| owner.clone());
+        let (spanning, _) = self.spanning_pair()?;
+
+        let Some(row_address) = address.as_item_parent() else {
+            return Err(Error::Structure(format!(
+                "{} names {} at {address}, which is not a row of a list",
+                owner.display(),
+                payload.display()
+            )));
+        };
+        let (list, index) = row_address
+            .as_item()
+            .expect("as_item_parent returns an item address");
+        let Some(value_key) = address.last_key() else {
+            unreachable!("a value in a row is at a key");
+        };
+
+        let (owner_text, owner_doc) = self.load(&owner).await?;
+        let owner_meta = fig::Value::from(&owner_doc.meta);
+        let row = field::values_at(&owner_meta, &FieldPath::parse(&row_address.to_string()))
+            .into_iter()
+            .next()
+            .map(|(_, v)| v.clone());
+        let Some(fig::Value::Map(row)) = row else {
+            unreachable!("the owner's value sits in a row");
+        };
+        let rows_left = field::values_at(&owner_meta, &FieldPath::parse(&list.to_string()))
+            .into_iter()
+            .next()
+            .map_or(0, |(_, v)| v.items().map_or(0, <[fig::Value]>::len))
+            .saturating_sub(1);
+
+        let mut title = link::path_to_title(&payload);
+        let mut carried = prov_graph::meta::Mapping::new();
+        for (k, v) in row {
+            let Some(k) = k.as_str().map(str::to_owned) else {
+                continue;
+            };
+            if k == value_key {
+                continue;
+            }
+            let v = prov_graph::meta::Value::from(v);
+            if k == "title" {
+                if let Some(text) = prov_graph::title::title_text(&v) {
+                    title = text;
+                }
+                continue;
+            }
+            carried.insert(k, v);
+        }
+
+        let (parent_text, parent_doc) = if parent == owner {
+            (owner_text.clone(), owner_doc.clone())
+        } else {
+            self.load(&parent).await?
+        };
+        let mut cs = self.change();
+        let staged = self
+            .stage_sidecar(&payload, &parent, &parent_doc, title, carried)
+            .await?;
+
+        // The owner loses the row (and the list, with its last row); the
+        // parent gains the card — in one rendering when they are one file.
+        let mut owner_editor = MetaEditor::open_or_init(&owner_text, owner_doc.carrier)?;
+        remove_entry(&mut owner_editor, &list.segments(), index, rows_left + 1)?;
+        let span_path = [fig::Segment::Key(&spanning)];
+        let append = |editor: &mut MetaEditor| -> Result<()> {
+            if editor
+                .append_value(&span_path, fig::Value::Str(staged.down.clone()))
+                .is_err()
+            {
+                editor.set_value(
+                    &span_path,
+                    fig::Value::Seq(vec![fig::Value::Str(staged.down.clone())]),
+                )?;
+            }
+            Ok(())
+        };
+        cs.expect(&owner, owner_text);
+        if parent == owner {
+            append(&mut owner_editor)?;
+        } else {
+            let mut parent_editor = MetaEditor::open_or_init(&parent_text, parent_doc.carrier)?;
+            append(&mut parent_editor)?;
+            cs.expect(&parent, parent_text);
+            cs.write(&parent, parent_editor.render()?);
+        }
+        cs.write(&owner, owner_editor.render()?);
+        cs.expect_absent(&staged.node);
+        cs.write(&staged.node, staged.text);
+        self.commit(cs).await?;
+        Ok(staged.node)
+    }
+}
+
 #[cfg(all(test, feature = "yaml"))]
 mod tests {
     use super::*;
@@ -622,5 +1075,189 @@ mod tests {
         let err = block_on(bare.attach_inline(Path::new("fjord.jpg"), Path::new("index.md"), None))
             .unwrap_err();
         assert!(err.to_string().contains("no field is declared"), "{err}");
+    }
+    /// A home and a devlog whose two pictures are cards under it, shown in
+    /// its body — the shape a devlog took before rows existed.
+    fn carded(tag: &str) -> PathBuf {
+        let dir = tempdir(tag);
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\ncontents:\n- log/log.md\n---\n",
+        );
+        write(
+            &dir,
+            "log/log.md",
+            b"---\ntitle: Log\npart_of: ../index.md\ncontents:\n- rules.svg.yaml\n- speed.svg.yaml\n---\n![](rules.svg)\n",
+        );
+        write(&dir, "log/rules.svg", b"<svg/>");
+        write(&dir, "log/speed.svg", b"<svg></svg>");
+        let digest = crate::fixity::digest(b"<svg/>");
+        write(
+            &dir,
+            "log/rules.svg.yaml",
+            format!(
+                "title: Rules\npart_of: log.md\ncontent: rules.svg\nattachment: true\ncontent_hash: {digest}\n"
+            )
+            .as_bytes(),
+        );
+        write(
+            &dir,
+            "log/speed.svg.yaml",
+            b"title: How fast it is\npart_of: log.md\ncontent: speed.svg\nattachment: true\nalt: a chart\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn demote_folds_a_card_into_a_row_on_its_parent() {
+        let dir = carded("demote");
+        let mut w = ws(&dir);
+        let (into, at) = block_on(w.demote(Path::new("log/rules.svg.yaml"), None, None)).unwrap();
+        assert_eq!(into, PathBuf::from("log/log.md"));
+        assert_eq!(at.to_string(), "attachments[0].content");
+        // Named by its payload, too.
+        let (_, at) = block_on(w.demote(Path::new("log/speed.svg"), None, None)).unwrap();
+        assert_eq!(at.to_string(), "attachments[1].content");
+
+        assert!(!dir.join("log/rules.svg.yaml").exists(), "the card is gone");
+        assert!(!dir.join("log/speed.svg.yaml").exists());
+        assert!(dir.join("log/rules.svg").exists(), "the payload stays");
+        let text = read(&dir, "log/log.md");
+        assert!(!text.contains("contents"), "{text}");
+        assert!(text.contains("- content: /log/rules.svg\n"), "{text}");
+        assert!(
+            !text.contains("title: Rules"),
+            "a title derived from the name is dropped: {text}"
+        );
+        assert!(
+            text.contains("title: How fast it is"),
+            "an authored one is kept: {text}"
+        );
+        assert!(text.contains("alt: a chart"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "content_hash: {}",
+                crate::fixity::digest(b"<svg/>")
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "content_hash: {}",
+                crate::fixity::digest(b"<svg></svg>")
+            )),
+            "a card with no checksum earns one: {text}"
+        );
+        assert!(!text.contains("attachment: true"), "{text}");
+        assert!(text.ends_with("![](rules.svg)\n"), "{text}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn demote_into_another_document_edits_both() {
+        let dir = carded("demote-into");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\ncontents:\n- log/log.md\n- other.md\n---\n",
+        );
+        write(
+            &dir,
+            "other.md",
+            b"---\ntitle: Other\npart_of: index.md\n---\n",
+        );
+        let mut w = ws(&dir);
+        block_on(w.demote(
+            Path::new("log/speed.svg.yaml"),
+            Some(Path::new("other.md")),
+            None,
+        ))
+        .unwrap();
+        let log = read(&dir, "log/log.md");
+        assert!(!log.contains("speed.svg.yaml"), "{log}");
+        assert!(log.contains("rules.svg.yaml"), "{log}");
+        let other = read(&dir, "other.md");
+        assert!(other.contains("- content: /log/speed.svg"), "{other}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn demote_refuses_a_card_something_links_to() {
+        let dir = carded("demote-linked");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\ncontents:\n- log/log.md\nlinks:\n- log/rules.svg.yaml\n---\n",
+        );
+        let before = read(&dir, "log/log.md");
+        let mut w = ws(&dir);
+        let err = block_on(w.demote(Path::new("log/rules.svg.yaml"), None, None)).unwrap_err();
+        assert!(err.to_string().contains("index.md (links"), "{err}");
+        assert_eq!(read(&dir, "log/log.md"), before);
+        assert!(dir.join("log/rules.svg.yaml").exists());
+        // A link to the payload is no reason to refuse: the payload stays.
+        block_on(w.demote(Path::new("log/speed.svg.yaml"), None, None)).unwrap();
+    }
+
+    #[test]
+    fn promote_gives_a_row_its_card_back() {
+        let dir = carded("promote");
+        let mut w = ws(&dir);
+        block_on(w.demote(Path::new("log/rules.svg.yaml"), None, None)).unwrap();
+        block_on(w.demote(Path::new("log/speed.svg.yaml"), None, None)).unwrap();
+
+        let node = block_on(w.promote(Path::new("log/speed.svg"), None)).unwrap();
+        assert_eq!(node, PathBuf::from("log/speed.svg.yaml"));
+        let card = read(&dir, "log/speed.svg.yaml");
+        assert!(card.contains("title: How fast it is"), "{card}");
+        assert!(card.contains("content: speed.svg"), "{card}");
+        assert!(card.contains("attachment: true"), "{card}");
+        assert!(card.contains("alt: a chart"), "{card}");
+        let log = read(&dir, "log/log.md");
+        assert!(log.contains("speed.svg.yaml"), "listed: {log}");
+        assert!(!log.contains("content: /log/speed.svg"), "row gone: {log}");
+        assert!(log.contains("content: /log/rules.svg"), "{log}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // The last row takes its list with it.
+        block_on(w.promote(Path::new("log/rules.svg"), None)).unwrap();
+        let log = read(&dir, "log/log.md");
+        assert!(!log.contains("attachments"), "{log}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        let err = block_on(w.promote(Path::new("log/rules.svg"), None)).unwrap_err();
+        assert!(err.to_string().contains("no document owns"), "{err}");
+    }
+    /// fig's own devlogs: a figl block whose `contents` is a `>` block list,
+    /// which fig's editor will not delete as a key. Demoting the last card
+    /// leaves `contents = []` instead, and the row still lands and checks clean.
+    #[cfg(feature = "fig-lang")]
+    #[test]
+    fn demote_into_a_figl_block_with_a_block_list() {
+        let dir = tempdir("demote-figl");
+        write(
+            &dir,
+            "index.md",
+            b"---\ntitle: Home\ncontents:\n- log.md\n---\n",
+        );
+        write(
+            &dir,
+            "log.md",
+            b"```fig\ntitle = Log\npart_of = index.md\ncontents\n> * [Rules](/rules.svg.yaml)\n```\n![](rules.svg)\n",
+        );
+        write(&dir, "rules.svg", b"<svg/>");
+        write(
+            &dir,
+            "rules.svg.yaml",
+            b"title: Rules\npart_of: log.md\ncontent: rules.svg\nattachment: true\n",
+        );
+        let mut w = ws(&dir);
+        block_on(w.demote(Path::new("rules.svg"), None, None)).unwrap();
+        let text = read(&dir, "log.md");
+        assert!(!text.contains("rules.svg.yaml"), "{text}");
+        assert!(text.contains("content = /rules.svg"), "{text}");
+        assert!(!dir.join("rules.svg.yaml").exists());
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }
 }

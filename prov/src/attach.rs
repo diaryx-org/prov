@@ -321,32 +321,88 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let parent = link::normalize(parent);
         self.check_attach(&payload, opaque).await?;
 
-        let (spanning, inverse) = self.spanning_pair()?;
-        let format = self.default_embed_format();
-        let node = sidecar_path(&payload, format);
-
         let (parent_text, parent_doc) = self.load(&parent).await?;
         let title = title_override
             .map(str::to_owned)
             .unwrap_or_else(|| link::path_to_title(&payload));
-        let parent_title = parent_doc
-            .meta
-            .get("title")
-            .and_then(prov_graph::title::title_text)
-            .unwrap_or_else(|| link::path_to_title(&parent));
 
         // Opens before the first id-authoring call below, so the index
         // checkpoint covers the registrations those make (see `mutate::create`).
         let mut cs = self.change();
+        let staged = self
+            .stage_sidecar(&payload, &parent, &parent_doc, title, Mapping::new())
+            .await?;
+        let (spanning, _) = self.spanning_pair()?;
+        let (node, node_text, down) = (staged.node, staged.text, staged.down);
+
+        // The parent: append the sidecar to its spanning field (creating it if
+        // absent — `append` needs an existing sequence).
+        let mut parent_editor = MetaEditor::open_or_init(&parent_text, parent_doc.carrier)?;
+        let span_path = [Segment::Key(&spanning)];
+        if parent_editor
+            .append_value(&span_path, fig::Value::Str(down.clone()))
+            .is_err()
+        {
+            parent_editor.set_value(&span_path, fig::Value::Seq(vec![fig::Value::Str(down)]))?;
+        }
+        let parent_out = parent_editor.render()?;
+
+        // The sidecar path the exists-check above found free is expected still
+        // free at apply, so a file another writer landed there in the
+        // compute→apply gap refuses the attach ([`Error::Drifted`]) instead of
+        // being silently replaced.
+        cs.expect_absent(&node);
+        cs.write(&node, node_text);
+        cs.write(&parent, parent_out);
+        self.commit(cs).await?;
+        Ok(node)
+    }
+}
+
+/// A sidecar composed but not yet written: what [`attach`](Workspace::attach)
+/// and [`promote`](Workspace::promote) both stage.
+pub(crate) struct StagedSidecar {
+    /// Where the sidecar goes, beside its payload.
+    pub(crate) node: PathBuf,
+    /// Its whole text.
+    pub(crate) text: String,
+    /// The spanning entry its parent gains, spelled as the parent should hold it.
+    pub(crate) down: String,
+}
+
+impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
+    /// Compose the sidecar for `payload` under `parent`: `title`, any id the
+    /// identity policy mints from birth, the inverse link up, a `content`
+    /// pointer at the payload, the `attachment: true` marker, then the keys
+    /// `carried` brings, in order, and a `content_hash` where the workspace
+    /// records checksums and `carried` has none. Writes nothing; the caller
+    /// must have opened its change set already, so the index checkpoint
+    /// covers the ids this registers.
+    pub(crate) async fn stage_sidecar(
+        &mut self,
+        payload: &Path,
+        parent: &Path,
+        parent_doc: &prov_graph::document::Document,
+        title: String,
+        carried: Mapping,
+    ) -> Result<StagedSidecar> {
+        let (spanning, inverse) = self.spanning_pair()?;
+        let format = self.default_embed_format();
+        let node = sidecar_path(payload, format);
+        let parent_title = parent_doc
+            .meta
+            .get("title")
+            .and_then(prov_graph::title::title_text)
+            .unwrap_or_else(|| link::path_to_title(parent));
 
         // The sidecar's inverse link up (the parent exists → an id link registers
         // it by path) and the parent's spanning entry down (the sidecar is not on
         // disk yet → mint its id directly rather than register-by-path).
         let up = self
-            .authored_target(&inverse, &node, &parent, &parent_title, true)
+            .authored_target(&inverse, &node, parent, &parent_title, true)
             .await?;
         let down = self
-            .authored_target(&spanning, &parent, &node, &title, false)
+            .authored_target(&spanning, parent, &node, &title, false)
             .await?;
 
         // Identity hook — eager policies assign an ID from birth (idempotent: an
@@ -381,43 +437,25 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         map.insert(inverse.clone(), Value::String(up));
         map.insert("content".into(), Value::String(payload_ref));
         map.insert("attachment".into(), Value::Bool(true));
+        for (key, value) in carried {
+            map.entry(key).or_insert(value);
+        }
         // Fixity: record a checksum of the payload's bytes, so `check` can later
         // detect bit-rot. Unambiguous for an attachment — its bytes are never
         // edited — so it is recorded whenever the workspace records checksums at
         // all. `is_on` rather than `covers` because the sidecar being built here
-        // has no parsed form yet; the `content` key three lines up is what would
-        // answer, and this verb is what writes it. The payload is read once here,
-        // at attach time.
-        if self.fixity().is_on() {
-            let bytes = self.read_bytes(&payload).await?;
+        // has no parsed form yet; the `content` key above is what would answer,
+        // and this verb is what writes it. The payload is read once here, at
+        // attach time, unless the caller carried a checksum already.
+        if self.fixity().is_on() && !map.contains_key("content_hash") {
+            let bytes = self.read_bytes(payload).await?;
             map.insert(
                 "content_hash".into(),
                 Value::String(crate::fixity::digest(&bytes)),
             );
         }
-        let node_text = prov_graph::meta::serialize_mapping(&map, format)?;
-
-        // The parent: append the sidecar to its spanning field (creating it if
-        // absent — `append` needs an existing sequence).
-        let mut parent_editor = MetaEditor::open_or_init(&parent_text, parent_doc.carrier)?;
-        let span_path = [Segment::Key(&spanning)];
-        if parent_editor
-            .append_value(&span_path, fig::Value::Str(down.clone()))
-            .is_err()
-        {
-            parent_editor.set_value(&span_path, fig::Value::Seq(vec![fig::Value::Str(down)]))?;
-        }
-        let parent_out = parent_editor.render()?;
-
-        // The sidecar path the exists-check above found free is expected still
-        // free at apply, so a file another writer landed there in the
-        // compute→apply gap refuses the attach ([`Error::Drifted`]) instead of
-        // being silently replaced.
-        cs.expect_absent(&node);
-        cs.write(&node, node_text);
-        cs.write(&parent, parent_out);
-        self.commit(cs).await?;
-        Ok(node)
+        let text = prov_graph::meta::serialize_mapping(&map, format)?;
+        Ok(StagedSidecar { node, text, down })
     }
 }
 
