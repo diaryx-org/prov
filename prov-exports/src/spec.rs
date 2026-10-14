@@ -176,6 +176,96 @@ impl Gate {
     }
 }
 
+/// The values a [`Gate`] admits once its value's term is read for the terms it
+/// `also_reads`: the gate's own value first, then every value it reaches,
+/// nearest first.
+///
+/// # Why a set, and why it is not in the gate
+///
+/// A gate is one field and one value, and stays so: *does this document
+/// leave?* is still answered by reading one field on that one document. What
+/// widens is what that one value *means*. A vocabulary can say that the
+/// `family` readership also reads what `friends` reads, and then a document
+/// declaring `friends` is one the family export admits, with no second mark
+/// on it. That widening is read off the vocabulary's terms, never off the
+/// documents, and it is resolved **once per plan**, here, rather than by every
+/// consumer that asks: a preview, a publish and a derived history that each
+/// followed the terms themselves could each follow them differently.
+///
+/// This crate cannot read a vocabulary, so the workspace resolves the reach
+/// (prov's `Workspace::gate_reach`) and hands it to [`plan`](crate::plan()),
+/// the way it hands over [`TermHolds`](crate::TermHolds). [`Reach::of`] is the
+/// gate alone, for a value whose term reads nothing.
+///
+/// The reach only ever widens *which declared values* admit; the hold and the
+/// view still narrow what it admits, and a document that declares nothing is
+/// still in no export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reach {
+    values: Vec<String>,
+}
+
+impl Reach {
+    /// The gate's own value and nothing else.
+    pub fn of(gate: &Gate) -> Self {
+        Reach {
+            values: vec![gate.value.trim().to_string()],
+        }
+    }
+
+    /// The gate's own value, then each of `reached` not already in it, in the
+    /// order given. Blank names and repeats are dropped.
+    pub fn widened(mut self, reached: impl IntoIterator<Item = String>) -> Self {
+        for value in reached {
+            let value = value.trim();
+            if !value.is_empty() && !self.values.iter().any(|v| v == value) {
+                self.values.push(value.to_string());
+            }
+        }
+        self
+    }
+
+    /// Every value this reach admits: the gate's own first, then the ones it
+    /// reaches, nearest first.
+    pub fn values(&self) -> &[String] {
+        &self.values
+    }
+
+    /// The gate's own value.
+    pub fn own(&self) -> &str {
+        &self.values[0]
+    }
+
+    /// The values reached beyond the gate's own, nearest first.
+    pub fn reached(&self) -> &[String] {
+        &self.values[1..]
+    }
+
+    /// Whether `value` is one this reach admits, exact after trim.
+    pub fn contains(&self, value: &str) -> bool {
+        let value = value.trim();
+        self.values.iter().any(|v| v == value)
+    }
+
+    /// The value through which a document declaring `declared` is admitted:
+    /// the gate's own when it declares it, otherwise the nearest reached value
+    /// it declares. `None` when it declares none of them.
+    pub fn through<'a>(&'a self, declared: &[String]) -> Option<&'a str> {
+        self.values
+            .iter()
+            .find(|v| declared.iter().any(|d| d == *v))
+            .map(String::as_str)
+    }
+
+    /// Whether `meta` declares, under `gate`'s field, any value this reach
+    /// admits: the membership test, widened. [`Gate::admits`] is this with
+    /// [`Reach::of`].
+    pub fn admits(&self, gate: &Gate, meta: &Value) -> bool {
+        gate.declared_in(meta)
+            .is_some_and(|declared| self.through(&declared).is_some())
+    }
+}
+
 /// One export a workspace declares for itself: a gate that bounds what leaves,
 /// optionally arranged by a view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,6 +638,35 @@ mod tests {
             value: "5".into(),
         };
         assert!(g.admits(&meta(&[("tier", Value::Int(5))])));
+    }
+
+    /// The reach widens which declared values admit, and nothing else: a
+    /// document declaring nothing is still in no export, and the gate's own
+    /// value is the first answer to *through which*.
+    #[test]
+    fn a_reach_admits_what_its_values_admit() {
+        let g = Gate {
+            field: "audience".into(),
+            value: "family".into(),
+        };
+        let reach =
+            Reach::of(&g).widened(["friends".to_string(), "public".into(), "friends".into()]);
+        assert_eq!(reach.values(), ["family", "friends", "public"]);
+        assert_eq!(reach.own(), "family");
+        assert_eq!(reach.reached(), ["friends", "public"]);
+        assert!(reach.admits(&g, &meta(&[("audience", Value::String("public".into()))])));
+        assert!(reach.admits(&g, &meta(&[("audience", seq(&["work", "friends"]))])));
+        assert!(!reach.admits(&g, &meta(&[("audience", seq(&["work"]))])));
+        assert!(!reach.admits(&g, &meta(&[])));
+        assert_eq!(
+            reach.through(&["public".into(), "family".into()]),
+            Some("family")
+        );
+        assert_eq!(
+            reach.through(&["public".into(), "friends".into()]),
+            Some("friends")
+        );
+        assert!(!Reach::of(&g).admits(&g, &meta(&[("audience", Value::String("public".into()))])));
     }
 
     #[test]

@@ -511,6 +511,11 @@ pub fn finding(f: &Finding) -> J {
             fields.push(("value", s(value)));
             fields.push(("suggestion", s(suggestion)));
         }
+        Finding::ReadsCycle { doc, field, terms } => {
+            fields.push(("doc", p(doc)));
+            fields.push(("field", s(field)));
+            fields.push(("terms", J::Arr(terms.iter().map(|t| s(t)).collect())));
+        }
         Finding::MalformedDate {
             doc,
             field,

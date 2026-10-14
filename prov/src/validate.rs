@@ -522,6 +522,18 @@ pub enum Finding {
         value: String,
         suggestion: String,
     },
+    /// The terms of `field`'s vocabulary read one another through
+    /// `also_reads` in a cycle: each of `terms` (sorted) reads every other.
+    /// `doc` is the vocabulary's store.
+    ///
+    /// A warning: the gate resolves it (every term on the cycle admits what
+    /// the others admit), but a family that reads friends who read the family
+    /// is one readership written as two, almost never what was meant.
+    ReadsCycle {
+        doc: PathBuf,
+        field: String,
+        terms: Vec<String>,
+    },
     /// A field declared `type: date` carries a `value` that is not one: not
     /// a calendar date, not an RFC 3339 instant, and not EDTF — the
     /// `1943-05`, `1913~`, `192X`, `1918/1922`, `XXXX` an archive writes
@@ -787,6 +799,7 @@ impl Finding {
             | Finding::UnknownTerm { doc, .. }
             | Finding::MalformedDate { doc, .. }
             | Finding::TermNearMiss { doc, .. }
+            | Finding::ReadsCycle { doc, .. }
             | Finding::ManifestConflict { doc }
             | Finding::ManifestMalformed { doc, .. } => doc,
             // The child is what gains the back-link; `doc` is the parent that
@@ -840,6 +853,9 @@ impl Finding {
             // An open vocabulary admits the value; the nudge is toward a
             // spelling already in use.
             | Finding::TermNearMiss { .. }
+            // Every term on the cycle resolves; what is wrong is what the
+            // author meant, which only they can say.
+            | Finding::ReadsCycle { .. }
             // The old spelling still resolves and every verb reads through it.
             | Finding::LegacyDeletionsPointer { .. }
             // The hashes are still verified; what has gone is their upkeep, and
@@ -921,6 +937,7 @@ impl Finding {
             Finding::MalformedStore { .. } => "malformed_store",
             Finding::UnknownTerm { .. } => "unknown_term",
             Finding::TermNearMiss { .. } => "term_near_miss",
+            Finding::ReadsCycle { .. } => "reads_cycle",
             Finding::MalformedDate { .. } => "malformed_date",
             Finding::LegacyDeletionsPointer { .. } => "legacy_deletions_pointer",
             Finding::LegacyBodyHash { .. } => "legacy_body_hash",
@@ -1308,6 +1325,16 @@ impl fmt::Display for Finding {
                 f,
                 "{}: `{field}: {value}` is not a known term — did you mean `{suggestion}`?",
                 doc.display(),
+            ),
+            Finding::ReadsCycle { doc, field, terms } => write!(
+                f,
+                "{}: the `{field}` terms {} read one another through `also_reads`, in a cycle",
+                doc.display(),
+                terms
+                    .iter()
+                    .map(|t| format!("`{t}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
             Finding::MalformedDate {
                 doc,
@@ -1971,6 +1998,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             crate::config::OpenClosed,
             crate::vocabulary::Vocabulary,
         )> = Vec::new();
+        let mut cycle_stores: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut cycles: Vec<Finding> = Vec::new();
         for (field, declarations) in &config.fields {
             for (index, spec) in declarations.iter().enumerate() {
                 // Membership is only checkable for a declaration that names a
@@ -1979,6 +2008,22 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 // apart — both yield the same term set, so everything below
                 // reads one shape.
                 if let Ok(Some(vocab)) = self.load_field_vocabulary(start, field, spec).await {
+                    // A cycle among the terms' `also_reads` is the
+                    // vocabulary's own finding, raised once per store.
+                    if let Some(store) = spec
+                        .vocabulary
+                        .as_deref()
+                        .and_then(|pointer| self.vocabulary_path(start, pointer))
+                        && cycle_stores.insert(store.clone())
+                    {
+                        cycles.extend(vocab.reads_cycles().into_iter().map(|terms| {
+                            Finding::ReadsCycle {
+                                doc: store.clone(),
+                                field: field.clone(),
+                                terms,
+                            }
+                        }));
+                    }
                     vocabs.push((field.clone(), index, spec.values, vocab));
                 }
             }
@@ -1992,7 +2037,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // declaration nobody is held to is a rule that silently stopped
         // applying.
         let scopes = self.field_scopes_of(start, &config).await?;
-        let mut findings = Vec::new();
+        let mut findings = cycles;
         if !scopes.unresolved().is_empty() {
             let surface = self
                 .config_path(start)

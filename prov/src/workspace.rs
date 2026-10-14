@@ -1109,6 +1109,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             .unwrap_or_default();
 
         let mut terms = BTreeMap::new();
+        let mut read_links: Vec<(String, Vec<PathBuf>)> = Vec::new();
         for raw in children {
             let Target::Path(path) = self.resolve_link(&index_path, &Link::parse(&raw)) else {
                 continue;
@@ -1160,8 +1161,39 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                     .get("holds")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                // Filled in below, once every term's node is known: a term
+                // node names the terms it reads by linking their nodes.
+                also_reads: Vec::new(),
             };
+            let reads: Vec<PathBuf> = child
+                .meta
+                .get(crate::vocabulary::ALSO_READS)
+                .map(Value::link_strings)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|raw| match self.resolve_link(&path, &Link::parse(&raw)) {
+                    Target::Path(target) => Some(target),
+                    _ => None,
+                })
+                .collect();
+            read_links.push((key.clone(), reads));
             terms.insert(key, (path, term));
+        }
+        // `also_reads` is a link to another term's node; the vocabulary reads
+        // it as that term's key. A link to a node that is no term of this
+        // vocabulary (or to nothing) reads nothing: a broken link is the
+        // census's to report, and widening on it would admit what nobody named.
+        let key_of: BTreeMap<PathBuf, String> = terms
+            .iter()
+            .map(|(key, (path, _))| (path.clone(), key.clone()))
+            .collect();
+        for (key, reads) in read_links {
+            if let Some((_, term)) = terms.get_mut(&key) {
+                term.also_reads = reads
+                    .iter()
+                    .filter_map(|path| key_of.get(path).cloned())
+                    .collect();
+            }
         }
         Ok(Some(terms))
     }

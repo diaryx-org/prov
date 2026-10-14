@@ -14,12 +14,17 @@
 //! one a consumer should call: `prov_exports::plan` takes the answer as a
 //! required argument precisely so that a caller who never asked cannot let
 //! every draft leave.
+//!
+//! The gate's other workspace-only half lives here too, for the same reason:
+//! what a gate's value *reaches* ([`Workspace::gate_reach`]) is read off the
+//! terms its vocabulary declares `also_reads` between, and only a workspace
+//! can find and read them.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::Path;
 
-use prov_exports::{ExportPlan, ExportSpec, TermHolds};
+use prov_exports::{ExportPlan, ExportSpec, Reach, TermHolds};
 use prov_graph::error::Result;
 use prov_graph::fs::ReadStorage;
 use prov_graph::index::IdIndex;
@@ -83,9 +88,49 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         Ok(TermHolds::from_docs(held))
     }
 
+    /// The values `spec`'s gate admits once its value's term is read for the
+    /// terms it `also_reads` ([`Reach`]): the gate's value, then every term
+    /// it reaches through the vocabulary that governs the gate's field at
+    /// `root_doc`, nearest first.
+    ///
+    /// The one resolution: an export plan, a preview and anything filtering
+    /// inside a document for the same readership ask this, so none of them
+    /// follows the terms its own way. The gate's value alone when the field
+    /// declares no vocabulary, when the value is no term of it, or when its
+    /// store will not load — a widening nobody can read is not applied, which
+    /// is the closed direction. A cycle resolves (each term on it reads the
+    /// others) and is `check`'s to report.
+    pub async fn gate_reach(&self, root_doc: &Path, spec: &ExportSpec) -> Result<Reach> {
+        let reach = Reach::of(&spec.gate);
+        let field = spec.gate.field.as_str();
+        let config = self.effective_config(root_doc).await?;
+        let Some(declarations) = config.fields.get(field) else {
+            return Ok(reach);
+        };
+        if declarations.iter().all(|d| d.vocabulary.is_none()) {
+            return Ok(reach);
+        }
+        // The vocabulary that governs the field where the walk starts: a gate
+        // is read for the whole workspace, so its readership's terms are the
+        // root's. A field whose terms are scoped deeper widens nothing here.
+        let scopes = self.field_scopes_of(root_doc, &config).await?;
+        let Some(index) = scopes.index_for(&config, field, root_doc) else {
+            return Ok(reach);
+        };
+        let Ok(Some(vocabulary)) = self
+            .load_field_vocabulary(root_doc, field, &declarations[index])
+            .await
+        else {
+            return Ok(reach);
+        };
+        let reached = vocabulary.reads(reach.own());
+        Ok(reach.widened(reached))
+    }
+
     /// What `spec` lets leave the workspace at `root_doc` — the export's plan,
     /// with its hold read through the workspace's vocabularies as well as the
-    /// literal `true` ([`term_holds`](Self::term_holds)).
+    /// literal `true` ([`term_holds`](Self::term_holds)), and its gate widened
+    /// by what the gate's term reads ([`gate_reach`](Self::gate_reach)).
     pub async fn export_plan(
         &self,
         root_doc: &Path,
@@ -93,7 +138,8 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         views: &[ViewSpec],
     ) -> prov_exports::Result<ExportPlan> {
         let term_holds = self.term_holds(root_doc, spec).await?;
-        prov_exports::plan(self.graph(), spec, views, root_doc, &term_holds).await
+        let reach = self.gate_reach(root_doc, spec).await?;
+        prov_exports::plan(self.graph(), spec, views, root_doc, &term_holds, &reach).await
     }
 }
 
@@ -176,6 +222,145 @@ mod tests {
 
     fn paths(docs: &[prov_exports::ExportDoc]) -> Vec<&str> {
         docs.iter().map(|d| d.path.to_str().unwrap()).collect()
+    }
+
+    /// Four nested circles and one outside them, as term nodes linking the
+    /// circle each reads, and a page for each.
+    fn circles(tag: &str) -> PathBuf {
+        let dir = prov_testkit::scratch("gate-reach", tag);
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\ncontents:\n- audiences/audiences.md\n- letter.md\n- lake.md\n- party.md\n- work.md\n- secret.md\n---\n",
+        );
+        write(
+            &dir,
+            "prov.yaml",
+            "title: prov config\nfields:\n  audience:\n    values: closed\n    vocabulary: /audiences/audiences.md\n",
+        );
+        write(
+            &dir,
+            "audiences/audiences.md",
+            "---\ntitle: Audiences\npart_of: ../index.md\ncontents:\n- closest.md\n- family.md\n- friends.md\n- public.md\n- work.md\n---\n",
+        );
+        for (term, reads) in [
+            ("closest", Some("family.md")),
+            ("family", Some("friends.md")),
+            ("friends", Some("public.md")),
+            ("public", None),
+            ("work", None),
+        ] {
+            let reads = reads
+                .map(|r| format!("also_reads:\n- {r}\n"))
+                .unwrap_or_default();
+            write(
+                &dir,
+                &format!("audiences/{term}.md"),
+                format!("---\nterm: {term}\npart_of: audiences.md\n{reads}---\n"),
+            );
+        }
+        for (page, audience) in [
+            ("letter", "family"),
+            ("lake", "public"),
+            ("party", "friends"),
+            ("work", "work"),
+        ] {
+            write(
+                &dir,
+                &format!("{page}.md"),
+                format!("---\ntitle: {page}\npart_of: index.md\naudience: {audience}\n---\n"),
+            );
+        }
+        write(
+            &dir,
+            "secret.md",
+            "---\ntitle: secret\npart_of: index.md\n---\n",
+        );
+        dir
+    }
+
+    fn gated(value: &str) -> ExportSpec {
+        ExportSpec {
+            name: value.into(),
+            label: None,
+            gate: Gate {
+                field: "audience".into(),
+                value: value.into(),
+            },
+            hold: None,
+            view: None,
+        }
+    }
+
+    /// A page marked only `public` is in every inner circle's plan, a
+    /// family page is in Closest's and not Friends', and a circle outside the
+    /// four reads only its own.
+    #[test]
+    fn a_gate_reaches_what_its_term_also_reads() {
+        let dir = circles("nested");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let root = Path::new("index.md");
+
+        let reach = block_on(ws.gate_reach(root, &gated("closest"))).unwrap();
+        assert_eq!(reach.values(), ["closest", "family", "friends", "public"]);
+
+        for (circle, expected) in [
+            ("closest", vec!["lake.md", "letter.md", "party.md"]),
+            ("family", vec!["lake.md", "letter.md", "party.md"]),
+            ("friends", vec!["lake.md", "party.md"]),
+            ("public", vec!["lake.md"]),
+            ("work", vec!["work.md"]),
+        ] {
+            let plan = block_on(ws.export_plan(root, &gated(circle), &[])).unwrap();
+            let mut got = paths(&plan.entries);
+            got.retain(|p| !p.starts_with("audiences/"));
+            got.sort();
+            assert_eq!(got, expected, "{circle}");
+        }
+    }
+
+    /// A cycle resolves, each circle on it reading the other's pages.
+    #[test]
+    fn a_cycle_of_circles_resolves() {
+        let dir = circles("cycle");
+        write(
+            &dir,
+            "audiences/public.md",
+            "---\nterm: public\npart_of: audiences.md\nalso_reads:\n- friends.md\n---\n",
+        );
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let root = Path::new("index.md");
+        let reach = block_on(ws.gate_reach(root, &gated("public"))).unwrap();
+        assert_eq!(reach.values(), ["public", "friends"]);
+        let reach = block_on(ws.gate_reach(root, &gated("family"))).unwrap();
+        assert_eq!(reach.values(), ["family", "friends", "public"]);
+
+        // ...and `check` says so, once, naming the vocabulary's store.
+        let cycles: Vec<_> = block_on(ws.check(root))
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.kind() == "reads_cycle")
+            .collect();
+        assert_eq!(cycles.len(), 1, "{cycles:?}");
+        match &cycles[0] {
+            crate::Finding::ReadsCycle { doc, field, terms } => {
+                assert_eq!(doc, Path::new("audiences/audiences.md"));
+                assert_eq!(field, "audience");
+                assert_eq!(terms, &["friends", "public"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(cycles[0].severity(), crate::Severity::Warning);
+
+        // The nested circles without the cycle raise nothing.
+        let dir = circles("acyclic");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        assert!(
+            !block_on(ws.check(root))
+                .unwrap()
+                .iter()
+                .any(|f| f.kind() == "reads_cycle")
+        );
     }
 
     #[test]

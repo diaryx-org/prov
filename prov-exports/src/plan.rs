@@ -32,6 +32,17 @@
 //! reason: [`TermHolds::none`] is a statement a caller makes, not a default it
 //! falls into.
 //!
+//! # What the gate's value reaches
+//!
+//! A gate's value can mean more than itself: when its term `also_reads`
+//! another (`family` reads `friends`), the gate admits what that one admits.
+//! The widening is resolved by the workspace, from the vocabulary, and handed
+//! in as a [`Reach`] the way the term holds are, so every consumer of a plan
+//! judges by the one resolution. It changes only which declared values admit;
+//! the hold and the view narrow its set exactly as they narrow the gate's.
+//! [`ExportPlan::reach`] says what was resolved, so a consumer that filters
+//! inside a document (a `:vis` region for `family`) reads the same set.
+//!
 //! The valve also fails **closed**: a view that cannot be executed is an
 //! error ([`Error::View`](crate::Error)), never a fall-back to the gate's
 //! whole set, and an unreadable export declaration is not an export at all
@@ -57,7 +68,7 @@ use prov_graph::index::IdIndex;
 use prov_views::{Row, ViewSpec};
 
 use crate::error::{Error, Result};
-use crate::spec::ExportSpec;
+use crate::spec::{ExportSpec, Reach};
 
 /// The documents whose hold-field value is a term that holds them back —
 /// the half of the hold a vocabulary answers. See the module docs.
@@ -150,6 +161,12 @@ pub struct ExportPlan {
     /// The bulk of any workspace — closed by default means most documents
     /// are here — reported so *withheld* is an answer, never a silence.
     pub withheld: Vec<Withheld>,
+    /// The values this plan admitted by: the gate's own, then what its term
+    /// reads (see [`Reach`]). Carried so whatever consumes the plan — a
+    /// render filtering a document's regions, a preview saying which circle a
+    /// page came through — reads the set the plan was judged by rather than
+    /// resolving its own.
+    pub reach: Reach,
 }
 
 /// Compose a gate's judgment over the reachable documents with a view's
@@ -158,21 +175,26 @@ pub struct ExportPlan {
 /// `rows` is every reachable document with its metadata, in path order.
 /// `view_scope` is `None` for an export that names no view, `Some(paths)` for
 /// the executed view's selection. `term_holds` names the documents a term
-/// holds back (see [`TermHolds`]). Read the body: `entries` is seeded from
-/// what the gate admits and only ever `retain`ed — see the module docs.
+/// holds back (see [`TermHolds`]), and `reach` the values the gate's value
+/// reaches (see [`Reach`]). Read the body: `entries` is seeded from what the
+/// gate admits and only ever `retain`ed — see the module docs.
 pub fn compose(
     spec: &ExportSpec,
     rows: &[Row],
     view_scope: Option<&HashSet<PathBuf>>,
     term_holds: &TermHolds,
+    reach: &Reach,
 ) -> ExportPlan {
+    // The gate's own value always admits, so a reach resolved for some other
+    // gate could widen this one but never take its own value away.
+    let reach = Reach::of(&spec.gate).widened(reach.values().iter().cloned());
     let mut entries = Vec::new();
     let mut held = Vec::new();
     let mut withheld = Vec::new();
     for row in rows {
         let title = row.title();
         match spec.gate.declared_in(&row.meta) {
-            Some(declared) if declared.iter().any(|v| v == spec.gate.value.trim()) => {
+            Some(declared) if reach.through(&declared).is_some() => {
                 let doc = ExportDoc {
                     path: row.path.clone(),
                     title,
@@ -217,6 +239,7 @@ pub fn compose(
         outside_view,
         held,
         withheld,
+        reach,
     }
 }
 
@@ -239,6 +262,7 @@ pub async fn plan<FS: ReadStorage, Ix: IdIndex>(
     views: &[ViewSpec],
     root_doc: impl AsRef<Path>,
     term_holds: &TermHolds,
+    reach: &Reach,
 ) -> Result<ExportPlan> {
     let root_doc = root_doc.as_ref();
     // One scope for the whole plan: the reachability walk, the metadata pass,
@@ -276,7 +300,7 @@ pub async fn plan<FS: ReadStorage, Ix: IdIndex>(
             .collect()
     });
 
-    Ok(compose(spec, &rows, view_scope.as_ref(), term_holds))
+    Ok(compose(spec, &rows, view_scope.as_ref(), term_holds, reach))
 }
 
 #[cfg(test)]
@@ -315,6 +339,15 @@ mod tests {
         }
     }
 
+    /// A reach that widens nothing: [`compose`] always admits the gate's own
+    /// value, so a reach of no value is the gate alone, whichever it is.
+    pub(super) fn unwidened() -> Reach {
+        Reach::of(&Gate {
+            field: "audience".into(),
+            value: String::new(),
+        })
+    }
+
     fn scope(paths: &[&str]) -> HashSet<PathBuf> {
         paths.iter().map(PathBuf::from).collect()
     }
@@ -338,12 +371,39 @@ mod tests {
             &rows,
             None,
             &TermHolds::none(),
+            &unwidened(),
         );
 
         assert_eq!(entry_paths(&plan), ["index.md", "trip.md"]);
         assert!(plan.outside_view.is_empty());
         assert_eq!(plan.withheld.len(), 1);
         assert_eq!(plan.withheld[0].declared, None, "undeclared, not refused");
+    }
+
+    /// A reach widens which declared values admit: a page marked only
+    /// `public` is in the family export when family reads public, and says so
+    /// in the plan's reach. A page that declares nothing is still withheld,
+    /// and a hold still holds.
+    #[test]
+    fn a_reach_admits_what_the_gate_value_reads() {
+        let rows = [
+            row("letter.md", Some(&["family"])),
+            row("lake.md", Some(&["public"])),
+            row("party.md", Some(&["friends"])),
+            row("work.md", Some(&["work"])),
+            row("secret.md", None),
+        ];
+        let family = spec("letters", "family", None);
+        let reach = Reach::of(&family.gate).widened(["friends".to_string(), "public".into()]);
+        let plan = compose(&family, &rows, None, &TermHolds::none(), &reach);
+        assert_eq!(entry_paths(&plan), ["letter.md", "lake.md", "party.md"]);
+        assert_eq!(plan.reach.values(), ["family", "friends", "public"]);
+        assert_eq!(plan.withheld.len(), 2);
+
+        // Without the reach, the gate is its own value alone.
+        let plan = compose(&family, &rows, None, &TermHolds::none(), &unwidened());
+        assert_eq!(entry_paths(&plan), ["letter.md"]);
+        assert_eq!(plan.reach.values(), ["family"]);
     }
 
     /// The load-bearing invariant. `daily/private.md` is inside the view's
@@ -362,6 +422,7 @@ mod tests {
             &rows,
             Some(&in_scope),
             &TermHolds::none(),
+            &unwidened(),
         );
 
         assert_eq!(
@@ -392,6 +453,7 @@ mod tests {
             &rows,
             Some(&everything),
             &TermHolds::none(),
+            &unwidened(),
         );
 
         assert_eq!(entry_paths(&plan), ["a.md"]);
@@ -424,6 +486,7 @@ mod tests {
             &rows,
             None,
             &TermHolds::none(),
+            &unwidened(),
         );
 
         assert!(plan.entries.is_empty());
@@ -444,6 +507,7 @@ mod tests {
             &rows,
             Some(&scope(&[])),
             &TermHolds::none(),
+            &unwidened(),
         );
         assert!(plan.entries.is_empty());
         assert_eq!(plan.outside_view, vec![PathBuf::from("a.md")]);
@@ -459,6 +523,7 @@ mod tests {
             &rows,
             None,
             &TermHolds::none(),
+            &unwidened(),
         );
         assert_eq!(plan.entries[0].declared, ["family", "friends"]);
     }
@@ -489,7 +554,13 @@ mod tests {
             row("index.md", Some(&["family"])),
             row_with("draft.md", Some(&["family", "friends"]), Value::Bool(true)),
         ];
-        let plan = compose(&held_spec(None), &rows, None, &TermHolds::none());
+        let plan = compose(
+            &held_spec(None),
+            &rows,
+            None,
+            &TermHolds::none(),
+            &unwidened(),
+        );
 
         assert_eq!(entry_paths(&plan), ["index.md"]);
         assert_eq!(plan.held.len(), 1);
@@ -514,7 +585,13 @@ mod tests {
             (Value::Sequence(vec![Value::Bool(true)]), false),
         ] {
             let rows = [row_with("a.md", Some(&["family"]), value.clone())];
-            let plan = compose(&held_spec(None), &rows, None, &TermHolds::none());
+            let plan = compose(
+                &held_spec(None),
+                &rows,
+                None,
+                &TermHolds::none(),
+                &unwidened(),
+            );
             assert_eq!(plan.entries.len() == 1, leaves, "for {value:?}");
             assert_eq!(plan.held.len() == 1, !leaves, "for {value:?}");
         }
@@ -536,11 +613,18 @@ mod tests {
             &rows,
             None,
             &TermHolds::none(),
+            &unwidened(),
         );
         assert_eq!(entry_paths(&unheld), ["draft.md"], "no hold, nothing held");
         assert!(unheld.held.is_empty());
 
-        let held = compose(&held_spec(None), &rows, None, &TermHolds::none());
+        let held = compose(
+            &held_spec(None),
+            &rows,
+            None,
+            &TermHolds::none(),
+            &unwidened(),
+        );
         assert!(held.entries.is_empty());
         assert_eq!(held.held.len(), 1, "only the admitted draft is held");
         assert_eq!(
@@ -569,6 +653,7 @@ mod tests {
             &rows,
             Some(&scope(&["daily/monday.md"])),
             &TermHolds::none(),
+            &unwidened(),
         );
 
         assert_eq!(entry_paths(&plan), ["daily/monday.md"]);
@@ -655,6 +740,10 @@ mod fs_tests {
         }
     }
 
+    fn unwidened() -> crate::Reach {
+        super::tests::unwidened()
+    }
+
     fn entry_paths(plan: &ExportPlan) -> Vec<String> {
         plan.entries
             .iter()
@@ -674,6 +763,7 @@ mod fs_tests {
             &[],
             "index.md",
             &TermHolds::none(),
+            &unwidened(),
         ))
         .expect("a plan");
         assert_eq!(
@@ -697,6 +787,7 @@ mod fs_tests {
             &[daily_view()],
             "index.md",
             &TermHolds::none(),
+            &unwidened(),
         ))
         .expect("a plan");
 
@@ -723,6 +814,7 @@ mod fs_tests {
             &[daily_view()],
             "index.md",
             &TermHolds::none(),
+            &unwidened(),
         ))
         .unwrap_err();
         let Error::ViewUnknown { export, view } = &err else {
@@ -746,6 +838,7 @@ mod fs_tests {
             &[view],
             "index.md",
             &TermHolds::none(),
+            &unwidened(),
         ))
         .expect("a plan");
         assert!(plan.entries.is_empty(), "{:?}", plan.entries);
@@ -773,8 +866,15 @@ mod fs_tests {
             hold: Some("draft".into()),
             ..export(None)
         };
-        let plan =
-            block_on(plan(&g, &holding, &[], "index.md", &TermHolds::none())).expect("a plan");
+        let plan = block_on(plan(
+            &g,
+            &holding,
+            &[],
+            "index.md",
+            &TermHolds::none(),
+            &unwidened(),
+        ))
+        .expect("a plan");
         assert_eq!(
             entry_paths(&plan),
             ["daily/07-24.md", "daily.md", "note.md"]
@@ -794,6 +894,7 @@ mod fs_tests {
             &[],
             "index.md",
             &TermHolds::none(),
+            &unwidened(),
         ))
         .expect("a plan");
         assert!(unheld.held.is_empty());
@@ -808,8 +909,24 @@ mod fs_tests {
         let g = graph(&dir);
         let views = [daily_view()];
         let spec = export(Some("daily"));
-        let first = block_on(plan(&g, &spec, &views, "index.md", &TermHolds::none())).unwrap();
-        let second = block_on(plan(&g, &spec, &views, "index.md", &TermHolds::none())).unwrap();
+        let first = block_on(plan(
+            &g,
+            &spec,
+            &views,
+            "index.md",
+            &TermHolds::none(),
+            &unwidened(),
+        ))
+        .unwrap();
+        let second = block_on(plan(
+            &g,
+            &spec,
+            &views,
+            "index.md",
+            &TermHolds::none(),
+            &unwidened(),
+        ))
+        .unwrap();
         assert_eq!(first, second);
     }
 }

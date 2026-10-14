@@ -69,4 +69,6 @@ pub mod spec;
 pub use error::{Error, Result};
 pub use lint::{ExportIssue, ExportIssueKind, diagnose_export, diagnose_exports};
 pub use plan::{ExportDoc, ExportPlan, TermHolds, Withheld, compose, plan};
-pub use spec::{EXPORT_KEYS, EXPORTS_KEY, ExportSpec, GATE_KEYS, Gate, HOLD_VALUE, exports_from};
+pub use spec::{
+    EXPORT_KEYS, EXPORTS_KEY, ExportSpec, GATE_KEYS, Gate, HOLD_VALUE, Reach, exports_from,
+};
