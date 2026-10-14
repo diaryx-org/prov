@@ -2,7 +2,7 @@
 title: inline attachments
 author: adammharris
 created: 2026-10-13
-updated: 2026-10-13
+updated: 2026-10-14
 status: accepted
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 derived_from:
@@ -12,10 +12,10 @@ derived_from:
 
 ## Status
 
-**Accepted** (2026-10-13), and phase 1 of §9 is built on `main`, not yet
+**Accepted** (2026-10-13). Phases 1 and 2 of §9 are built on `main`, not yet
 released: `type: payload`, the owned-payload rules of §4, the spec §4 row,
-and `attach --inline`. Promotion and demotion (§6), diaryx's side (§7) and
-projection (§8.1) are not. The body is left as argued. Three things settled
+`attach --inline`, and promotion and demotion (§6). Diaryx's side (§7) and
+projection (§8.1) are not. The body is left as argued. These things settled
 differently in the build:
 
 - **The checksum key is `content_hash`, not `sha256`.** It is the key a
@@ -35,8 +35,25 @@ differently in the build:
   address (`attachments[0].content_hash`), and its repair is a judgment, as
   `FixityMismatch`'s is.
 
+- **Demotion keeps an authored `title`.** §6 drops it, but a title someone
+  wrote is a fact about the picture, and a row can carry it. Only the title
+  `attach` would have derived from the file's name is dropped, so a row
+  promoted again gets back the card's title, and a fresh card's row carries
+  nothing it did not need.
+- **A demoted row gains a `content_hash`** where the card had none and the
+  workspace records checksums, as `attach --inline` would have written.
+- **Demotion refuses a card holding any relation** besides its link to its
+  parent, and one with children: a row has no inverse to keep them by.
+- **The last entry takes its list with it.** Demoting a parent's last card
+  removes `contents`, and promoting a document's last row removes its
+  `attachments`. Where the format's editor cannot remove the key (fig's
+  refuses a figl `>` block list), the list is left `[]`.
+
 The CLI spelling is `prov attach FILE --in DOC --inline`, with `--field
-PATH` when a workspace declares more than one `type: payload` path.
+PATH` when a workspace declares more than one `type: payload` path. Moving
+between the two is `prov attach FILE --demote [--in DOC]` (FILE is the card
+or its file, DOC defaults to the card's parent) and `prov attach FILE
+--promote [--in PARENT]` (PARENT defaults to the document that owned it).
 
 ## Summary
 
