@@ -99,6 +99,7 @@ pub mod lint;
 pub mod search;
 pub mod select;
 pub mod spec;
+mod stack;
 
 pub use error::{Error, Result};
 pub use expr::{Evaluator, Expression, ExpressionError, FUNCTIONS, KeyShape};

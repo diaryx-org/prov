@@ -497,6 +497,32 @@ mod tests {
         dir
     }
 
+    /// Discovery compiles every view's CEL, and the CEL parser recurses deeply
+    /// with large frames. A host that identifies a workspace from a thread of
+    /// its own — a Swift cooperative-pool thread has 512 KB — must not overflow
+    /// for a view a few calls deep. Run in a debug build, where the frames are
+    /// largest; a release build passes with or without the fix.
+    #[test]
+    fn discovery_survives_a_nested_view_on_a_small_stack() {
+        let root = tmp("small-stack");
+        std::fs::write(
+            root.join("index.md"),
+            "---\ntitle: Home\nprov:\n  views:\n    deep:\n      where: \"present(first(first(first(first(status, kind), tag), label), name))\"\n      key: \"[first([first([status, kind]), tag]), [label]]\"\n---\n",
+        )
+        .unwrap();
+        let found = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || block_on(discover(&StdFs, &root)))
+            .expect("spawn")
+            .join()
+            .expect("discovery ran to the end")
+            .expect("discover");
+        match found {
+            Discovery::Found(d) => assert_eq!(d.config.views.len(), 1, "the view was read"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
     #[test]
     fn finds_the_root_by_walking_up_from_a_nested_dir() {
         let root = tmp("walk-up");

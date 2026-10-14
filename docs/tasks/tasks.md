@@ -7,6 +7,7 @@ updated: 2026-10-06
 part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
+- '[cel parses on a small stack](/docs/tasks/cel-parses-on-a-small-stack.md)'
 ---
 
 # Tasks

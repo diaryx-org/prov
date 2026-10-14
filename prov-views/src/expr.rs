@@ -74,6 +74,7 @@ use prov_graph::meta::{Mapping, Value};
 use prov_graph::title;
 
 use crate::select::Row;
+use crate::stack;
 use prov_grain::{Grain, scalar_texts};
 
 /// prov's functions — the only names an expression may call beyond CEL's own.
@@ -143,10 +144,30 @@ const TYPE_NAMES: &[&str] = &[
 #[derive(Clone)]
 pub struct Expression {
     source: String,
-    program: Arc<Program>,
-    /// The tree that runs: the program's own, with every container `in` and a
+    compiled: Arc<Compiled>,
+}
+
+/// The trees an [`Expression`] keeps, and how deep they go — which is what
+/// every walk over them sizes its stack by (see [`crate::stack`]).
+struct Compiled {
+    /// The tree as parsed, which the questions about what was written
+    /// ([`Expression::fields`], [`Expression::anchors`]) are asked of.
+    written: IdedExpr,
+    /// The tree that runs: the written one, with every container `in` and a
     /// comprehension read through [`CONTAINER`]. See [`absent_is_empty`].
-    tree: Arc<IdedExpr>,
+    tree: IdedExpr,
+    /// The levels in the deeper of the two.
+    depth: usize,
+}
+
+impl Drop for Compiled {
+    /// Dropping a tree recurses as deep as it goes, so it gets the same room
+    /// as a walk over it.
+    fn drop(&mut self) {
+        let written = std::mem::take(&mut self.written);
+        let tree = std::mem::take(&mut self.tree);
+        stack::with_stack(stack::for_depth(self.depth), move || drop((written, tree)));
+    }
 }
 
 impl Expression {
@@ -158,24 +179,12 @@ impl Expression {
         if source.is_empty() {
             return Err(ExpressionError::Empty);
         }
-        let program = Program::compile(source)
-            .map_err(|errors| ExpressionError::Syntax(first_line(&errors.to_string())))?;
-        let references = program.references();
-        let mut unknown: Vec<&str> = references
-            .functions()
-            .into_iter()
-            .filter(|name| is_named_function(name) && !is_known_function(name))
-            .collect();
-        unknown.sort_unstable();
-        if let Some(name) = unknown.first() {
-            return Err(ExpressionError::UnknownFunction((*name).to_string()));
-        }
-        let mut tree = program.expression().clone();
-        absent_is_empty(&mut tree);
+        let needed =
+            stack::PARSE.saturating_add(source.len().saturating_mul(stack::PARSE_PER_BYTE));
+        let compiled = stack::with_stack(needed, || compile(source))?;
         Ok(Expression {
             source: source.to_string(),
-            program: Arc::new(program),
-            tree: Arc::new(tree),
+            compiled: Arc::new(compiled),
         })
     }
 
@@ -189,14 +198,15 @@ impl Expression {
     /// included, since the parser does not tell them apart; a caller using
     /// this to find the fields a view depends on reads it as *at most*.
     pub fn fields(&self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .program
-            .references()
-            .variables()
-            .into_iter()
-            .filter(|name| *name != "doc")
-            .map(str::to_string)
-            .collect();
+        let mut names: Vec<String> = self.walk(|written| {
+            written
+                .references()
+                .variables()
+                .into_iter()
+                .filter(|name| *name != "doc")
+                .map(str::to_string)
+                .collect()
+        });
         names.sort();
         names.dedup();
         names
@@ -208,27 +218,62 @@ impl Expression {
     /// ancestors and so cannot tell an anchor that names nothing from one that
     /// is simply not above this document.
     pub fn anchors(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        visit(self.program.expression(), &mut |expr| {
-            if let Expr::Call(call) = &expr.expr
-                && call.target.is_none()
-                && call.func_name == "under"
-                && let [arg] = call.args.as_slice()
-                && let Expr::Literal(LiteralValue::String(anchor)) = &arg.expr
-                && !out.iter().any(|a| a == anchor.inner())
-            {
-                out.push(anchor.inner().to_string());
-            }
-        });
-        out
+        self.walk(|written| {
+            let mut out: Vec<String> = Vec::new();
+            visit(written, &mut |expr| {
+                if let Expr::Call(call) = &expr.expr
+                    && call.target.is_none()
+                    && call.func_name == "under"
+                    && let [arg] = call.args.as_slice()
+                    && let Expr::Literal(LiteralValue::String(anchor)) = &arg.expr
+                    && !out.iter().any(|a| a == anchor.inner())
+                {
+                    out.push(anchor.inner().to_string());
+                }
+            });
+            out
+        })
     }
 
     /// What this expression does, when it is one of the shapes a person could
     /// be told in words — a field, a chain, a grain over either. See
     /// [`KeyShape`].
     pub fn key_shape(&self) -> KeyShape {
-        KeyShape::of(self.program.expression())
+        self.walk(KeyShape::of)
     }
+
+    /// `f` over the tree as written, with the stack a walk that deep needs.
+    fn walk<R>(&self, f: impl FnOnce(&IdedExpr) -> R) -> R {
+        stack::with_stack(stack::for_depth(self.compiled.depth), || {
+            f(&self.compiled.written)
+        })
+    }
+}
+
+/// The parse proper, which [`Expression::parse`] runs with the stack it needs.
+fn compile(source: &str) -> Result<Compiled, ExpressionError> {
+    let program = Program::compile(source)
+        .map_err(|errors| ExpressionError::Syntax(first_line(&errors.to_string())))?;
+    let written = program.expression().clone();
+    drop(program);
+    let references = written.references();
+    let mut unknown: Vec<&str> = references
+        .functions()
+        .into_iter()
+        .filter(|name| is_named_function(name) && !is_known_function(name))
+        .collect();
+    unknown.sort_unstable();
+    if let Some(name) = unknown.first() {
+        return Err(ExpressionError::UnknownFunction((*name).to_string()));
+    }
+    let mut tree = written.clone();
+    absent_is_empty(&mut tree);
+    let depth = depth(&tree);
+    Ok(Compiled {
+        written,
+        tree,
+        depth,
+    })
 }
 
 impl fmt::Debug for Expression {
@@ -384,9 +429,12 @@ impl Evaluator {
             row,
             doc: doc_value(row),
         };
-        let mut ctx = self.root.new_inner_scope();
-        ctx.set_variable_resolver(&scope);
-        ctx.resolve(&expr.tree).map_err(|e| explain(&e))
+        let compiled = &expr.compiled;
+        stack::with_stack(stack::for_depth(compiled.depth), || {
+            let mut ctx = self.root.new_inner_scope();
+            ctx.set_variable_resolver(&scope);
+            ctx.resolve(&compiled.tree).map_err(|e| explain(&e))
+        })
     }
 
     /// Whether `row` meets `expr` — which must come out `true` or `false`.
@@ -794,41 +842,43 @@ impl Anchor {
 /// Call `f` on every node of `expr`, parents first.
 fn visit(expr: &IdedExpr, f: &mut dyn FnMut(&IdedExpr)) {
     f(expr);
+    for child in children(expr) {
+        visit(child, f);
+    }
+}
+
+/// The levels in `expr`: one for a leaf.
+fn depth(expr: &IdedExpr) -> usize {
+    1 + children(expr).into_iter().map(depth).max().unwrap_or(0)
+}
+
+/// The subexpressions directly under `expr`, in source order.
+fn children(expr: &IdedExpr) -> Vec<&IdedExpr> {
     match &expr.expr {
-        Expr::Call(call) => {
-            if let Some(target) = call.target.as_deref() {
-                visit(target, f);
-            }
-            for arg in &call.args {
-                visit(arg, f);
-            }
-        }
-        Expr::Comprehension(comp) => {
-            for part in [
-                &comp.iter_range,
-                &comp.accu_init,
-                &comp.loop_cond,
-                &comp.loop_step,
-                &comp.result,
-            ] {
-                visit(part, f);
-            }
-        }
-        Expr::List(list) => list.elements.iter().for_each(|e| visit(e, f)),
+        Expr::Call(call) => call
+            .target
+            .as_deref()
+            .into_iter()
+            .chain(&call.args)
+            .collect(),
+        Expr::Comprehension(comp) => vec![
+            &comp.iter_range,
+            &comp.accu_init,
+            &comp.loop_cond,
+            &comp.loop_step,
+            &comp.result,
+        ],
+        Expr::List(list) => list.elements.iter().collect(),
         Expr::Map(cel::common::ast::MapExpr { entries })
-        | Expr::Struct(cel::common::ast::StructExpr { entries, .. }) => {
-            for entry in entries {
-                match &entry.expr {
-                    cel::common::ast::EntryExpr::MapEntry(e) => {
-                        visit(&e.key, f);
-                        visit(&e.value, f);
-                    }
-                    cel::common::ast::EntryExpr::StructField(field) => visit(&field.value, f),
-                }
-            }
-        }
-        Expr::Select(select) => visit(&select.operand, f),
-        _ => {}
+        | Expr::Struct(cel::common::ast::StructExpr { entries, .. }) => entries
+            .iter()
+            .flat_map(|entry| match &entry.expr {
+                cel::common::ast::EntryExpr::MapEntry(e) => vec![&e.key, &e.value],
+                cel::common::ast::EntryExpr::StructField(field) => vec![&field.value],
+            })
+            .collect(),
+        Expr::Select(select) => vec![&select.operand],
+        _ => Vec::new(),
     }
 }
 
@@ -937,6 +987,43 @@ mod tests {
             meta: Value::Mapping(meta),
             references: Vec::new(),
         }
+    }
+
+    /// Parse, evaluate, walk and drop `source` on a thread with `stack`
+    /// bytes, as a host's pool thread would; the value it comes to.
+    fn on_a_small_stack(stack: usize, source: String) -> Result<cel::Value, String> {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn(move || {
+                let expr = Expression::parse(&source).expect("parses");
+                expr.fields();
+                expr.anchors();
+                expr.key_shape();
+                let value = Evaluator::new().value(&expr, &row(&[("x", Value::Int(1))]));
+                drop(expr);
+                value
+            })
+            .expect("spawn")
+            .join()
+            .expect("ran to the end on a small stack")
+    }
+
+    #[test]
+    fn an_expression_at_cels_nesting_limit_needs_no_stack_of_the_callers() {
+        let n = 90;
+        let source = format!("{}x{}", "[".repeat(n), "]".repeat(n));
+        on_a_small_stack(256 * 1024, source).expect("evaluates");
+    }
+
+    #[test]
+    fn a_long_operand_chain_needs_no_stack_of_the_callers() {
+        // Not counted against cel's nesting limit, and a level of the tree
+        // per operand.
+        let source = vec!["x"; 2000].join(" + ");
+        assert_eq!(
+            on_a_small_stack(256 * 1024, source),
+            Ok(cel::Value::Int(2000))
+        );
     }
 
     fn text(s: &str) -> Value {

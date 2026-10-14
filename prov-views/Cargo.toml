@@ -30,6 +30,11 @@ cel.workspace = true
 # dependency-free, so the guarantee above still holds.
 unicode-normalization.workspace = true
 
+# A fresh stack for CEL when the calling thread is short of one — see
+# `src/stack.rs`. Wasm has one stack, sized at link time, and nothing to grow.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+stacker.workspace = true
+
 [dev-dependencies]
 prov-testkit = { workspace = true }
 # A retired view's `nest:` translates to a filing entry; the tests read it back

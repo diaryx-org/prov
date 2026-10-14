@@ -91,6 +91,11 @@ moid = "1"
 # (`May 1943` → `1943-05`, `c. 1913` → `1913~`) that reports ambiguity rather
 # than guessing, which is what a `check` remedy is allowed to be.
 cel = "0.14"
+# Room on the stack for `cel`, whose parser and interpreter recurse far deeper
+# than a host thread may allow — see `prov-views/src/stack.rs`. `maybe_grow`
+# costs a check when the thread has room. Not built for wasm, which has one
+# stack and nothing to switch to.
+stacker = "0.1"
 edtf-core = "1.2"
 edtf-normalize = "1.2"
 
