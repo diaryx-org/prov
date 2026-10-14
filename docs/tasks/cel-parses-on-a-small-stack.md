@@ -4,7 +4,7 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 created: 2026-10-14T16:47:13.324124Z
 status: open
 author: adammharris
-description: cel's ANTLR parser spends ~165 KB of stack per nesting level in a debug build, so prov runs every CEL walk on a grown stack; the fix belongs upstream, and the workaround goes when it lands
+description: "cel's ANTLR parser spends ~165 KB of stack per nesting level in a debug build, so prov runs every CEL walk on a grown stack; upstream's Pratt parser fits in 279 KB at the limit and is the way out once it is selectable"
 ---
 
 # cel parses on a small stack
@@ -57,8 +57,39 @@ a 256–512 KB thread in a debug build.
 
 ## Upstream
 
-The fix is the parser's: frames this large come from the generated
-`CELParser`'s context objects and `antlr4rust`'s recursion, and the
-interpreter could resolve an operand chain without a frame per operand. Worth
-an issue on `cel-rust` with the table above. When a release fixes it,
-re-measure and shrink or remove `stack.rs`.
+Checked 2026-10-14, against cel-rust `main` and 0.15.0.
+
+- **The stack cost is known and accepted for ANTLR.** #212 (closed) is this
+  bug on Windows; its fix, #213 (0.11.6), is the `max_recursion_depth` of 96
+  prov already gets, which turns a deep parse into an error but does not
+  make a shallow one cheap. #273 found no low-hanging fruit: about 21 frames
+  per nesting level, "all due to how deep the stack gets due to how ANTLR
+  does this".
+- **The way out is a Pratt parser ported from cel-go** (#320, #326, parity
+  fixes in #333), about 20–40× faster than ANTLR by its benchmarks. Since
+  0.14.5 it is `cel::parser::PrattParser`, behind the non-default
+  `parser_pratt` feature and `#[doc(hidden)]`; `Program::compile` still uses
+  ANTLR. The maintainer's remaining steps (on #320): a default
+  `parser_antlr` feature that, when turned off, lets `parser_pratt` replace
+  it, then a release. Neither is in 0.15.0, and CI's conformance job does
+  not turn `parser_pratt` on.
+- **Pratt fits a small stack.** Measured as above, 0.14.5:
+
+  | | ANTLR debug | Pratt debug | ANTLR release | Pratt release |
+  |---|---|---|---|---|
+  | parse `x` | 215 KB | 23 KB | 23 KB | 23 KB |
+  | nesting 16 | 2.9 MB | 39 KB | 135 KB | 23 KB |
+  | nesting 95 | 16 MB | 279 KB | 727 KB | 151 KB |
+  | `x + …` × 2000 | 2.6 MB | 423 KB | 775 KB | 119 KB |
+
+  With `Expression::parse` calling `PrattParser` instead of
+  `Program::compile`, prov's whole test suite passes unchanged (tried and
+  reverted; prov keeps only the `IdedExpr`, so no `Program` is needed).
+- **Evaluation is untouched by any of it.** The interpreter still recurses
+  per level of the tree (~40 KB in debug); #355 (plan evaluation) is about
+  speed, not depth. That half of `stack.rs` stays until it changes.
+
+So the parse half of this task is done when Pratt is cel's default parser,
+or selectable without a hidden API: switch to it, re-measure, and drop the
+parse size in `stack.rs` to what Pratt needs. Taking `PrattParser` now
+would mean leaning on a `#[doc(hidden)]` API that semver does not cover.
