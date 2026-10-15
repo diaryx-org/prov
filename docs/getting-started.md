@@ -69,9 +69,7 @@ ties).
 
 prov builds from source:
 
-- **Rust** (`cargo`, 1.85 or newer) — to build prov itself.
-
-If you want to set custom (non-default) features for the build, you will also need a Zig 0.16.0 toolchain.
+- **Rust** (`cargo`, 1.88 or newer) — to build prov itself. Nothing else: its dependencies are pure Rust.
 
 ```sh
 $ git clone https://github.com/diaryx-org/prov
@@ -97,7 +95,7 @@ $ prov init my-vault
 ◇  Title ················ My Vault
 ◇  Author ··············· (blank)
 ◇  Content format ······· Markdown
-◇  Embed type ··········· Character delimiters
+◇  Embed type ··········· Frontmatter
 ◇  Config language ······ YAML
 ◇  Wrapper ·············· Markdown
 ◇  Identity ············· On demand
@@ -128,8 +126,8 @@ The prompts, in the order they're asked:
 | **Title**                     | `--title`      | the directory's name          | any text                                                      |
 | **Author**                    | `--author`     | omitted                       | any text                                                      |
 | **Content format**            | `--content`    | `markdown`                    | `markdown` (`.md`), `djot` (`.dj`), `html` (`.html`)          |
-| **Embed type**                | `--embed`      | the content's first style     | `delimited`, `code-block`, `html-script`, `html-code`, `separate` — narrowed by content format |
-| **Config language**           | `--meta`       | `yaml`                        | `yaml`, `json`, `toml`, `fig` — narrowed by embed type        |
+| **Embed type**                | `--embed`      | the content's first style     | `delimited`, `separate` — Markdown leads with `delimited`, Djot and HTML with `separate` |
+| **Config language**           | `--meta`       | `yaml`                        | `yaml`, `json`, `toml`, `figl` (`fig` still reads)             |
 | **Wrapper**                   | `--wrapper`    | `markdown`                    | `markdown` (`[Title](target)`), `wikilink` (`[[target]]`)     |
 | **Identity**                  | `--identity`   | `lazy`                        | `off` (a.k.a. `none`), `lazy`, `eager` — see [§9](#9-stable-ids-optional) |
 | **References between docs**   | `--reference`  | `path`                        | `path`, `id`, `alias`, `split` — `id`/`split` need identity   |
@@ -142,9 +140,9 @@ The root-shaping choices come first; the rest are **workspace preferences**, all
 written into a config document (`prov.yaml`, linked from the root) so the
 workspace records how it wants to be authored — see [§10](#10-workspace-config).
 The **content format** sets the root file's extension and body grammar. The
-**embed type** picks the carrier the config language is written in — frontmatter
-delimiters, a fenced code block, an HTML data island, or a separate sidecar — and
-gates which config languages fit (bare delimiters don't suit `fig`).
+**embed type** picks the carrier the config language is written in — a
+frontmatter block (`---` YAML, `+++` TOML, `---json`, `---figl`) or a separate
+sidecar file. Every config language fits either.
 
 Setting some flags and being prompted for the rest works too. `--reference id`
 needs identity, so it's rejected with `--identity off`:
@@ -152,9 +150,10 @@ needs identity, so it's rejected with `--identity off`:
 ```sh
 $ prov init my-vault --content djot --reference id --yes
 initialized /home/you/my-vault
-  root: index.dj — My Vault
-  config: prov.yaml — content djot, embed code_block (typed code block), language yaml, identity lazy, references id, id storage both, recycle bin, fixity on
-next: prov new <title> --in index.dj
+  root: index.yaml — My Vault
+  config: prov.yaml — content djot, embed separate (separate), language yaml, identity lazy, references id, id storage both, records deletions, fixity on, updates `updated`, stamps `created`
+  about: about.dj
+next: prov new <title> --in index.yaml
 ```
 
 With no directory argument, `init` initializes the current directory. It refuses
@@ -525,8 +524,8 @@ The knobs (dotted keys address nested axes):
 | `references.label`        | `true`/`false`                                                 | whether an id/alias link carries a `\|Title`      |
 | `identity`                | `none` (or `off`), `lazy`, `eager`                             | when a document earns a stable ID                |
 | `id_storage`              | `registry`, `frontmatter`, `both`                              | where a stable ID lives                          |
-| `metadata.format`         | `yaml`, `json`, `toml`, `fig`                                  | config language for newly created documents      |
-| `metadata.embed`          | `delimited`, `code_block`, `html_script`, `html_code`, `separate` | how that config language is embedded          |
+| `metadata.format`         | `yaml`, `json`, `toml`, `figl`                                 | config language for newly created documents      |
+| `metadata.embed`          | `delimited`, `separate`                                        | how that config language is embedded             |
 | `content_format`          | `markdown`, `djot`, `html`                                     | the body grammar the workspace is authored in    |
 | `fixity`                  | `on`, `off`                                                    | whether content checksums are recorded           |
 | `record_deletions`        | `true`/`false`                                                 | a delete records what it destroyed               |

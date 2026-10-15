@@ -375,7 +375,7 @@ fn fields_of(value: &Value) -> Vec<String> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::expr::Expression;
@@ -383,7 +383,7 @@ mod tests {
     use prov_filing::FilingSpec;
 
     fn yaml(src: &str) -> Value {
-        prov_graph::meta::parse_value(src, prov_graph::Format::Yaml).expect("yaml")
+        prov_graph::meta::parse_value(src, prov_graph::MetaFormat::Yaml).expect("yaml")
     }
 
     fn translated(src: &str) -> Translation {

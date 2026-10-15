@@ -228,7 +228,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::provenance::Tier;
@@ -449,7 +449,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "toml")]
     #[test]
     fn the_content_digest_of_toml_frontmatter() {
         content_digest_ignores_only_confirmations(
@@ -461,11 +460,10 @@ mod tests {
 
     /// JSON frontmatter, over a list written by hand: fig cannot yet splice a
     /// mapping into a JSON sequence, so `confirm` cannot write one there.
-    #[cfg(feature = "json")]
     #[test]
     fn the_content_digest_of_json_frontmatter() {
-        let bare = ";;;\n{\n  \"part_of\": \"index.md\",\n  \"title\": \"A\"\n}\n;;;\nalpha\n";
-        let confirmed = ";;;\n{\n  \"part_of\": \"index.md\",\n  \"title\": \"A\",\n  \"confirmed\": [{\"by\": \"amh\", \"at\": \"2026-09-11T09:20:00.000000Z\"}]\n}\n;;;\nalpha\n";
+        let bare = "---json\n{\n  \"part_of\": \"index.md\",\n  \"title\": \"A\"\n}\n---\nalpha\n";
+        let confirmed = "---json\n{\n  \"part_of\": \"index.md\",\n  \"title\": \"A\",\n  \"confirmed\": [{\"by\": \"amh\", \"at\": \"2026-09-11T09:20:00.000000Z\"}]\n}\n---\nalpha\n";
         assert_eq!(
             digest_of("a.md", bare),
             crate::fixity::digest(bare.as_bytes())

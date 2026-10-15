@@ -507,16 +507,17 @@ fn content_text(text: &str, doc: &Document) -> Result<String> {
         return Ok(text.to_string());
     }
     let stripped = prov_store::edit::unset_in_text(text, Some(carrier), CONFIRMED)?;
-    if let prov_graph::document::MetaCarrier::Fenced(kind) = carrier {
-        let found = fig::Embed::extract(&stripped, kind)?;
-        let left = crate::meta::parse_value(found.content(), kind.inner_format())?;
+    if let prov_graph::document::MetaCarrier::Fenced(format) = carrier
+        && let Some((_, content, before, after)) = Document::split(&stripped)
+    {
+        let left = crate::meta::parse_value(content, format)?;
         let empty = match &left {
             Value::Null => true,
             Value::Mapping(map) => map.is_empty(),
             _ => false,
         };
         if empty {
-            return Ok(format!("{}{}", found.host_before(), found.host_after()));
+            return Ok(format!("{before}{after}"));
         }
     }
     Ok(stripped)
@@ -548,7 +549,7 @@ mod tests {
     use super::*;
 
     fn meta(yaml: &str) -> Value {
-        Value::Mapping(crate::meta::parse_mapping(yaml, fig::Format::Yaml).unwrap())
+        Value::Mapping(crate::meta::parse_mapping(yaml, prov_graph::MetaFormat::Yaml).unwrap())
     }
 
     #[test]

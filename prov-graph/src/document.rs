@@ -12,10 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 use crate::meta::{self, Value};
 
-/// The embed archetype a fenced metadata block was found in. Re-exported from
-/// `fig`, which owns both detection (`fig::detect`) and the fence/format
-/// coupling ([`EmbedType::inner_format`]).
-pub use fig::EmbedType;
+use crate::format::MetaFormat;
 
 /// A document's prose body, and the file it was read from.
 ///
@@ -38,47 +35,34 @@ pub struct Body {
 }
 
 /// Where a document's metadata physically lives — recorded at parse time so a
-/// write can preserve the original carrier exactly (a ```` ```fig ```` block is
-/// never rewritten as `---` YAML; a bare `.yaml` file never grows fences).
+/// write can preserve the original carrier exactly (a `+++` TOML block is never
+/// rewritten as `---` YAML; a bare `.yaml` file never grows fences).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaCarrier {
-    /// A fenced block inside a host file (`---` YAML, `;;;` JSON,
-    /// ```` ```fig ````, endmatter), with the prose body around it.
-    Fenced(EmbedType),
+    /// A frontmatter block opening a host file, with the prose body after it:
+    /// `---` YAML, `+++` TOML, or `---<lang>` in any of the four formats
+    /// (`---json`, `---figl`, …). twig locates it (`twig::meta`) and keeps its
+    /// fences byte for byte on an edit.
+    Fenced(MetaFormat),
     /// The entire file is the metadata (a config document); the body is empty.
     /// The format comes from the file extension.
-    WholeFile(fig::Format),
+    WholeFile(MetaFormat),
 }
 
 impl MetaCarrier {
     /// The format the metadata is written in.
-    pub fn format(&self) -> fig::Format {
+    pub fn format(&self) -> MetaFormat {
         match self {
-            MetaCarrier::Fenced(kind) => kind.inner_format(),
-            MetaCarrier::WholeFile(format) => *format,
+            MetaCarrier::Fenced(format) | MetaCarrier::WholeFile(format) => *format,
         }
     }
 }
 
 /// The whole-file metadata format implied by `path`'s extension, if any.
-/// These are the extensions prov treats as config documents.
-///
-/// Each extension is recognized only when its format feature is compiled in: a
-/// `.json` file is a config document under the `json` feature, and an ordinary
-/// (metadata-less) prose document without it. This keeps prov from claiming
-/// to read a format whose parser was left out of the build.
-pub fn whole_file_format(path: &Path) -> Option<fig::Format> {
-    match path.extension()?.to_str()? {
-        #[cfg(feature = "yaml")]
-        "yaml" | "yml" => Some(fig::Format::Yaml),
-        #[cfg(feature = "json")]
-        "json" => Some(fig::Format::Json),
-        #[cfg(feature = "toml")]
-        "toml" => Some(fig::Format::Toml),
-        #[cfg(feature = "fig-lang")]
-        "fig" | "figl" => Some(fig::Format::Fig),
-        _ => None,
-    }
+/// These are the extensions prov treats as config documents: `.yaml`/`.yml`,
+/// `.json`, `.toml`, and `.figl` (or fig 5's `.fig`).
+pub fn whole_file_format(path: &Path) -> Option<MetaFormat> {
+    MetaFormat::from_extension(path.extension()?.to_str()?)
 }
 
 /// Enforce that a **record store** at `path` (the id registry, the recycle-bin
@@ -89,7 +73,7 @@ pub fn whole_file_format(path: &Path) -> Option<fig::Format> {
 /// unambiguous extension→format sniffing depends on the carrier being whole-file.
 /// The single choke point every store loader passes through, so the rule cannot
 /// be enforced in one place and forgotten in another.
-pub fn require_whole_file(path: &Path, carrier: MetaCarrier) -> Result<fig::Format> {
+pub fn require_whole_file(path: &Path, carrier: MetaCarrier) -> Result<MetaFormat> {
     match carrier {
         MetaCarrier::WholeFile(format) => Ok(format),
         MetaCarrier::Fenced(_) => Err(crate::error::Error::MarkdownStore(path.to_path_buf())),
@@ -111,59 +95,37 @@ pub fn is_opaque_payload(path: &Path) -> bool {
 /// The canonical whole-file extension for a metadata `format` — the inverse of
 /// [`whole_file_format`]. Used when materializing a whole-file metadata document
 /// (a config/registry sidecar, or the metadata half of a *separated* document):
-/// `yaml`, `json`, `figl`. A format whose feature is not compiled falls back to
-/// `yaml` (the always-present default).
-pub fn whole_file_extension(format: fig::Format) -> &'static str {
-    match format {
-        #[cfg(feature = "json")]
-        fig::Format::Json => "json",
-        #[cfg(feature = "toml")]
-        fig::Format::Toml => "toml",
-        #[cfg(feature = "fig-lang")]
-        fig::Format::Fig => "figl",
-        _ => "yaml",
-    }
+/// `yaml`, `json`, `toml`, `figl`.
+pub fn whole_file_extension(format: MetaFormat) -> &'static str {
+    format.extension()
 }
 
-/// The fenced-frontmatter carrier for `format` — the archetype a new document
-/// gets when it inherits no parent block and the workspace default is `format`.
-/// A format whose feature is not compiled falls back to YAML frontmatter (which
-/// the default `yaml` feature always provides).
-pub fn frontmatter_carrier(format: fig::Format) -> MetaCarrier {
-    let embed = match format {
-        #[cfg(feature = "json")]
-        fig::Format::Json => EmbedType::Semicolons,
-        #[cfg(feature = "toml")]
-        fig::Format::Toml => EmbedType::Plus,
-        #[cfg(feature = "fig-lang")]
-        fig::Format::Fig => EmbedType::FencedFig,
-        _ => EmbedType::Frontmatter,
-    };
-    MetaCarrier::Fenced(embed)
+/// The frontmatter carrier for `format` — the block a new document gets when it
+/// inherits no parent block and the workspace default is `format`. twig writes
+/// its fences: `---` for YAML, `+++` for TOML, `---json` and `---figl` for the
+/// others.
+pub fn frontmatter_carrier(format: MetaFormat) -> MetaCarrier {
+    MetaCarrier::Fenced(format)
 }
 
-/// The archetype *family* a workspace authors embedded metadata in — the
-/// "embed type" the CLI's `init` prompts for, one level above the concrete
-/// [`EmbedType`]. A family plus a metadata [`fig::Format`] resolves to a
-/// carrier through [`embed_carrier`]: e.g. (`CodeBlock`, YAML) is a
-/// ```` ```yaml ```` block, (`Delimited`, TOML) is a `+++` block, and
-/// (`Separate`, JSON) is a whole-file `.json` sidecar. It is what the config
-/// document records (via `prov`'s `WorkspaceConfig`) so a
-/// workspace stays self-describing about *how* its metadata is embedded, not
-/// just which format it is written in.
+/// The *family* a workspace authors embedded metadata in — the "embed type" the
+/// CLI's `init` prompts for, one level above the [`MetaCarrier`]. A family plus a
+/// [`MetaFormat`] resolves to a carrier through [`embed_carrier`]: (`Delimited`,
+/// TOML) is a `+++` block, and (`Separate`, JSON) is a whole-file `.json`
+/// sidecar. It is what the config document records (via `prov`'s
+/// `WorkspaceConfig`) so a workspace stays self-describing about *how* its
+/// metadata is embedded, not just which format it is written in.
+///
+/// Through prov 0.18 there were three more: fenced code blocks (with
+/// ```` ```endmatter ````), HTML `<script>` islands and HTML `<pre><code>`
+/// blocks, and `;;;` JSON was a delimiter. fig 6 took embedding out of fig, and
+/// twig, which locates a document's metadata now, reads frontmatter alone; a
+/// workspace config naming one of the others reads as the default, with a
+/// config finding saying so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbedStyle {
-    /// Character-delimited frontmatter: `---` YAML, `+++` TOML, `;;;` JSON. A
-    /// Markdown convention; the fig dialect has no delimiter form.
+    /// Delimited frontmatter: `---` YAML, `+++` TOML, `---json`, `---figl`.
     Delimited,
-    /// A typed fenced code block — ```` ```yaml ````, ```` ```toml ````,
-    /// ```` ```json ````, ```` ```fig ```` — that renders as a visible block in
-    /// Markdown or Djot.
-    CodeBlock,
-    /// An HTML `<script type="application/…">` data island (not rendered).
-    HtmlScript,
-    /// An HTML `<pre><code class="language-…">` visible code block.
-    HtmlCode,
     /// Metadata kept in a sibling *whole-file* document, joined to a plain body
     /// file by a `content` attribute — neither file carries fences.
     Separate,
@@ -174,9 +136,6 @@ impl EmbedStyle {
     pub fn as_config_str(self) -> &'static str {
         match self {
             EmbedStyle::Delimited => "delimited",
-            EmbedStyle::CodeBlock => "code_block",
-            EmbedStyle::HtmlScript => "html_script",
-            EmbedStyle::HtmlCode => "html_code",
             EmbedStyle::Separate => "separate",
         }
     }
@@ -185,95 +144,48 @@ impl EmbedStyle {
     pub fn from_config_str(value: &str) -> Option<Self> {
         Some(match value {
             "delimited" => EmbedStyle::Delimited,
-            "code_block" => EmbedStyle::CodeBlock,
-            "html_script" => EmbedStyle::HtmlScript,
-            "html_code" => EmbedStyle::HtmlCode,
             "separate" => EmbedStyle::Separate,
             _ => return None,
         })
     }
 }
 
-/// The [`EmbedStyle`] *family* a concrete [`EmbedType`] belongs to — the inverse
-/// (on the style axis) of [`embed_carrier`], which resolves a `(style, format)`
-/// pair back to a carrier. Pairing it with a new metadata format is how a
-/// *format conversion* keeps a document's embedding shape while changing only its
-/// frontmatter language: classify the current archetype, then [`embed_carrier`]
-/// the same style with the target format.
-///
-/// The bare delimiter frontmatters (`---`/`+++`/`;;;`) and the labeled markdown
-/// frontmatters (`---json`/`---toml`/`---fig`) are all [`Delimited`](EmbedStyle::Delimited);
-/// [`embed_carrier`] then lands each format on prov's canonical delimiter
-/// spelling. Endmatter is grouped with the fenced [`CodeBlock`](EmbedStyle::CodeBlock)
-/// forms (it is a trailing ```` ```endmatter ```` block); converting it to another
-/// format therefore moves it to a leading fenced block, since only YAML has an
-/// endmatter archetype.
-pub fn embed_style_of(kind: EmbedType) -> EmbedStyle {
-    use EmbedType as E;
-    match kind {
-        E::Frontmatter | E::Semicolons | E::Plus | E::MdJson | E::MdToml | E::MdFig => {
-            EmbedStyle::Delimited
-        }
-        E::Endmatter | E::FencedYaml | E::FencedJson | E::FencedToml | E::FencedFig => {
-            EmbedStyle::CodeBlock
-        }
-        E::HtmlScriptYaml | E::HtmlScriptJson | E::HtmlScriptToml | E::HtmlScriptFig => {
-            EmbedStyle::HtmlScript
-        }
-        E::HtmlCodeYaml | E::HtmlCodeJson | E::HtmlCodeToml | E::HtmlCodeFig => {
-            EmbedStyle::HtmlCode
-        }
-        // `EmbedType` is `#[non_exhaustive]`: a fig version newer than this crate
-        // may detect an archetype prov doesn't know yet. Guessing a style here
-        // would risk silently misclassifying a real document mid-`convert`, so
-        // this needs an actual case added (here, `embed_carrier`, and the prose
-        // in `about.rs`/`history/docs.rs`) before such a document can be handled.
-        _ => unreachable!("unhandled fig::EmbedType variant — add a case in embed_style_of"),
+/// The [`EmbedStyle`] *family* a carrier belongs to — the inverse (on the style
+/// axis) of [`embed_carrier`], which resolves a `(style, format)` pair back to a
+/// carrier. Pairing it with a new metadata format is how a *format conversion*
+/// keeps a document's embedding shape while changing only its frontmatter
+/// language: classify the current carrier, then [`embed_carrier`] the same style
+/// with the target format.
+pub fn embed_style_of(carrier: MetaCarrier) -> EmbedStyle {
+    match carrier {
+        MetaCarrier::Fenced(_) => EmbedStyle::Delimited,
+        MetaCarrier::WholeFile(_) => EmbedStyle::Separate,
     }
 }
 
 /// Resolve an [`EmbedStyle`] + metadata `format` to the carrier a new document
-/// should get. `Separate` maps to a whole-file sidecar in `format`; every other
-/// style maps to the concrete [`EmbedType`] for that `(style, format)` pair.
-/// `None` for a combination that has no archetype — notably `Delimited` + fig
-/// (the dialect has no `---`-style delimiter) and any fenced style paired with a
-/// format fig cannot fence (`Zon`).
-pub fn embed_carrier(style: EmbedStyle, format: fig::Format) -> Option<MetaCarrier> {
-    use EmbedType as E;
-    use fig::Format as F;
-    // JSON's three dialects share one fenced/frontmatter archetype.
-    let is_json = matches!(format, F::Json | F::Jsonc | F::Json5);
-    let kind = match style {
-        EmbedStyle::Separate => return Some(MetaCarrier::WholeFile(format)),
-        EmbedStyle::Delimited => match format {
-            F::Yaml => E::Frontmatter,
-            F::Toml => E::Plus,
-            _ if is_json => E::Semicolons,
-            _ => return None,
-        },
-        EmbedStyle::CodeBlock => match format {
-            F::Yaml => E::FencedYaml,
-            F::Toml => E::FencedToml,
-            F::Fig => E::FencedFig,
-            _ if is_json => E::FencedJson,
-            _ => return None,
-        },
-        EmbedStyle::HtmlScript => match format {
-            F::Yaml => E::HtmlScriptYaml,
-            F::Toml => E::HtmlScriptToml,
-            F::Fig => E::HtmlScriptFig,
-            _ if is_json => E::HtmlScriptJson,
-            _ => return None,
-        },
-        EmbedStyle::HtmlCode => match format {
-            F::Yaml => E::HtmlCodeYaml,
-            F::Toml => E::HtmlCodeToml,
-            F::Fig => E::HtmlCodeFig,
-            _ if is_json => E::HtmlCodeJson,
-            _ => return None,
-        },
-    };
-    Some(MetaCarrier::Fenced(kind))
+/// should get: a frontmatter block in `format`, or a whole-file sidecar in it.
+/// Every pair has one.
+pub fn embed_carrier(style: EmbedStyle, format: MetaFormat) -> MetaCarrier {
+    match style {
+        EmbedStyle::Delimited => MetaCarrier::Fenced(format),
+        EmbedStyle::Separate => MetaCarrier::WholeFile(format),
+    }
+}
+
+/// The frontmatter block opening `text`, located by twig, and the metadata
+/// format its fence names. `None` when `text` opens no block, its opening fence
+/// is never closed, or the fence names a language prov does not read (a
+/// `---zon` block is prose to prov, as it would be to a Markdown renderer).
+///
+/// twig finds the block by parsing `text` as Markdown, which reads frontmatter
+/// whatever the host's own grammar is: it is the document's first lines and
+/// nothing an extension changes.
+pub fn frontmatter_block(text: &str) -> Option<(MetaFormat, twig::meta::Block)> {
+    let parsed = twig::meta::parse_host(text.as_bytes(), twig_markdown::format()).ok()?;
+    let block = twig::meta::find(&parsed.doc, twig::meta::Where::Front)?;
+    let format = MetaFormat::from_fig(twig::meta::dialect_for(&block.lang)?)?;
+    Some((format, block))
 }
 
 /// A parsed document: its path, its embedded metadata, and its body text.
@@ -301,10 +213,9 @@ impl Document {
     ///
     /// If `path` has a config extension (`.yaml`, `.yml`, `.json`, `.fig`,
     /// `.figl`), the entire text is the metadata and the body is empty.
-    /// Otherwise the embedded metadata block is auto-detected via
-    /// `fig::detect` — any archetype fig knows (`---` YAML, `;;;` JSON,
-    /// ```` ```fig ````, ```` ```endmatter ````) — and parsed in that
-    /// archetype's inner format. If there is no (well-formed) block, `meta`
+    /// Otherwise the document's frontmatter is located by twig
+    /// ([`frontmatter_block`]) — `---` YAML, `+++` TOML, or `---<lang>` — and
+    /// parsed in the format its fence names. If there is no (well-formed) block, `meta`
     /// is [`Value::Null`] and the whole text is the body. An unterminated
     /// opening fence is treated as no metadata — we do not guess where it
     /// ends.
@@ -319,25 +230,17 @@ impl Document {
                 carrier: Some(MetaCarrier::WholeFile(format)),
             });
         }
-        let (meta, body, carrier) = match fig::detect(text) {
-            Some(kind) => match fig::Embed::extract(text, kind) {
-                Ok(found) => (
-                    meta::parse_value(found.content(), kind.inner_format())?,
-                    // *Both* host sides, in file order. A block at an edge leaves
-                    // one of them empty, which is every markdown document; a
-                    // mid-document block — an HTML `<script>` island below a
-                    // `<head>` — leaves text on both, and taking fig's one-sided
-                    // `body()` view there silently drops everything above the
-                    // island. What that cost: a body write losing the `<head>`,
-                    // and `content_hash` covering a suffix while reporting that
-                    // it covered the document (fig 3.3 exposes both sides).
-                    [found.host_before(), found.host_after()].concat(),
-                    Some(MetaCarrier::Fenced(kind)),
-                ),
-                // Detected by its open delimiter but with no matching close:
-                // recognized-but-malformed degrades to "no metadata".
-                Err(_) => (Value::Null, text.to_owned(), None),
-            },
+        let (meta, body, carrier) = match Self::split(text) {
+            Some((carrier, block, before, after)) => (
+                meta::parse_value(block, carrier.format())?,
+                // Both host sides, in file order. Frontmatter leaves `before`
+                // empty; keeping the join is what keeps `body` honest should a
+                // block ever sit mid-document again.
+                [before, after].concat(),
+                Some(carrier),
+            ),
+            // No block, or one never closed: an unterminated fence degrades to
+            // "no metadata", and the whole text is the body.
             None => (Value::Null, text.to_owned(), None),
         };
         Ok(Self {
@@ -351,24 +254,21 @@ impl Document {
     /// Zero-copy counterpart to [`parse`](Self::parse): locate a fenced
     /// metadata block in `text` without parsing it, returning the
     /// [`MetaCarrier`] found and the three slices it borrows from `text` —
-    /// `(meta_block, body_before, body_after)`. Mirrors
-    /// `fig::detect`/`fig::Embed::extract` composed into one step, the same
-    /// primitives `parse` builds its owned, parsed [`Value`] from.
+    /// `(meta_block, body_before, body_after)` — the same location `parse`
+    /// builds its owned, parsed [`Value`] from.
     ///
     /// The body comes back in **two** pieces because a block need not sit at an
-    /// edge. Frontmatter leaves `body_before` empty and endmatter leaves
-    /// `body_after` empty, but an HTML `<script>` data island below a `<head>`
-    /// has host text on both sides, and a single slice cannot name both — the
-    /// one-sided view this used to return dropped whichever side it could not
-    /// see. Concatenated in order they are [`Document::body`]; a caller
-    /// splicing text back together wants them separate, since only their
-    /// offsets say where the block sat.
+    /// edge. Frontmatter always leaves `body_before` empty today, but through
+    /// prov 0.18 an HTML `<script>` island could sit below a `<head>`, and a
+    /// caller splicing text back together wants the two sides separate, since
+    /// only their offsets say where the block sat. Concatenated in order they
+    /// are [`Document::body`].
     ///
     /// Only recognizes a *fenced* carrier — a whole-file (config) document has
     /// no split to offer, since its entire text already is the metadata; a
     /// caller steering by path extension (as `parse` does via
     /// [`whole_file_format`]) should check that first. Returns `None` when
-    /// `text` opens no known archetype, or its opening fence has no matching
+    /// `text` opens no frontmatter, or its opening fence has no matching
     /// close (an unterminated fence degrades to "no metadata", matching
     /// `parse`).
     ///
@@ -377,13 +277,21 @@ impl Document {
     /// deserializer, or just needs the raw borrowed text (e.g. to detect which
     /// archetype a document uses without allocating).
     pub fn split(text: &str) -> Option<(MetaCarrier, &str, &str, &str)> {
-        let kind = fig::detect(text)?;
-        let found = fig::Embed::extract(text, kind).ok()?;
+        let (format, block) = frontmatter_block(text)?;
+        // twig's span ends with the closing fence itself; its line ending is the
+        // block's too, not the body's first byte.
+        let rest = &text[block.span.end..];
+        let end = block.span.end
+            + if rest.starts_with("\r\n") {
+                2
+            } else {
+                usize::from(rest.starts_with('\n'))
+            };
         Some((
-            MetaCarrier::Fenced(kind),
-            found.content(),
-            found.host_before(),
-            found.host_after(),
+            MetaCarrier::Fenced(format),
+            &text[block.body],
+            &text[..block.span.start],
+            &text[end..],
         ))
     }
 
@@ -490,7 +398,6 @@ impl Document {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn content_path_joins_the_target_onto_the_node_s_own_directory() {
         let doc = Document::parse("notes/a.yaml", "title: A\ncontent: a.md\n").unwrap();
@@ -506,7 +413,6 @@ mod tests {
 
     /// The CLI resolves by real filesystem path, so the join must not assume a
     /// workspace-root coordinate.
-    #[cfg(feature = "yaml")]
     #[test]
     fn content_path_resolves_an_absolute_node_path_as_absolute() {
         let doc = Document::parse("/vault/notes/a.yaml", "title: A\ncontent: a.md\n").unwrap();
@@ -516,7 +422,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn a_combined_document_has_no_content_path_and_is_its_own_body_path() {
         let doc = Document::parse("notes/a.md", "---\ntitle: A\n---\nprose\n").unwrap();
@@ -527,54 +432,64 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn parses_yaml_frontmatter_and_body() {
         let text = "---\ntitle: Root\ncontents:\n- a.md\n---\n# Body\n\nhello\n";
         let doc = Document::parse("index.md", text).unwrap();
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Root"));
         assert_eq!(doc.body, "# Body\n\nhello\n");
-        assert_eq!(
-            doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::Frontmatter))
-        );
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(MetaFormat::Yaml)));
         assert!(doc.has_meta());
     }
 
-    #[cfg(feature = "fig-lang")]
     #[test]
-    fn parses_fig_fenced_frontmatter() {
-        let text = "```fig\ntitle = prov\ncontents = [docs/design.md]\n```\n# Body\n";
-        let doc = Document::parse("README.md", text).unwrap();
-        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("prov"));
-        assert_eq!(doc.body, "# Body\n");
-        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(EmbedType::FencedFig)));
-        assert!(doc.has_meta());
+    fn parses_figl_frontmatter_under_either_name() {
+        for fence in ["---figl", "---fig"] {
+            let text = format!("{fence}\ntitle = prov\ncontents = [docs/design.md]\n---\n# Body\n");
+            let doc = Document::parse("README.md", &text).unwrap();
+            assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("prov"));
+            assert_eq!(doc.body, "# Body\n");
+            assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(MetaFormat::Figl)));
+        }
     }
 
-    #[cfg(feature = "json")]
     #[test]
-    fn parses_json_frontmatter() {
-        let text = ";;;\n{\"title\": \"Root\"}\n;;;\nbody\n";
-        let doc = Document::parse("note.md", text).unwrap();
+    fn parses_json_and_toml_frontmatter() {
+        let doc =
+            Document::parse("note.md", "---json\n{\"title\": \"Root\"}\n---\nbody\n").unwrap();
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Root"));
-        assert_eq!(
-            doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::Semicolons))
-        );
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(MetaFormat::Json)));
+        assert_eq!(doc.body, "body\n");
+
+        let doc = Document::parse("note.md", "+++\ntitle = \"Root\"\n+++\nbody\n").unwrap();
+        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Root"));
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(MetaFormat::Toml)));
     }
 
-    #[cfg(feature = "yaml")]
+    /// The archetypes fig 5 read and twig does not are prose now: a document
+    /// carrying one reads as having no metadata, its whole text the body.
     #[test]
-    fn parses_yaml_endmatter() {
-        let text = "# Body first\n```endmatter\ntitle: Tail\n```\n";
-        let doc = Document::parse("note.md", text).unwrap();
-        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Tail"));
-        assert_eq!(doc.body, "# Body first\n");
-        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(EmbedType::Endmatter)));
+    fn the_retired_archetypes_read_as_prose() {
+        for text in [
+            ";;;\n{\"title\": \"Root\"}\n;;;\nbody\n",
+            "```fig\ntitle = prov\n```\n# Body\n",
+            "# Body first\n```endmatter\ntitle: Tail\n```\n",
+            "<script type=\"application/yaml\">\ntitle: Mid\n</script>\n",
+        ] {
+            let doc = Document::parse("note.md", text).unwrap();
+            assert_eq!(doc.carrier, None, "{text:?}");
+            assert_eq!(doc.body, text);
+        }
     }
 
-    #[cfg(feature = "yaml")]
+    #[test]
+    fn a_fence_naming_a_language_prov_does_not_read_is_prose() {
+        let text = "---zon\n.{ .title = \"x\" }\n---\nbody\n";
+        let doc = Document::parse("note.md", text).unwrap();
+        assert_eq!(doc.carrier, None);
+        assert_eq!(doc.body, text);
+    }
+
     #[test]
     fn a_config_file_is_a_document_whose_content_is_all_metadata() {
         let text = "title: ID registry\npart_of: index.md\nregistry:\n  abc: a.md\n";
@@ -588,84 +503,48 @@ mod tests {
             Some("index.md")
         );
         assert_eq!(doc.body, "");
-        assert_eq!(doc.carrier, Some(MetaCarrier::WholeFile(fig::Format::Yaml)));
+        assert_eq!(doc.carrier, Some(MetaCarrier::WholeFile(MetaFormat::Yaml)));
         assert!(doc.has_meta());
     }
 
-    #[cfg(feature = "fig-lang")]
     #[test]
     fn a_fig_config_file_parses_the_dialect() {
         let text = "title = settings\npart_of = index.md\n";
-        let doc = Document::parse("settings.figl", text).unwrap();
-        assert_eq!(
-            doc.meta.get("title").and_then(Value::as_str),
-            Some("settings")
-        );
-        assert_eq!(doc.carrier, Some(MetaCarrier::WholeFile(fig::Format::Fig)));
+        for path in ["settings.figl", "settings.fig"] {
+            let doc = Document::parse(path, text).unwrap();
+            assert_eq!(
+                doc.meta.get("title").and_then(Value::as_str),
+                Some("settings")
+            );
+            assert_eq!(doc.carrier, Some(MetaCarrier::WholeFile(MetaFormat::Figl)));
+        }
     }
 
     #[test]
     fn embed_style_config_str_round_trips() {
-        for style in [
-            EmbedStyle::Delimited,
-            EmbedStyle::CodeBlock,
-            EmbedStyle::HtmlScript,
-            EmbedStyle::HtmlCode,
-            EmbedStyle::Separate,
-        ] {
+        for style in [EmbedStyle::Delimited, EmbedStyle::Separate] {
             assert_eq!(
                 EmbedStyle::from_config_str(style.as_config_str()),
                 Some(style)
             );
         }
         assert_eq!(EmbedStyle::from_config_str("nonsense"), None);
+        // The styles twig does not read are no longer spellings.
+        for retired in ["code_block", "html_script", "html_code"] {
+            assert_eq!(EmbedStyle::from_config_str(retired), None);
+        }
     }
 
     #[test]
     fn embed_carrier_resolves_style_and_format_to_a_carrier() {
-        use fig::Format;
-        let fenced = |k| Some(MetaCarrier::Fenced(k));
-        // Delimited: the three delimiter formats, but the fig dialect has none.
-        assert_eq!(
-            embed_carrier(EmbedStyle::Delimited, Format::Yaml),
-            fenced(EmbedType::Frontmatter)
-        );
-        assert_eq!(
-            embed_carrier(EmbedStyle::Delimited, Format::Toml),
-            fenced(EmbedType::Plus)
-        );
-        assert_eq!(
-            embed_carrier(EmbedStyle::Delimited, Format::Json),
-            fenced(EmbedType::Semicolons)
-        );
-        assert_eq!(embed_carrier(EmbedStyle::Delimited, Format::Fig), None);
-        // Code block: fig lands in the ```fig block; the rest in ```lang blocks.
-        assert_eq!(
-            embed_carrier(EmbedStyle::CodeBlock, Format::Fig),
-            fenced(EmbedType::FencedFig)
-        );
-        assert_eq!(
-            embed_carrier(EmbedStyle::CodeBlock, Format::Yaml),
-            fenced(EmbedType::FencedYaml)
-        );
-        // HTML islands, both shapes.
-        assert_eq!(
-            embed_carrier(EmbedStyle::HtmlScript, Format::Json),
-            fenced(EmbedType::HtmlScriptJson)
-        );
-        assert_eq!(
-            embed_carrier(EmbedStyle::HtmlCode, Format::Toml),
-            fenced(EmbedType::HtmlCodeToml)
-        );
-        // Separate is a whole-file sidecar in the chosen format (any format).
-        assert_eq!(
-            embed_carrier(EmbedStyle::Separate, Format::Yaml),
-            Some(MetaCarrier::WholeFile(Format::Yaml))
-        );
-        assert_eq!(
-            embed_carrier(EmbedStyle::Separate, Format::Fig),
-            Some(MetaCarrier::WholeFile(Format::Fig))
-        );
+        for format in MetaFormat::ALL {
+            let fenced = embed_carrier(EmbedStyle::Delimited, format);
+            assert_eq!(fenced, MetaCarrier::Fenced(format));
+            assert_eq!(embed_style_of(fenced), EmbedStyle::Delimited);
+            let whole = embed_carrier(EmbedStyle::Separate, format);
+            assert_eq!(whole, MetaCarrier::WholeFile(format));
+            assert_eq!(embed_style_of(whole), EmbedStyle::Separate);
+        }
     }
 
     #[test]
@@ -686,12 +565,11 @@ mod tests {
         assert_eq!(doc.carrier, None);
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn split_borrows_yaml_frontmatter_and_body_without_parsing() {
         let text = "---\ntitle: Root\n---\n# Body\n\nhello\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::Frontmatter));
+        assert_eq!(carrier, MetaCarrier::Fenced(MetaFormat::Yaml));
         assert_eq!(meta, "title: Root\n");
         assert_eq!(before, "", "frontmatter has no host text above it");
         assert_eq!(after, "# Body\n\nhello\n");
@@ -701,12 +579,11 @@ mod tests {
         assert_eq!(doc.body, body);
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn split_handles_crlf_line_endings() {
         let text = "---\r\ntitle: Root\r\n---\r\nbody\r\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::Frontmatter));
+        assert_eq!(carrier, MetaCarrier::Fenced(MetaFormat::Yaml));
         assert_eq!(meta, "title: Root\r\n");
         assert_eq!(before, "");
         assert_eq!(after, "body\r\n");
@@ -723,75 +600,31 @@ mod tests {
         assert_eq!(Document::split(text), None);
     }
 
-    #[cfg(feature = "fig-lang")]
     #[test]
     fn split_recognizes_a_non_yaml_carrier() {
-        let text = "```fig\ntitle = prov\n```\n# Body\n";
+        let text = "---figl\ntitle = prov\n---\n# Body\n";
         let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::FencedFig));
+        assert_eq!(carrier, MetaCarrier::Fenced(MetaFormat::Figl));
         assert_eq!(meta, "title = prov\n");
         assert_eq!(before, "");
         assert_eq!(after, "# Body\n");
     }
 
-    #[cfg(feature = "json")]
     #[test]
-    fn split_recognizes_json_frontmatter() {
-        let text = ";;;\n{\"title\": \"Root\"}\n;;;\nbody\n";
-        let (carrier, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(carrier, MetaCarrier::Fenced(EmbedType::Semicolons));
-        assert_eq!(meta, "{\"title\": \"Root\"}\n");
-        assert_eq!(before, "");
-        assert_eq!(after, "body\n");
+    fn a_djot_document_reads_its_frontmatter_too() {
+        let text = "---\ntitle: Dj\n---\n_body_\n";
+        let doc = Document::parse("note.dj", text).unwrap();
+        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Dj"));
+        assert_eq!(doc.body, "_body_\n");
     }
 
-    /// A `<script>` island below a `<head>` has host text on *both* sides. fig's
-    /// one-sided `body()` view returned only the tail, so the whole document head
-    /// vanished from `doc.body` — and from everything reading it: a separated
-    /// document's prose file, `prov body`, and the bytes `content_hash` covers.
-    #[cfg(feature = "yaml")]
-    #[test]
-    fn a_mid_document_island_keeps_the_host_text_on_both_sides() {
-        let text = concat!(
-            "<!doctype html>\n",
-            "<html><head><title>KEEP ME</title></head>\n",
-            "<body>\n",
-            "<script type=\"application/yaml\">\n",
-            "title: Mid\n",
-            "</script>\n",
-            "<p>tail</p>\n",
-            "</html>\n",
-        );
-        let doc = Document::parse("page.html", text).unwrap();
-        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Mid"));
-        assert!(
-            doc.body.contains("KEEP ME"),
-            "the head above the island was dropped: {:?}",
-            doc.body
-        );
-        assert!(doc.body.contains("<p>tail</p>"), "the tail was dropped");
-
-        // The two sides, in file order, and nothing of the block itself.
-        let (_, meta, before, after) = Document::split(text).unwrap();
-        assert_eq!(doc.body, format!("{before}{after}"));
-        assert!(
-            !doc.body.contains("<script"),
-            "the island leaked into the body"
-        );
-        assert_eq!(meta, "title: Mid\n");
-    }
-
-    #[cfg(feature = "yaml")]
     #[test]
     fn crlf_fences_are_handled() {
         let text = "---\r\ntitle: Root\r\n---\r\nbody\r\n";
         let doc = Document::parse("x.md", text).unwrap();
-        assert_eq!(
-            doc.carrier,
-            Some(MetaCarrier::Fenced(EmbedType::Frontmatter))
-        );
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(MetaFormat::Yaml)));
         assert_eq!(doc.body, "body\r\n");
-        // Exact scalar — fig ≥ 2.1.1 treats \r\n as a single line break.
+        // Exact scalar — fig treats \r\n as a single line break.
         assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Root"));
     }
 }

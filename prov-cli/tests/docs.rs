@@ -156,9 +156,7 @@ fn a_root_alone_is_one_row() {
 
 /// `--body` is the census as text. Four shapes of document, four answers, and
 /// the `path` column alone would get three of them wrong: a combined
-/// document's file is its metadata block *and* its prose (and the block need
-/// not sit at the file's edge — an HTML data island has host text on both
-/// sides), a separated node's `.yaml` has no prose of its own, a sidecar's
+/// document's file is its metadata block *and* its prose, a separated node's `.yaml` has no prose of its own, a sidecar's
 /// `content` is bytes prov promised never to open, and a `.yaml` node with no
 /// `content` has nothing to read at all.
 #[test]
@@ -171,12 +169,11 @@ fn body_column_is_prov_s_reading_of_the_prose_and_null_where_there_is_none() {
         "index.md",
         "---\ntitle: Home\ncontents:\n- mid.html\n- empty.md\n- sep.yaml\n- photo.jpg.yaml\n- bare.yaml\n---\n",
     );
-    // The block sits in the middle of the file; the body is the host text on
-    // both sides of it.
+    // The block opens the file; the body is the host text after it.
     write(
         &dir,
         "mid.html",
-        "<p>above</p>\n<script type=\"application/yaml\">\ntitle: Mid\npart_of: index.md\n</script>\n<p>below</p>\n",
+        "---\ntitle: Mid\npart_of: index.md\n---\n<p>above</p>\n<p>below</p>\n",
     );
     write(
         &dir,
@@ -223,7 +220,7 @@ fn body_column_is_prov_s_reading_of_the_prose_and_null_where_there_is_none() {
             .clone()
             .unwrap_or_else(|| panic!("{path} has a body key: {out}"))
     };
-    // Prose from both sides of the block, the block itself left out.
+    // The prose, the block itself left out.
     assert_eq!(
         body_of("mid.html"),
         "\"<p>above</p>\\n<p>below</p>\\n\"",

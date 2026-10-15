@@ -471,8 +471,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-// These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use prov_graph::exec::block_on;

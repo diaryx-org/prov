@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use prov::{Format, IdIndex, MetaCarrier, Value, block_on, meta};
+use prov::{IdIndex, MetaCarrier, MetaFormat as Format, Value, block_on, meta};
 
 use crate::CmdResult;
 use crate::about::refresh_about;

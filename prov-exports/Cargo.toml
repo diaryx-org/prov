@@ -25,9 +25,3 @@ prov-views = { workspace = true, default-features = false }
 [dev-dependencies]
 prov-testkit = { workspace = true }
 
-[features]
-default = ["yaml"]
-yaml = ["prov-graph/yaml", "prov-views/yaml"]
-json = ["prov-graph/json", "prov-views/json"]
-toml = ["prov-graph/toml", "prov-views/toml"]
-fig-lang = ["prov-graph/fig-lang", "prov-views/fig-lang"]

@@ -463,7 +463,7 @@ fn collect(node: &prov_graph::graph::Node, out: &mut BTreeSet<PathBuf>) {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::OpenClosed;

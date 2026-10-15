@@ -148,7 +148,7 @@ pub struct Settings {
     pub reference_style: Option<ReferenceStyle>,
     /// The metadata format a new document gets when it inherits no parent block
     /// — see [`Workspace::default_embed_format`].
-    pub default_embed_format: fig::Format,
+    pub default_embed_format: prov_graph::MetaFormat,
     /// How that metadata is embedded — see [`Workspace::embed_style`].
     pub embed_style: EmbedStyle,
     /// How far content checksums are recorded — see [`Workspace::fixity`].
@@ -194,7 +194,7 @@ impl Default for Settings {
             link_style: LinkStyle::default(),
             id_links: false,
             reference_style: None,
-            default_embed_format: fig::Format::Yaml,
+            default_embed_format: prov_graph::MetaFormat::Yaml,
             embed_style: EmbedStyle::Delimited,
             fixity: Fixity::On,
             record_deletions: true,
@@ -726,7 +726,7 @@ impl<FS, Id, Ix> Workspace<FS, Id, Ix> {
     /// The metadata format a new document gets when it inherits no parent block
     /// — a *default* for authoring, not a workspace constraint (existing
     /// documents keep their own format on write, §7).
-    pub fn default_embed_format(&self) -> fig::Format {
+    pub fn default_embed_format(&self) -> prov_graph::MetaFormat {
         self.settings.default_embed_format
     }
 
@@ -1666,7 +1666,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         pointer: &str,
         sidecar: &Path,
         seed: &prov_graph::meta::Mapping,
-        format: fig::Format,
+        format: prov_graph::MetaFormat,
     ) -> Result<bool> {
         let mut cs = ChangeSet::new();
         let created = !self.exists(sidecar).await?;
@@ -2153,7 +2153,7 @@ impl<FS, Id, Ix> WorkspaceBuilder<FS, Id, Ix> {
 
     /// Set the metadata format new documents get when they inherit no parent
     /// block (a default, not a constraint).
-    pub fn default_embed_format(mut self, format: fig::Format) -> Self {
+    pub fn default_embed_format(mut self, format: prov_graph::MetaFormat) -> Self {
         self.settings.default_embed_format = format;
         self
     }
@@ -2299,8 +2299,8 @@ mod tests {
             link_style: LinkStyle::PlainRelative,
             id_links: true,
             reference_style: None,
-            default_embed_format: fig::Format::Json,
-            embed_style: EmbedStyle::CodeBlock,
+            default_embed_format: prov_graph::MetaFormat::Json,
+            embed_style: EmbedStyle::Separate,
             fixity: Fixity::Off,
             record_deletions: false,
             id_storage: IdStorage::Frontmatter,
@@ -2320,8 +2320,8 @@ mod tests {
             .build();
 
         assert_eq!(ws.link_style(), LinkStyle::PlainRelative);
-        assert_eq!(ws.default_embed_format(), fig::Format::Json);
-        assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
+        assert_eq!(ws.default_embed_format(), prov_graph::MetaFormat::Json);
+        assert_eq!(ws.embed_style(), EmbedStyle::Separate);
         assert_eq!(ws.fixity(), Fixity::Off);
         assert!(!ws.record_deletions());
         assert_eq!(
@@ -2356,8 +2356,8 @@ mod tests {
             id_storage: IdStorage::Frontmatter,
             fixity: Fixity::Off,
             record_deletions: false,
-            embed_style: EmbedStyle::CodeBlock,
-            default_embed_format: fig::Format::Json,
+            embed_style: EmbedStyle::Separate,
+            default_embed_format: prov_graph::MetaFormat::Json,
             workspace_id: "notes".into(),
             confirmations: crate::config::ConfirmationBinding::Content,
             ..Default::default()
@@ -2371,8 +2371,8 @@ mod tests {
         assert_eq!(ws.id_storage(), IdStorage::Frontmatter);
         assert_eq!(ws.fixity(), Fixity::Off);
         assert!(!ws.record_deletions());
-        assert_eq!(ws.embed_style(), EmbedStyle::CodeBlock);
-        assert_eq!(ws.default_embed_format(), fig::Format::Json);
+        assert_eq!(ws.embed_style(), EmbedStyle::Separate);
+        assert_eq!(ws.default_embed_format(), prov_graph::MetaFormat::Json);
         assert_eq!(ws.workspace_id(), "notes");
         assert_eq!(
             ws.confirmation_binding(),
@@ -2508,7 +2508,7 @@ mod spanning_children_tests {
 /// over a real filesystem. The fixtures are YAML frontmatter on markdown
 /// carriers — deliberately the shape the *flat* loader refuses, since a reified
 /// store being content is the whole distinction under test.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod reified_vocabulary_tests {
     use super::*;
     use crate::config::{FieldSpec, OpenClosed};
@@ -2646,7 +2646,7 @@ mod reified_vocabulary_tests {
         let mut ws = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::lazy(9))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         ws.index_mut()
             .register(&DocId("bcdfghj".into()), Path::new("vocab/public.md"));

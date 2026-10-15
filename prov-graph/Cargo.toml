@@ -18,9 +18,12 @@ publish.workspace = true
 fs-transaction = { workspace = true }
 
 # Embedded-metadata backend. See the workspace manifest for why the version
-# floor is where it is. Which format backends fig compiles in is governed by
-# this crate's features below, which `prov` forwards to.
+# floor is where it is. `MetaFormat` registers the four languages prov reads.
 fig.workspace = true
+fig-yaml.workspace = true
+fig-json.workspace = true
+fig-toml.workspace = true
+fig-figl.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 
@@ -31,11 +34,14 @@ thiserror.workspace = true
 # mint into a registration *is* a write, and stays in `prov`.
 moid.workspace = true
 
-# Body-prose parsing (Djot/Markdown). Zig-backed (its build.rs runs `zig
-# build`), so building this crate needs the Zig toolchain. Required, not
+# Body-prose parsing (Djot/Markdown/HTML), each grammar a crate of its own,
+# and `twig::meta`, which locates a document's frontmatter. Required, not
 # optional: the census scans body `[[wikilinks]]`, and doing that correctly
 # means parsing the body well enough to know which spans are code.
 twig-doc.workspace = true
+twig-markdown.workspace = true
+twig-djot.workspace = true
+twig-html.workspace = true
 # The fixity digest. See the workspace manifest for why this is not the new
 # dependency it looks like.
 sha2.workspace = true
@@ -55,9 +61,4 @@ prov-testkit = { workspace = true }
 proptest = "1"
 
 [features]
-default = ["yaml"]
-yaml = ["fig/yaml"]
-json = ["fig/json"]
-toml = ["fig/toml"]
-fig-lang = ["fig/fig"]
 parallel = ["dep:rayon"]

@@ -227,8 +227,6 @@ mod tests {
     #[test]
     fn two_formats_in_one_directory_resolve_by_a_fixed_order() {
         // Not by directory order, which is not stable across filesystems.
-        // Both spellings here belong to the `yaml` feature, which is the default
-        // build, so the ordering is exercised whatever else is switched on.
         let dir = tmp("formats");
         std::fs::write(dir.join("prov.yml"), "workspace_id: notes\n").unwrap();
         std::fs::write(dir.join("prov.yaml"), "workspace_id: notes\n").unwrap();

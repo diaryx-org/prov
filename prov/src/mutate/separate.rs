@@ -52,7 +52,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             )));
         }
         let (own_text, doc) = self.load(&path).await?;
-        let Some(MetaCarrier::Fenced(kind)) = doc.carrier else {
+        let Some(carrier @ MetaCarrier::Fenced(_)) = doc.carrier else {
             return Err(Error::Structure(format!(
                 "{} is not a combined document (nothing to separate)",
                 path.display()
@@ -70,7 +70,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 path.display()
             )));
         };
-        let format = kind.inner_format();
+        let format = carrier.format();
         let meta_path = path.with_extension(prov_graph::document::whole_file_extension(format));
         if meta_path == path {
             return Err(Error::Structure(format!(
@@ -235,7 +235,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;

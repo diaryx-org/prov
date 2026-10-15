@@ -840,7 +840,7 @@ fn rewrite_body_inbound(
 // it through that verb. What follows is the exception: the boundary a
 // sub-workspace draws is a property of `spanning_root` itself, and asking it
 // through `rename` alone would leave the stop condition implied.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;
@@ -925,8 +925,20 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!removed.contains("gone.md"), "{removed}");
+        // fig 7 lays the remaining key out as the item's first (`- title: Gone`)
+        // where fig 5 kept its indent; the fact is what has to stay.
+        let after = Document::parse("card.md", &removed).unwrap();
+        assert_eq!(
+            after
+                .meta
+                .get_path("sources")
+                .and_then(|s| s.as_sequence())
+                .map(|s| s.len()),
+            Some(2),
+            "{removed}"
+        );
         assert!(
-            removed.contains("  title: Gone"),
+            removed.contains("title: Gone"),
             "the fact beside it stays: {removed}"
         );
         assert!(

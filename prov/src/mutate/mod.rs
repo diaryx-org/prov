@@ -99,12 +99,12 @@ pub use reorder::Reordered;
 pub use reparent::Reparented;
 pub use save::ContentState;
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod support;
 
 // Laws over the verbs *together* — the sequences no fixture would think to
 // write. Not any one verb's file, because it is not any one verb's claim.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod properties;
 
 // Three properties the ops rest on rather than implement — the id map they
@@ -112,7 +112,7 @@ mod properties;
 // hook they fire — exercised here, through the same fixtures, because
 // `workspace.rs` (where all three live) has no filesystem-backed test surface
 // of its own.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::support::*;
     use crate::identity::Trigger;

@@ -299,12 +299,12 @@ pub fn manifest_node_candidates(dir: &Path) -> impl Iterator<Item = PathBuf> + '
     crate::graph::sidecar_candidates(dir)
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn parse(text: &str) -> Result<Manifest> {
-        let map = crate::meta::parse_mapping(text, fig::Format::Yaml).unwrap();
+        let map = crate::meta::parse_mapping(text, crate::MetaFormat::Yaml).unwrap();
         Manifest::from_meta(&Value::Mapping(map))
     }
 
@@ -391,9 +391,11 @@ mod tests {
     #[test]
     fn round_trips_through_a_mapping() {
         let m = parse("root: photos/\nfiles:\n- path: a.jpg\n  hash: sha256:abc\n").unwrap();
-        let text =
-            crate::meta::serialize_mapping(&m.to_mapping("Photos — manifest"), fig::Format::Yaml)
-                .unwrap();
+        let text = crate::meta::serialize_mapping(
+            &m.to_mapping("Photos — manifest"),
+            crate::MetaFormat::Yaml,
+        )
+        .unwrap();
         assert!(text.contains("root: photos/"), "{text}");
         assert_eq!(parse(&text).unwrap(), m);
     }
@@ -414,9 +416,11 @@ mod tests {
         );
         assert!(m.files[1].fields.is_empty());
 
-        let text =
-            crate::meta::serialize_mapping(&m.to_mapping("Photos — manifest"), fig::Format::Yaml)
-                .unwrap();
+        let text = crate::meta::serialize_mapping(
+            &m.to_mapping("Photos — manifest"),
+            crate::MetaFormat::Yaml,
+        )
+        .unwrap();
         assert!(text.contains("title: Mum at the lake"), "{text}");
         assert_eq!(parse(&text).unwrap(), m);
     }

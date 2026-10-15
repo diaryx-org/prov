@@ -76,7 +76,7 @@ pub trait Landing: Send + Sync {
     fn landed(&self, landed: &Landed);
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};

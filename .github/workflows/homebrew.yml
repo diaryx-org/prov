@@ -11,11 +11,6 @@ name: Release
 # named `prov` — hence `cargo-package` and `name` differing. The aarch64-linux
 # cross linker the cargo build needs is installed by the shared workflow.
 #
-# `needs-zig: true` because prov depends on fig-sys/twig-sys, whose build.rs
-# builds fig/twig-doc's native library from source (via `zig build`) when no
-# prebuilt payload exists for the target — which is the case for wasm32-wasip1,
-# and cheap insurance on the native targets.
-#
 # `wasi: true` attaches a wasm32-wasip1 build to the same Release. It is not part
 # of the Homebrew formula (brew doesn't run wasm) — just a portable download for
 # any WASI runtime (wasmtime, wasmer, ...).
@@ -43,9 +38,6 @@ jobs:
       desc: "Command-line companion for the prov self-describing workspace library"
       language: rust
       cargo-package: prov-cli
-      needs-zig: true
-      # Matches ci.yml's setup-zig: twig 4.0.1 builds from source only with 0.17.0.
-      zig-version: "0.17.0"
       wasi: true
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}

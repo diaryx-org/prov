@@ -318,8 +318,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     }
 }
 
-// These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::exec::block_on;

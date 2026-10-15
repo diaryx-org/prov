@@ -56,7 +56,7 @@ use prov_store::index::IndexStore;
 /// The sidecar path for `payload` in metadata `format`: the payload's full name
 /// plus the format's whole-file extension, as a sibling (`sub/a.pdf` →
 /// `sub/a.pdf.yaml`), so the sidecar's `content` pointer is just the basename.
-pub(crate) fn sidecar_path(payload: &Path, format: fig::Format) -> PathBuf {
+pub(crate) fn sidecar_path(payload: &Path, format: prov_graph::MetaFormat) -> PathBuf {
     let ext = whole_file_extension(format);
     let name = payload
         .file_name()
@@ -459,7 +459,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::validate::Finding;
@@ -961,7 +961,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_storage(IdStorage::Frontmatter)
             .build();
         block_on(w.attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
@@ -994,7 +994,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.attach(Path::new("media/photo.jpg"), Path::new("index.md"))).unwrap();
         block_on(w.attach_opaque(Path::new("sample.md"), Path::new("index.md"))).unwrap();
@@ -1052,7 +1052,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.attach(Path::new("photo.jpg"), Path::new("index.md"))).unwrap();
         let id = w

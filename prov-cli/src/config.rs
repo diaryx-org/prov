@@ -11,7 +11,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use prov::{Document, Format, Mapping, StdFs, Value, Workspace, block_on, edit, meta};
+use prov::{
+    Document, Mapping, MetaFormat as Format, StdFs, Value, Workspace, block_on, edit, meta,
+};
 
 use crate::about::refresh_about;
 use crate::cli::{CONFIG_STEM, ConfigHome, sidecar_name};

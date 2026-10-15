@@ -35,22 +35,6 @@
 //! [`index::IndexStore`]) are staked out here so nothing diaryx-specific leaks
 //! into the eventual public API.
 
-// At least one embedded-metadata format backend must be compiled in, otherwise
-// prov can neither parse nor serialize any metadata. The format features
-// (`yaml`, `json`, `toml`, `fig-lang`) forward to the matching `fig` parser —
-// see `Cargo.toml`.
-#[cfg(not(any(
-    feature = "yaml",
-    feature = "json",
-    feature = "toml",
-    feature = "fig-lang"
-)))]
-compile_error!(
-    "prov needs at least one metadata-format feature enabled: \
-     `yaml` (the default), `json`, `toml`, or `fig-lang`. \
-     You have disabled the default feature without selecting a replacement."
-);
-
 pub mod about;
 pub mod attach;
 pub use prov_config as config;
@@ -104,14 +88,14 @@ pub use prov_graph::kind::{RecordKind, payload_kind};
 pub use prov_graph::twig;
 pub use prov_graph::{
     Address, Addressing, Backlink, Body, BodyLink, BulkReads, Cardinality, CensusEntry, Collision,
-    ContentFormat, DirEntry, Document, Edge, EmbedStyle, EmbedType, Error, ExtKind, FieldPath,
-    FileType, Format, Graph, Id, IdIndex, IdStorage, Link, LinkSite, LinkStyle, Manifest,
-    ManifestEntry, Mapping, MetaCarrier, Metadata, NoIndex, NoPeers, Node, NodeKind, Notation,
-    PathStyle, PeerLocation, PeerLookup, PeerResolver, ReadScope, ReadSettings, ReadStorage,
-    ReferenceStyle, Relation, RelationSet, Resolution, Result, StdFs, StructuralFact, Target,
-    TitleIndex, TitleMatch, TreeOptions, Unconfirmed, Value, Walk, Wikilink, Wrapper, block_on,
-    code_spans, embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload,
-    path_to_title, reachable_set, render_html, require_whole_file,
+    ContentFormat, DirEntry, Document, Edge, EmbedStyle, Error, ExtKind, FieldPath, FileType,
+    Graph, Id, IdIndex, IdStorage, Link, LinkSite, LinkStyle, Manifest, ManifestEntry, Mapping,
+    MetaCarrier, MetaFormat, Metadata, NoIndex, NoPeers, Node, NodeKind, Notation, PathStyle,
+    PeerLocation, PeerLookup, PeerResolver, ReadScope, ReadSettings, ReadStorage, ReferenceStyle,
+    Relation, RelationSet, Resolution, Result, StdFs, StructuralFact, Target, TitleIndex,
+    TitleMatch, TreeOptions, Unconfirmed, Value, Walk, Wikilink, Wrapper, block_on, code_spans,
+    embed_carrier, embed_style_of, escapes_root, format_link, is_opaque_payload, path_to_title,
+    reachable_set, render_html, require_whole_file,
 };
 /// The read core's modules, re-exported at their original paths so `prov`'s
 /// public API is exactly what it was before the split.

@@ -283,7 +283,7 @@ fn is_missing(error: &Error) -> bool {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;

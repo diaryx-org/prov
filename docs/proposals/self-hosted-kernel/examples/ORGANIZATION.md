@@ -1,9 +1,9 @@
-;;;
+---json
 {
   "title": "How this workspace is organized",
   "generated_by": "prov 0.3.2"
 }
-;;;
+---
 
 <!--
   EXAMPLE — not a live file.
@@ -43,20 +43,20 @@ through something else that does.
 
 ## Every file opens with a metadata block
 
-A file begins with a line containing three semicolons:
+A file begins with a line containing `---json`:
 
 ```
-;;;
+---json
 {
   "title": "Some Document",
   "section_of": "[[id:aj7eqx|Board Records]]"
 }
-;;;
+---
 
 The rest of the file is the document itself.
 ```
 
-Everything between that line and the next `;;;` is the file's metadata,
+Everything between that line and the next `---` is the file's metadata,
 written in JSON. Everything after it is the document.
 
 The order of the keys is for your benefit, not the machine's. Some files

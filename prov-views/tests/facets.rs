@@ -79,7 +79,7 @@ audience:
 ";
 
 fn parse(yaml: &str) -> Mapping {
-    prov_graph::meta::parse_mapping(yaml, prov_graph::Format::Yaml).expect("the fixture parses")
+    prov_graph::meta::parse_mapping(yaml, prov_graph::MetaFormat::Yaml).expect("the fixture parses")
 }
 
 fn field(name: &str) -> KeyShape {

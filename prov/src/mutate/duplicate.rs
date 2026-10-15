@@ -211,7 +211,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;
@@ -351,7 +351,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_storage(IdStorage::Frontmatter)
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();

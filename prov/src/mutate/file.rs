@@ -414,7 +414,7 @@ fn period_path(parent: &Path, grain: Grain, period: &str, ext: &str) -> PathBuf 
     link::normalize(dir.join(name).join(format!("index.{ext}")))
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use prov_graph::exec::block_on;
@@ -451,7 +451,7 @@ mod tests {
     }
 
     fn meta(yaml: &str) -> Value {
-        prov_graph::meta::parse_value(yaml, prov_graph::Format::Yaml).unwrap()
+        prov_graph::meta::parse_value(yaml, prov_graph::MetaFormat::Yaml).unwrap()
     }
 
     fn spec(ws: &Workspace<StdFs>) -> FilingSpec {

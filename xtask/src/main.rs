@@ -22,12 +22,10 @@ type Result<T> = std::result::Result<T, String>;
 /// Workspace feature unification means `cargo check --workspace` can pass even
 /// when a crate cannot compile on its own — some other member's feature
 /// selection quietly fills the gap. Each entry below builds one crate in
-/// isolation (or with a single explicit format feature), which is what catches
-/// that before it becomes a publish-time surprise.
+/// isolation, which is what catches that before it becomes a publish-time
+/// surprise.
 ///
-/// A new workspace member belongs in this list. `prov` itself is covered by the
-/// per-format rows rather than a bare check: its default features pull in every
-/// parser backend, which is precisely the case that cannot go wrong.
+/// A new workspace member belongs in this list.
 const ISOLATED: &[&[&str]] = &[
     &["-p", "prov-graph"],
     &["-p", "prov-store"],
@@ -37,16 +35,7 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "prov-filing"],
     &["-p", "prov-exports"],
     &["-p", "prov-cli"],
-    &["-p", "prov", "--no-default-features", "--features", "yaml"],
-    &["-p", "prov", "--no-default-features", "--features", "json"],
-    &["-p", "prov", "--no-default-features", "--features", "toml"],
-    &[
-        "-p",
-        "prov",
-        "--no-default-features",
-        "--features",
-        "fig-lang",
-    ],
+    &["-p", "prov"],
 ];
 
 fn package_isolation(sh: &Sh) -> Result<()> {
@@ -188,7 +177,7 @@ mod tests {
         for member in members.split('"').skip(1).step_by(2) {
             let member_manifest =
                 std::fs::read_to_string(sh.root.join(member).join("Cargo.toml")).unwrap();
-            if member == "prov" || !publishable(&member_manifest) {
+            if !publishable(&member_manifest) {
                 continue;
             }
             assert!(
@@ -196,7 +185,6 @@ mod tests {
                 "workspace member `{member}` is not built in isolation by `cargo xtask package-isolation`",
             );
         }
-        assert!(ISOLATED.iter().any(|spec| spec.contains(&"--features")));
     }
 
     /// `publish = false` anywhere in the manifest opts a member out; nothing

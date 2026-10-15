@@ -106,8 +106,8 @@ prov:
   # ── description: how the workspace is written ──
   content_format: djot        # markdown | djot | html   (body grammar)
   metadata:
-    format: yaml              # yaml | json | toml | fig  (frontmatter language)
-    embed: delimited          # delimited | code_block | html_script | html_code | separate
+    format: yaml              # yaml | json | toml | figl  (frontmatter language)
+    embed: delimited          # delimited | separate
   references:
     notation: markdown        # markdown | wikilink | bare
     path_style: root          # root | relative   (path targets only)
@@ -1199,8 +1199,8 @@ present, and fills in the rest at their default. The layout is canonicalized
 a short prose page telling a reader with no prior knowledge how to read *this*
 directory. It is the spec **specialized** against this configuration — every
 rule resolved to a concrete fact, every branch this workspace does not take left
-out. Where the spec says "the block is fenced by `---`, `;;;`, or ```` ```fig
-````," the generated page says "every file here opens with a `---` line."
+out. Where the spec says "the block is fenced by `---`, `+++`, or `---<lang>`,"
+the generated page says "every file here opens with a `---` line."
 
 Where the workspace declares [views](#views), the page lists them too — each
 one's label, what it groups by where that can be said in words (a field, a

@@ -192,7 +192,7 @@ pub struct AboutDiff {
 
 // The `about` page's own findings — its staleness check and the autofix that
 // repairs it. YAML fixtures, so gated like the rest of this crate's I/O tests.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::WorkspaceConfig;

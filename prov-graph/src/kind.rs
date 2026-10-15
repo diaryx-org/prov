@@ -188,7 +188,6 @@ mod tests {
         assert_eq!(RecordKind::parse_list_item("photo"), None);
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn a_document_reads_as_the_record_it_is() {
         let page = Document::parse("a.md", "---\ntitle: A\n---\nhi\n").unwrap();

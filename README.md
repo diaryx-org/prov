@@ -50,7 +50,7 @@ A *self-describing plaintext workspace*: a set of documents whose structure live
 
 Releases are one command: `ship <patch|minor|major|x.y.z>` bumps the workspace version, cuts the changelog's unreleased region into a released section, commits and tags — and pushes only when given `--push`, because the push is what ships the Homebrew binaries. prov is not on crates.io: a Rust project depends on it from git, `prov = { git = "https://github.com/diaryx-org/prov", branch = "main" }`. See [Releasing](docs/releasing.md).
 
-Building needs [Zig](https://ziglang.org) 0.16 on `PATH` — prov's `fig` and `twig-doc` dependencies are Zig-backed, and their build scripts run `zig build`. `nix develop` provides it, as does the `flake.nix` dev shell.
+Building needs a Rust toolchain and nothing else: prov's `fig` and `twig-doc` dependencies are pure Rust (since fig 7 and twig 6). `nix develop` provides the pinned toolchain.
 
 ## Status
 

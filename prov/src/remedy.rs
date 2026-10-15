@@ -1818,8 +1818,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
 }
 
 /// Remedies — the repairs a finding offers when more than one is defensible.
-// These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::identity::Minter;
@@ -2959,7 +2958,7 @@ mod tests {
         let mut ws = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::lazy(9))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_links(true)
             .build();
 

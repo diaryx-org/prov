@@ -154,7 +154,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;
@@ -189,7 +189,7 @@ mod tests {
             .root(&dir)
             .relations(relations)
             .identity(Minter::eager(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.create_with_title(Path::new("child.md"), Path::new("index.md"), "Child"))
             .unwrap();

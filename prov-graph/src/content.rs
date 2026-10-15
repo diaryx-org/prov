@@ -4,10 +4,10 @@
 //! really code, e.g. `[[inf] * n for _ in range(m)]]` inside backticks, must
 //! never be treated as a link).
 //!
-//! `twig` (a sister Zig-backed project) parses Markdown/Djot into a shared AST.
-//! [`render_html`] and [`code_spans`] are direct FFI calls into it — `twig`'s C
-//! ABI exposes `twig_document_render_html` and `twig_document_nodes`, no
-//! subprocess involved. (`code_spans` used to bind a code-block-specific
+//! `twig` (a sister project, pure Rust since 6.0) parses Markdown/Djot/HTML into
+//! a shared AST. [`render_html`] and [`code_spans`] are plain calls into it, no
+//! subprocess involved; each grammar is a language crate of its own
+//! (`twig-markdown`, `twig-djot`, `twig-html`), registered on first use. (`code_spans` used to bind a code-block-specific
 //! accessor, then a selector query per code-bearing kind; it now filters the
 //! flat node array by kind, which needs one call and reaches the detached
 //! definition subtrees a query does not — see `spans_where`.) `twig` is a
@@ -45,9 +45,9 @@ impl ContentFormat {
 
     fn twig_format(self) -> twig::Format {
         match self {
-            Self::Markdown => twig::Format::Markdown,
-            Self::Djot => twig::Format::Djot,
-            Self::Html => twig::Format::Html,
+            Self::Markdown => twig_markdown::format(),
+            Self::Djot => twig_djot::format(),
+            Self::Html => twig_html::format(),
         }
     }
 

@@ -743,7 +743,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use prov_graph::exec::block_on;
@@ -766,7 +766,7 @@ mod tests {
         let meta = fig::Value::from(&prov_graph::meta::Value::Mapping(
             prov_graph::meta::parse_mapping(
                 "attachments:\n- content: fjord.jpg\n  content_hash: sha256:ab\n  people: [Ada]\n- content: https://example.org/x.jpg\n- content: id:abc\n",
-                fig::Format::Yaml,
+                prov_graph::MetaFormat::Yaml,
             )
             .unwrap(),
         ));
@@ -1232,7 +1232,6 @@ mod tests {
     /// fig's own devlogs: a figl block whose `contents` is a `>` block list,
     /// which fig's editor will not delete as a key. Demoting the last card
     /// leaves `contents = []` instead, and the row still lands and checks clean.
-    #[cfg(feature = "fig-lang")]
     #[test]
     fn demote_into_a_figl_block_with_a_block_list() {
         let dir = tempdir("demote-figl");
@@ -1244,7 +1243,7 @@ mod tests {
         write(
             &dir,
             "log.md",
-            b"```fig\ntitle = Log\npart_of = index.md\ncontents\n> * [Rules](/rules.svg.yaml)\n```\n![](rules.svg)\n",
+            b"---figl\ntitle = Log\npart_of = index.md\ncontents\n> * [Rules](/rules.svg.yaml)\n---\n![](rules.svg)\n",
         );
         write(&dir, "rules.svg", b"<svg/>");
         write(
@@ -1256,7 +1255,18 @@ mod tests {
         block_on(w.demote(Path::new("rules.svg"), None, None)).unwrap();
         let text = read(&dir, "log.md");
         assert!(!text.contains("rules.svg.yaml"), "{text}");
-        assert!(text.contains("content = /rules.svg"), "{text}");
+        // fig 7 writes the spliced row in flow form (`{content=/rules.svg …}`).
+        let doc = prov_graph::Document::parse("log.md", &text).unwrap();
+        assert_eq!(
+            doc.meta
+                .get_path("attachments")
+                .and_then(|a| a.as_sequence())
+                .and_then(|a| a.first())
+                .and_then(|row| row.get("content"))
+                .and_then(prov_graph::Value::as_str),
+            Some("/rules.svg"),
+            "{text}"
+        );
         assert!(!dir.join("rules.svg.yaml").exists());
         assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
     }

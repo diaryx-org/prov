@@ -14,9 +14,9 @@ use std::process::ExitCode;
 
 use prov::document::MetaCarrier;
 use prov::{
-    Addressing, Adoption, ContentFormat, Document, EmbedStyle, Format, LinkStyle, Mapping,
-    Notation, StdFs, StructurePlan, SynthNode, Value, Workspace, WorkspaceConfig, block_on, edit,
-    link, meta,
+    Addressing, Adoption, ContentFormat, Document, EmbedStyle, LinkStyle, Mapping,
+    MetaFormat as Format, Notation, StdFs, StructurePlan, SynthNode, Value, Workspace,
+    WorkspaceConfig, block_on, edit, link, meta,
 };
 
 use crate::about::about_context;
@@ -763,19 +763,9 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
         None if interactive => prompt_embed_style(content)?,
         None => content.embed_styles()[0],
     };
-    // Config language — depends on the embed type (fig has no delimiter form).
+    // Config language — every one can be embedded in every style.
     let meta: MetaFormat = match meta {
-        Some(m) => {
-            if prov::embed_carrier(embed, m.into()).is_none() {
-                return Err(format!(
-                    "`{}` metadata cannot be embedded as `{}` (try a code block or separate)",
-                    m.label(),
-                    embed.as_config_str()
-                )
-                .into());
-            }
-            m
-        }
+        Some(m) => m,
         None if interactive => prompt_config_language(embed)?,
         None => MetaFormat::Yaml,
     };
@@ -943,15 +933,8 @@ pub(crate) fn cmd_init(args: InitArgs) -> CmdResult {
     let config_name = sidecar_name(CONFIG_STEM, meta_format);
     let content_name = format!("index.{}", content.ext());
     // The carrier the root's metadata lives in — a fenced block in the content
-    // file, or (for `separate`) a whole-file sibling node. Validated already, so
-    // this never fails here.
-    let carrier = prov::embed_carrier(embed, meta_format).ok_or_else(|| {
-        format!(
-            "`{}` metadata cannot be embedded as `{}`",
-            meta.label(),
-            embed.as_config_str()
-        )
-    })?;
+    // file, or (for `separate`) a whole-file sibling node.
+    let carrier = prov::embed_carrier(embed, meta_format);
 
     // Write the root, and learn which file is the structural root document (the
     // node the `config` pointer is added to, and the `next:` hint names).

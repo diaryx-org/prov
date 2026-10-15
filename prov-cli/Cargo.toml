@@ -39,11 +39,3 @@ libc = "0.2"
 [dev-dependencies]
 prov-testkit = { workspace = true }
 
-[features]
-# JSON and the native fig dialect ship in the default binary, but a downstream
-# build can drop either with `--no-default-features` to shrink `libfig.a`. The
-# `--format` flag only offers the formats compiled in (see `MetaFormat`).
-default = ["json", "toml", "fig-lang"]
-json = ["prov/json"]
-toml = ["prov/toml"]
-fig-lang = ["prov/fig-lang"]

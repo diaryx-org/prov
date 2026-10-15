@@ -242,7 +242,7 @@ fn scalar_names(value: &Value) -> Vec<String> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use prov_graph::document::Document;

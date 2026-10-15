@@ -465,7 +465,7 @@ pub(crate) fn empty() -> Mutex<Option<InboundIndex>> {
     Mutex::new(None)
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::fs_faults::CountingFs;
@@ -508,7 +508,7 @@ mod tests {
         Workspace::builder(fs)
             .root(dir)
             .identity(Minter::lazy(3))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build()
     }
 
@@ -553,7 +553,7 @@ mod tests {
         let mut w = Workspace::builder(CountingFs::default())
             .root(&dir)
             .identity(Minter::lazy(3))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .bulk_reads(hook.clone())
             .build();
 

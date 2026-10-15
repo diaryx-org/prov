@@ -444,5 +444,5 @@ fn dir(path: String, reason: Reason) -> Ignore {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests;

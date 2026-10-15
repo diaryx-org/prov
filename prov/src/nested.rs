@@ -160,7 +160,7 @@ impl<FS: Storage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use std::path::Path;
 
@@ -189,7 +189,7 @@ mod tests {
         let ws: Workspace<StdFs, crate::identity::NoIdentity, FileIndex> =
             Workspace::builder(StdFs)
                 .root(dir)
-                .index(FileIndex::new(fig::Format::Yaml))
+                .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
                 .build();
         block_on(ws.nested_peers()).unwrap()
     }

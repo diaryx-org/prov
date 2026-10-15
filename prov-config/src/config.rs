@@ -572,7 +572,7 @@ pub struct WorkspaceConfig {
     pub id_storage: IdStorage,
     /// The metadata format new documents get when they inherit no parent block
     /// — a *default* for authoring, never a workspace constraint (§7).
-    pub default_embed_format: fig::Format,
+    pub default_embed_format: prov_graph::MetaFormat,
     /// How that metadata is *embedded* — delimiters, a fenced code block, an
     /// HTML island, or a separate sidecar. Together with `default_embed_format`
     /// it selects the carrier a fresh root/document is authored in; recorded so
@@ -731,7 +731,7 @@ impl Default for WorkspaceConfig {
             filing: Vec::new(),
             exports: Vec::new(),
             id_storage: IdStorage::Frontmatter,
-            default_embed_format: fig::Format::Yaml,
+            default_embed_format: prov_graph::MetaFormat::Yaml,
             embed_style: EmbedStyle::Delimited,
             content_format: ContentFormat::Markdown,
             record_deletions: true,
@@ -2680,19 +2680,14 @@ fn unknown(key: String, suggestion: String) -> ConfigIssue {
     }
 }
 
-/// The `metadata.format` spellings compiled into this build (yaml is always
-/// available; the rest are feature-gated, matching [`format_from_str`]).
+/// The `metadata.format` spellings a diagnostic offers: fig's names for the
+/// four formats. `yml` and `fig` (figl's name through fig 5) still read, but
+/// are not what a suggestion should teach.
 fn embed_format_spellings() -> Vec<&'static str> {
-    // `mut` is used only when a format feature below is compiled in.
-    #[allow(unused_mut)]
-    let mut v = vec!["yaml"];
-    #[cfg(feature = "json")]
-    v.push("json");
-    #[cfg(feature = "toml")]
-    v.push("toml");
-    #[cfg(feature = "fig-lang")]
-    v.push("fig");
-    v
+    prov_graph::MetaFormat::ALL
+        .iter()
+        .map(|f| f.name())
+        .collect()
 }
 
 /// A short, human-readable rendering of a config value for a diagnostic message.
@@ -2706,46 +2701,30 @@ fn value_summary(value: &Value) -> String {
     }
 }
 
-/// Parse a `metadata.format` config value (`yaml`/`json`/`toml`/`fig`) into a
-/// metadata [`fig::Format`], honoring the compiled-in formats — the public form of
+/// Parse a `metadata.format` config value (`yaml`/`json`/`toml`/`figl`, or the
+/// older `yml`/`fig`) into a [`prov_graph::MetaFormat`] — the public form of
 /// [`format_from_str`], for callers that name a frontmatter language from outside
 /// the config parser (the CLI's `convert … metadata.format …`).
-pub fn metadata_format_from_str(value: &str) -> Option<fig::Format> {
+pub fn metadata_format_from_str(value: &str) -> Option<prov_graph::MetaFormat> {
     format_from_str(value)
 }
 
-/// The `metadata.format` config spelling for a metadata [`fig::Format`] — the
+/// The `metadata.format` config spelling for a metadata [`prov_graph::MetaFormat`] — the
 /// public form of [`format_str`], and the inverse of [`metadata_format_from_str`].
-pub fn metadata_format_str(format: fig::Format) -> &'static str {
+pub fn metadata_format_str(format: prov_graph::MetaFormat) -> &'static str {
     format_str(format)
 }
 
-/// Parse the `metadata.format` config value into a metadata format (only the
-/// compiled-in formats are recognized; others → `None`, keeping the default).
-fn format_from_str(value: &str) -> Option<fig::Format> {
-    match value {
-        "yaml" | "yml" => Some(fig::Format::Yaml),
-        #[cfg(feature = "json")]
-        "json" => Some(fig::Format::Json),
-        #[cfg(feature = "toml")]
-        "toml" => Some(fig::Format::Toml),
-        #[cfg(feature = "fig-lang")]
-        "fig" => Some(fig::Format::Fig),
-        _ => None,
-    }
+/// Parse the `metadata.format` config value into a metadata format; anything
+/// else → `None`, keeping the default.
+fn format_from_str(value: &str) -> Option<prov_graph::MetaFormat> {
+    prov_graph::MetaFormat::from_name(value)
 }
 
-/// The `metadata.format` config spelling for a metadata format.
-fn format_str(format: fig::Format) -> &'static str {
-    match format {
-        #[cfg(feature = "json")]
-        fig::Format::Json => "json",
-        #[cfg(feature = "toml")]
-        fig::Format::Toml => "toml",
-        #[cfg(feature = "fig-lang")]
-        fig::Format::Fig => "fig",
-        _ => "yaml",
-    }
+/// The `metadata.format` config spelling for a metadata format: fig's name for
+/// it, so figl is written `figl`.
+fn format_str(format: prov_graph::MetaFormat) -> &'static str {
+    format.name()
 }
 
 /// Parse a relation `cardinality` config value (`one`/`many`); unknown → `None`.
@@ -2834,9 +2813,7 @@ mod tests {
         set.relations().iter().find(|r| r.name == name)
     }
 
-    // Uses YAML frontmatter fixtures, so it runs under the `yaml` feature.
     #[test]
-    #[cfg(feature = "yaml")]
     fn a_vocabulary_declaring_only_a_new_pair_keeps_the_preset_it_did_not_mention() {
         use prov_graph::document::Document;
 
@@ -3209,8 +3186,8 @@ mod tests {
                 },
             ],
             id_storage: IdStorage::Frontmatter,
-            default_embed_format: fig::Format::Yaml,
-            embed_style: EmbedStyle::CodeBlock,
+            default_embed_format: prov_graph::MetaFormat::Yaml,
+            embed_style: EmbedStyle::Separate,
             content_format: ContentFormat::Djot,
             record_deletions: false,
             fixity: Fixity::Off,
