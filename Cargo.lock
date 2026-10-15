@@ -441,7 +441,7 @@ dependencies = [
 [[package]]
 name = "fig-schema"
 version = "0.4.0"
-source = "git+https://github.com/diaryx-org/fig-schema?branch=cc%2Fmodest-mendel-tw57ql#4dc071e500377a0d2bfb7ee111d0dd9f667df2d8"
+source = "git+https://github.com/diaryx-org/fig-schema?branch=master#73f3d0234208706ff4344f40565af0c3f6b82690"
 dependencies = [
  "fig",
 ]

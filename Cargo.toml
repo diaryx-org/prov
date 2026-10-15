@@ -57,9 +57,11 @@ fig-figl = { version = "7", default-features = false, features = ["fig"] }
 # identically instead of agreeing by convention. Without its default `cli`
 # feature it is the library alone, on `fig`.
 #
-# From git until fig-schema's fig 7 release (0.5) is on crates.io: 0.4 is on
-# fig 5, whose `Value` is not fig 7's. Move this to `version = "0.5"` then.
-fig-schema = { git = "https://github.com/diaryx-org/fig-schema", branch = "cc/modest-mendel-tw57ql", default-features = false }
+# From git, on its default branch, until fig-schema's fig 7 release (0.5) is on
+# crates.io: 0.4 is on fig 5, whose `Value` is not fig 7's. Move this to
+# `version = "0.5"` then. flower takes it from the same place, so a program
+# using both builds one fig-schema.
+fig-schema = { git = "https://github.com/diaryx-org/fig-schema", branch = "master", default-features = false }
 indexmap = { version = "2.0", features = ["serde"] }
 thiserror = "2.0"
 
