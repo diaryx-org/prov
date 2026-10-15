@@ -60,9 +60,11 @@ jobs:
     # A field a job's runner table leaves out is null here: no components, and
     # Zig and the cache set up unless the job says `builds = false`.
     - uses: mlugg/setup-zig@v2
-      if: matrix.job.builds != false
+      # A missing `builds` is null, and GitHub compares loosely, so `null != false`
+      # is false: the test is for null itself.
+      if: matrix.job.builds == null || matrix.job.builds
       with: { version: "0.17.0" }
     - uses: Swatinem/rust-cache@v2
-      if: matrix.job.builds != false
+      if: matrix.job.builds == null || matrix.job.builds
     - run: cargo install --locked --git https://github.com/diaryx-org/ship ship
     - run: ship ci ${{ matrix.job.id }}
