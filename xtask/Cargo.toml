@@ -1,7 +1,7 @@
-# prov's CI, as a program. Not a published crate — `publish = false` keeps it out
-# of any `cargo publish` sweep, and it deliberately has no dependencies: every job
-# in the workspace needs `cargo xtask` to build before it can do anything, so the
-# cost of building it is paid on every CI job and in every developer's first run.
+# The CI job that is more than a command: `cargo xtask package-isolation`. Not a
+# published crate — `publish = false` keeps it out of any `cargo publish` sweep,
+# and it deliberately has no dependencies, since the job has to build it before
+# it can do anything.
 [package]
 name = "xtask"
 version = "0.0.0"

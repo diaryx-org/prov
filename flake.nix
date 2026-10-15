@@ -84,7 +84,7 @@
         };
 
         # The shared rust+zig shell. It carries the pinned Rust toolchain rather
-        # than nixpkgs' `cargo`/`rustc`, and git-cliff for `release changelog`.
+        # than nixpkgs' `cargo`/`rustc`, and git-cliff for `ship changelog`.
         devShells.default = diaryx-nix.devShells.${system}.rust-zig;
       });
 }

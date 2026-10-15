@@ -20,13 +20,12 @@ name: Release
 # of the Homebrew formula (brew doesn't run wasm) — just a portable download for
 # any WASI runtime (wasmtime, wasmer, ...).
 #
-# Nothing here writes the release body. `release <spec> --push` writes it from the
+# Nothing here writes the release body. `ship <spec> --push` writes it from the
 # laptop that cut the tag, out of the section that tag's own tree carries, which
-# is why no job here checks out diaryx-org/devtools or installs nu any more. The
-# shared workflow creates the release if it gets there first and leaves the body
-# alone either way — see the note on its attach step. If a release ever appears
-# with binaries and no notes, `release github-release <tag>` is the whole of the
-# fix.
+# is why no job here installs any release tooling. The shared workflow creates
+# the release if it gets there first and leaves the body alone either way — see
+# the note on its attach step. If a release ever appears with binaries and no
+# notes, `ship github <tag>` is the whole of the fix.
 #
 # Runs on `v*.*.*` tags. Prerequisite before the first tagged release: install
 # the diaryx-bot GitHub App on diaryx-org/homebrew-tap (Contents:write) and add

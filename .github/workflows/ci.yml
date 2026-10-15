@@ -1,15 +1,16 @@
 name: CI
 # Build, lint, and test the prov workspace on every push and pull request.
 #
-# There is deliberately almost nothing here. Every job is `cargo xtask <id>`, and
-# the list of jobs comes from `cargo xtask ci-matrix` rather than from this file,
-# so changing CI — adding a job, renaming one, changing what a job runs — is an
-# edit to `xtask/src/main.rs` alone. `cargo xtask ci` runs the same jobs locally,
-# in the same order.
+# There is deliberately almost nothing here. The jobs are the `job` list in
+# .config/ship.figl, and ship is what reads it: the plan job asks `ship ci
+# --matrix` for them, and each runner runs one as `ship ci <id>`. Changing CI —
+# adding a job, renaming one, changing what a job runs — is an edit to that file
+# alone, and `ship ci` runs the same jobs locally, in the same order, with the
+# same shell.
 #
 # What the runner still owns is the toolchain, because only it knows how to
-# install one: stable Rust, the components a job asks for, and — for jobs that
-# compile — the pinned Zig, since prov's `fig` and `twig-doc` dependencies are
+# install one: stable Rust, the components a job's `runner` table asks for, and
+# — for every job but the one that says `builds = false` — the pinned Zig, since prov's `fig` and `twig-doc` dependencies are
 # Zig-backed and their build.rs runs `zig build`. The Zig version mirrors
 # `.github/workflows/homebrew.yml`.
 on:
@@ -26,8 +27,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Ask xtask what CI consists of. Needs no Zig and no cache: it builds the
-  # dependency-free xtask crate and nothing else.
+  # Ask ship what CI consists of. Needs no Zig and no cache: it compiles ship
+  # and nothing of prov's.
   plan:
     name: Plan
     runs-on: ubuntu-latest
@@ -36,11 +37,12 @@ jobs:
     steps:
     - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
+    - run: cargo install --locked --git https://github.com/diaryx-org/ship ship
     - id: plan
-      run: echo "jobs=$(cargo xtask ci-matrix)" >> "$GITHUB_OUTPUT"
+      run: echo "jobs=$(ship ci --matrix)" >> "$GITHUB_OUTPUT"
 
   # One runner per job in that table. `name` is the job's own, so these appear as
-  # `CI / Format`, `CI / Clippy`, … — rename a job in xtask and the required
+  # `CI / Format`, `CI / Clippy`, … — rename a job in ship.figl and the required
   # status check is renamed with it.
   run:
     name: ${{ matrix.job.name }}
@@ -55,9 +57,12 @@ jobs:
     - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
       with: { components: "${{ matrix.job.components }}" }
+    # A field a job's runner table leaves out is null here: no components, and
+    # Zig and the cache set up unless the job says `builds = false`.
     - uses: mlugg/setup-zig@v2
-      if: matrix.job.builds
+      if: matrix.job.builds != false
       with: { version: "0.17.0" }
     - uses: Swatinem/rust-cache@v2
-      if: matrix.job.builds
-    - run: cargo xtask ${{ matrix.job.id }}
+      if: matrix.job.builds != false
+    - run: cargo install --locked --git https://github.com/diaryx-org/ship ship
+    - run: ship ci ${{ matrix.job.id }}

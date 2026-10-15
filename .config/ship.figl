@@ -1,0 +1,85 @@
+# What ship needs to know about prov: its release, and its CI. Everything not
+# stated here is ship's default — the manifest, the changelog path, the cliff
+# config, and that this is a Cargo workspace.
+name = prov
+url = https://github.com/diaryx-org/prov
+release_branch = main
+
+# No `verify`: before cutting, a release runs the jobs below.
+
+# Not on crates.io: prov is consumed from git, by commit. 0.18.0 was the last
+# version uploaded.
+publishes = false
+
+# What pushing the tag sets off, most consequential first. The warning printed
+# before the push is handed back to you is composed from these.
+tag_starts
+> * {workflow=homebrew.yml does='builds the binaries and writes the tap'}
+
+# CI. `.github/workflows/ci.yml` asks `ship ci --matrix` for these and runs one
+# per runner, as `ship ci <id>`; `ship ci` runs them all here, in this order,
+# with the same shell, and stops at the first that fails. Changing CI is an edit
+# here and nowhere else.
+#
+# A job is `id` (what `ship ci <id>` takes), `name` (the check GitHub shows as
+# `CI / <name>` — renaming it renames the required status check) and `run` (run
+# by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
+# `components` are the rustup components it installs, and `builds = false` is
+# the one job that only ever parses, so it needs neither the pinned Zig (prov's
+# `fig` and `twig-doc` dependencies are Zig-backed, and their build.rs runs `zig
+# build`) nor the cargo cache. Cheapest and most likely to fail first.
+job
+> *
+> > id = fmt
+> > name = Format
+> > run = cargo fmt --all --check
+> > runner
+> > > components = rustfmt
+> > > builds = false
+> *
+> > # Warnings are errors in CI, so they are errors here too — a lint that only
+> > # fires on the runner is a lint found too late.
+> > id = clippy
+> > name = Clippy
+> > run = cargo clippy --workspace --all-targets -- -D warnings
+> > runner
+> > > components = clippy
+> *
+> > id = test
+> > name = Test
+> > run = cargo test --workspace
+> *
+> > # The guides' command transcripts — getting started, and querying —
+> > # replayed against a freshly built binary, so the docs can never drift from
+> > # the CLI. The replay is `ci/check-getting-started.sh`: it runs a guide's
+> > # `console` blocks as one continuous session, which is what a reader
+> > # following along actually experiences.
+> > id = docs
+> > name = Guide transcripts
+> > run = '''
+cargo build -p prov-cli
+ci/check-getting-started.sh
+ci/check-getting-started.sh docs/querying.md
+'''
+> *
+> > # Each crate built alone, without workspace feature unification — which can
+> > # let `cargo check --workspace` pass for a crate that cannot compile on its
+> > # own. The list of crates is in xtask, beside the test that every publishable
+> > # member is on it.
+> > id = package-isolation
+> > name = Package isolation
+> > run = cargo xtask package-isolation
+> *
+> > # A build, not a test run: MSRV is a promise about who can compile prov, and
+> > # the dev-dependencies need not hold to it. The version is read from
+> > # `[workspace.package] rust-version`, so the pin follows the declared floor.
+> > # `rustup run` rather than `cargo +<version>`, which only rustup's proxy knows.
+> > id = msrv
+> > name = MSRV
+> > run = '''
+version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+test -n "$version" || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
+echo "MSRV from Cargo.toml: $version"
+rustup toolchain install "$version" --profile minimal --no-self-update
+rustup run "$version" cargo build --workspace
+'''

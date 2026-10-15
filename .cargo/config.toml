@@ -1,3 +1,4 @@
 [alias]
-# `cargo xtask <job>` runs one CI job; see xtask/src/main.rs.
+# `cargo xtask package-isolation`, which the CI job of that name runs; see
+# xtask/src/main.rs.
 xtask = "run --quiet --package xtask --"
