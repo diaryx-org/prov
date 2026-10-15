@@ -937,8 +937,81 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     }
 }
 
-// These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
-#[cfg(all(test, feature = "yaml"))]
+/// Invert a census into a backlink map: every resolved target to the inbound
+/// references that reach it, each target's sorted by source.
+///
+/// A free function over an already-taken census, rather than a method that takes
+/// one, because the caller who has to bound the walk — `prov`, which knows where
+/// it parks its own bytes — has already done the walking. Taking the census as
+/// an argument is what lets the bounded and unbounded callers share this.
+pub fn invert(census: Vec<CensusEntry>) -> BTreeMap<PathBuf, Vec<Backlink>> {
+    let mut map: BTreeMap<PathBuf, Vec<Backlink>> = BTreeMap::new();
+    for entry in census {
+        let by_id = matches!(entry.resolution, Resolution::Id { .. });
+        let Some(target) = entry.resolution.resolved_path().cloned() else {
+            continue;
+        };
+        map.entry(target).or_default().push(Backlink {
+            source: entry.source,
+            site: entry.site,
+            by_id,
+            via_payload: false,
+        });
+    }
+    for links in map.values_mut() {
+        links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
+    }
+    map
+}
+
+/// The inbound references to one `target` within an already-taken census,
+/// sorted by source — [`invert`] focused on a single entry.
+pub fn inbound(census: Vec<CensusEntry>, target: &Path) -> Vec<Backlink> {
+    inbound_node(census, target, None)
+}
+
+/// The inbound references to one node within an already-taken census, through
+/// either of its handles: `target`, and — for an attachment — its `payload`,
+/// each reference through the payload marked
+/// [`via_payload`](Backlink::via_payload). Sorted by source, then path before
+/// id, then sidecar before payload. With no payload this is [`inbound`].
+pub fn inbound_node(
+    census: Vec<CensusEntry>,
+    target: &Path,
+    payload: Option<&Path>,
+) -> Vec<Backlink> {
+    let target = link::normalize(target);
+    let payload = payload.map(link::normalize);
+    let mut links: Vec<Backlink> = census
+        .into_iter()
+        .filter_map(|entry| {
+            let resolved = entry.resolution.resolved_path()?;
+            let via_payload = if *resolved == target {
+                false
+            } else if Some(resolved) == payload.as_ref() {
+                true
+            } else {
+                return None;
+            };
+            let by_id = matches!(entry.resolution, Resolution::Id { .. });
+            Some(Backlink {
+                source: entry.source,
+                site: entry.site,
+                by_id,
+                via_payload,
+            })
+        })
+        .collect();
+    links.sort_by(|a, b| {
+        a.source
+            .cmp(&b.source)
+            .then(a.by_id.cmp(&b.by_id))
+            .then(a.via_payload.cmp(&b.via_payload))
+    });
+    links
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::exec::block_on;
@@ -1180,78 +1253,4 @@ mod tests {
         let map = block_on(ws.backlinks("index.md")).unwrap();
         assert_eq!(map[&PathBuf::from("a.md")].len(), 3);
     }
-}
-
-/// Invert a census into a backlink map: every resolved target to the inbound
-/// references that reach it, each target's sorted by source.
-///
-/// A free function over an already-taken census, rather than a method that takes
-/// one, because the caller who has to bound the walk — `prov`, which knows where
-/// it parks its own bytes — has already done the walking. Taking the census as
-/// an argument is what lets the bounded and unbounded callers share this.
-pub fn invert(census: Vec<CensusEntry>) -> BTreeMap<PathBuf, Vec<Backlink>> {
-    let mut map: BTreeMap<PathBuf, Vec<Backlink>> = BTreeMap::new();
-    for entry in census {
-        let by_id = matches!(entry.resolution, Resolution::Id { .. });
-        let Some(target) = entry.resolution.resolved_path().cloned() else {
-            continue;
-        };
-        map.entry(target).or_default().push(Backlink {
-            source: entry.source,
-            site: entry.site,
-            by_id,
-            via_payload: false,
-        });
-    }
-    for links in map.values_mut() {
-        links.sort_by(|a, b| a.source.cmp(&b.source).then(a.by_id.cmp(&b.by_id)));
-    }
-    map
-}
-
-/// The inbound references to one `target` within an already-taken census,
-/// sorted by source — [`invert`] focused on a single entry.
-pub fn inbound(census: Vec<CensusEntry>, target: &Path) -> Vec<Backlink> {
-    inbound_node(census, target, None)
-}
-
-/// The inbound references to one node within an already-taken census, through
-/// either of its handles: `target`, and — for an attachment — its `payload`,
-/// each reference through the payload marked
-/// [`via_payload`](Backlink::via_payload). Sorted by source, then path before
-/// id, then sidecar before payload. With no payload this is [`inbound`].
-pub fn inbound_node(
-    census: Vec<CensusEntry>,
-    target: &Path,
-    payload: Option<&Path>,
-) -> Vec<Backlink> {
-    let target = link::normalize(target);
-    let payload = payload.map(link::normalize);
-    let mut links: Vec<Backlink> = census
-        .into_iter()
-        .filter_map(|entry| {
-            let resolved = entry.resolution.resolved_path()?;
-            let via_payload = if *resolved == target {
-                false
-            } else if Some(resolved) == payload.as_ref() {
-                true
-            } else {
-                return None;
-            };
-            let by_id = matches!(entry.resolution, Resolution::Id { .. });
-            Some(Backlink {
-                source: entry.source,
-                site: entry.site,
-                by_id,
-                via_payload,
-            })
-        })
-        .collect();
-    links.sort_by(|a, b| {
-        a.source
-            .cmp(&b.source)
-            .then(a.by_id.cmp(&b.by_id))
-            .then(a.via_payload.cmp(&b.via_payload))
-    });
-    links
 }

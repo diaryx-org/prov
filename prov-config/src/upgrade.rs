@@ -267,13 +267,13 @@ fn stamp_edit(
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::diagnose;
 
     fn yaml(text: &str) -> Value {
-        prov_graph::meta::parse_value(text, prov_graph::Format::Yaml).expect("yaml")
+        prov_graph::meta::parse_value(text, prov_graph::MetaFormat::Yaml).expect("yaml")
     }
 
     /// Apply a plan to a surface, as the editor would.

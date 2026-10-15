@@ -526,7 +526,7 @@ fn render_log(
     title: &str,
     part_of: Option<&str>,
     records: Vec<Value>,
-    format: fig::Format,
+    format: prov_graph::MetaFormat,
 ) -> Result<String> {
     let mut map = prov_graph::meta::Mapping::new();
     map.insert("title".into(), Value::String(title.to_string()));
@@ -537,7 +537,7 @@ fn render_log(
     prov_graph::meta::serialize_mapping(&map, format)
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::delete::Diagnosis;
     use super::super::support::*;

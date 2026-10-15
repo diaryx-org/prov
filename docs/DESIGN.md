@@ -378,20 +378,20 @@ The same rule governs the deletion log and *flat* vocabulary stores; a
   so targeting the value tree as the common currency makes the backend a
   build-time choice the core never sees. `fig` is already published in multiple
   places; shipping it natively is defensible (the "fig + prov" ecosystem),
-  while a `serde` backend keeps the door open for those who do not want the Zig
-  toolchain `fig`'s build requires.
+  and since fig 7 it is pure Rust, so it asks nothing of the build.
 - **Multi-format embedded metadata.** The crate is agnostic about the *format*
-  of the embedded block — YAML (`---`), JSON (`;;;`), fig-native
-  (```` ```fig ````), endmatter — anything `fig` recognizes. The **fence layer**
-  turned out to live in `fig` itself, not prov: `fig::detect` sniffs the
-  archetype (fig 2.1, upstreamed from this project's needs), `fig::split`
-  separates content from body, and `EmbedType::inner_format` couples each fence
-  style to its format so invalid combinations are unspellable. prov records
-  the detected `EmbedType` on every `Document` so writes **preserve the original
-  format and layout** (never rewrite a ```` ```fig ```` block as YAML). prov
-  feature gates (`yaml`, `json`, `fig`, …) forward to the corresponding `fig`
-  feature. A useful consequence: the sidecar index need not match the document
-  format — documents can be YAML while the index is fig-native for parse speed.
+  of the embedded block — YAML (`---`), TOML (`+++`), JSON (`---json`) or figl
+  (`---figl`). The **fence layer** lived in `fig` through fig 5 (`fig::detect`,
+  `fig::Embed`, `EmbedType`, upstreamed from this project's needs); fig 6 took
+  embedding out of fig and twig took it in, as `twig::meta`, which locates a
+  document's frontmatter and splices fig's editor back between its fences.
+  prov records the block's format (`MetaCarrier::Fenced(MetaFormat)`) on every
+  `Document` so writes **preserve the original format and layout** (never
+  rewrite a `+++` block as YAML). twig reads frontmatter only, so the other
+  archetypes fig 5 read — `;;;` JSON, fenced code blocks and endmatter, HTML
+  `<script>` and `<pre><code>` islands — are prose to prov now. A useful
+  consequence of the split: the sidecar index need not match the document
+  format — documents can be YAML while the index is figl.
 
 ## 8. Validation is the sleeper feature
 
@@ -494,7 +494,7 @@ not yet ported.
 | Area | Module | Status |
 | --- | --- | --- |
 | Embedded metadata (parse/serialize, dynamic value) | `meta` | ✅ implemented + tested (format-parametric) |
-| Document splitting (frontmatter fence) | `document` | ✅ all fig archetypes via `fig::detect` (`---`, `;;;`, ```` ```fig ````, endmatter); `EmbedType` recorded per document |
+| Document splitting (frontmatter fence) | `document` | ✅ frontmatter located by `twig::meta` (`---`, `+++`, `---<lang>`); its `MetaFormat` recorded per document |
 | Relation vocabulary + edge/child extraction | `relation` | ✅ implemented + tested |
 | Identity policy + registration triggers | `identity` | ✅ NOID xdigit+check minter (ARK lineage, no shoulder), `Trigger` events, `Workspace::register` (idempotent, policy-gated), mint-by-rejection |
 | Index store (id↔path registry) | `index` | ✅ `NoIndex` + `InMemoryIndex` + persistent `FileIndex` — records live under the `registry` key of a **whole-file config document** (markdown carriers refused at load via `require_whole_file`, §5), tombstones as `id: null`, block layout, per-record preserving upserts |

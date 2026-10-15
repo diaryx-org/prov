@@ -976,7 +976,7 @@ fn free_name(dir: &Path, name: &str, taken: &[PathBuf]) -> PathBuf {
         .expect("an unbounded range finds a free name")
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;
@@ -1346,7 +1346,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::eager(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_links(true)
             .build();
         write(&dir, "index.md", "---\ntitle: Home\n---\n");

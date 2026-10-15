@@ -25,9 +25,8 @@ tag_starts
 # `CI / <name>` — renaming it renames the required status check) and `run` (run
 # by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
 # `components` are the rustup components it installs, and `builds = false` is
-# the one job that only ever parses, so it needs neither the pinned Zig (prov's
-# `fig` and `twig-doc` dependencies are Zig-backed, and their build.rs runs `zig
-# build`) nor the cargo cache. Cheapest and most likely to fail first.
+# the one job that only ever parses, so it needs no cargo cache. Cheapest and
+# most likely to fail first.
 job
 > *
 > > id = fmt

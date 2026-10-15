@@ -308,7 +308,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;
@@ -423,13 +423,11 @@ mod tests {
         );
     }
 
-    // Exercises inheritance of a `fig`-dialect parent block, so it needs that
-    // backend on top of the module-wide `yaml` gate.
-    #[cfg(feature = "fig-lang")]
+    // Exercises inheritance of a figl parent block.
     #[test]
     fn create_links_both_directions_in_the_parents_format() {
         let dir = tempdir("create");
-        write(&dir, "index.md", "```fig\ntitle = Root\n```\nbody\n");
+        write(&dir, "index.md", "---figl\ntitle = Root\n---\nbody\n");
         // Plain-relative keeps the authored links bare and deterministic.
         let w = || {
             Workspace::builder(StdFs)
@@ -441,7 +439,7 @@ mod tests {
 
         let child = read(&dir, "notes/new.md");
         assert!(
-            child.starts_with("```fig\n"),
+            child.starts_with("---figl\n"),
             "child inherits the parent's archetype: {child}"
         );
         assert!(child.contains("part_of = ../index.md"), "{child}");
@@ -454,7 +452,6 @@ mod tests {
         assert_eq!(block_on(w().check("index.md")).unwrap(), vec![]);
     }
 
-    #[cfg(feature = "fig-lang")]
     #[test]
     fn create_uses_the_workspace_default_embed_format() {
         // The parent is a config file (whole-file metadata), so the child
@@ -464,11 +461,11 @@ mod tests {
         write(&dir, "index.yaml", "title: Root\n");
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
-            .default_embed_format(fig::Format::Fig)
+            .default_embed_format(prov_graph::MetaFormat::Figl)
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.yaml"))).unwrap();
         assert!(
-            read(&dir, "a.md").starts_with("```fig"),
+            read(&dir, "a.md").starts_with("---figl\n"),
             "{}",
             read(&dir, "a.md")
         );
@@ -483,7 +480,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::lazy(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_links(true)
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
@@ -515,7 +512,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_storage(IdStorage::Frontmatter)
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
@@ -544,7 +541,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
 
@@ -574,7 +571,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::lazy(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_links(true)
             .id_storage(IdStorage::Frontmatter)
             .build();
@@ -608,7 +605,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::with(Registration::EAGER, 7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_storage(IdStorage::Frontmatter)
             .build();
         block_on(w.create(Path::new("notes.md"), Path::new("index.yaml"))).unwrap();
@@ -657,7 +654,7 @@ mod tests {
             .root(&dir)
             .relations(relations)
             .identity(Minter::lazy(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
 
@@ -763,7 +760,7 @@ mod tests {
         let mut w = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::eager(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();
         let id = w
@@ -808,7 +805,7 @@ mod tests {
             .id_links(true)
             // No host: `pending_write` stages nothing, so `commit` has no registry
             // write to report — exactly the case that leaves a checkpoint behind.
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
 
         block_on(w.create(Path::new("a.md"), Path::new("index.md"))).unwrap();

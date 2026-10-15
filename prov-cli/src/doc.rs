@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use prov::prov_graph::field::Step;
-use prov::{Format, RelationSet, StdFs, Value, block_on, edit, meta};
+use prov::{MetaFormat as Format, RelationSet, StdFs, Value, block_on, edit, meta};
 
 use crate::cli::MetaFormat;
 use crate::clock;

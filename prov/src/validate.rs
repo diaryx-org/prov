@@ -2739,8 +2739,15 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     }
 }
 
-// These tests use YAML frontmatter fixtures, so they run under the `yaml` feature.
-#[cfg(all(test, feature = "yaml"))]
+/// A block of YAML indented to sit under a finding's line.
+fn indent(yaml: &str) -> String {
+    yaml.lines()
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::identity::Minter;
@@ -3305,7 +3312,7 @@ mod tests {
             .root(&dir)
             .relations(relations)
             .identity(Minter::eager(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
         block_on(w.create_with_title(Path::new("child.md"), Path::new("index.md"), "Child"))
             .unwrap();
@@ -4378,7 +4385,7 @@ mod tests {
         let mut w = Workspace::builder(fs.clone())
             .root(&dir)
             .identity(Minter::lazy(7))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .id_links(true)
             .build();
         block_on(w.create(Path::new("notes/a.md"), Path::new("index.md"))).unwrap();
@@ -4592,7 +4599,7 @@ mod tests {
             Workspace::builder(StdFs)
                 .root(&dir)
                 .identity(Minter::lazy(9))
-                .index(FileIndex::new(fig::Format::Yaml))
+                .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
                 .build()
         };
 
@@ -4651,7 +4658,7 @@ mod tests {
         let mut ws = Workspace::builder(StdFs)
             .root(&dir)
             .identity(Minter::lazy(9))
-            .index(FileIndex::new(fig::Format::Yaml))
+            .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
             .build();
 
         let findings = block_on(ws.check("index.md")).unwrap();
@@ -4690,7 +4697,7 @@ mod tests {
             let mut ws = Workspace::builder(StdFs)
                 .root(&dir)
                 .identity(Minter::lazy(9))
-                .index(FileIndex::new(fig::Format::Yaml))
+                .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
                 .id_storage(storage)
                 .build();
             ws.index_mut()
@@ -5112,12 +5119,4 @@ mod tests {
         // And two clean runs agree on everything.
         assert_eq!(CheckDiff::between(&[], &[]), CheckDiff::default());
     }
-}
-
-/// A block of YAML indented to sit under a finding's line.
-fn indent(yaml: &str) -> String {
-    yaml.lines()
-        .map(|line| format!("    {line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }

@@ -2,9 +2,6 @@
 //!
 //! Each verb's tests live in its own file, so the workspace-building helpers
 //! they all need cannot hang off any one of them.
-//!
-//! These engine tests use YAML fixtures throughout, so every one of those
-//! modules — and this one — runs whenever the (default) `yaml` feature is on.
 
 use std::path::{Path, PathBuf};
 
@@ -46,7 +43,7 @@ pub(super) fn id_ws(dir: &Path) -> Workspace<StdFs, Minter, FileIndex> {
     Workspace::builder(StdFs)
         .root(dir)
         .identity(Minter::lazy(42))
-        .index(FileIndex::new(fig::Format::Yaml))
+        .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
         .build()
 }
 

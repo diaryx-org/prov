@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use prov::{
-    Addressing, ContentFormat, EmbedStyle, Format, IdStorage, Layout, LinkStyle, Notation,
-    Registration, RelationStyleConfig, WorkspaceConfig, Wrapper,
+    Addressing, ContentFormat, EmbedStyle, IdStorage, Layout, LinkStyle, MetaFormat as Format,
+    Notation, Registration, RelationStyleConfig, WorkspaceConfig, Wrapper,
 };
 
 /// `--layout` — the CLI mirror of [`Layout`], so the flag's spelling is the
@@ -43,18 +43,10 @@ pub(crate) const CONFIG_STEM: &str = "prov";
 
 /// The whole-file extension for a metadata format: the config and registry
 /// sidecars are written in the workspace's *chosen metadata format*, not always
-/// YAML — `yaml`/`json`/`figl`. Mirrors [`prov::document::whole_file_format`],
+/// YAML — `yaml`/`json`/`toml`/`figl`. Mirrors [`prov::document::whole_file_format`],
 /// which parses them back.
 pub(crate) fn sidecar_ext(format: Format) -> &'static str {
-    match format {
-        #[cfg(feature = "json")]
-        Format::Json => "json",
-        #[cfg(feature = "toml")]
-        Format::Toml => "toml",
-        #[cfg(feature = "fig-lang")]
-        Format::Fig => "figl",
-        _ => "yaml",
-    }
+    format.extension()
 }
 
 /// The sidecar filename for `stem` in metadata `format` (e.g. `prov.figl`).
@@ -1419,19 +1411,16 @@ pub(crate) enum ConfigHome {
     Sidecar,
 }
 
-/// CLI spelling of the metadata formats prov compiles in. Variants track the
-/// crate's format features: YAML is always available; JSON and the native fig
-/// dialect appear only when their features are enabled, so `--format` never
-/// offers a format whose parser is not in the binary.
+/// CLI spelling of the metadata formats prov reads and writes. fig's own
+/// dialect is `figl`, as fig 6 names it; `fig`, its name through fig 5, is
+/// still accepted.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum MetaFormat {
     Yaml,
-    #[cfg(feature = "toml")]
     Toml,
-    #[cfg(feature = "json")]
     Json,
-    #[cfg(feature = "fig-lang")]
-    Fig,
+    #[value(alias = "fig")]
+    Figl,
 }
 
 impl MetaFormat {
@@ -1439,19 +1428,14 @@ impl MetaFormat {
     pub(crate) fn label(self) -> &'static str {
         match self {
             MetaFormat::Yaml => "yaml",
-            #[cfg(feature = "toml")]
             MetaFormat::Toml => "toml",
-            #[cfg(feature = "json")]
             MetaFormat::Json => "json",
-            #[cfg(feature = "fig-lang")]
-            MetaFormat::Fig => "fig",
+            MetaFormat::Figl => "fig",
         }
     }
 }
 
-/// CLI spelling of the body-prose grammars `twig` parses. Unlike the metadata
-/// formats these are always available (twig is a required dependency), so no
-/// variant is feature-gated.
+/// CLI spelling of the body-prose grammars `twig` parses.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ContentLang {
     Markdown,
@@ -1487,24 +1471,15 @@ impl ContentLang {
     }
 
     /// The embed styles `init` offers for this grammar, in menu order (the first
-    /// is the default). Markdown gets delimiters, a fenced block, or a separate
-    /// sidecar; Djot drops delimiters (it has no idiomatic frontmatter, and a
-    /// leading `---`/`+++` is body syntax) and offers a fenced block or separate;
-    /// HTML offers the two data-island shapes; every grammar can keep metadata
-    /// in a sibling file.
+    /// is the default). Every grammar can carry frontmatter or keep metadata in
+    /// a sibling file. Markdown leads with frontmatter, its own convention;
+    /// Djot and HTML lead with the sibling file, since a leading `---` is a
+    /// thematic break to a Djot renderer and visible text to a browser (prov
+    /// reads the block either way, and leaves it out of what it renders).
     pub(crate) fn embed_styles(self) -> &'static [EmbedStyle] {
         match self {
-            ContentLang::Markdown => &[
-                EmbedStyle::Delimited,
-                EmbedStyle::CodeBlock,
-                EmbedStyle::Separate,
-            ],
-            ContentLang::Djot => &[EmbedStyle::CodeBlock, EmbedStyle::Separate],
-            ContentLang::Html => &[
-                EmbedStyle::HtmlScript,
-                EmbedStyle::HtmlCode,
-                EmbedStyle::Separate,
-            ],
+            ContentLang::Markdown => &[EmbedStyle::Delimited, EmbedStyle::Separate],
+            ContentLang::Djot | ContentLang::Html => &[EmbedStyle::Separate, EmbedStyle::Delimited],
         }
     }
 
@@ -1520,29 +1495,21 @@ impl ContentLang {
 /// the summary line's spelling.
 pub(crate) fn embed_labels(style: EmbedStyle) -> (&'static str, &'static str) {
     match style {
-        EmbedStyle::Delimited => ("Character delimiters", "--- yaml · +++ toml · ;;; json"),
-        EmbedStyle::CodeBlock => ("Typed code block", "```yaml · ```toml · ```fig"),
-        EmbedStyle::HtmlScript => ("Script tag", "<script type=\"application/…\">"),
-        EmbedStyle::HtmlCode => ("Code tag", "<pre><code class=\"language-…\">"),
+        EmbedStyle::Delimited => ("Frontmatter", "--- yaml · +++ toml · ---json · ---figl"),
         EmbedStyle::Separate => ("Separate", "metadata in a sibling file"),
     }
 }
 
-/// The config languages `init` offers for `embed`, compiled-in only. YAML is
-/// always present; TOML/JSON/fig follow their crate features. The fig dialect
-/// has no character-delimiter form, so it is dropped for [`EmbedStyle::Delimited`].
+/// The config languages `init` offers. Every one can be embedded in every
+/// style, so `embed` does not narrow them; it is taken so the menu can.
 pub(crate) fn config_languages(embed: EmbedStyle) -> Vec<(MetaFormat, &'static str)> {
-    let _ = embed; // read below only under the `fig-lang` feature
-    let mut opts = vec![(MetaFormat::Yaml, "YAML")];
-    #[cfg(feature = "toml")]
-    opts.push((MetaFormat::Toml, "TOML"));
-    #[cfg(feature = "json")]
-    opts.push((MetaFormat::Json, "JSON"));
-    #[cfg(feature = "fig-lang")]
-    if embed != EmbedStyle::Delimited {
-        opts.push((MetaFormat::Fig, "fig"));
-    }
-    opts
+    let _ = embed;
+    vec![
+        (MetaFormat::Yaml, "YAML"),
+        (MetaFormat::Toml, "TOML"),
+        (MetaFormat::Json, "JSON"),
+        (MetaFormat::Figl, "figl"),
+    ]
 }
 
 impl From<ContentLang> for ContentFormat {
@@ -1562,14 +1529,8 @@ impl From<ContentLang> for ContentFormat {
 /// validated against the chosen content.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum EmbedArg {
-    /// Character-delimited frontmatter (`---`/`+++`/`;;;`). Markdown only.
+    /// Frontmatter: `---` YAML, `+++` TOML, `---json`, `---figl`.
     Delimited,
-    /// A typed fenced code block (```` ```yaml ````, ```` ```fig ````, …).
-    CodeBlock,
-    /// An HTML `<script type="application/…">` data island. HTML only.
-    HtmlScript,
-    /// An HTML `<pre><code class="language-…">` block. HTML only.
-    HtmlCode,
     /// Metadata in a sibling whole-file document, linked by `content`.
     Separate,
 }
@@ -1578,9 +1539,6 @@ impl From<EmbedArg> for EmbedStyle {
     fn from(e: EmbedArg) -> Self {
         match e {
             EmbedArg::Delimited => EmbedStyle::Delimited,
-            EmbedArg::CodeBlock => EmbedStyle::CodeBlock,
-            EmbedArg::HtmlScript => EmbedStyle::HtmlScript,
-            EmbedArg::HtmlCode => EmbedStyle::HtmlCode,
             EmbedArg::Separate => EmbedStyle::Separate,
         }
     }
@@ -1855,12 +1813,9 @@ impl From<MetaFormat> for Format {
     fn from(f: MetaFormat) -> Format {
         match f {
             MetaFormat::Yaml => Format::Yaml,
-            #[cfg(feature = "toml")]
             MetaFormat::Toml => Format::Toml,
-            #[cfg(feature = "json")]
             MetaFormat::Json => Format::Json,
-            #[cfg(feature = "fig-lang")]
-            MetaFormat::Fig => Format::Fig,
+            MetaFormat::Figl => Format::Figl,
         }
     }
 }

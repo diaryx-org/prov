@@ -304,8 +304,8 @@ format-agnosticism, made an action). Decided this session:
      `Workspace::convert_link_style` + `restyle_frontmatter_links`/
      `restyle_body_links`; CLI `convert <file> link_format <style> [-r]`. Only the
      `link_format` axis so far; the other reference axes are the natural next add.
-  2. ✅ **Metadata language** (`metadata.format` yaml↔fig↔json↔toml, `metadata.embed`) —
-     reserialize the block via `reformat_block`, resolving a target `EmbedType` from
+  2. ✅ **Metadata language** (`metadata.format` yaml↔figl↔json↔toml, `metadata.embed`) —
+     reserialize the block via `reformat_block`/`retype_block`, resolving a target carrier from
      the document's *other* axis. `convert_meta_format` / `convert_meta_embed`.
      Comment loss across formats is the caveat; `separate` stays out of scope (a
      move, not a re-fence).

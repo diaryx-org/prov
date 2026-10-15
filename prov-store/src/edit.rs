@@ -1,122 +1,128 @@
 //! Format-preserving edits to a document's metadata, whatever carries it.
 //!
-//! [`MetaEditor`] dispatches on the document's [`MetaCarrier`]: a fenced block
-//! is edited with fig's [`fig::Embed`] (fences and body untouched), a config
-//! document with fig's [`fig::Editor`] (the whole file *is* the metadata).
-//! Either way the edit is comment-preserving and byte-minimal — only the
-//! changed node's bytes move — and the original carrier and format are never
-//! rewritten into another.
+//! [`MetaEditor`] dispatches on the document's [`MetaCarrier`]: a frontmatter
+//! block is edited through twig's [`Embed`] (fences and the
+//! body around it untouched), a config document with fig's [`fig::Editor`] (the
+//! whole file *is* the metadata). Either way the edit is comment-preserving and
+//! byte-minimal — only the changed node's bytes move — and the original carrier
+//! and format are never rewritten into another.
 //!
 //! The workspace mutation ops build on this; the free functions are the
 //! single-document surface (the CLI's `set`/`unset`).
 
-use fig::{Embed, EmbedType, Segment};
+use fig::Segment;
+use prov_graph::twig::meta::Embed;
 
-use prov_graph::document::MetaCarrier;
+use prov_graph::document::{MetaCarrier, frontmatter_block};
 use prov_graph::field::Address;
 use prov_graph::meta::Mapping;
-use prov_graph::{Error, Result};
+use prov_graph::{Error, MetaFormat, Result};
 
-/// The frontmatter archetype used to synthesize a metadata block for a document
-/// that has none. YAML (`---`) is the convention when compiled in; otherwise the
-/// first other format that is. Exactly one arm survives `cfg` stripping, and the
-/// `compile_error!` in `lib.rs` guarantees at least one does.
-fn default_embed_type() -> EmbedType {
-    #[cfg(feature = "yaml")]
-    return EmbedType::Frontmatter;
-    #[cfg(all(not(feature = "yaml"), feature = "json"))]
-    return EmbedType::Semicolons;
-    #[cfg(all(not(feature = "yaml"), not(feature = "json"), feature = "toml"))]
-    return EmbedType::Plus;
-    #[cfg(all(
-        not(feature = "yaml"),
-        not(feature = "json"),
-        not(feature = "toml"),
-        feature = "fig-lang"
-    ))]
-    return EmbedType::FencedFig;
+/// `body` with a frontmatter block in `format` above it, holding `content`
+/// (which ends its last line, or is empty). The fences are the ones twig writes
+/// and reads: `---` for YAML, `+++` for TOML, and `---<name>` closed by `---`
+/// for the others.
+fn frontmatter_text(format: MetaFormat, content: &str, body: &str) -> String {
+    let (open, close) = match format {
+        MetaFormat::Yaml => ("---", "---"),
+        MetaFormat::Toml => ("+++", "+++"),
+        MetaFormat::Json => ("---json", "---"),
+        MetaFormat::Figl => ("---figl", "---"),
+    };
+    format!("{open}\n{content}{close}\n{body}")
 }
 
 /// A comment-preserving editor over a document's metadata, generic over where
 /// the metadata lives.
 pub enum MetaEditor {
-    /// Editing a fenced block inside a host file.
+    /// Editing a frontmatter block inside a host file.
     Fenced(Embed),
-    /// Editing a config document (the whole file is the metadata).
-    Whole(fig::Editor),
+    /// Editing a config document (the whole file is the metadata), in the
+    /// format its extension names.
+    Whole(fig::Editor, MetaFormat),
 }
 
 impl MetaEditor {
     /// Open an editor over `text` for an existing carrier.
     pub fn open(text: &str, carrier: MetaCarrier) -> Result<Self> {
         Ok(match carrier {
-            MetaCarrier::Fenced(kind) => MetaEditor::Fenced(Embed::open(text.as_bytes(), kind)?),
+            MetaCarrier::Fenced(_) => {
+                let (_, block) = frontmatter_block(text).ok_or_else(|| {
+                    Error::Structure("document has no embedded metadata block".into())
+                })?;
+                MetaEditor::Fenced(Embed::open(text.as_bytes(), &block)?)
+            }
             MetaCarrier::WholeFile(format) => {
-                MetaEditor::Whole(fig::Editor::open(text.as_bytes(), format)?)
+                MetaEditor::Whole(fig::Editor::open(text.as_bytes(), format.fig())?, format)
             }
         })
     }
 
     /// Open an editor over `text`, creating the metadata block when the
-    /// document has none: an explicit carrier is honored (an absent fenced
-    /// block is synthesized in place), and `None` defaults to a fresh
-    /// frontmatter block in `default_embed_type`'s archetype (`---` YAML
-    /// when that feature is compiled in).
+    /// document has none: an explicit carrier is honored (an absent
+    /// frontmatter block is synthesized above the first line, in the carrier's
+    /// format), and `None` defaults to a fresh `---` YAML block.
     pub fn open_or_init(text: &str, carrier: Option<MetaCarrier>) -> Result<Self> {
-        Ok(match carrier {
+        let format = match carrier {
             Some(MetaCarrier::WholeFile(format)) => {
-                MetaEditor::Whole(fig::Editor::open(text.as_bytes(), format)?)
+                return Ok(MetaEditor::Whole(
+                    fig::Editor::open(text.as_bytes(), format.fig())?,
+                    format,
+                ));
             }
-            Some(MetaCarrier::Fenced(kind)) => {
-                MetaEditor::Fenced(Embed::open_or_init(text.as_bytes(), kind)?)
-            }
-            None => MetaEditor::Fenced(Embed::open_or_init(text.as_bytes(), default_embed_type())?),
-        })
+            Some(MetaCarrier::Fenced(format)) => format,
+            None => MetaFormat::Yaml,
+        };
+        if let Some((_, block)) = frontmatter_block(text) {
+            return Ok(MetaEditor::Fenced(Embed::open(text.as_bytes(), &block)?));
+        }
+        // No block yet: write an empty one above the first line and open that.
+        // Empty is no content at all, except in JSON, where an empty document
+        // does not parse and an empty object is the nothing an edit starts from.
+        let seed = if format == MetaFormat::Json {
+            "{}\n"
+        } else {
+            ""
+        };
+        let seeded = frontmatter_text(format, seed, text);
+        let (_, block) = frontmatter_block(&seeded).ok_or_else(|| {
+            Error::Structure(format!(
+                "a new {format} frontmatter block did not read back"
+            ))
+        })?;
+        Ok(MetaEditor::Fenced(Embed::open(seeded.as_bytes(), &block)?))
+    }
+
+    fn editor_mut(&mut self) -> &mut fig::Editor {
+        match self {
+            MetaEditor::Fenced(e) => e.editor_mut(),
+            MetaEditor::Whole(e, _) => e,
+        }
     }
 
     /// Upsert `value` at `path` (the trailing segment must be a key).
     pub fn set_value(&mut self, path: &[Segment], value: impl Into<fig::Value>) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.set_value(path, value)?,
-            MetaEditor::Whole(e) => e.set_value(path, value)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().set_value(path, value)?)
     }
 
     /// Replace the existing value at `path`.
     pub fn replace_value(&mut self, path: &[Segment], value: impl Into<fig::Value>) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.replace_value(path, value)?,
-            MetaEditor::Whole(e) => e.replace_value(path, value)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().replace_value(path, value)?)
     }
 
     /// Rename the key at `path`, keeping its value, position, and comments.
     pub fn replace_key(&mut self, path: &[Segment], key: &str) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.rename_key(path, key)?,
-            MetaEditor::Whole(e) => e.rename_key(path, key)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().rename_key(path, key)?)
     }
 
     /// Append `value` to the sequence at `path`.
     pub fn append_value(&mut self, path: &[Segment], value: impl Into<fig::Value>) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.append_value(path, value)?,
-            MetaEditor::Whole(e) => e.append_value(path, value)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().append_value(path, value)?)
     }
 
     /// Delete the mapping entry at `path`.
     pub fn delete(&mut self, path: &[Segment]) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.delete_key(path)?,
-            MetaEditor::Whole(e) => e.delete_key(path)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().delete_key(path)?)
     }
 
     /// Remove the item at `index` from the sequence at `path`. A list that
@@ -126,40 +132,31 @@ impl MetaEditor {
     /// array to `[]`. A YAML block list alone would be left as a bare key,
     /// which reads as null.
     pub fn remove_item(&mut self, path: &[Segment], index: usize) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.delete_item(path, index)?,
-            MetaEditor::Whole(e) => e.delete_item(path, index)?,
-        }
+        self.editor_mut().delete_item(path, index)?;
         if self.is_null_at(path)? {
             self.replace_value(path, fig::Value::Seq(Vec::new()))?;
         }
         Ok(())
     }
 
+    /// The format the metadata is edited in.
+    fn format(&self) -> Option<MetaFormat> {
+        match self {
+            MetaEditor::Fenced(e) => MetaFormat::from_fig(e.dialect()),
+            MetaEditor::Whole(_, format) => Some(*format),
+        }
+    }
+
     /// Whether the value at `path` in the edited metadata now reads as null —
-    /// the trace an emptied YAML block list leaves. The whole-file editor does
-    /// not say its format, so its text is read as YAML: the only format that
-    /// leaves the null, and one a JSON document also parses as, where an
-    /// emptied array reads as `[]`.
+    /// the trace an emptied YAML block list leaves.
     fn is_null_at(&mut self, path: &[Segment]) -> Result<bool> {
-        let meta = match self {
-            MetaEditor::Fenced(e) => {
-                let text = e.render()?;
-                let Some((MetaCarrier::Fenced(kind), content, _, _)) =
-                    prov_graph::document::Document::split(text)
-                else {
-                    return Ok(false);
-                };
-                prov_graph::meta::parse_value(content, kind.inner_format()).ok()
-            }
-            #[cfg(feature = "yaml")]
-            MetaEditor::Whole(e) => {
-                prov_graph::meta::parse_value(e.source()?, fig::Format::Yaml).ok()
-            }
-            #[cfg(not(feature = "yaml"))]
-            MetaEditor::Whole(_) => None,
+        let Some(format) = self.format() else {
+            return Ok(false);
         };
-        let Some(meta) = meta else { return Ok(false) };
+        let source = self.editor_mut().source()?.to_owned();
+        let Ok(meta) = prov_graph::meta::parse_value(&source, format) else {
+            return Ok(false);
+        };
         let mut value = &meta;
         for segment in path {
             let next = match segment {
@@ -179,11 +176,7 @@ impl MetaEditor {
     /// relative order and follow. Unknown keys are ignored. Every entry keeps
     /// its comments and interleaved trivia.
     pub fn reorder_keys<S: AsRef<str>>(&mut self, path: &[Segment], keys: &[S]) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.reorder_keys(path, keys)?,
-            MetaEditor::Whole(e) => e.reorder_keys(path, keys)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().reorder_keys(path, keys)?)
     }
 
     /// Reorder the sequence at `path` so the items at `indices` (positions in
@@ -191,18 +184,15 @@ impl MetaEditor {
     /// their original relative order and follow. Out-of-range indices are
     /// ignored.
     pub fn reorder_items(&mut self, path: &[Segment], indices: &[usize]) -> Result<()> {
-        match self {
-            MetaEditor::Fenced(e) => e.reorder_items(path, indices)?,
-            MetaEditor::Whole(e) => e.reorder_items(path, indices)?,
-        }
-        Ok(())
+        Ok(self.editor_mut().reorder_items(path, indices)?)
     }
 
     /// Render the full document text with the edits applied.
     pub fn render(&mut self) -> Result<String> {
         Ok(match self {
-            MetaEditor::Fenced(e) => e.render()?.to_string(),
-            MetaEditor::Whole(e) => e.source()?.to_string(),
+            MetaEditor::Fenced(e) => String::from_utf8(e.render()?)
+                .map_err(|_| Error::Structure("an edited frontmatter block is not UTF-8".into()))?,
+            MetaEditor::Whole(e, _) => e.source()?.to_string(),
         })
     }
 }
@@ -348,66 +338,41 @@ pub fn unset_in_text(text: &str, carrier: Option<MetaCarrier>, dotted: &str) -> 
     editor.render()
 }
 
-/// Re-emit `mapping` as a fresh metadata block of archetype `target`, placed in
-/// `target`'s canonical position around the plain `body` (before it for
-/// frontmatter, after it for endmatter) — the reconstruction a *format
-/// conversion* performs. Unlike the comment-preserving edits above, this
-/// deliberately rebuilds the block: a conversion crosses formats (a YAML comment
-/// has no JSON home), so only the values survive.
+/// Re-emit `mapping` as a fresh frontmatter block in `target` above the plain
+/// `body` — the reconstruction a *format conversion* performs. Unlike the
+/// comment-preserving edits above, this deliberately rebuilds the block: a
+/// conversion crosses formats (a YAML comment has no JSON home), so only the
+/// values survive.
 ///
 /// The content is rendered by prov's canonical [`serialize_mapping`] — the
 /// same serializer behind `prov meta --format`, so a converted block's
 /// sequence and scalar layout matches the rest of the codebase (fig's per-key
-/// [`Embed`] splice path renders some formats, notably fig sequences,
-/// differently). The block's fences and placement come from fig, by synthesizing
-/// an empty `target` block around `body` and splicing the serialized content into
-/// its content slot.
-///
-/// The content is spliced verbatim — the same bytes prov's reader
-/// ([`Document::parse`](prov_graph::Document::parse)) hands back to the format
-/// parser, which does not HTML-decode a `<pre><code>` island. Writing what that
-/// reader expects keeps a converted value round-tripping through
-/// `prov get`/`check` rather than acquiring stray `&lt;` entities.
+/// splice renders some formats, notably figl sequences, differently).
 ///
 /// [`serialize_mapping`]: prov_graph::meta::serialize_mapping
-pub fn reformat_block(body: &str, mapping: &Mapping, target: EmbedType) -> Result<String> {
-    // Synthesize an empty `target` block in its canonical place around `body`,
-    // then fill it: fig owns the fences and the placement, we own what goes
-    // between them. Filling is a same-archetype `retype`, which fig documents as
-    // a byte-identical rebuild carrying new content — so the fence bytes come
-    // back exactly as `render` laid them down.
-    let rendered = Embed::open_or_init(body.as_bytes(), target)?
-        .render()?
-        .to_string();
-    retype_block(&rendered, target, mapping, target)
-}
-
-/// Re-house the existing `from` block in `text` as a `target` one carrying
-/// `mapping` — the conversion [`reformat_block`] performs for a document that
-/// has no block yet, for one that does.
-///
-/// Every host byte outside the block survives, **on both sides**, in file order.
-/// That is the difference from rebuilding around a body slice: a document whose
-/// block sits mid-file — an HTML `<script>` island below a `<head>` — has host
-/// text above and below it, and reconstructing from one side silently discarded
-/// the other. fig 3.3's `retype` owns the whole operation, so the placement
-/// rules (a block moves only when the target archetype belongs at the other end
-/// of the file; mid-document to edge is refused outright) are fig's to state
-/// rather than something prov re-derives by arithmetic on spans.
-pub fn retype_block(
-    text: &str,
-    from: EmbedType,
-    mapping: &Mapping,
-    target: EmbedType,
-) -> Result<String> {
-    let mut inner = prov_graph::meta::serialize_mapping(mapping, target.inner_format())?;
-    // The content slot sits between the opening fence's trailing newline and the
-    // closing fence, so the content must end in exactly one newline for the close
-    // fence to land on its own line.
+pub fn reformat_block(body: &str, mapping: &Mapping, target: MetaFormat) -> Result<String> {
+    let mut inner = prov_graph::meta::serialize_mapping(mapping, target)?;
+    // The content must end in exactly one newline for the closing fence to land
+    // on its own line.
     if !inner.ends_with('\n') {
         inner.push('\n');
     }
-    Ok(Embed::retype(text, from, target, &inner)?)
+    Ok(frontmatter_text(target, &inner, body))
+}
+
+/// Re-house `text`'s existing frontmatter block as a `target` one carrying
+/// `mapping` — the conversion [`reformat_block`] performs for a document that
+/// has no block yet, for one that does. Every host byte outside the block
+/// survives. A document with no frontmatter gets a new block, as
+/// [`reformat_block`] would give it.
+pub fn retype_block(text: &str, mapping: &Mapping, target: MetaFormat) -> Result<String> {
+    match prov_graph::Document::split(text) {
+        Some((_, _, before, after)) => Ok(format!(
+            "{before}{}",
+            reformat_block(after, mapping, target)?
+        )),
+        None => reformat_block(text, mapping, target),
+    }
 }
 
 #[cfg(test)]
@@ -420,7 +385,6 @@ mod tests {
             .carrier
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn set_preserves_comments_and_format() {
         let text = "---\n# keep me\ntitle: Old\n---\nbody\n";
@@ -429,7 +393,6 @@ mod tests {
         assert_eq!(out, "---\n# keep me\ntitle: New\n---\nbody\n");
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn an_all_digit_id_survives_the_round_trip_as_a_string() {
         // The NOID alphabet has digits, so a minted id can look like a number.
@@ -451,10 +414,9 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "fig-lang")]
     #[test]
-    fn set_in_a_fig_block_stays_fig() {
-        let text = "```fig\ntitle = prov\n```\nbody\n";
+    fn set_in_a_figl_block_stays_figl() {
+        let text = "---figl\ntitle = prov\n---\nbody\n";
         let out = set_in_text(
             text,
             carrier_of("x.md", text),
@@ -462,15 +424,45 @@ mod tests {
             infer_scalar("renamed"),
         )
         .unwrap();
-        assert!(out.starts_with("```fig\n"), "fence preserved: {out}");
-        assert!(
-            out.contains("title = renamed"),
-            "fig dialect preserved: {out}"
-        );
-        assert!(out.ends_with("```\nbody\n"));
+        assert_eq!(out, "---figl\ntitle = renamed\n---\nbody\n");
     }
 
-    #[cfg(feature = "yaml")]
+    #[test]
+    fn set_in_a_toml_block_keeps_its_plus_fences() {
+        let text = "+++\ntitle = \"prov\"\n+++\nbody\n";
+        let out = set_in_text(
+            text,
+            carrier_of("x.md", text),
+            "title",
+            infer_scalar("renamed"),
+        )
+        .unwrap();
+        assert_eq!(out, "+++\ntitle = \"renamed\"\n+++\nbody\n");
+    }
+
+    #[test]
+    fn a_new_block_is_written_in_the_carriers_format() {
+        for (format, open) in [
+            (MetaFormat::Yaml, "---\n"),
+            (MetaFormat::Toml, "+++\n"),
+            (MetaFormat::Json, "---json\n"),
+            (MetaFormat::Figl, "---figl\n"),
+        ] {
+            let out = set_in_text(
+                "body\n",
+                Some(MetaCarrier::Fenced(format)),
+                "title",
+                infer_scalar("T"),
+            )
+            .unwrap();
+            assert!(out.starts_with(open), "{format}: {out}");
+            assert!(out.ends_with("body\n"), "{format}: {out}");
+            let doc = prov_graph::Document::parse("x.md", &out).unwrap();
+            assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(format)), "{out}");
+            assert_eq!(doc.body, "body\n", "{out}");
+        }
+    }
+
     #[test]
     fn set_edits_a_bare_config_document() {
         let text = "# workspace registry\ntitle: ID registry\nregistry:\n  abc: a.md\n";
@@ -486,7 +478,6 @@ mod tests {
         assert!(!out.contains("---"), "no fences grown: {out}");
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn set_creates_a_block_when_none_exists() {
         let out = set_in_text("just a body\n", None, "title", infer_scalar("T")).unwrap();
@@ -494,7 +485,6 @@ mod tests {
         assert!(out.ends_with("just a body\n"));
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn unset_removes_only_the_named_key() {
         let text = "---\ntitle: T\ndraft: true\n---\nbody\n";
@@ -503,7 +493,6 @@ mod tests {
         assert!(unset_in_text("no meta\n", None, "x").is_err());
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn removing_the_last_item_of_a_block_list_leaves_an_empty_list() {
         // fig empties a flow list, a JSON array and a TOML array to `[]`, but
@@ -561,7 +550,6 @@ mod tests {
         assert_eq!(infer_scalar("-0.25"), fig::Value::Float(-0.25));
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn dotted_paths_mix_keys_and_indices() {
         let text = "---\ncontents:\n- a.md\n- b.md\n---\n";
@@ -575,9 +563,8 @@ mod tests {
         assert!(out.contains("- a.md\n- c.md"), "{out}");
     }
 
-    // ---- MetaEditor parity with fig::Embed: reorder_items/replace_key/reorder_keys ----
+    // ---- MetaEditor parity across carriers: reorder_items/replace_key/reorder_keys ----
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn replace_key_renames_the_key_and_preserves_comments_elsewhere() {
         let text = "---\n# keep me\ntitle: Old\nauthor: me\n---\nbody\n";
@@ -592,7 +579,6 @@ mod tests {
         assert!(out.contains("author: me"), "{out}");
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn reorder_keys_moves_listed_keys_first_and_preserves_comments() {
         let text = "---\n# c1\ntitle: T\n# c2\nauthor: me\ndraft: true\n---\nbody\n";
@@ -609,7 +595,6 @@ mod tests {
         assert!(out.contains("# c2"), "comment lost: {out}");
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn reorder_items_moves_listed_items_first_and_preserves_comments() {
         let text = "---\ncontents:\n- a # keep a\n- b # keep b\n- c # keep c\n---\nbody\n";
@@ -628,7 +613,6 @@ mod tests {
         assert!(c_pos < a_pos && a_pos < b_pos, "{out}");
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn reorder_keys_works_on_a_whole_file_config_document() {
         // Exercises the `MetaEditor::Whole` arm (a config document, not a
@@ -651,7 +635,6 @@ mod tests {
     /// whose ancestors are absent used to fail outright: fig creates missing
     /// ancestors as inline flow, and the block-rendered YAML mapping spliced
     /// into that flow did not re-parse.
-    #[cfg(feature = "yaml")]
     #[test]
     fn a_mapping_lands_at_a_path_whose_ancestors_do_not_exist_yet() {
         let text = "title: prov config\nspec: 1\n";
@@ -691,7 +674,6 @@ mod tests {
     /// Replacing a mapping is a replace, not a merge: a key the old block had
     /// and the new one does not is removed. Without this, clearing a view's
     /// `under:` would leave the lens scoped to an anchor nobody declared.
-    #[cfg(feature = "yaml")]
     #[test]
     fn replacing_a_mapping_drops_the_keys_it_no_longer_declares() {
         let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n      under: '[Daily](id:abc)'\n";
@@ -726,7 +708,6 @@ mod tests {
 
     /// A sibling under the same parent is untouched — the write is scoped to
     /// the path it was given, so declaring a second view keeps the first.
-    #[cfg(feature = "yaml")]
     #[test]
     fn a_sibling_mapping_survives_the_write() {
         let text = "title: t\ndiaryx:\n  views:\n    daily:\n      group: date\n";
@@ -760,7 +741,6 @@ mod tests {
     }
 
     /// Nested mappings flatten all the way down, however deep.
-    #[cfg(feature = "yaml")]
     #[test]
     fn nested_mappings_flatten_all_the_way_down() {
         let text = "title: t\n";
@@ -787,7 +767,6 @@ mod tests {
 
     /// A sequence lands fine when its parent block already exists — the common
     /// case, and the one that must keep its block layout.
-    #[cfg(feature = "yaml")]
     #[test]
     fn a_sequence_lands_under_a_parent_that_already_exists() {
         let text = "title: t\nvocab:\n  audience:\n    closed: true\n";
@@ -823,7 +802,6 @@ mod tests {
     /// *string* `"- public"`. prov detected that by re-parsing and refused the
     /// write. Now the ancestors are block and the list is a list, so the assert
     /// is on the value rather than on an error message.
-    #[cfg(feature = "yaml")]
     #[test]
     fn a_sequence_lands_as_a_sequence_at_a_path_with_no_parent_block() {
         let text = "title: t\n";
@@ -855,7 +833,6 @@ mod tests {
     /// one **replaces** it. prov used to guarantee this by diffing the old
     /// subtree against the new leaves and unsetting the difference; now it rests
     /// on fig's splice replacing the node whole, which is worth pinning.
-    #[cfg(feature = "yaml")]
     #[test]
     fn writing_a_mapping_replaces_the_subtree_rather_than_merging_into_it() {
         let text = "title: t\na:\n  keep: 1\n  stale: 9\n  gone:\n    deeper: 2\n";
@@ -886,42 +863,31 @@ mod tests {
         );
     }
 
-    /// The conversion `prov convert <file> metadata.embed …` performs, on a
-    /// document whose island sits below a `<head>`. Rebuilding around the body
-    /// slice put the head *below* the island it used to sit above; `retype`
-    /// re-houses the block in place and every host byte keeps its side.
-    #[cfg(feature = "yaml")]
+    /// The conversion `prov convert <file> metadata.format …` performs: the
+    /// block changes language and fences, the values carry over, and the body
+    /// is untouched.
     #[test]
-    fn retyping_a_mid_document_island_keeps_the_head_above_it() {
-        let text = concat!(
-            "<!doctype html>\n",
-            "<html><head><title>KEEP ME</title></head>\n",
-            "<body>\n",
-            "<script type=\"application/yaml\">\n",
-            "title: Mid\n",
-            "</script>\n",
-            "<p>tail</p>\n",
-            "</html>\n",
-        );
-        let doc = prov_graph::document::Document::parse("page.html", text).unwrap();
+    fn retyping_a_block_changes_its_language_and_keeps_the_body() {
+        let text = "---\ntitle: T\ntags:\n- a\n---\n# Body\n";
+        let doc = prov_graph::document::Document::parse("x.md", text).unwrap();
         let mapping = doc.meta.as_mapping().unwrap();
-        let out = retype_block(
-            text,
-            EmbedType::HtmlScriptYaml,
-            mapping,
-            EmbedType::HtmlCodeYaml,
-        )
-        .unwrap();
+        for format in MetaFormat::ALL {
+            let out = retype_block(text, mapping, format).unwrap();
+            let back = prov_graph::document::Document::parse("x.md", &out).unwrap();
+            assert_eq!(back.carrier, Some(MetaCarrier::Fenced(format)), "{out}");
+            assert_eq!(back.meta, doc.meta, "{out}");
+            assert_eq!(back.body, "# Body\n", "{out}");
+        }
+    }
 
-        let head = out.find("KEEP ME").expect("the head survived");
-        let island = out
-            .find("<pre")
-            .expect("the block was re-housed as html_code");
-        assert!(head < island, "the head must stay above the block:\n{out}");
-        assert!(out.contains("<p>tail</p>"), "the tail survived:\n{out}");
-        assert!(
-            !out.contains("<script"),
-            "the old archetype is gone:\n{out}"
-        );
+    #[test]
+    fn reformatting_a_body_gives_it_a_block_above() {
+        let mut mapping = Mapping::new();
+        mapping.insert("title".into(), prov_graph::Value::String("T".into()));
+        let out = reformat_block("# Body\n", &mapping, MetaFormat::Json).unwrap();
+        assert!(out.starts_with("---json\n"), "{out}");
+        let back = prov_graph::document::Document::parse("x.md", &out).unwrap();
+        assert_eq!(back.carrier, Some(MetaCarrier::Fenced(MetaFormat::Json)));
+        assert_eq!(back.body, "# Body\n");
     }
 }

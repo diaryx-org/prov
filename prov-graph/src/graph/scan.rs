@@ -569,7 +569,7 @@ fn shadow_probe(rel_dir: &Path, entries: &[crate::fs::DirEntry]) -> ShadowProbe 
     ShadowProbe::over(files.iter())
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 

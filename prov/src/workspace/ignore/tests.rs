@@ -24,7 +24,7 @@ fn ws(dir: &Path) -> Workspace<StdFs, crate::identity::Minter, FileIndex> {
     Workspace::builder(StdFs)
         .root(dir)
         .identity(crate::identity::Minter::lazy(42))
-        .index(FileIndex::new(fig::Format::Yaml))
+        .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
         .build()
 }
 
@@ -246,7 +246,7 @@ fn a_declared_directory_is_one_rule_naming_the_declaration() {
     let scoped = Workspace::builder(StdFs)
         .root(&dir)
         .identity(crate::identity::Minter::lazy(42))
-        .index(FileIndex::new(fig::Format::Yaml))
+        .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
         .out_of_scope([PathBuf::from("history")])
         .build();
     let list = block_on(scoped.ignore_list(Path::new("index.md"))).unwrap();
@@ -285,7 +285,7 @@ fn a_declaration_covers_even_a_reachable_document() {
     let scoped = Workspace::builder(StdFs)
         .root(&dir)
         .identity(crate::identity::Minter::lazy(42))
-        .index(FileIndex::new(fig::Format::Yaml))
+        .index(FileIndex::new(prov_graph::MetaFormat::Yaml))
         .out_of_scope([PathBuf::from("vendor")])
         .build();
     let list = block_on(scoped.ignore_list(Path::new("index.md"))).unwrap();

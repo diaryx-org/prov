@@ -400,7 +400,6 @@ mod tests {
         assert!(!verify(b"the corrupted bytes", &recorded));
     }
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn covers_exactly_the_documents_whose_hash_would_name_another_file() {
         use crate::document::Document;

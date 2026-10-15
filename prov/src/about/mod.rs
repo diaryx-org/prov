@@ -91,9 +91,10 @@ use std::path::{Path, PathBuf};
 use crate::config::{About, Fixity, IdStorage, WorkspaceConfig};
 use crate::identity::Registration;
 use prov_grain::Grain;
+use prov_graph::MetaFormat;
 use prov_graph::content::{ContentFormat, transcode};
 use prov_graph::document::{EmbedStyle, MetaCarrier, embed_carrier};
-use prov_graph::error::{Error, Result};
+use prov_graph::error::Result;
 use prov_graph::link::{Addressing, Notation, PathStyle};
 use prov_graph::meta::{Mapping, Value};
 use prov_graph::relation::{Cardinality, RelationSet};
@@ -331,10 +332,9 @@ fn metadata_block_section(config: &WorkspaceConfig, relations: &RelationSet) -> 
     s.push_str("## Every file opens with a metadata block\n\n");
 
     let (intro, example, closing) = match carrier {
-        Some(MetaCarrier::Fenced(kind)) => fence_prose(kind, &format_name, config, relations),
-        // `Separate` is handled above; a `None` carrier means the format and
-        // style name no real embedding (fig has no delimiter form). Describe the
-        // format alone rather than inventing a fence.
+        MetaCarrier::Fenced(format) => fence_prose(format, &format_name, config, relations),
+        // `Separate` is handled above. Describe the format alone rather than
+        // inventing a fence.
         _ => (
             format!("A file begins with a metadata block written in {format_name}."),
             None,
@@ -361,18 +361,16 @@ fn metadata_block_section(config: &WorkspaceConfig, relations: &RelationSet) -> 
     s
 }
 
-/// The fence prose for one concrete carrier: how the block opens, a worked
-/// example, and how it ends. Split out because it is the one place where the
-/// specialization is *entirely* mechanical — one branch per carrier prov can
-/// actually write, and no branch for any it cannot.
+/// The fence prose for a frontmatter block in one format: how the block opens,
+/// a worked example, and how it ends. Split out because it is the one place
+/// where the specialization is *entirely* mechanical — one branch per fence
+/// prov can actually write, and no branch for any it cannot.
 fn fence_prose(
-    kind: fig::EmbedType,
+    format: MetaFormat,
     format_name: &str,
     config: &WorkspaceConfig,
     relations: &RelationSet,
 ) -> (String, Option<String>, String) {
-    use fig::EmbedType as E;
-
     // The worked example must be one that could actually occur *here*: this
     // workspace's up-field, holding a reference in this workspace's own
     // notation. A sample showing `part_of` to a reader whose files say
@@ -383,112 +381,27 @@ fn fence_prose(
     let sample_json =
         format!("{{\n  \"title\": \"Some Document\",\n  \"{field}\": \"{target}\"\n}}");
     let sample_toml = format!("title = \"Some Document\"\n{field} = \"{target}\"");
-    let sample_fig = sample_yaml.clone();
-    let (sample_yaml, sample_json, sample_toml, sample_fig) = (
-        sample_yaml.as_str(),
-        sample_json.as_str(),
-        sample_toml.as_str(),
-        sample_fig.as_str(),
-    );
+    let sample_figl = sample_yaml.clone();
 
-    let delimited = |fence: &str, spelled: &str, sample: &str| {
+    let delimited = |open: &str, close: &str, spelled: &str, sample: &str| {
         (
             format!("A file begins with a line containing {spelled}:"),
             Some(fenced_block(&format!(
-                "{fence}\n{sample}\n{fence}\n\nThe rest of the file is the document itself."
+                "{open}\n{sample}\n{close}\n\nThe rest of the file is the document itself."
             ))),
             format!(
-                "Everything between that line and the next `{fence}` is the file's \
+                "Everything between that line and the next `{close}` is the file's \
                  metadata, written in {format_name}. Everything after it is the \
                  document."
             ),
         )
     };
 
-    let fenced = |lang: &str, sample: &str| {
-        (
-            format!("A file begins with a fenced code block labelled `{lang}`:"),
-            Some(fenced_block(&format!(
-                "```{lang}\n{sample}\n```\n\nThe rest of the file is the document itself."
-            ))),
-            format!(
-                "Everything inside that block is the file's metadata, written in \
-                 {format_name}. Everything after the closing fence is the \
-                 document. The block is deliberately visible: it renders as a code \
-                 block rather than disappearing."
-            ),
-        )
-    };
-
-    let island = |lang: &str, sample: &str| {
-        (
-            format!(
-                "A file begins with an HTML data island — a `<script>` tag whose \
-                 type names {format_name}:"
-            ),
-            Some(fenced_block(&format!(
-                "<script type=\"application/{lang}\">\n{sample}\n</script>\n\n\
-                 The rest of the file is the document itself."
-            ))),
-            format!(
-                "Everything inside the tag is the file's metadata, written in \
-                 {format_name}. Everything after `</script>` is the document. The \
-                 island does not render, so a browser shows only the prose."
-            ),
-        )
-    };
-
-    let html_code = |lang: &str, sample: &str| {
-        (
-            format!(
-                "A file begins with a visible HTML code block whose class names \
-                 {format_name}:"
-            ),
-            Some(fenced_block(&format!(
-                "<pre><code class=\"language-{lang}\">\n{sample}\n</code></pre>\n\n\
-                 The rest of the file is the document itself."
-            ))),
-            format!(
-                "Everything inside the block is the file's metadata, written in \
-                 {format_name}. Everything after `</pre>` is the document. \
-                 Characters like `<` and `&` are HTML-encoded in there; decode \
-                 them before reading the values."
-            ),
-        )
-    };
-
-    match kind {
-        E::Frontmatter => delimited("---", "three dashes", sample_yaml),
-        E::Semicolons => delimited(";;;", "three semicolons", sample_json),
-        E::Plus => delimited("+++", "three plus signs", sample_toml),
-        E::MdJson => delimited("---json", "`---json`", sample_json),
-        E::MdToml => delimited("---toml", "`---toml`", sample_toml),
-        E::MdFig => delimited("---fig", "`---fig`", sample_fig),
-        E::FencedYaml => fenced("yaml", sample_yaml),
-        E::FencedJson => fenced("json", sample_json),
-        E::FencedToml => fenced("toml", sample_toml),
-        E::FencedFig => fenced("fig", sample_fig),
-        E::Endmatter => (
-            "A file *ends* with a fenced code block labelled `endmatter`:".into(),
-            Some(fenced_block(&format!(
-                "The document itself comes first.\n\n```endmatter\n{sample_yaml}\n```"
-            ))),
-            format!(
-                "Everything inside that block is the file's metadata, written in \
-                 {format_name}. Everything before it is the document."
-            ),
-        ),
-        E::HtmlScriptYaml => island("yaml", sample_yaml),
-        E::HtmlScriptJson => island("json", sample_json),
-        E::HtmlScriptToml => island("toml", sample_toml),
-        E::HtmlScriptFig => island("figl", sample_fig),
-        E::HtmlCodeYaml => html_code("yaml", sample_yaml),
-        E::HtmlCodeJson => html_code("json", sample_json),
-        E::HtmlCodeToml => html_code("toml", sample_toml),
-        E::HtmlCodeFig => html_code("figl", sample_fig),
-        // `EmbedType` is `#[non_exhaustive]`; see the matching comment in
-        // `document::embed_style_of` — a new variant needs a real case here too.
-        _ => unreachable!("unhandled fig::EmbedType variant — add a case in fence_prose"),
+    match format {
+        MetaFormat::Yaml => delimited("---", "---", "three dashes", &sample_yaml),
+        MetaFormat::Toml => delimited("+++", "+++", "three plus signs", &sample_toml),
+        MetaFormat::Json => delimited("---json", "---", "`---json`", &sample_json),
+        MetaFormat::Figl => delimited("---figl", "---", "`---figl`", &sample_figl),
     }
 }
 
@@ -1422,14 +1335,10 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     if config.embed_style == EmbedStyle::Separate {
         return Ok(body.to_string());
     }
-    let Some(MetaCarrier::Fenced(kind)) =
+    let MetaCarrier::Fenced(format) =
         embed_carrier(config.embed_style, config.default_embed_format)
     else {
-        return Err(Error::Structure(format!(
-            "no metadata carrier for embed style `{}` with format `{}`",
-            config.embed_style.as_config_str(),
-            crate::config::metadata_format_str(config.default_embed_format),
-        )));
+        unreachable!("only `separate` is whole-file, and it returned above");
     };
 
     let mut mapping = Mapping::new();
@@ -1452,7 +1361,7 @@ fn with_metadata_block(body: &str, config: &WorkspaceConfig, ctx: &AboutContext)
     // A blank line between the block and the `# ` heading — the body is prose in
     // the workspace's content format, and prose starts after the block, not
     // wedged against its closing fence.
-    prov_store::edit::reformat_block(&format!("\n{body}"), &mapping, kind)
+    prov_store::edit::reformat_block(&format!("\n{body}"), &mapping, format)
 }
 
 // ─── prose helpers ───────────────────────────────────────────────────────────
@@ -1571,13 +1480,12 @@ fn escape_cell(value: &str) -> String {
 // ─── config → prose ──────────────────────────────────────────────────────────
 
 /// The human name of a metadata format, as the page should say it.
-pub(crate) fn format_name(format: fig::Format) -> String {
+pub(crate) fn format_name(format: prov_graph::MetaFormat) -> String {
     match format {
-        fig::Format::Yaml => "YAML".into(),
-        fig::Format::Toml => "TOML".into(),
-        fig::Format::Json | fig::Format::Jsonc | fig::Format::Json5 => "JSON".into(),
-        fig::Format::Fig => "fig".into(),
-        other => crate::config::metadata_format_str(other).to_uppercase(),
+        prov_graph::MetaFormat::Yaml => "YAML".into(),
+        prov_graph::MetaFormat::Toml => "TOML".into(),
+        prov_graph::MetaFormat::Json => "JSON".into(),
+        prov_graph::MetaFormat::Figl => "figl".into(),
     }
 }
 
@@ -1892,7 +1800,7 @@ fn body_of(text: &str, format: ContentFormat) -> String {
 }
 
 // These tests build YAML/JSON metadata blocks, so they need a format backend.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{FieldSpec, OpenClosed, RelationDef};
@@ -2124,18 +2032,18 @@ mod tests {
     #[test]
     fn the_metadata_block_follows_the_workspace_carrier() {
         let (mut config, ctx) = default_workspace();
-        config.default_embed_format = fig::Format::Json;
+        config.default_embed_format = prov_graph::MetaFormat::Json;
         let page = render(&config, &ctx);
         // The page's own block is spelled the way this workspace spells blocks,
         // so it does not contradict the sentence it contains.
-        assert!(page.starts_with(";;;"));
-        assert!(flat(&page).contains("A file begins with a line containing three semicolons"));
+        assert!(page.starts_with("---json\n"), "{page}");
+        assert!(flat(&page).contains("A file begins with a line containing `---json`"));
 
         let (mut config, ctx) = default_workspace();
-        config.embed_style = EmbedStyle::CodeBlock;
+        config.default_embed_format = prov_graph::MetaFormat::Toml;
         let page = render(&config, &ctx);
-        assert!(page.contains("```yaml"));
-        assert!(flat(&page).contains("fenced code block labelled `yaml`"));
+        assert!(page.starts_with("+++\n"), "{page}");
+        assert!(flat(&page).contains("A file begins with a line containing three plus signs"));
     }
 
     #[test]

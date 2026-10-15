@@ -67,7 +67,7 @@ fn skip_or_err<T>(named: bool, path: &Path, why: &str) -> Result<Option<T>> {
 #[derive(Clone, Copy)]
 enum ReformatAxis {
     /// Vary the frontmatter language (`metadata.format`), keep the embedding shape.
-    Format(fig::Format),
+    Format(prov_graph::MetaFormat),
     /// Vary the embedding shape (`metadata.embed`), keep the frontmatter language.
     Embed(EmbedStyle),
 }
@@ -148,7 +148,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     pub async fn convert_meta_format(
         &mut self,
         file: &Path,
-        format: fig::Format,
+        format: prov_graph::MetaFormat,
         recursive: bool,
     ) -> Result<Vec<PathBuf>> {
         self.reformat_sweep(file, ReformatAxis::Format(format), recursive)
@@ -507,11 +507,12 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     /// this document directly, so an out-of-scope document is a hard error rather
     /// than a silent skip.
     ///
-    /// The two axes converge on the same reconstruction: resolve a target
-    /// [`EmbedType`](prov_graph::document::EmbedType) from the document's `(style, format)`
-    /// pair with one coordinate replaced, then re-emit the block in it. `Format`
-    /// replaces the format and keeps the current style; `Embed` replaces the style
-    /// and keeps the current format.
+    /// The two axes converge on the same reconstruction: resolve a target carrier
+    /// from the document's `(style, format)` pair with one coordinate replaced,
+    /// then re-emit the block in it. `Format` replaces the format and keeps the
+    /// current style; `Embed` replaces the style and keeps the current format.
+    /// With frontmatter the only fenced style left, an `Embed` conversion of a
+    /// fenced document is always already there, or a move to `separate`.
     async fn reformat_document(
         &self,
         path: &Path,
@@ -522,8 +523,8 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let Some(mapping) = doc.meta.as_mapping() else {
             return Ok(None); // no metadata block to convert
         };
-        let kind = match doc.carrier {
-            Some(MetaCarrier::Fenced(kind)) => kind,
+        let carrier = match doc.carrier {
+            Some(carrier @ MetaCarrier::Fenced(_)) => carrier,
             // The whole file *is* the metadata: re-embedding it means creating or
             // deleting a fenced host and moving the body — a move, not a re-fence,
             // and out of scope. An error when named directly; skipped in a sweep.
@@ -541,13 +542,13 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // coordinate replaced; a document already at the requested value is a no-op.
         let (style, format) = match axis {
             ReformatAxis::Format(format) => {
-                if kind.inner_format() == format {
+                if carrier.format() == format {
                     return Ok(None);
                 }
-                (prov_graph::document::embed_style_of(kind), format)
+                (prov_graph::document::embed_style_of(carrier), format)
             }
             ReformatAxis::Embed(style) => {
-                if prov_graph::document::embed_style_of(kind) == style {
+                if prov_graph::document::embed_style_of(carrier) == style {
                     return Ok(None);
                 }
                 // `separate` is a whole-file sidecar, not a fenced shape — the same
@@ -559,31 +560,16 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                         path.display()
                     )));
                 }
-                (style, kind.inner_format())
+                (style, carrier.format())
             }
         };
-        let target = match prov_graph::document::embed_carrier(style, format) {
-            Some(MetaCarrier::Fenced(target)) => target,
-            // The only `(style, format)` with no fenced archetype is
-            // `delimited` + fig — the fig dialect has no `---`-style delimiter. A
-            // real "impossible as asked" (reached converting *to* fig from a
-            // delimited block, or *to* delimited from a fig one), so it errors
-            // rather than skipping, aborting any recursive sweep.
-            _ => {
-                let fmt = crate::config::metadata_format_str(format);
-                return Err(Error::Structure(format!(
-                    "{}: a {} block cannot carry {fmt} — {fmt} has no delimiter syntax; \
-                     use a code_block or HTML embedding",
-                    path.display(),
-                    style.as_config_str(),
-                )));
-            }
+        let MetaCarrier::Fenced(target) = prov_graph::document::embed_carrier(style, format) else {
+            unreachable!("a fenced style resolves to a fenced carrier");
         };
-        // Re-housed in the document's own text, not rebuilt around `doc.body`.
-        // The body is the two host sides concatenated, so rebuilding from it put
-        // an HTML island's `<head>` *below* the island it used to sit above.
+        // Re-housed in the document's own text, not rebuilt around `doc.body`, so
+        // every host byte outside the block keeps its place.
         Ok(Some(prov_store::edit::retype_block(
-            &text, kind, mapping, target,
+            &text, mapping, target,
         )?))
     }
 
@@ -678,7 +664,7 @@ fn restyle_body_links(
     splice_body(text, body, &new_body)
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::super::support::*;
     use super::*;
@@ -773,10 +759,9 @@ mod tests {
         // convert test validates a clean workspace after converting.)
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn convert_meta_format_reserializes_the_block_keeping_values_and_body() {
-        // A delimited YAML block becomes a delimited JSON block (`;;;`): every
+        // A delimited YAML block becomes a delimited JSON block (`---json`): every
         // value and the prose body survive, only the frontmatter language changes,
         // and the workspace still validates.
         let dir = tempdir("convert-meta-json");
@@ -791,13 +776,16 @@ mod tests {
             "---\ntitle: Leaf\npart_of: /index.md\n---\n",
         );
 
-        let n =
-            block_on(ws(&dir).convert_meta_format(Path::new("index.md"), fig::Format::Json, false))
-                .unwrap();
+        let n = block_on(ws(&dir).convert_meta_format(
+            Path::new("index.md"),
+            prov_graph::MetaFormat::Json,
+            false,
+        ))
+        .unwrap();
         assert_eq!(n.len(), 1, "only the named file converted");
 
         let out = read(&dir, "index.md");
-        assert!(out.starts_with(";;;\n"), "delimited JSON now: {out}");
+        assert!(out.starts_with("---json\n"), "delimited JSON now: {out}");
         assert!(out.contains("\"title\": \"Root\""), "{out}");
         assert!(
             out.contains("[Leaf](/leaf.md)"),
@@ -809,71 +797,40 @@ mod tests {
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
     }
 
-    // fig has no `---`-style delimiter, so a *delimited* block cannot become fig,
-    // but a *code-block* one can (```` ```fig ````): the embedding shape is kept.
-    #[cfg(feature = "fig-lang")]
+    /// A YAML block converts to TOML under twig's `+++` fences, and converting a
+    /// block to the format it is already in changes nothing.
     #[test]
-    fn convert_meta_format_keeps_the_embedding_shape_and_rejects_impossible_pairs() {
-        let dir = tempdir("convert-meta-fig");
-        // A code-block YAML document converts cleanly to a ```` ```fig ```` block.
-        write(&dir, "code.md", "```yaml\ntitle: Root\n```\nbody\n");
-        let n =
-            block_on(ws(&dir).convert_meta_format(Path::new("code.md"), fig::Format::Fig, false))
-                .unwrap();
+    fn convert_meta_format_writes_each_formats_own_fences() {
+        let dir = tempdir("convert-meta-toml");
+        write(&dir, "a.md", "---\ntitle: Root\n---\nbody\n");
+        let n = block_on(ws(&dir).convert_meta_format(
+            Path::new("a.md"),
+            prov_graph::MetaFormat::Toml,
+            false,
+        ))
+        .unwrap();
         assert_eq!(n.len(), 1);
-        let code = read(&dir, "code.md");
-        assert!(code.starts_with("```fig\n"), "code block kept: {code}");
-        assert!(code.contains("title = Root"), "fig dialect: {code}");
-        assert!(code.ends_with("body\n"), "body untouched: {code}");
+        let out = read(&dir, "a.md");
+        assert!(out.starts_with("+++\n"), "{out}");
+        assert!(out.contains("title = \"Root\""), "{out}");
+        assert!(out.ends_with("+++\nbody\n"), "body untouched: {out}");
 
-        // A delimited (`---`) block cannot carry fig — a hard error, not a silent skip.
-        write(&dir, "delim.md", "---\ntitle: Root\n---\nbody\n");
-        let err =
-            block_on(ws(&dir).convert_meta_format(Path::new("delim.md"), fig::Format::Fig, false))
-                .unwrap_err();
-        assert!(
-            err.to_string().contains("cannot carry fig"),
-            "clear diagnostic: {err}"
-        );
+        let n = block_on(ws(&dir).convert_meta_format(
+            Path::new("a.md"),
+            prov_graph::MetaFormat::Toml,
+            false,
+        ))
+        .unwrap();
+        assert!(n.is_empty(), "already TOML");
     }
 
-    // Sequence layout is the trap here: fig's per-key Embed splice renders a
+    // Sequence layout is the trap here: fig's per-key splice renders a
     // single-element sequence as a broken inline `* item`, so the reconstruction
-    // must go through the canonical serializer. Needs fig on top of the yaml gate.
-    #[cfg(feature = "fig-lang")]
+    // must go through the canonical serializer.
     #[test]
     fn convert_meta_format_renders_sequences_the_canonical_way() {
         let dir = tempdir("convert-meta-seq");
         // A *single-element* `contents` is the case that exposed the splice bug.
-        write(
-            &dir,
-            "index.md",
-            "```yaml\ntitle: Root\ncontents:\n- '[Leaf](/leaf.md)'\n```\n# Root\n",
-        );
-        write(
-            &dir,
-            "leaf.md",
-            "```yaml\ntitle: Leaf\npart_of: /index.md\n```\n",
-        );
-
-        block_on(ws(&dir).convert_meta_format(Path::new("index.md"), fig::Format::Fig, false))
-            .unwrap();
-        let out = read(&dir, "index.md");
-        // The link survives as a real sequence element, not fused into a scalar.
-        assert!(
-            out.contains("[Leaf](/leaf.md)") && !out.contains("= * ["),
-            "sequence stays well-formed: {out}"
-        );
-        // The proof it is well-formed: the workspace re-parses and validates.
-        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
-    }
-
-    #[cfg(feature = "fig-lang")]
-    #[test]
-    fn convert_meta_embed_reshapes_the_block_and_unblocks_fig() {
-        // The motivating flow: a `delimited` block cannot hold fig, but re-embedding
-        // it as a `code_block` (language kept) can then be converted to fig.
-        let dir = tempdir("convert-meta-embed");
         write(
             &dir,
             "index.md",
@@ -885,24 +842,59 @@ mod tests {
             "---\ntitle: Leaf\npart_of: /index.md\n---\n",
         );
 
-        // delimited → code_block keeps the YAML language, only the shape changes.
-        let n = block_on(ws(&dir).convert_meta_embed(
+        block_on(ws(&dir).convert_meta_format(
             Path::new("index.md"),
-            EmbedStyle::CodeBlock,
+            prov_graph::MetaFormat::Figl,
             false,
         ))
         .unwrap();
-        assert_eq!(n.len(), 1);
-        let code = read(&dir, "index.md");
-        assert!(code.starts_with("```yaml\n"), "now a code block: {code}");
-        assert!(code.ends_with("# Root\n"), "body untouched: {code}");
-        // …which the format axis can now carry to fig.
-        block_on(ws(&dir).convert_meta_format(Path::new("index.md"), fig::Format::Fig, false))
-            .unwrap();
-        assert!(read(&dir, "index.md").starts_with("```fig\n"));
+        let out = read(&dir, "index.md");
+        // The link survives as a real sequence element, not fused into a scalar.
+        assert!(
+            out.contains("[Leaf](/leaf.md)") && !out.contains("= * ["),
+            "sequence stays well-formed: {out}"
+        );
+        // The proof it is well-formed: the workspace re-parses and validates.
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn convert_meta_format_carries_delimited_yaml_to_figl_directly() {
+        // Through prov 0.18 a `delimited` block could not hold fig, and the way
+        // there was a detour through a `code_block`. twig's `---figl` is a
+        // delimited figl block, so the format axis gets there in one step.
+        let dir = tempdir("convert-meta-figl");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- '[Leaf](/leaf.md)'\n---\n# Root\n",
+        );
+        write(
+            &dir,
+            "leaf.md",
+            "---\ntitle: Leaf\npart_of: /index.md\n---\n",
+        );
+        block_on(ws(&dir).convert_meta_format(
+            Path::new("index.md"),
+            prov_graph::MetaFormat::Figl,
+            false,
+        ))
+        .unwrap();
+        let out = read(&dir, "index.md");
+        assert!(out.starts_with("---figl\n"), "{out}");
+        assert!(out.ends_with("# Root\n"), "body untouched: {out}");
         assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
 
-        // `separate` is a whole-file move, out of scope — a clear refusal.
+        // Frontmatter is the only fenced shape, so re-embedding a fenced block as
+        // `delimited` is a no-op…
+        let n = block_on(ws(&dir).convert_meta_embed(
+            Path::new("index.md"),
+            EmbedStyle::Delimited,
+            false,
+        ))
+        .unwrap();
+        assert!(n.is_empty());
+        // …and `separate` is a whole-file move, out of scope — a clear refusal.
         let err = block_on(ws(&dir).convert_meta_embed(
             Path::new("leaf.md"),
             EmbedStyle::Separate,
@@ -912,7 +904,6 @@ mod tests {
         assert!(err.to_string().contains("separate"), "{err}");
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn convert_meta_format_recursive_skips_no_ops_and_out_of_scope_documents() {
         // A recursive convert sweeps the spanning subtree. A document already in
@@ -929,24 +920,27 @@ mod tests {
         write(
             &dir,
             "a.md",
-            ";;;\n{\"title\": \"A\", \"part_of\": \"index.md\"}\n;;;\n",
+            "---json\n{\"title\": \"A\", \"part_of\": \"index.md\"}\n---\n",
         );
 
-        let n =
-            block_on(ws(&dir).convert_meta_format(Path::new("index.md"), fig::Format::Json, true))
-                .unwrap();
+        let n = block_on(ws(&dir).convert_meta_format(
+            Path::new("index.md"),
+            prov_graph::MetaFormat::Json,
+            true,
+        ))
+        .unwrap();
         assert_eq!(
             n.len(),
             1,
             "only the root actually changed (a.md was already JSON)"
         );
-        assert!(read(&dir, "index.md").starts_with(";;;\n"));
+        assert!(read(&dir, "index.md").starts_with("---json\n"));
 
         // Naming a whole-file config document directly is refused.
         write(&dir, "conf.yaml", "title: Config\n");
         let err = block_on(ws(&dir).convert_meta_format(
             Path::new("conf.yaml"),
-            fig::Format::Json,
+            prov_graph::MetaFormat::Json,
             false,
         ))
         .unwrap_err();

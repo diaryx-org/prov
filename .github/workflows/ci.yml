@@ -10,9 +10,7 @@ name: CI
 #
 # What the runner still owns is the toolchain, because only it knows how to
 # install one: stable Rust, the components a job's `runner` table asks for, and
-# — for every job but the one that says `builds = false` — the pinned Zig, since prov's `fig` and `twig-doc` dependencies are
-# Zig-backed and their build.rs runs `zig build`. The Zig version mirrors
-# `.github/workflows/homebrew.yml`.
+# — for every job but the one that says `builds = false` — the cargo cache.
 on:
   push: { branches: [main] }
   pull_request: null
@@ -27,7 +25,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Ask ship what CI consists of. Needs no Zig and no cache: it compiles ship
+  # Ask ship what CI consists of. Needs no cache: it compiles ship
   # and nothing of prov's.
   plan:
     name: Plan
@@ -58,13 +56,10 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with: { components: "${{ matrix.job.components }}" }
     # A field a job's runner table leaves out is null here: no components, and
-    # Zig and the cache set up unless the job says `builds = false`.
-    - uses: mlugg/setup-zig@v2
+    # the cache set up unless the job says `builds = false`.
+    - uses: Swatinem/rust-cache@v2
       # A missing `builds` is null, and GitHub compares loosely, so `null != false`
       # is false: the test is for null itself.
-      if: matrix.job.builds == null || matrix.job.builds
-      with: { version: "0.17.0" }
-    - uses: Swatinem/rust-cache@v2
       if: matrix.job.builds == null || matrix.job.builds
     - run: cargo install --locked --git https://github.com/diaryx-org/ship ship
     - run: ship ci ${{ matrix.job.id }}

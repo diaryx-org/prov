@@ -34,6 +34,10 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// twig could not locate or splice a document's frontmatter, or fig
+    /// refused an edit made through it.
+    #[error("frontmatter: {0}")]
+    Frontmatter(String),
     /// The `twig` body parser failed — see `content.rs`.
     #[error("content error: {0}")]
     Content(String),
@@ -157,6 +161,15 @@ impl From<fs_transaction::Error> for Error {
             // upstream must not silently become a compile error here, but it
             // must not be mistaken for a prov-level failure either.
             other => Error::Structure(other.to_string()),
+        }
+    }
+}
+
+impl From<twig::meta::Error> for Error {
+    fn from(e: twig::meta::Error) -> Self {
+        match e {
+            twig::meta::Error::Fig(e) => Error::Meta(e),
+            other => Error::Frontmatter(other.to_string()),
         }
     }
 }

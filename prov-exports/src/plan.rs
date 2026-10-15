@@ -662,10 +662,9 @@ mod tests {
     }
 }
 
-// These tests read YAML frontmatter fixtures from a real directory, so they
-// run under the `yaml` feature — the same arrangement as `prov-views`' select
-// tests.
-#[cfg(all(test, feature = "yaml"))]
+// These tests read YAML frontmatter fixtures from a real directory — the same
+// arrangement as `prov-views`' select tests.
+#[cfg(test)]
 mod fs_tests {
     use super::*;
     use crate::spec::Gate;

@@ -133,7 +133,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     }
 }
 
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 

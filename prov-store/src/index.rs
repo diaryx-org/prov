@@ -349,7 +349,7 @@ struct FileIndexState {
 impl FileIndex {
     /// An empty registry with no host document — see the `host` field. Records
     /// resolve in memory; nothing is staged for writing.
-    pub fn new(format: fig::Format) -> Self {
+    pub fn new(format: prov_graph::MetaFormat) -> Self {
         Self {
             live: InMemoryIndex::new(),
             tombstones: BTreeSet::new(),
@@ -410,7 +410,7 @@ impl FileIndex {
             // No metadata yet: default by extension, else fresh YAML frontmatter.
             whole_file_format(path)
                 .map(MetaCarrier::WholeFile)
-                .unwrap_or(MetaCarrier::Fenced(fig::EmbedType::Frontmatter))
+                .unwrap_or(MetaCarrier::Fenced(prov_graph::MetaFormat::Yaml))
         });
         // A registry is a record store, so it must be a whole-file config
         // document — a markdown carrier is refused (DESIGN §5, whole-file rule).
@@ -431,7 +431,7 @@ impl FileIndex {
         // is not always the id that was written: `0123456` is 123456. The
         // source keeps the spelling, so recover it from there.
         let respelled = match carrier {
-            MetaCarrier::WholeFile(fig::Format::Yaml) => bare_registry_keys(text),
+            MetaCarrier::WholeFile(prov_graph::MetaFormat::Yaml) => bare_registry_keys(text),
             _ => HashMap::new(),
         };
         index.requote = !respelled.is_empty();
@@ -539,7 +539,10 @@ impl FileIndex {
         }
 
         // Steady state: per-record comment-preserving upserts of the diff.
-        let yaml = matches!(self.carrier, MetaCarrier::WholeFile(fig::Format::Yaml));
+        let yaml = matches!(
+            self.carrier,
+            MetaCarrier::WholeFile(prov_graph::MetaFormat::Yaml)
+        );
         for (id, value) in &current {
             if self.persisted.get(id) == Some(value) {
                 continue;
@@ -769,7 +772,7 @@ impl IndexStore for FileIndex {
 fn bare_yaml_key_is_string(key: &Id) -> bool {
     let key = key.as_str();
     matches!(
-        prov_graph::meta::parse_mapping(&format!("k: {key}\n"), fig::Format::Yaml),
+        prov_graph::meta::parse_mapping(&format!("k: {key}\n"), prov_graph::MetaFormat::Yaml),
         Ok(m) if m.get("k").and_then(Value::as_str) == Some(key)
     )
 }
@@ -806,9 +809,10 @@ fn bare_registry_keys(text: &str) -> HashMap<String, String> {
         if bare_yaml_key_is_string(&written) {
             continue;
         }
-        let read = prov_graph::meta::parse_mapping(&format!("{key}: x\n"), fig::Format::Yaml)
-            .ok()
-            .and_then(|m| m.keys().next().cloned());
+        let read =
+            prov_graph::meta::parse_mapping(&format!("{key}: x\n"), prov_graph::MetaFormat::Yaml)
+                .ok()
+                .and_then(|m| m.keys().next().cloned());
         if let Some(read) = read {
             out.insert(read, written.0);
         }
@@ -816,9 +820,7 @@ fn bare_registry_keys(text: &str) -> HashMap<String, String> {
     out
 }
 
-// These engine tests use YAML fixtures throughout, so they run whenever the
-// (default) `yaml` feature is on.
-#[cfg(all(test, feature = "yaml"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -905,7 +907,7 @@ mod tests {
         // The bootstrap backstop: an index built with no home (records minted by
         // fixes) is given one after the fact. Its own records must survive into
         // the write, and any the host already carried must not be trampled by it.
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         let mine = Id("mineeee".into());
         ix.register(&mine, Path::new("fixed.md"));
 
@@ -947,7 +949,7 @@ mod tests {
         // Frontmatter-only workspaces, and the window before a registry is
         // bootstrapped: nothing to stage, so the caller must still be told there
         // is something to write.
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         ix.register(&Id("orphann".into()), Path::new("a.md"));
         assert_eq!(ix.pending_write().unwrap(), None, "nowhere to write");
         assert!(ix.is_dirty(), "and so it must not claim to be persisted");
@@ -1047,7 +1049,7 @@ mod tests {
 
     #[test]
     fn file_index_round_trips_sorted_with_tombstones() {
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         ix.register(&Id("zzzzzzz".into()), Path::new("z.md"));
         ix.register(&Id("bcdfghj".into()), Path::new("notes/a.md"));
         ix.register(&Id("mmmmmmm".into()), Path::new("gone.md"));
@@ -1119,7 +1121,7 @@ Prose does not belong in a record store.
 
     #[test]
     fn tombstoned_ids_are_never_free_for_reminting() {
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         let id = Id("bcdfghj".into());
         ix.register(&id, Path::new("a.md"));
         ix.unregister(&id);
@@ -1129,7 +1131,7 @@ Prose does not belong in a record store.
 
     #[test]
     fn dirty_tracks_mutations() {
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         assert!(!ix.is_dirty());
         ix.register(&Id("x".into()), Path::new("a.md"));
         assert!(ix.is_dirty());
@@ -1155,7 +1157,7 @@ Prose does not belong in a record store.
         // Reaching this needs a displacement to slip past `registration_conflict`
         // / `move_conflict`. That is what those guards are for, and this store is
         // the last line of defence when one gets through.
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         let (first, second) = (Id("aaa111a".into()), Id("bbb222b".into()));
 
         ix.register(&first, Path::new("a.md"));
@@ -1174,7 +1176,7 @@ Prose does not belong in a record store.
         // `render` has always resolved that in favour of live — so the in-memory
         // store must agree, or it disagrees with its own serialization until the
         // process restarts.
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         let id = Id("ccc333c".into());
         ix.set_host("registry.yaml", "title: ID registry\n")
             .unwrap();
@@ -1200,7 +1202,7 @@ Prose does not belong in a record store.
         // had to land together. Un-retiring on registration, without retiring
         // what a registration displaces, would make this the *easiest* way to
         // forget an id rather than an impossible one.
-        let mut ix = FileIndex::new(fig::Format::Yaml);
+        let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
         let (restored, other) = (Id("aaa111a".into()), Id("bbb222b".into()));
 
         ix.register(&restored, Path::new("a.md"));
@@ -1319,7 +1321,7 @@ Prose does not belong in a record store.
             fn the_persistent_id_map_stays_a_bijection(
                 ops in prop::collection::vec(op(), 1..12),
             ) {
-                let mut ix = FileIndex::new(fig::Format::Yaml);
+                let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
                 for op in &ops {
                     run(&mut ix, op);
                     assert_bijection(&ix)?;
@@ -1333,7 +1335,7 @@ Prose does not belong in a record store.
             /// deleted" and "that was never issued here" (DESIGN §10).
             #[test]
             fn a_retired_id_stays_known_forever(ops in prop::collection::vec(op(), 1..12)) {
-                let mut ix = FileIndex::new(fig::Format::Yaml);
+                let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
                 let mut retired: Vec<Id> = Vec::new();
                 for op in &ops {
                     run(&mut ix, op);
@@ -1356,7 +1358,7 @@ Prose does not belong in a record store.
             /// now retires what it displaces, so the law holds unscoped.
             #[test]
             fn is_known_is_monotonic(ops in prop::collection::vec(op(), 1..12)) {
-                let mut ix = FileIndex::new(fig::Format::Yaml);
+                let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
                 let mut ever = Vec::new();
                 for (n, op) in ops.iter().enumerate() {
                     run(&mut ix, op);
@@ -1412,7 +1414,7 @@ Prose does not belong in a record store.
             fn a_rendered_registry_parses_back_to_the_same_records(
                 ops in prop::collection::vec(op(), 1..12),
             ) {
-                let mut ix = FileIndex::new(fig::Format::Yaml);
+                let mut ix = FileIndex::new(prov_graph::MetaFormat::Yaml);
                 ix.set_host("registry.yaml", "title: ID registry\n").unwrap();
                 for op in &ops {
                     run(&mut ix, op);

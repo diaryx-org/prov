@@ -6,14 +6,13 @@
 //! mirroring the proven approach in `diaryx_core`'s `yaml` module.
 //!
 //! The functions here are format-parametric: the caller passes the
-//! [`fig::Format`] the block is written in, resolved from the detected embed
-//! archetype via [`fig::EmbedType::inner_format`] (see `document`). Which
-//! formats are compiled in is governed by prov's forwarded `fig` feature
-//! gates (`yaml`, `json`, `fig`).
+//! [`MetaFormat`] the block is written in, which the document's carrier records
+//! (see `document`).
 
 use indexmap::IndexMap;
 
 use crate::error::Result;
+use crate::format::MetaFormat;
 
 /// A dynamic metadata value. Integers and floats are kept distinct, and
 /// mappings preserve key order (frontmatter is order-significant to humans).
@@ -179,14 +178,14 @@ pub fn indexed_link_strings(value: &fig::Value) -> Vec<(Option<usize>, String)> 
 /// Parse a metadata document in `format` into a [`Value`], serde-free.
 ///
 /// An empty document is [`Value::Null`].
-pub fn parse_value(s: &str, format: fig::Format) -> Result<Value> {
-    let doc = fig::Document::parse(s.as_bytes(), format)?;
+pub fn parse_value(s: &str, format: MetaFormat) -> Result<Value> {
+    let doc = fig::Document::parse(s.as_bytes(), format.fig())?;
     Ok(Value::from(doc.to_value()?))
 }
 
 /// Parse a metadata mapping (the shape of frontmatter) in `format`. An empty
 /// document is an empty mapping; a non-mapping top level is an error.
-pub fn parse_mapping(s: &str, format: fig::Format) -> Result<Mapping> {
+pub fn parse_mapping(s: &str, format: MetaFormat) -> Result<Mapping> {
     match parse_value(s, format)? {
         Value::Mapping(m) => Ok(m),
         Value::Null => Ok(Mapping::new()),
@@ -197,24 +196,22 @@ pub fn parse_mapping(s: &str, format: fig::Format) -> Result<Mapping> {
 }
 
 /// Serialize a metadata mapping back to a string in `format` — the same format
-/// it was parsed from, so a ```` ```fig ```` block is never rewritten as YAML.
+/// it was parsed from, so a `---figl` block is never rewritten as YAML.
 ///
 /// Forces block layout (one list item per line) rather than fig 2.0's default
 /// flow style for short sequences, matching the diffs humans expect from
 /// frontmatter.
-pub fn serialize_mapping(map: &Mapping, format: fig::Format) -> Result<String> {
+pub fn serialize_mapping(map: &Mapping, format: MetaFormat) -> Result<String> {
     let value = fig::Value::from(&Value::Mapping(map.clone()));
-    Ok(value.serialize_with(format, fig::SerializeOptions::default().width(1))?)
+    Ok(value.serialize_with(format.fig(), fig::SerializeOptions::default().width(1))?)
 }
 
 /// Serialize any metadata value to a string in `format`. What `serialize_mapping`
 /// is for whole frontmatter blocks, this is for a value plucked out of one
 /// (the CLI's `get` on a compound field).
-pub fn serialize_value(value: &Value, format: fig::Format) -> Result<String> {
-    Ok(
-        fig::Value::from(value)
-            .serialize_with(format, fig::SerializeOptions::default().width(1))?,
-    )
+pub fn serialize_value(value: &Value, format: MetaFormat) -> Result<String> {
+    Ok(fig::Value::from(value)
+        .serialize_with(format.fig(), fig::SerializeOptions::default().width(1))?)
 }
 
 // ---------------------------------------------------------------------------
@@ -287,12 +284,11 @@ fn fig_key_to_string(key: fig::Value) -> String {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "yaml")]
     #[test]
     fn parses_frontmatter_mapping() {
         let m = parse_mapping(
             "title: Hello\ncount: 42\ntags:\n- a\n- b\n",
-            fig::Format::Yaml,
+            MetaFormat::Yaml,
         )
         .unwrap();
         assert_eq!(m.get("title").and_then(Value::as_str), Some("Hello"));
@@ -303,10 +299,9 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "fig-lang")]
     #[test]
     fn parses_fig_dialect_mapping() {
-        let m = parse_mapping("title = Hello\ntags = [a, b]\n", fig::Format::Fig).unwrap();
+        let m = parse_mapping("title = Hello\ntags = [a, b]\n", MetaFormat::Figl).unwrap();
         assert_eq!(m.get("title").and_then(Value::as_str), Some("Hello"));
         assert_eq!(
             m.get("tags").map(Value::link_strings),
@@ -342,15 +337,11 @@ mod tests {
         assert!(Value::Null.link_strings().is_empty());
     }
 
-    #[cfg(all(feature = "yaml", feature = "fig-lang"))]
     #[test]
     fn round_trips_through_fig() {
-        for format in [fig::Format::Yaml, fig::Format::Fig] {
-            let m = parse_mapping(
-                "title: Root\ncontents:\n- a.md\n- b.md\n",
-                fig::Format::Yaml,
-            )
-            .unwrap();
+        for format in [MetaFormat::Yaml, MetaFormat::Figl] {
+            let m = parse_mapping("title: Root\ncontents:\n- a.md\n- b.md\n", MetaFormat::Yaml)
+                .unwrap();
             let out = serialize_mapping(&m, format).unwrap();
             let reparsed = parse_mapping(&out, format).unwrap();
             assert_eq!(m, reparsed, "round-trip through {format:?}");

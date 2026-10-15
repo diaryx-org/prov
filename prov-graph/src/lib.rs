@@ -51,21 +51,6 @@
 //! validation findings are all views over it, and any stored index heals
 //! *toward* it, never the reverse.
 
-// At least one embedded-metadata format backend must be compiled in, otherwise
-// nothing here can parse a document at all. The format features (`yaml`,
-// `json`, `toml`, `fig-lang`) forward to the matching `fig` parser.
-#[cfg(not(any(
-    feature = "yaml",
-    feature = "json",
-    feature = "toml",
-    feature = "fig-lang"
-)))]
-compile_error!(
-    "prov-graph needs at least one metadata-format feature enabled: \
-     `yaml` (the default), `json`, `toml`, or `fig-lang`. \
-     You have disabled the default feature without selecting a replacement."
-);
-
 pub mod bulk;
 pub mod content;
 pub mod document;
@@ -73,6 +58,7 @@ pub mod error;
 pub mod exec;
 pub mod field;
 pub mod fixity;
+pub mod format;
 pub mod fs;
 pub mod graph;
 pub mod identity;
@@ -90,15 +76,15 @@ pub mod title;
 pub use bulk::BulkReads;
 pub use content::{ContentFormat, code_spans, render_html};
 pub use document::{
-    Body, Document, EmbedStyle, EmbedType, MetaCarrier, embed_carrier, embed_style_of,
-    is_opaque_payload, require_whole_file,
+    Body, Document, EmbedStyle, MetaCarrier, embed_carrier, embed_style_of, is_opaque_payload,
+    require_whole_file,
 };
 pub use error::{Error, Result};
 pub use exec::block_on;
 pub use field::{Address, FieldPath};
 pub use fig::ExtKind;
-pub use fig::Format;
 pub use fixity::Fixity;
+pub use format::MetaFormat;
 pub use fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
 pub use graph::{
     Backlink, CensusEntry, Graph, LinkSite, Node, NodeKind, ParkedStore, Parking, ReadSettings,
@@ -138,22 +124,27 @@ pub use title::{TitleIndex, TitleMatch};
 ///
 /// **This makes `twig-doc` a public dependency**, which is a real cost and the
 /// reason it was not done sooner: twig's major version is now part of prov's
-/// semver contract, so a twig 4 is a breaking change for prov whether or not
+/// semver contract, so a new twig major is a breaking change for prov whether or not
 /// prov's own surface moves. Accepted deliberately — the alternative is not
 /// "no coupling", it is the same coupling spelled separately by every
 /// downstream crate and enforced by nobody.
 ///
+/// twig 6 gave each grammar a crate of its own, so the three prov parses bodies
+/// in are re-exported beside it for the same reason: a format handle from a
+/// second copy of `twig-markdown` would name a language this twig never
+/// registered.
+///
 /// ```
-/// use prov_graph::twig::{Document, Format, MarkdownExtensions};
+/// use prov_graph::twig::Document;
+/// use prov_graph::twig_markdown;
 ///
 /// // What [`content`] cannot ask for: an opt-in extension. prov parses with
 /// // defaults, so a consumer that needs directives reaches past it — and,
 /// // through this re-export, reaches the same twig.
-/// let directives = MarkdownExtensions { directives: true, ..Default::default() };
-/// let mut doc = Document::parse_str_with(
-///     ":::vis{.public}\nHello\n:::\n",
-///     Format::Markdown,
-///     directives,
+/// let mut doc = Document::parse_with_features(
+///     b":::vis{.public}\nHello\n:::\n",
+///     twig_markdown::format(),
+///     &["directives"],
 /// )?;
 /// // The directive's name becomes the element tag and its attributes ride
 /// // along — which is also why a consumer publishing HTML unwraps these
@@ -163,3 +154,6 @@ pub use title::{TitleIndex, TitleMatch};
 /// # Ok::<(), prov_graph::twig::Error>(())
 /// ```
 pub use twig;
+pub use twig_djot;
+pub use twig_html;
+pub use twig_markdown;

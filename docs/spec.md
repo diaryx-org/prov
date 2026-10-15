@@ -48,7 +48,8 @@ prov workspace:
    exact shape — metadata, no spanning-parent, no id — but is derived from the
    root, so it can never be the root.)*
 2. **Read its metadata block.** Split frontmatter from body by fence — `---`
-   (YAML), `;;;` (JSON), or a ```` ```fig ```` block. The block is a key→value map.
+   (YAML), `+++` (TOML), or `---<lang>` (`---json`, `---figl`; `---fig` still
+   reads as figl). The block is a key→value map.
 3. **Read the policy, from both homes.** Workspace policy is one vocabulary
    with two homes: the root's `prov:` key, and the **config document** — where
    the same keys sit at *top level* because the whole document is policy. The

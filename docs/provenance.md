@@ -239,8 +239,8 @@ bytes are bookkeeping is prov's to say, so the rule is prov's, and stated here
 so that anything else can apply it:
 
 - The key is removed with the same comment-preserving edit `confirm` writes
-  with, in whatever format the metadata is in — `---` YAML, `+++` TOML, `;;;`
-  JSON, or a whole-file `.yaml`/`.json`/`.toml` document. Everything else —
+  with, in whatever format the metadata is in — `---` YAML, `+++` TOML, `---json`
+  JSON, `---figl` figl, or a whole-file `.yaml`/`.json`/`.toml` document. Everything else —
   comments, key order, the body, `updated` — is digested as the file says it.
 - A document whose metadata has no `confirmed` key digests as its text,
   unchanged.

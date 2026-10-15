@@ -38,21 +38,6 @@
 //! [`ReadStorage`]: prov_graph::fs::ReadStorage
 //! [`IdIndex`]: prov_graph::index::IdIndex
 
-// `edit` synthesizes a metadata block for a document that has none, and picks
-// the archetype by format feature — so at least one backend must be compiled
-// in here for the same reason it must be in `prov-graph`.
-#[cfg(not(any(
-    feature = "yaml",
-    feature = "json",
-    feature = "toml",
-    feature = "fig-lang"
-)))]
-compile_error!(
-    "prov-store needs at least one metadata-format feature enabled: \
-     `yaml` (the default), `json`, `toml`, or `fig-lang`. \
-     You have disabled the default feature without selecting a replacement."
-);
-
 pub mod edit;
 pub mod fs;
 pub mod index;

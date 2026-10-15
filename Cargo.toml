@@ -21,59 +21,58 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-# Embedded-metadata backend. fig is a Zig-backed parser/editor (its build.rs
-# runs `zig build`). The value tree is prov's common currency.
+# Embedded-metadata backend. fig is a pure-Rust parser/editor (since 7.0; it
+# was Zig-backed through 6.x). The value tree is prov's common currency.
 #
-# Only the format-agnostic infrastructure is enabled here (serde/derive/indexmap).
-# The per-format parser backends (yaml/json/fig) are pulled in *by prov's own
-# features* — see `prov/Cargo.toml` `[features]`, which forwards `yaml` →
-# `fig/yaml`, etc. This lets a downstream user compile out the formats they don't
-# use (each unused format is a Zig parser/printer left out of `libfig.a`).
+# fig's core names no language (6.0): every format is a crate that registers
+# with it. prov reads and writes the four a document's metadata is written in
+# most — YAML, JSON, TOML and figl — which are also the four `twig-doc`'s
+# `fig` feature brings, so they are always compiled in and there are no
+# per-format features any more. `prov_graph::MetaFormat` is prov's closed name
+# for them; it turns into a `fig::Format` handle (registering the language on
+# first use) wherever fig is asked to parse or print.
 #
-# **3.0.2 is a floor, not a preference.** Two reasons stack here:
+# **7.0 is the floor**, and 6.0 is the release that moved things:
 #
-# - 2.5.3 is where the editor splice started seeding a path's missing
-#   ancestors as *block* rather than inline flow. Before it, `set_meta_in_text`
-#   had to write a value, re-parse the document and compare the value's kind
-#   at the path, because a block value spliced into flow ancestors came out
-#   corrupt (`a: {b: - x}`, which re-reads as a string) and still reported
-#   success. That check and its leaf-by-leaf fallback are gone; lowering this
-#   bound brings the silent corruption back with nothing left to catch it.
-#   The fix is in the Zig `fig-sys`, which fig requires transitively at the
-#   same version.
-# - 3.0 made fig's FFI-mirroring enums (e.g. `EmbedType`, `ExtKind`)
-#   `#[non_exhaustive]` — prov's matches on them (about.rs, document.rs)
-#   gained wildcard arms accordingly. 3.0.2 is where
-#   `fig-sys` learned to skip its native build under `DOCS_RS`, without which
-#   prov itself fails to build on docs.rs (no Zig, no network there).
-# - 3.1 added convenience accessors on `fig::Value` itself (`as_str`,
-#   `as_bool`, `as_seq`, `as_mapping`, `is_null`, a string/index-aware `get`),
-#   letting accessor-only call sites work on `fig::Value` directly instead of
-#   going through `prov_graph::meta::Value`.
+# - Embedding left fig. `fig::Embed`, `EmbedType`, `fig::detect` and
+#   `Embed::retype` are gone; a document's frontmatter is located and spliced
+#   by twig (`twig::meta`, below), and prov reads only the archetypes twig
+#   reads: `---` YAML, `+++` TOML and `---<lang>` frontmatter.
+# - `fig::Format` is a per-process handle found by name, not an enum, and the
+#   native dialect is named `figl` (`fig` is no format's name).
+# - `ExtKind::PlistData` became `ExtKind::Data`.
 #
-# **4.0 was the floor** for a plainer reason: it carries core 3.0, whose
-# C ABI is version 2 with the native payloads rebuilt to match, and fig-schema
-# (below) sits on it too. The Rust surface prov uses kept its shape; what
-# moved is that a plist `<date>`/`<data>` arrives as `Value::Extended` rather
-# than `Value::Str`, and `Format` gained a tuple variant.
-#
-# **5.0 is the current floor**: the one-version release of every fig artifact,
-# and fig-schema moves with it. `EmbedType`'s variants took the CLI's archetype
-# names (`FrontmatterYaml` is `Frontmatter`, `FrontmatterJson` is
-# `Semicolons`, …) and the editor's `delete`/`remove_item`/`replace_key` became
-# `delete_key`/`delete_item`/`rename_key`; `MetaEditor` keeps its own names.
-fig = { version = "5", default-features = false, features = ["serde", "derive", "indexmap"] }
+# Earlier floors still hold through these: 2.5.3's block-seeded ancestors on
+# a splice (which `set_meta_in_text` relies on to write a nested value in one
+# step), 3.0's `#[non_exhaustive]` FFI-mirroring enums, and 3.1's accessors
+# on `fig::Value`.
+fig = { version = "7", features = ["derive", "indexmap"] }
+fig-yaml = { version = "7", default-features = false, features = ["fig"] }
+fig-json = { version = "7", default-features = false, features = ["fig"] }
+fig-toml = { version = "7", default-features = false, features = ["fig"] }
+fig-figl = { version = "7", default-features = false, features = ["fig"] }
 # The schema layer over fig's value tree. prov uses only its `FieldType` — the
 # vocabulary a `fields.<name>.type` declaration is spelled in — so that prov, a
 # schema-aware frontend, and (later) a view engine all name field types
-# identically instead of agreeing by convention.
-fig-schema = { version = "0.4.0" }
+# identically instead of agreeing by convention. Without its default `cli`
+# feature it is the library alone, on `fig`.
+#
+# From git until fig-schema's fig 7 release (0.5) is on crates.io: 0.4 is on
+# fig 5, whose `Value` is not fig 7's. Move this to `version = "0.5"` then.
+fig-schema = { git = "https://github.com/diaryx-org/fig-schema", branch = "cc/modest-mendel-tw57ql", default-features = false }
 indexmap = { version = "2.0", features = ["serde"] }
 thiserror = "2.0"
 
-# Body-prose parsing (Djot/Markdown) — prov's body-parser dependency (see
-# `src/content.rs`).
-twig-doc = "4"
+# Body-prose parsing (Djot/Markdown/HTML) — prov's body-parser dependency (see
+# `prov-graph/src/content.rs`) — and, through its default `fig` feature,
+# `twig::meta`, which locates a document's frontmatter and splices fig's
+# editor back into it. twig 6 is pure Rust, and like fig its core names no
+# language: each one prov parses a body in is a crate of its own, registered
+# on first use.
+twig-doc = "6"
+twig-markdown = "6"
+twig-djot = "6"
+twig-html = "6"
 
 # Opaque document-ID minting: NOID xdigit alphabet + NOID check character
 # over a seeded PRNG. Prov supplies its own seed (uniqueness is enforced by

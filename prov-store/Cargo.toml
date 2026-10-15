@@ -23,8 +23,8 @@ fs-transaction = { workspace = true }
 prov-graph = { workspace = true, default-features = false }
 
 # Embedded-metadata backend. `edit` splices a value back through fig's
-# comment-preserving editor; which format backends are compiled in is governed
-# by this crate's features below, which `prov` forwards to.
+# comment-preserving editor, over a frontmatter block twig locates (through
+# `prov_graph::twig`, so the two agree on one twig).
 fig.workspace = true
 
 [dev-dependencies]
@@ -32,9 +32,3 @@ fig.workspace = true
 # law, and an example test can only witness one input of it.
 proptest = "1"
 
-[features]
-default = ["yaml"]
-yaml = ["fig/yaml", "prov-graph/yaml"]
-json = ["fig/json", "prov-graph/json"]
-toml = ["fig/toml", "prov-graph/toml"]
-fig-lang = ["fig/fig", "prov-graph/fig-lang"]
