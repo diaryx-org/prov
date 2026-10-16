@@ -2031,13 +2031,7 @@ fn diagnose_metadata(issues: &mut Vec<ConfigIssue>, value: &Value) {
                 &dotted,
                 v,
                 |s| EmbedStyle::from_config_str(s).is_some(),
-                &[
-                    "delimited",
-                    "code_block",
-                    "html_script",
-                    "html_code",
-                    "separate",
-                ],
+                &["delimited", "separate"],
             ),
             other => {
                 if let Some(sug) = nearest(other, METADATA_KEYS) {
