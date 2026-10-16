@@ -31,13 +31,7 @@
             inherit version;
             src = ./.;
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              # fig-schema comes from git, pinned by its rev in Cargo.lock,
-              # until its fig 7 release is on crates.io; fetching it this way
-              # needs no hash written here. Drop this with the git dependency.
-              allowBuiltinFetchGit = true;
-            };
+            cargoLock.lockFile = ./Cargo.lock;
 
             # Build/test only the CLI crate; the library is a workspace member.
             cargoBuildFlags = [ "-p" "prov-cli" ];
