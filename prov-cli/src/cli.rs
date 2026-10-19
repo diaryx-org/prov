@@ -1364,6 +1364,13 @@ pub(crate) struct AttachArgs {
     /// now and at each refresh, which is a real cost over an archive.
     #[arg(long = "no-hash", requires = "manifest")]
     pub(crate) no_hash: bool,
+    /// With `--manifest`, claim every file under the directory, documents
+    /// included, and record that in the manifest (`verbatim: true`). For a
+    /// directory that is one artifact carried byte for byte — a built web
+    /// app, whose `index.html` is part of the build — rather than an archive
+    /// whose notes stay documents of the workspace.
+    #[arg(long, requires = "manifest")]
+    pub(crate) verbatim: bool,
     /// Attach the file *inline*: append a row naming it to the metadata of
     /// the document `--in` names, in a field the workspace declares
     /// `type: payload`, instead of minting a sidecar. The document then owns

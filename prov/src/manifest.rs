@@ -164,8 +164,22 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         root: &str,
         hash: bool,
     ) -> Result<Manifest> {
+        self.build_manifest_claiming(manifest_doc, root, hash, false)
+            .await
+    }
+
+    /// [`build_manifest`](Self::build_manifest) for a manifest that may be
+    /// [`verbatim`](Manifest::verbatim): when `verbatim`, the documents under
+    /// `root` are listed and hashed as well, and the manifest says so.
+    pub async fn build_manifest_claiming(
+        &self,
+        manifest_doc: &Path,
+        root: &str,
+        hash: bool,
+        verbatim: bool,
+    ) -> Result<Manifest> {
         let covered = link::resolve(manifest_doc, root);
-        let paths = self.graph().scan_covered(&covered).await?;
+        let paths = self.graph().scan_claimed(&covered, verbatim).await?;
         let files = if hash {
             let mut digests = crate::fixity::Digests::new();
             for rel in &paths {
@@ -192,6 +206,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let mut manifest = Manifest {
             root: root.to_string(),
             files,
+            verbatim,
         };
         manifest.sort();
         Ok(manifest)
@@ -251,7 +266,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             return Ok(None);
         };
         let root = manifest.checked_root(&manifest_doc)?;
-        let on_disk = self.graph().scan_covered(&root).await?;
+        let on_disk = self.graph().scan_claimed(&root, manifest.verbatim).await?;
         let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
         Ok(Some(ManifestStatus {
             node: node.to_path_buf(),
@@ -342,8 +357,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         } else {
             current.is_hashed()
         };
+        // Whether it claims documents too is a decision made at attach, and
+        // kept, as the hashing mode is.
         let mut fresh = self
-            .build_manifest(&manifest_doc, &current.root, hashed)
+            .build_manifest_claiming(&manifest_doc, &current.root, hashed, current.verbatim)
             .await?;
         // What a row says about its file is the one thing the directory cannot
         // say again: it stays on the row while the file does, bytes changed or
@@ -493,8 +510,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 return refuse(&format!("it is not under {}", root.display()));
             };
             let rel = rel.to_path_buf();
-            if !prov_graph::document::is_opaque_payload(&rel) {
-                return refuse("it is a document, which a manifest never covers");
+            if !current.claims(&rel) {
+                return refuse(
+                    "it is a document, which a manifest covers only when it is verbatim",
+                );
             }
             if rel.iter().any(|c| c.to_string_lossy().starts_with('.')) {
                 return refuse("a hidden file is never listed");
@@ -627,6 +646,23 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         title_override: Option<&str>,
         hash: bool,
     ) -> Result<PathBuf> {
+        self.attach_manifest_claiming(dir, parent, title_override, hash, false)
+            .await
+    }
+
+    /// [`attach_manifest_titled`](Self::attach_manifest_titled), choosing
+    /// whether the manifest is [`verbatim`](Manifest::verbatim): whether it
+    /// claims the documents under `dir` too, so the directory is carried byte
+    /// for byte — a built web app with its `index.html` — rather than its
+    /// documents staying documents of the workspace.
+    pub async fn attach_manifest_claiming(
+        &mut self,
+        dir: &Path,
+        parent: &Path,
+        title_override: Option<&str>,
+        hash: bool,
+        verbatim: bool,
+    ) -> Result<PathBuf> {
         let dir = link::normalize(dir);
         let parent = link::normalize(parent);
         self.check_attach_manifest(&dir).await?;
@@ -654,7 +690,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             "{}/",
             link::relative(manifest_doc.parent().unwrap_or(Path::new("")), &dir)
         );
-        let manifest = self.build_manifest(&manifest_doc, &root, hash).await?;
+        let manifest = self
+            .build_manifest_claiming(&manifest_doc, &root, hash, verbatim)
+            .await?;
         let manifest_text = prov_graph::meta::serialize_mapping(
             &manifest.to_mapping(&format!("{title} — manifest")),
             format,
@@ -887,6 +925,128 @@ mod tests {
 
         let manifest = read(&dir, "photos.manifest.yaml");
         assert!(!manifest.contains("note.md"), "{manifest}");
+    }
+
+    /// A built web app: its `index.html` is part of the build, not a page.
+    fn app(tag: &str) -> PathBuf {
+        let dir = tempdir(tag);
+        write(&dir, "index.md", b"---\ntitle: Home\n---\n");
+        write(
+            &dir,
+            "app/index.html",
+            b"<!doctype html><title>Player</title><script src=\"/app/index-1.js\"></script>\n",
+        );
+        write(&dir, "app/index-1.js", b"console.log(1)\n");
+        write(
+            &dir,
+            "app/assets/help.html",
+            b"<!doctype html><title>Help</title>\n",
+        );
+        dir
+    }
+
+    fn attach_verbatim(dir: &Path) -> PathBuf {
+        block_on(ws(dir).attach_manifest_claiming(
+            Path::new("app"),
+            Path::new("index.md"),
+            None,
+            true,
+            true,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_verbatim_manifest_claims_the_documents_too() {
+        let dir = app("verbatim");
+        let node = attach_verbatim(&dir);
+
+        let manifest = read(&dir, "app.manifest.yaml");
+        assert!(manifest.contains("verbatim: true"), "{manifest}");
+        for path in ["index.html", "index-1.js", "assets/help.html"] {
+            assert!(
+                manifest.contains(&format!("path: {path}")),
+                "{path}: {manifest}"
+            );
+        }
+        let status = block_on(ws(&dir).manifest_status(&node)).unwrap().unwrap();
+        assert!(status.agrees(), "{status:?}");
+        assert_eq!(status.listed, 3);
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+
+        // The same directory, covered without the flag, leaves its pages out.
+        let plain = app("verbatim-plain");
+        block_on(ws(&plain).attach_manifest(Path::new("app"), Path::new("index.md"))).unwrap();
+        let manifest = read(&plain, "app.manifest.yaml");
+        assert!(!manifest.contains("verbatim"), "{manifest}");
+        assert!(!manifest.contains("index.html"), "{manifest}");
+    }
+
+    #[test]
+    fn a_verbatim_manifest_stays_verbatim_and_reports_a_new_page_as_drift() {
+        let dir = app("verbatim-update");
+        let node = attach_verbatim(&dir);
+        write(
+            &dir,
+            "app/about.html",
+            b"<!doctype html><title>About</title>\n",
+        );
+
+        let status = block_on(ws(&dir).manifest_status(&node)).unwrap().unwrap();
+        assert_eq!(status.extra, vec![PathBuf::from("about.html")]);
+
+        let update = block_on(ws(&dir).update_manifest(&node)).unwrap();
+        assert_eq!(update.added, vec![PathBuf::from("about.html")]);
+        let manifest = read(&dir, "app.manifest.yaml");
+        assert!(manifest.contains("verbatim: true"), "{manifest}");
+        assert!(manifest.contains("path: about.html"), "{manifest}");
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_page_can_be_added_to_a_verbatim_manifest_only() {
+        let dir = app("verbatim-add");
+        let node = attach_verbatim(&dir);
+        write(&dir, "app/about.html", b"<!doctype html>\n");
+        let update =
+            block_on(ws(&dir).extend_manifest(&node, &[PathBuf::from("app/about.html")])).unwrap();
+        assert_eq!(update.added, vec![PathBuf::from("about.html")]);
+
+        let plain = app("verbatim-add-plain");
+        let node =
+            block_on(ws(&plain).attach_manifest(Path::new("app"), Path::new("index.md"))).unwrap();
+        let err = block_on(ws(&plain).extend_manifest(&node, &[PathBuf::from("app/index.html")]))
+            .unwrap_err();
+        assert!(err.to_string().contains("verbatim"), "{err}");
+    }
+
+    #[test]
+    fn a_link_into_a_verbatim_directory_leaves_its_pages_out_of_the_workspace() {
+        // Linking a file of the app puts its directory in reach. Its pages are
+        // still the app's: no orphan, and no title of theirs answers an alias.
+        let dir = app("verbatim-linked");
+        attach_verbatim(&dir);
+        let index = read(&dir, "index.md");
+        std::fs::write(
+            dir.join("index.md"),
+            format!("{index}\n[script](app/index-1.js)\n"),
+        )
+        .unwrap();
+        assert_eq!(block_on(ws(&dir).check("index.md")).unwrap(), vec![]);
+
+        let titles = block_on(ws(&dir).title_index_scoped(Path::new("index.md"))).unwrap();
+        assert_eq!(
+            titles.resolve("index"),
+            prov_graph::title::TitleMatch::Unique(PathBuf::from("index.md"))
+        );
+    }
+
+    #[test]
+    fn a_verbatim_manifest_is_not_scattered() {
+        let dir = app("verbatim-scatter");
+        let node = attach_verbatim(&dir);
+        let err = block_on(ws(&dir).plan_scatter(&node, None)).unwrap_err();
+        assert!(err.to_string().contains("verbatim"), "{err}");
     }
 
     #[test]

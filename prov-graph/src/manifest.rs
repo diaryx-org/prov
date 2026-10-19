@@ -47,6 +47,13 @@
 //! usual — so a manifest never shadows a document, and the "opacity is a role"
 //! escape hatch (`attach --opaque`) stays a single-file affair.
 //!
+//! The one exception is opt-in and written in the manifest itself:
+//! `verbatim: true` claims **every** file under `root`, documents included.
+//! It is for a directory whose files are one artifact to be carried byte for
+//! byte — a built web app, whose `index.html` is part of the build and not a
+//! page anyone writes — so the promise is visible where it is made, as
+//! `attach --opaque`'s is in its sidecar.
+//!
 //! This module is the model and its serialization, which is all the read core
 //! needs; the verbs that build, refresh and verify one are `prov`'s.
 
@@ -62,6 +69,10 @@ pub const MANIFEST_KEY: &str = "manifest";
 /// The manifest key naming the directory it covers, relative to the manifest
 /// document's own directory.
 pub const ROOT_KEY: &str = "root";
+
+/// The manifest key that, set to `true`, claims every file under `root` —
+/// documents included — instead of the opaque payloads alone.
+pub const VERBATIM_KEY: &str = "verbatim";
 
 /// The manifest key holding the rows.
 pub const FILES_KEY: &str = "files";
@@ -101,6 +112,9 @@ pub struct Manifest {
     /// The rows, sorted by [`path_sort_key`] when this library wrote them; a
     /// manifest read back off disk keeps whatever order it was written in.
     pub files: Vec<ManifestEntry>,
+    /// Whether the manifest claims every file under `root`, documents
+    /// included ([`VERBATIM_KEY`]), rather than the opaque payloads alone.
+    pub verbatim: bool,
 }
 
 impl Manifest {
@@ -119,6 +133,15 @@ impl Manifest {
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Structure(format!("manifest has no `{ROOT_KEY}`")))?
             .to_string();
+        // Refused rather than read as `false` when it is not a boolean: the
+        // flag decides which files the manifest claims, and a misread one
+        // would turn every claimed document into drift, or the reverse.
+        let verbatim = match meta.get(VERBATIM_KEY) {
+            None | Some(Value::Null) => false,
+            Some(value) => value.as_bool().ok_or_else(|| {
+                Error::Structure(format!("manifest `{VERBATIM_KEY}` must be true or false"))
+            })?,
+        };
         let rows = match meta.get(FILES_KEY) {
             // A manifest over an empty directory has no rows at all, which is a
             // legitimate state (`files:` written as null, or absent).
@@ -155,7 +178,11 @@ impl Manifest {
                 fields,
             });
         }
-        Ok(Manifest { root, files })
+        Ok(Manifest {
+            root,
+            files,
+            verbatim,
+        })
     }
 
     /// The manifest as a whole-file document mapping, `title` first — the shape
@@ -168,6 +195,9 @@ impl Manifest {
         let mut map = Mapping::new();
         map.insert("title".into(), Value::String(title.to_string()));
         map.insert(ROOT_KEY.into(), Value::String(self.root.clone()));
+        if self.verbatim {
+            map.insert(VERBATIM_KEY.into(), Value::Bool(true));
+        }
         map.insert(
             FILES_KEY.into(),
             Value::Sequence(
@@ -228,6 +258,13 @@ impl Manifest {
                 .cmp(&path_sort_key(&b.path))
                 .then_with(|| a.hash.cmp(&b.hash))
         });
+    }
+
+    /// Whether the file at `rel`, relative to the covered root, is one this
+    /// manifest claims: any file when it is [`verbatim`](Self::verbatim), an
+    /// opaque payload otherwise.
+    pub fn claims(&self, rel: &Path) -> bool {
+        self.verbatim || crate::document::is_opaque_payload(rel)
     }
 
     /// Whether every row carries a digest — the difference between an inventory
@@ -383,9 +420,41 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            ..Default::default()
         };
         m.sort();
         assert_eq!(m.files[0].path, PathBuf::from("a.jpg"));
+    }
+
+    #[test]
+    fn verbatim_is_opt_in_and_must_be_a_boolean() {
+        let plain = parse("root: app/\n").unwrap();
+        assert!(!plain.verbatim);
+        assert!(!plain.claims(Path::new("index.html")));
+        assert!(plain.claims(Path::new("index-abc.js")));
+
+        let verbatim = parse("root: app/\nverbatim: true\n").unwrap();
+        assert!(verbatim.verbatim);
+        assert!(verbatim.claims(Path::new("index.html")));
+
+        assert!(parse("root: app/\nverbatim: yes please\n").is_err());
+    }
+
+    #[test]
+    fn a_verbatim_manifest_round_trips_and_a_plain_one_writes_no_flag() {
+        let text = |m: &Manifest| {
+            crate::meta::serialize_mapping(&m.to_mapping("App — manifest"), crate::MetaFormat::Yaml)
+                .unwrap()
+        };
+        let plain = parse("root: app/\nfiles:\n- path: a.js\n").unwrap();
+        assert!(!text(&plain).contains("verbatim"), "{}", text(&plain));
+        let verbatim = parse("root: app/\nverbatim: true\nfiles:\n- path: index.html\n").unwrap();
+        assert!(
+            text(&verbatim).contains("verbatim: true"),
+            "{}",
+            text(&verbatim)
+        );
+        assert_eq!(parse(&text(&verbatim)).unwrap(), verbatim);
     }
 
     #[test]

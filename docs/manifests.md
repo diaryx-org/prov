@@ -77,6 +77,7 @@ spec §5's MUST, which a list of rows prov re-lays-out plainly falls under.
 | `title` | no | Human gloss. prov writes `<node title> — manifest`. |
 | `root` | yes | The covered directory, relative to *this document's* directory. |
 | `files` | yes | The rows. Absent or null means an empty directory. |
+| `verbatim` | no | `true` claims every file under `root`, documents included (§3.1). Absent means `false`; any value but a boolean is refused. |
 
 Each row:
 
@@ -120,6 +121,27 @@ directory then rewrites one line instead of ten thousand.
   the sidecar beside the file it is made about.
 - A nested manifest's directory belongs to its own node, so two manifests can
   never claim one file.
+
+### 3.1 Verbatim: claiming the documents too
+
+Some directories are one artifact, not an archive: a built web app, whose
+`index.html` sits beside its script bundle because the build put it there, and
+is no more a page of the workspace than the bundle is. `verbatim: true`, written
+in the manifest by `attach DIR --manifest --verbatim`, claims **every** file
+under `root`, the readable ones included:
+
+- each one has a row, hashed like any other, and one without a row is drift;
+- none of them is a document: its title answers no `[[alias]]`, an `id` in it
+  registers nothing, and a link into the directory does not make it an orphan;
+- a refresh keeps the flag, as it keeps the hashing mode, and `--add` takes a
+  readable file only when it is set;
+- `scatter` refuses it — one card per file would shadow each document singly,
+  a promise `attach --opaque` makes on purpose.
+
+It is opt-in, and recorded where the claim is made, because it is still the
+exception to the rule above: an archive with a note among its photographs
+keeps that note a document. The promise is visible in the manifest the way an
+opaque attachment's is visible in its sidecar.
 
 Completeness is what makes the interesting question answerable. A covered file is
 not a document, so §8's orphan walk cannot see it, and it is not a link, so the
@@ -285,7 +307,7 @@ Each verb is one change set: moved, written and removed together.
 
 | Command | What it does |
 |---|---|
-| `attach DIR --manifest [--in P] [--no-hash]` | cover a directory: mint the node and the manifest, link the node under a parent |
+| `attach DIR --manifest [--in P] [--no-hash] [--verbatim]` | cover a directory: mint the node and the manifest, link the node under a parent; `--verbatim` claims its documents too (§3.1) |
 | `manifest TARGET` | what the manifest says, and whether the directory still agrees (no file reads) |
 | `manifest TARGET --update` | rebuild the rows from the directory as it is now, keeping each row's fields, re-stamping the node |
 | `manifest TARGET --add FILE...` | append rows for the named files only, checksumming just those; every other row stays, its file present or not (§5) |

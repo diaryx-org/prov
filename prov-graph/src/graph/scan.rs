@@ -96,14 +96,37 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         let mut index = TitleIndex::new();
         let files = self.direct_child_files(&dirs).await?;
         let probe = ShadowProbe::over(files.iter());
-        for rel in files {
-            if !is_document_path(&rel) || self.is_shadowed_payload(&rel, &probe).await {
+        // A reached directory a verbatim manifest claims (something linked one
+        // of its files) holds no titles of the workspace's. Its node sits in
+        // the parent directory, which is reached too whenever the node is, so
+        // the listing already in hand is the probe.
+        let listed: BTreeSet<&PathBuf> = files.iter().collect();
+        let mut verbatim: Vec<&PathBuf> = Vec::new();
+        for dir in &dirs {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            for candidate in crate::manifest::manifest_node_candidates(dir) {
+                if listed.contains(&candidate)
+                    && let Ok(Some((manifest_doc, manifest))) = self.manifest_of(&candidate).await
+                    && manifest.verbatim
+                    && manifest.covered_root(&manifest_doc) == *dir
+                {
+                    verbatim.push(dir);
+                }
+            }
+        }
+        for rel in &files {
+            if verbatim.iter().any(|dir| rel.starts_with(dir)) {
+                continue;
+            }
+            if !is_document_path(rel) || self.is_shadowed_payload(rel, &probe).await {
                 continue;
             }
             if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
                 index.insert(stem, rel.clone());
             }
-            if let Ok((_, doc)) = self.load(&rel).await
+            if let Ok((_, doc)) = self.load(rel).await
                 && let Some(title) = doc.meta.get("title").and_then(crate::title::title_text)
             {
                 index.insert(&title, rel.clone());
@@ -436,6 +459,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 return Ok(());
             }
             let probe = shadow_probe(&rel_dir, &entries);
+            let siblings = file_names(&entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -453,7 +477,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     rel_dir.join(&name)
                 };
                 if entry.file_type().is_dir() {
-                    self.scan_ids_dir(rel, ids).await?;
+                    // A verbatim manifest claims the documents under it: an
+                    // `id` in one is part of the artifact, not a registration.
+                    if !self.is_verbatim_root(&rel, &siblings).await {
+                        self.scan_ids_dir(rel, ids).await?;
+                    }
                 } else if entry.file_type().is_file()
                     && is_document_path(&rel)
                     // An `id:` inside a shadowed payload is an example, not a
@@ -499,6 +527,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 return Ok(());
             }
             let probe = shadow_probe(&rel_dir, &entries);
+            let siblings = file_names(&entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -516,7 +545,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     rel_dir.join(&name)
                 };
                 if entry.file_type().is_dir() {
-                    self.scan_titles(rel, parked, index).await?;
+                    // A verbatim manifest's documents are part of its
+                    // artifact, and their titles must not answer `[[alias]]`.
+                    if !self.is_verbatim_root(&rel, &siblings).await {
+                        self.scan_titles(rel, parked, index).await?;
+                    }
                 } else if entry.file_type().is_file()
                     && is_document_path(&rel)
                     // A shadowed payload is bytes prov agreed not to read: its
@@ -547,6 +580,18 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 /// skipped so the scan neither reads nor mis-indexes them.
 fn is_document_path(path: &Path) -> bool {
     !is_opaque_payload(path)
+}
+
+/// The names of the visible files among a directory's `entries` — the listing
+/// [`is_verbatim_root`](Graph::is_verbatim_root) probes a child directory's
+/// node against.
+fn file_names(entries: &[crate::fs::DirEntry]) -> std::collections::BTreeSet<String> {
+    entries
+        .iter()
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.file_name().and_then(|n| n.to_str()).map(str::to_owned))
+        .filter(|name| !name.starts_with('.'))
+        .collect()
 }
 
 /// The shadow probe over the *files* among a directory's `entries`

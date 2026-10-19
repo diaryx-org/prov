@@ -22,7 +22,7 @@ use crate::fs::ReadStorage;
 use crate::index::IdIndex;
 use crate::link::{self, Link};
 
-const SIDECAR_EXTENSIONS: &[&str] = &["yaml", "yml", "json", "toml", "fig", "figl"];
+pub(crate) const SIDECAR_EXTENSIONS: &[&str] = &["yaml", "yml", "json", "toml", "fig", "figl"];
 
 /// Every path that could be `payload`'s sidecar under the `<payload>.<ext>`
 /// convention, in reverse-lookup preference order. The probe half of the lookup;
