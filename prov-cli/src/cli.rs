@@ -291,7 +291,8 @@ pub(crate) enum Command {
         /// (`contents[0]`, or `contents.0`).
         key: String,
         /// Value; `true`/`false`, integers, floats, and `null` are typed,
-        /// everything else is a string.
+        /// `[a, b]` is a list (quote an item to keep it text), everything
+        /// else is a string.
         value: String,
     },
     /// Remove a metadata field (comment- and format-preserving). Stamps

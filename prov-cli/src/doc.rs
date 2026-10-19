@@ -168,7 +168,7 @@ pub(crate) fn cmd_render(file: &Path) -> CmdResult {
 
 pub(crate) fn cmd_set(file: &Path, key: &str, value: &str) -> CmdResult {
     let (text, doc) = load(file)?;
-    let updated = edit::set_in_text(&text, doc.carrier, key, edit::infer_scalar(value))?;
+    let updated = edit::set_in_text(&text, doc.carrier, key, edit::infer_value(value))?;
     write_field_edit(file, key, &updated)?;
     println!("{}", file.display());
     Ok(ExitCode::SUCCESS)

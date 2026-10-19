@@ -242,6 +242,74 @@ pub fn infer_scalar(s: &str) -> fig::Value {
     }
 }
 
+/// Interpret a CLI-provided value: a flow list (`[public]`, `[a, b]`, `[]`)
+/// becomes a sequence of [`infer_scalar`]ed items, and anything else is
+/// [`infer_scalar`]'s.
+///
+/// The list form is what a person writes for a list-valued field —
+/// `prov set note.md audience '[public]'` — and storing it as the string
+/// `"[public]"` gave the field a value no reader of it takes for a list. An
+/// item in quotes (`["a, b", 'c']`) is that text exactly, which is also how to
+/// keep an item from being typed. A value with a bracket inside it
+/// (`[[alias]]`, `[a, [b]]`) is not a flat list and stays a string, so a
+/// wikilink set as a value is still a wikilink.
+pub fn infer_value(s: &str) -> fig::Value {
+    let trimmed = s.trim();
+    let Some(inner) = trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return infer_scalar(s);
+    };
+    if inner.contains(['[', ']', '\n']) {
+        return infer_scalar(s);
+    }
+    let Some(items) = split_flow_items(inner) else {
+        return infer_scalar(s);
+    };
+    fig::Value::Seq(items)
+}
+
+/// The items of a flow list's interior, or `None` when a quote is left open.
+fn split_flow_items(inner: &str) -> Option<Vec<fig::Value>> {
+    let mut items = Vec::new();
+    if inner.trim().is_empty() {
+        return Some(items);
+    }
+    let mut chars = inner.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        let item = match chars.peek() {
+            Some(&quote @ ('"' | '\'')) => {
+                chars.next();
+                let mut text = String::new();
+                loop {
+                    match chars.next()? {
+                        c if c == quote => break,
+                        c => text.push(c),
+                    }
+                }
+                while chars.next_if(|c| c.is_whitespace()).is_some() {}
+                if chars.peek().is_some_and(|c| *c != ',') {
+                    return None;
+                }
+                fig::Value::Str(text)
+            }
+            _ => {
+                let mut text = String::new();
+                while let Some(c) = chars.next_if(|c| *c != ',') {
+                    text.push(c);
+                }
+                infer_scalar(text.trim())
+            }
+        };
+        items.push(item);
+        if chars.next().is_none() {
+            return Some(items);
+        }
+    }
+}
+
 /// Whether `s` opens with a zero a numeric parse would silently discard — `08`,
 /// `-007`, `00`. The test is "zero followed by another digit", so the `0` of `0`
 /// and of `0.5` (information, not padding) is not caught.
@@ -531,6 +599,67 @@ mod tests {
         assert_eq!(infer_scalar("4.5"), fig::Value::Float(4.5));
         assert_eq!(infer_scalar("null"), fig::Value::Null);
         assert_eq!(infer_scalar("hello"), fig::Value::Str("hello".into()));
+    }
+
+    #[test]
+    fn a_flow_list_is_a_list() {
+        let strs = |items: &[&str]| {
+            fig::Value::Seq(items.iter().map(|s| fig::Value::Str((*s).into())).collect())
+        };
+        assert_eq!(infer_value("[public]"), strs(&["public"]));
+        assert_eq!(
+            infer_value("[public, friends]"),
+            strs(&["public", "friends"])
+        );
+        assert_eq!(infer_value("[]"), fig::Value::Seq(Vec::new()));
+        assert_eq!(
+            infer_value("[1, true, 08]"),
+            fig::Value::Seq(vec![
+                fig::Value::Int(1),
+                fig::Value::Bool(true),
+                fig::Value::Str("08".into())
+            ])
+        );
+        assert_eq!(infer_value(r#"["a, b", '1']"#), strs(&["a, b", "1"]));
+        // Not a flat list: kept as the text it is.
+        assert_eq!(
+            infer_value("[[Some Note]]"),
+            fig::Value::Str("[[Some Note]]".into())
+        );
+        assert_eq!(
+            infer_value("[draft] notes"),
+            fig::Value::Str("[draft] notes".into())
+        );
+        assert_eq!(
+            infer_value(r#"["open]"#),
+            fig::Value::Str(r#"["open]"#.into())
+        );
+        assert_eq!(infer_value("42"), fig::Value::Int(42));
+    }
+
+    #[test]
+    fn a_list_set_from_the_cli_is_written_as_a_list() {
+        let text = "---\ntitle: T\n---\n";
+        let out = set_in_text(
+            text,
+            carrier_of("x.md", text),
+            "audience",
+            infer_value("[public]"),
+        )
+        .unwrap();
+        assert!(
+            !out.contains("'[public]'") && !out.contains("\"[public]\""),
+            "{out}"
+        );
+        let doc = prov_graph::document::Document::parse("x.md", &out).unwrap();
+        assert_eq!(
+            doc.meta
+                .get("audience")
+                .and_then(|v| v.as_sequence())
+                .map(|s| s.len()),
+            Some(1),
+            "{out}"
+        );
     }
 
     #[test]
