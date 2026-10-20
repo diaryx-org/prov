@@ -2539,7 +2539,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             }
 
-            let on_disk = self.graph().scan_covered(&root).await?;
+            let on_disk = self.graph().scan_claimed(&root, manifest.verbatim).await?;
             let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
             if !missing.is_empty() || !extra.is_empty() {
                 findings.push(Finding::ManifestDrift {
@@ -2587,10 +2587,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // Scan only the directories the reachable set occupies (their direct
         // children), never descending into unreached subdirectories.
         let reached_dirs = Self::reached_dirs(reachable);
+        // A verbatim manifest claims the documents under its root, so a link
+        // into that directory must not turn its `index.html` into an orphan.
+        let verbatim = self.graph().verbatim_roots_reached(reachable).await;
         let mut docs: Vec<PathBuf> = Vec::new();
         let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
         for path in self.direct_child_files(&reached_dirs).await? {
             if reachable.contains(&path) || island.contains(&path) {
+                continue;
+            }
+            if verbatim.iter().any(|root| path.starts_with(root)) {
                 continue;
             }
             if ContentFormat::from_extension(&path).is_some() {

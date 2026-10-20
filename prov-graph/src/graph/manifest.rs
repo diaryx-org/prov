@@ -131,8 +131,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// bytes, never shadows a document. And a **nested manifest's** directory is
     /// left to its own node, so two manifests never claim the same file.
     pub async fn scan_covered(&self, root: &Path) -> Result<Vec<PathBuf>> {
+        self.scan_claimed(root, false).await
+    }
+
+    /// [`scan_covered`](Self::scan_covered) for a manifest that may be
+    /// [`verbatim`](crate::manifest::Manifest::verbatim): when `verbatim`, the
+    /// files prov can read are listed too, since such a manifest claims them.
+    /// Hidden entries and nested manifests' directories are still left out.
+    pub async fn scan_claimed(&self, root: &Path, verbatim: bool) -> Result<Vec<PathBuf>> {
         let mut found = Vec::new();
-        self.scan_covered_into(root, PathBuf::new(), &mut found)
+        self.scan_covered_into(root, PathBuf::new(), verbatim, &mut found)
             .await?;
         found.sort_by(|a, b| {
             crate::manifest::path_sort_key(a).cmp(&crate::manifest::path_sort_key(b))
@@ -144,6 +152,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         &'a self,
         root: &'a Path,
         rel: PathBuf,
+        verbatim: bool,
         out: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
@@ -180,8 +189,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     {
                         continue;
                     }
-                    self.scan_covered_into(root, child, out).await?;
-                } else if is_opaque_payload(&child) {
+                    self.scan_covered_into(root, child, verbatim, out).await?;
+                } else if verbatim || is_opaque_payload(&child) {
                     out.push(child);
                 }
             }
@@ -194,12 +203,102 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// Damaged manifests contribute nothing (their damage is `check`'s to
     /// report).
     pub async fn manifest_roots(&self, walk_docs: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
-        let mut roots = BTreeSet::new();
+        self.manifest_roots_claiming(walk_docs)
+            .await
+            .into_iter()
+            .map(|(root, _)| root)
+            .collect()
+    }
+
+    /// [`manifest_roots`](Self::manifest_roots), each with whether its manifest
+    /// is [`verbatim`](crate::manifest::Manifest::verbatim) — whether the
+    /// documents under it are claimed too.
+    pub async fn manifest_roots_claiming(
+        &self,
+        walk_docs: &BTreeSet<PathBuf>,
+    ) -> Vec<(PathBuf, bool)> {
+        let mut roots = Vec::new();
         for doc in walk_docs {
             if let Ok(Some((manifest_doc, manifest))) = self.manifest_of(doc).await {
-                roots.insert(manifest.covered_root(&manifest_doc));
+                roots.push((manifest.covered_root(&manifest_doc), manifest.verbatim));
             }
         }
+        roots.sort();
+        roots.dedup();
         roots
+    }
+
+    /// The roots of the [`verbatim`](crate::manifest::Manifest::verbatim)
+    /// manifests whose nodes `reachable` holds beside a directory some
+    /// reachable path lies in — the directories a reachability-bounded pass
+    /// must not read documents out of.
+    ///
+    /// Found by the `<dir>.<ext>` convention against `reachable` alone, so a
+    /// workspace with no manifest node beside a reached directory reads
+    /// nothing; the bound is [`under_manifest`](Self::under_manifest)'s.
+    pub async fn verbatim_roots_reached(&self, reachable: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
+        // The convention read backwards, as `ShadowProbe` reads it: a reached
+        // `photos.yaml` could be the node of `photos/`. Only metadata files
+        // can be nodes, so most reached paths cost one extension check.
+        let mut by_dir: std::collections::HashMap<PathBuf, Vec<&PathBuf>> =
+            std::collections::HashMap::new();
+        for path in reachable {
+            if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| super::shadow::SIDECAR_EXTENSIONS.contains(&ext))
+            {
+                by_dir
+                    .entry(path.with_extension(""))
+                    .or_default()
+                    .push(path);
+            }
+        }
+        let mut nodes: BTreeSet<PathBuf> = BTreeSet::new();
+        if !by_dir.is_empty() {
+            for dir in Self::reached_dirs(reachable) {
+                for ancestor in dir.ancestors() {
+                    if ancestor.as_os_str().is_empty() {
+                        break;
+                    }
+                    if let Some(found) = by_dir.get(ancestor) {
+                        nodes.extend(found.iter().map(|p| (*p).clone()));
+                    }
+                }
+            }
+        }
+        self.manifest_roots_claiming(&nodes)
+            .await
+            .into_iter()
+            .filter_map(|(root, verbatim)| verbatim.then_some(root))
+            .collect()
+    }
+
+    /// Whether the directory `dir` is the root of a
+    /// [`verbatim`](crate::manifest::Manifest::verbatim) manifest, judged from
+    /// `siblings`, the names of the files in `dir`'s parent: the
+    /// `<dir>.<ext>` convention is probed against that listing, so a directory
+    /// with no such sibling costs no read at all.
+    ///
+    /// What the flat title and id scans ask before descending: a verbatim
+    /// manifest claims the documents under it, so their titles and ids are
+    /// not the workspace's. Probe-only, with the same bound
+    /// [`under_manifest`](Self::under_manifest) states.
+    pub async fn is_verbatim_root(&self, dir: &Path, siblings: &BTreeSet<String>) -> bool {
+        let dir = link::normalize(dir);
+        for candidate in manifest_node_candidates(&dir) {
+            let Some(name) = candidate.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !siblings.contains(name) {
+                continue;
+            }
+            if let Ok(Some((manifest_doc, manifest))) = self.manifest_of(&candidate).await
+                && manifest.covered_root(&manifest_doc) == dir
+            {
+                return manifest.verbatim;
+            }
+        }
+        false
     }
 }

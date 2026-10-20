@@ -518,6 +518,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut manifest = Manifest {
             root: root_text,
             files: entries,
+            verbatim: false,
         };
         manifest.sort();
         let manifest_text = prov_graph::meta::serialize_mapping(
@@ -666,6 +667,16 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 node.display()
             )));
         };
+        // A verbatim manifest is one artifact carried whole; one card per
+        // file would shadow each of its documents singly, which is a promise
+        // to make on purpose (`attach --opaque`), not as a side effect.
+        if manifest.verbatim {
+            return Err(Error::Structure(format!(
+                "{} is verbatim — it carries its directory as one artifact, and is \
+                 not scattered into cards",
+                manifest_doc.display()
+            )));
+        }
         let format = self.default_embed_format();
         let updated = self.updated_field();
         let mut cards = Vec::new();

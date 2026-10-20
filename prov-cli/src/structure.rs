@@ -530,6 +530,7 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
         recursive,
         manifest,
         no_hash,
+        verbatim,
         inline,
         field,
         demote,
@@ -668,11 +669,12 @@ pub(crate) fn cmd_attach(args: AttachArgs) -> CmdResult {
     // The bulk form: the positional is a directory, and it gains one node and
     // one list rather than a sidecar per file.
     if manifest {
-        let node = block_on(session.ws.attach_manifest_titled(
+        let node = block_on(session.ws.attach_manifest_claiming(
             &payload_rel,
             &parent_rel,
             None,
             hash,
+            verbatim,
         ))?;
         session.commit()?;
         let (manifest_doc, listed) = block_on(session.ws.manifest_of(&node))?

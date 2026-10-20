@@ -393,19 +393,35 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // The covered roots, asked only of the paths that can be documents: a
         // payload's own bytes must not get to declare a manifest either. Asked
         // at all only when an opaque path was reached, which is rare.
-        let covered = if reachable.iter().any(|p| is_opaque_payload(p)) {
-            let readable: BTreeSet<PathBuf> = reachable
-                .iter()
-                .filter(|p| !is_opaque_payload(p))
-                .cloned()
-                .collect();
-            self.manifest_roots(&readable).await
+        //
+        // A verbatim manifest claims the documents under its root as well. A
+        // reached document can only be one of those when the node beside its
+        // directory was reached too, so that is probed first, by the
+        // `<dir>.<ext>` convention against the reached set alone — the same
+        // bound `under_manifest` accepts.
+        let readable: BTreeSet<PathBuf> = reachable
+            .iter()
+            .filter(|p| !is_opaque_payload(p))
+            .cloned()
+            .collect();
+        let beside_a_node = |path: &PathBuf| {
+            path.ancestors().skip(1).any(|dir| {
+                !dir.as_os_str().is_empty()
+                    && crate::manifest::manifest_node_candidates(dir).any(|c| readable.contains(&c))
+            })
+        };
+        let covered = if reachable.iter().any(|p| is_opaque_payload(p))
+            || readable.iter().any(beside_a_node)
+        {
+            self.manifest_roots_claiming(&readable).await
         } else {
-            BTreeSet::new()
+            Vec::new()
         };
         let mut documents = BTreeSet::new();
         for path in reachable {
-            if is_opaque_payload(path) && covered.iter().any(|root| path.starts_with(root)) {
+            if covered.iter().any(|(root, verbatim)| {
+                path.starts_with(root) && (*verbatim || is_opaque_payload(path))
+            }) {
                 continue;
             }
             if !self.is_shadowed_payload(path, &probe).await {
