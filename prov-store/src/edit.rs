@@ -462,6 +462,22 @@ mod tests {
     }
 
     #[test]
+    fn set_in_an_html_page_edits_its_script_island_in_place() {
+        let text = "<script type=\"application/yaml\">\ntitle: Page\n</script>\n<p>Body</p>\n";
+        let out = set_in_text(
+            text,
+            carrier_of("index.html", text),
+            "id",
+            infer_scalar("x1"),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "<script type=\"application/yaml\">\ntitle: Page\nid: x1\n</script>\n<p>Body</p>\n"
+        );
+    }
+
+    #[test]
     fn an_all_digit_id_survives_the_round_trip_as_a_string() {
         // The NOID alphabet has digits, so a minted id can look like a number.
         // Stamping one must not turn it into an integer (which would drop the
