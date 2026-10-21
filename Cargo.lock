@@ -1238,7 +1238,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 [[package]]
 name = "twig-djot"
 version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#3c8c9d529878e5223cc58fbe178ba47646dace3f"
+source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -1247,7 +1247,7 @@ dependencies = [
 [[package]]
 name = "twig-doc"
 version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#3c8c9d529878e5223cc58fbe178ba47646dace3f"
+source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
 dependencies = [
  "fig",
  "fig-figl",
@@ -1260,7 +1260,7 @@ dependencies = [
 [[package]]
 name = "twig-html"
 version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#3c8c9d529878e5223cc58fbe178ba47646dace3f"
+source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -1269,12 +1269,12 @@ dependencies = [
 [[package]]
 name = "twig-kit"
 version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#3c8c9d529878e5223cc58fbe178ba47646dace3f"
+source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
 
 [[package]]
 name = "twig-markdown"
 version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#3c8c9d529878e5223cc58fbe178ba47646dace3f"
+source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
 dependencies = [
  "twig-doc",
  "twig-html",
