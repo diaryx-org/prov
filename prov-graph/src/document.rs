@@ -173,19 +173,33 @@ pub fn embed_carrier(style: EmbedStyle, format: MetaFormat) -> MetaCarrier {
     }
 }
 
-/// The frontmatter block opening `text`, located by twig, and the metadata
-/// format its fence names. `None` when `text` opens no block, its opening fence
-/// is never closed, or the fence names a language prov does not read (a
-/// `---zon` block is prose to prov, as it would be to a Markdown renderer).
+/// The metadata block of `text`, located by twig, and the metadata format its
+/// fence names. `None` when `text` has no block, its opening fence is never
+/// closed, or the fence names a language prov does not read (a `---zon`
+/// block is prose to prov, as it would be to a Markdown renderer).
 ///
-/// twig finds the block by parsing `text` as Markdown, which reads frontmatter
-/// whatever the host's own grammar is: it is the document's first lines and
-/// nothing an extension changes.
+/// The block is the frontmatter opening `text`, found by parsing it as
+/// Markdown, which reads frontmatter whatever the host's own grammar is: it is
+/// the document's first lines and nothing an extension changes. A text with no
+/// frontmatter whose first non-blank byte opens a tag is an HTML page, and its
+/// block is the first `<script type="application/<lang>">` data island in it,
+/// found by parsing it as HTML. An island may sit anywhere, typically in
+/// `<head>`, and is edited where it sits.
 pub fn frontmatter_block(text: &str) -> Option<(MetaFormat, twig::meta::Block)> {
-    let parsed = twig::meta::parse_host(text.as_bytes(), twig_markdown::format()).ok()?;
-    let block = twig::meta::find(&parsed.doc, twig::meta::Where::Front)?;
+    let block = located(text, twig_markdown::format()).or_else(|| {
+        text.trim_start()
+            .starts_with('<')
+            .then(|| located(text, twig_html::format()))
+            .flatten()
+    })?;
     let format = MetaFormat::from_fig(twig::meta::dialect_for(&block.lang)?)?;
     Some((format, block))
+}
+
+/// `text`'s front metadata block, parsing it as `format`.
+fn located(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
+    let parsed = twig::meta::parse_host(text.as_bytes(), format).ok()?;
+    twig::meta::find(&parsed.doc, twig::meta::Where::Front)
 }
 
 /// A parsed document: its path, its embedded metadata, and its body text.
@@ -467,14 +481,14 @@ mod tests {
     }
 
     /// The archetypes fig 5 read and twig does not are prose now: a document
-    /// carrying one reads as having no metadata, its whole text the body.
+    /// carrying one reads as having no metadata, its whole text the body. An
+    /// HTML `<script>` data island is not among them: twig reads it again.
     #[test]
     fn the_retired_archetypes_read_as_prose() {
         for text in [
             ";;;\n{\"title\": \"Root\"}\n;;;\nbody\n",
             "```fig\ntitle = prov\n```\n# Body\n",
             "# Body first\n```endmatter\ntitle: Tail\n```\n",
-            "<script type=\"application/yaml\">\ntitle: Mid\n</script>\n",
         ] {
             let doc = Document::parse("note.md", text).unwrap();
             assert_eq!(doc.carrier, None, "{text:?}");
@@ -608,6 +622,31 @@ mod tests {
         assert_eq!(meta, "title = prov\n");
         assert_eq!(before, "");
         assert_eq!(after, "# Body\n");
+    }
+
+    #[test]
+    fn an_html_page_reads_its_script_island_as_its_metadata() {
+        let text = "<script type=\"application/yaml\">\ntitle: Page\n</script>\n<p>Body</p>\n";
+        let doc = Document::parse("index.html", text).unwrap();
+        assert_eq!(doc.carrier, Some(MetaCarrier::Fenced(MetaFormat::Yaml)));
+        assert_eq!(doc.meta.get("title").and_then(Value::as_str), Some("Page"));
+        assert_eq!(doc.body, "<p>Body</p>\n");
+    }
+
+    #[test]
+    fn an_island_in_head_splits_the_page_around_it() {
+        let text = "<html>\n<head>\n<script type=\"application/json\">\n{\"title\": \"T\"}\n</script>\n</head>\n</html>\n";
+        let (carrier, meta, before, after) = Document::split(text).unwrap();
+        assert_eq!(carrier, MetaCarrier::Fenced(MetaFormat::Json));
+        assert_eq!(meta, "{\"title\": \"T\"}\n");
+        assert_eq!(before, "<html>\n<head>\n");
+        assert_eq!(after, "</head>\n</html>\n");
+    }
+
+    #[test]
+    fn a_page_script_that_is_not_an_island_is_body() {
+        let text = "<script>let a = 1;</script>\n<p>Body</p>\n";
+        assert_eq!(Document::split(text), None);
     }
 
     #[test]

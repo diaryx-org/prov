@@ -145,3 +145,13 @@ prov-filing = { path = "prov-filing", version = "0.18.0", default-features = fal
 prov-exports = { path = "prov-exports", version = "0.18.0", default-features = false }
 # Workspace configuration policy, codecs, diagnostics, and vocabularies.
 prov-config = { path = "prov-config", version = "0.18.0", default-features = false }
+
+# twig's HTML `<script>` data island, which `prov_graph::document` reads as an
+# HTML page's metadata, is on twig's `html-script-metadata` branch until a
+# twig release carries it. Replace this with that release's version above.
+[patch.crates-io]
+twig-doc = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
+twig-kit = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
+twig-markdown = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
+twig-djot = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
+twig-html = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }

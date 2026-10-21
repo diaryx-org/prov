@@ -387,9 +387,11 @@ The same rule governs the deletion log and *flat* vocabulary stores; a
   document's frontmatter and splices fig's editor back between its fences.
   prov records the block's format (`MetaCarrier::Fenced(MetaFormat)`) on every
   `Document` so writes **preserve the original format and layout** (never
-  rewrite a `+++` block as YAML). twig reads frontmatter only, so the other
-  archetypes fig 5 read — `;;;` JSON, fenced code blocks and endmatter, HTML
-  `<script>` and `<pre><code>` islands — are prose to prov now. A useful
+  rewrite a `+++` block as YAML). twig reads frontmatter and, in an HTML
+  page, a `<script type="application/<lang>">` data island, which prov edits
+  where it sits (it carries `MetaCarrier::Fenced` too). The other archetypes
+  fig 5 read — `;;;` JSON, fenced code blocks and endmatter, HTML
+  `<pre><code>` islands — are prose to prov now. A useful
   consequence of the split: the sidecar index need not match the document
   format — documents can be YAML while the index is figl.
 
