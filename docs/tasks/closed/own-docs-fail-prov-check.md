@@ -1,13 +1,19 @@
 ---
 title: prov's own docs fail prov check
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 created: 2026-10-22T09:20:08.499373Z
-status: open
+status: done
 description: An out-of-band edit to a sidecar's payload left a stale content_hash on main, and nothing in CI runs prov check on prov's own workspace to catch it
-updated: 2026-10-22T09:20:32.761063Z
+updated: 2026-10-22T21:20:07.795975Z
 ---
 
 # prov's own docs fail prov check
+
+**Status.** Done, in `ci: run prov check over prov's own workspace`
+(2026-10-22). The `8247d29` text is the one meant: that commit retired `;;;`
+and rewrote the example's prose to match. `prov stamp` recorded its checksum,
+the `sha256sum` above. The `prov-check` job in `.config/ship.figl` builds
+prov-cli and runs `target/debug/prov check` at the root.
 
 ## Repro
 

@@ -18,6 +18,7 @@ contents:
 - '[A manifest has no add-only verb](/docs/tasks/closed/a-manifest-has-no-add-only-verb.md)'
 - '[check skips orphaned sidecars](/docs/tasks/closed/check-skips-orphaned-sidecars.md)'
 - '[A nested workspace is walked as the outer one''s](/docs/tasks/closed/a-nested-workspace-is-walked-as-the-outer-ones.md)'
+- '[prov''s own docs fail prov check](/docs/tasks/closed/own-docs-fail-prov-check.md)'
 ---
 
 # Closed tasks

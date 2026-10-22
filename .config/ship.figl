@@ -61,6 +61,16 @@ ci/check-getting-started.sh
 ci/check-getting-started.sh docs/querying.md
 '''
 > *
+> > # prov's own workspace, checked by the prov just built: a covered file
+> > # edited outside prov, without a `prov stamp`, fails here rather than
+> > # landing with a stale checksum.
+> > id = prov-check
+> > name = prov check
+> > run = '''
+cargo build -p prov-cli
+target/debug/prov check
+'''
+> *
 > > # Each crate built alone, without workspace feature unification — which can
 > > # let `cargo check --workspace` pass for a crate that cannot compile on its
 > > # own. The list of crates is in xtask, beside the test that every publishable
