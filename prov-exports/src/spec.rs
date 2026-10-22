@@ -86,6 +86,36 @@
 //! export with no hold, because the author wrote down a bound on what leaves
 //! and a bound nobody can apply must not be dropped silently.
 //!
+//! # The keep-back: a document's own "not for them"
+//!
+//! A hold says *not yet* to every export that holds on its field. A document
+//! can also need to say *not for this readership*, while it stays in every
+//! other: a family page that a wider group reading the family's pages should
+//! not get. Removing the audience cannot say it, because the page is still for
+//! the family, so the format carries it under one more key: an optional
+//! `withhold`, naming a field.
+//!
+//! ```yaml
+//! exports:
+//!   reunion:
+//!     gate: { field: audience, value: reunion }
+//!     withhold: withheld_from
+//! ```
+//!
+//! A document the gate admits that names the gate's value under the withhold
+//! field (`withheld_from: [reunion]`) is **kept back**: it is not in the
+//! export, and the plan reports it as kept back, beside the held and the
+//! withheld. Only the gate's own value keeps a document back: `withheld_from:
+//! [family]` keeps a page out of the family's export and out of no other,
+//! even one that reads what the family reads. This crate matches the value as
+//! written; a link to the value's term node (`withheld_from: ["[The
+//! Reunion](reunion.md)"]`) keeps the document back too, which the workspace
+//! resolves and hands in as part of the [`TermHolds`](crate::TermHolds).
+//!
+//! The keep-back narrows and never widens, exactly as the hold does, and fails
+//! closed the same way: a `withhold` that does not name a field is an
+//! unreadable export.
+//!
 //! # Why an export has no front page
 //!
 //! A diaryx site fronts its published set with an `index:` page. That key is
@@ -105,7 +135,7 @@ use prov_views::humanize;
 pub const EXPORTS_KEY: &str = "exports";
 
 /// The keys valid inside one `exports.<name>` entry.
-pub const EXPORT_KEYS: &[&str] = &["label", "gate", "hold", "view"];
+pub const EXPORT_KEYS: &[&str] = &["label", "gate", "hold", "withhold", "view"];
 
 /// The one value that holds a document back under an export's `hold` field —
 /// compared against the field's scalar text, so a YAML `draft: true` and a
@@ -286,6 +316,11 @@ pub struct ExportSpec {
     /// holds nothing back. See the module docs: a hold narrows the gate's set
     /// and never widens it.
     pub hold: Option<String>,
+    /// The field a document names this export's gate value under to be kept
+    /// back from this export alone — `withheld_from`, typically. `None` keeps
+    /// nothing back. See the module docs: like a hold, a keep-back narrows the
+    /// gate's set and never widens it.
+    pub withhold: Option<String>,
     /// The [`ViewSpec`](prov_views::ViewSpec) naming this export's
     /// arrangement, by its key under `views:`. `None` exports the gate's whole
     /// admitted set. A view may narrow the set; it can never widen it — see
@@ -297,7 +332,7 @@ impl ExportSpec {
     /// Read one `exports.<name>` entry.
     ///
     /// Returns `None` when the entry is not a mapping, carries no readable
-    /// [`Gate`], or writes a `hold` that does not name a field. Dropping such
+    /// [`Gate`], or writes a `hold` or `withhold` that does not name a field. Dropping such
     /// an entry is the fail-closed direction — an unreadable export
     /// declaration exports nothing, where defaulting its gate would export a
     /// set nobody chose, and ignoring its hold would let leave what the
@@ -311,11 +346,16 @@ impl ExportSpec {
             None => None,
             Some(field) => Some(non_empty(Some(field))?),
         };
+        let withhold = match map.get("withhold") {
+            None => None,
+            Some(field) => Some(non_empty(Some(field))?),
+        };
         Some(ExportSpec {
             name: name.to_string(),
             label: non_empty(map.get("label")),
             gate,
             hold,
+            withhold,
             view: non_empty(map.get("view")),
         })
     }
@@ -333,6 +373,21 @@ impl ExportSpec {
         })
     }
 
+    /// Whether `meta` names this export's gate value under its withhold field —
+    /// the "not for them" that keeps a gate-admitted document out of this
+    /// export alone.
+    ///
+    /// Always `false` for an export with no withhold. Matches the value as
+    /// written, exact after trim; a link to the value's term node is the
+    /// workspace's to resolve (see the module docs).
+    pub fn withholds(&self, meta: &Value) -> bool {
+        self.withhold.as_ref().is_some_and(|field| {
+            let own = self.gate.value.trim();
+            meta.get(field)
+                .is_some_and(|value| scalar_texts(value).iter().any(|t| t == own))
+        })
+    }
+
     /// The mapping this export writes back as. Absent options are omitted
     /// rather than written empty, so an export declared from an app reads as
     /// the small thing it is.
@@ -344,6 +399,9 @@ impl ExportSpec {
         map.insert("gate".into(), self.gate.to_value());
         if let Some(hold) = &self.hold {
             map.insert("hold".into(), Value::String(hold.clone()));
+        }
+        if let Some(withhold) = &self.withhold {
+            map.insert("withhold".into(), Value::String(withhold.clone()));
         }
         if let Some(view) = &self.view {
             map.insert("view".into(), Value::String(view.clone()));
@@ -475,6 +533,7 @@ mod tests {
                 value: "family".into(),
             },
             hold: Some("draft".into()),
+            withhold: Some("withheld_from".into()),
             view: Some("daily".into()),
         };
         let back =
@@ -489,11 +548,13 @@ mod tests {
                 value: "family".into(),
             },
             hold: None,
+            withhold: None,
             view: None,
         };
         let map = minimal.to_mapping();
         assert!(map.get("label").is_none(), "absent options are omitted");
         assert!(map.get("hold").is_none());
+        assert!(map.get("withhold").is_none());
         assert!(map.get("view").is_none());
         let back = ExportSpec::parse("letters", &Value::Mapping(map)).expect("an export");
         assert_eq!(back, minimal);
@@ -587,6 +648,7 @@ mod tests {
                 value: "family".into(),
             },
             hold: Some("draft".into()),
+            withhold: None,
             view: None,
         };
         let draft = |v: Value| meta(&[("audience", Value::String("family".into())), ("draft", v)]);
@@ -606,6 +668,69 @@ mod tests {
         assert!(
             !unholding.holds(&draft(Value::Bool(true))),
             "no hold reads no field"
+        );
+    }
+
+    /// A `withhold` that does not name a field is not an export, as for a
+    /// hold: the author wrote down whom to keep a page from.
+    #[test]
+    fn a_withhold_must_name_a_field_or_the_entry_is_not_an_export() {
+        let with =
+            |field: Value| mapping(&[("gate", gate("audience", "reunion")), ("withhold", field)]);
+        assert_eq!(
+            ExportSpec::parse("x", &with(Value::String("withheld_from".into())))
+                .and_then(|s| s.withhold),
+            Some("withheld_from".to_string())
+        );
+        for bad in [
+            Value::String("  ".into()),
+            Value::Null,
+            seq(&["withheld_from"]),
+        ] {
+            assert!(
+                ExportSpec::parse("x", &with(bad.clone())).is_none(),
+                "for {bad:?}"
+            );
+        }
+    }
+
+    /// A keep-back names the gate's own value, exact after trim, in a scalar or
+    /// a sequence. Naming another value keeps the document out of that value's
+    /// export, not this one.
+    #[test]
+    fn a_withhold_keeps_back_only_from_its_own_gate_value() {
+        let space = ExportSpec {
+            name: "reunion".into(),
+            label: None,
+            gate: Gate {
+                field: "audience".into(),
+                value: "reunion".into(),
+            },
+            hold: None,
+            withhold: Some("withheld_from".into()),
+            view: None,
+        };
+        let page = |v: Value| {
+            meta(&[
+                ("audience", Value::String("family".into())),
+                ("withheld_from", v),
+            ])
+        };
+        assert!(space.withholds(&page(Value::String("reunion".into()))));
+        assert!(space.withholds(&page(Value::String(" reunion ".into()))));
+        assert!(space.withholds(&page(seq(&["church", "reunion"]))));
+        assert!(!space.withholds(&page(seq(&["church"]))));
+        assert!(!space.withholds(&page(Value::String("Reunion".into()))));
+        assert!(!space.withholds(&page(Value::Bool(true))));
+        assert!(!space.withholds(&meta(&[("audience", Value::String("family".into()))])));
+
+        let open = ExportSpec {
+            withhold: None,
+            ..space
+        };
+        assert!(
+            !open.withholds(&page(Value::String("reunion".into()))),
+            "no withhold reads no field"
         );
     }
 

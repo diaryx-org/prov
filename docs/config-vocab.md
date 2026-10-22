@@ -171,6 +171,7 @@ prov:
         field: audience       # a document is in this export only if…
         value: family         # …its own `audience` declares `family`
       hold: draft             # optional — a document declaring `draft: true` waits
+      withhold: withheld_from # optional — a document naming `family` there is kept back from this export alone
       view: daily             # optional arrangement — may narrow, can never widen
   id_storage: both            # registry | frontmatter | both
   workspace_id: notes         # what this workspace calls itself (omit/"" = anonymous; `prov id --workspace`)
@@ -677,6 +678,28 @@ declaration"), so `draft` can hold under `Proposals` and mean nothing of the
 kind under `Tasks`. A retired term still holds: retiring says a value is no
 longer for new content, not that what carries it is ready.
 
+`withhold` optionally names a third field, for a fact neither the gate nor the
+hold can carry: that a document is for this readership's own circle but not for
+this readership. It matters once one term `also_reads` another. A space gated
+on `reunion` that reads `family` admits every family page, and a family page the
+reunion should not get keeps its `audience: family` and says so on itself:
+
+```yaml
+# a page
+audience: family
+withheld_from: ["[The Reunion](/config/audiences/reunion.md)"]
+```
+
+Under an export with `withhold: withheld_from`, a document the gate admits that
+names the gate's own value under that field is **kept back**: not in the export,
+and reported as kept back. The value can be the term's name as the gate writes
+it (`withheld_from: [reunion]`) or a link to the term's node in a vocabulary of
+term documents. Only the gate's own value keeps a document back, so the page
+above still reaches the family's export, and an export gated on a term that
+reads `reunion` is not narrowed by it. A keep-back is judged before the hold, so
+a kept-back draft is reported as kept back. A `withhold` that does not name a
+field makes the entry unreadable, as for a hold.
+
 `view` optionally arranges what leaves, and it obeys a one-way valve: **an
 export's set is a subset of what its gate admits, whatever the view says**. A
 view may narrow the set; it can never put back a document the gate held out.
@@ -692,7 +715,7 @@ There is no `index:` (front page) key: which page greets a reader is a
 rendering concern, declared by the publish layer that owns a render. prov only
 ever *plans* an export — `prov exports` lists them, `prov exports <name>`
 previews what leaves, what the gate held back, what the documents themselves
-are holding, and what the view scoped out, and moves nothing. Publishing, copy-out, and OCFL export are downstream
+are holding or keeping back, and what the view scoped out, and moves nothing. Publishing, copy-out, and OCFL export are downstream
 consumers of the same plan. The format and planner are the `prov-exports`
 crate, which depends only on the read core and `prov-views` and so cannot
 write to — or leak from — the workspace it judges.

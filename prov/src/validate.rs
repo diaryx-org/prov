@@ -4501,6 +4501,7 @@ mod tests {
                 value: "public".into(),
             },
             hold: Some("status".into()),
+            withhold: None,
             view: None,
         };
         let holds = block_on(ws.term_holds(root, &spec)).unwrap();

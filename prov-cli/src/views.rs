@@ -383,6 +383,21 @@ pub(crate) fn cmd_exports(name: Option<&str>) -> CmdResult {
             }
         }
     }
+    // What the author kept from this readership alone, by naming it on the
+    // page: listed like the held, for the same reason.
+    if !plan.kept_back.is_empty() {
+        println!(
+            "(admitted by the gate, kept back by `{}`) ({})",
+            export.withhold.as_deref().unwrap_or_default(),
+            plan.kept_back.len()
+        );
+        for doc in &plan.kept_back {
+            match &doc.title {
+                Some(title) => println!("  {} — {title}", doc.path.display()),
+                None => println!("  {}", doc.path.display()),
+            }
+        }
+    }
     // Named because it is the difference between the export and its gate:
     // "I tagged it and it isn't in the export" is unexplainable from the
     // file alone, and this list is the explanation.
@@ -396,12 +411,16 @@ pub(crate) fn cmd_exports(name: Option<&str>) -> CmdResult {
         }
     }
     println!(
-        "\n{} document(s) leave, {} held back by the gate{}{}",
+        "\n{} document(s) leave, {} held back by the gate{}{}{}",
         plan.entries.len(),
         plan.withheld.len(),
         match plan.held.len() {
             0 => String::new(),
             n => format!(", {n} held by the document"),
+        },
+        match plan.kept_back.len() {
+            0 => String::new(),
+            n => format!(", {n} kept back by the document"),
         },
         match plan.outside_view.len() {
             0 => String::new(),

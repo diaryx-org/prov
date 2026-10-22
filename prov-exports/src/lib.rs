@@ -19,6 +19,7 @@
 //!     label: Letters home
 //!     gate: { field: audience, value: family }
 //!     hold: draft
+//!     withhold: withheld_from
 //!     view: daily
 //! ```
 //!
@@ -26,7 +27,10 @@
 //! stay behind for now — `draft: true` — without giving up the audience it
 //! declared. It also holds a document whose value under that field is a term
 //! its vocabulary marks `holds: true` (`hold: status` keeps a `status: draft`
-//! back), which the caller supplies as [`TermHolds`]. Who a document is *for* and whether it is *ready* are different
+//! back), which the caller supplies as [`TermHolds`]. The optional `withhold`
+//! names a field a document names the gate's value under to be kept back
+//! from this export alone (`withheld_from: [reunion]`), while it stays in
+//! every other. Who a document is *for* and whether it is *ready* are different
 //! facts with different lifetimes, and the format carries them apart. See
 //! [`spec`] for the reasoning.
 //!

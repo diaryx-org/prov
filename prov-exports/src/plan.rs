@@ -32,6 +32,14 @@
 //! reason: [`TermHolds::none`] is a statement a caller makes, not a default it
 //! falls into.
 //!
+//! The export's `withhold` is a third narrowing through the same valve: a
+//! document the gate admits that names the gate's value under the withhold
+//! field is `retain`ed out of `entries` into [`ExportPlan::kept_back`]. It is
+//! judged before the hold, so a draft kept back from this readership is
+//! reported as kept back: it is not a page this export is waiting for. A
+//! keep-back can be written as a link to the term's node, which only the
+//! workspace can resolve, so that half also comes in the [`TermHolds`].
+//!
 //! # What the gate's value reaches
 //!
 //! A gate's value can mean more than itself: when its term `also_reads`
@@ -80,6 +88,7 @@ use crate::spec::{ExportSpec, Reach};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TermHolds {
     docs: HashSet<PathBuf>,
+    kept_back: HashSet<PathBuf>,
 }
 
 impl TermHolds {
@@ -94,7 +103,22 @@ impl TermHolds {
     pub fn from_docs(docs: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
             docs: docs.into_iter().collect(),
+            kept_back: HashSet::new(),
         }
+    }
+
+    /// Also keep back each of `docs`, workspace-relative: documents whose
+    /// withhold field links to the node of the gate value's term, which only
+    /// the workspace can resolve. Only ever added to what the value as
+    /// written keeps back ([`ExportSpec::withholds`]).
+    pub fn with_kept_back(mut self, docs: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.kept_back.extend(docs);
+        self
+    }
+
+    /// Whether `doc` is kept back by a link to the gate value's term.
+    pub fn keeps_back(&self, doc: &Path) -> bool {
+        self.kept_back.contains(doc)
     }
 
     /// Whether `doc` is held by the term it carries.
@@ -102,9 +126,9 @@ impl TermHolds {
         self.docs.contains(doc)
     }
 
-    /// Whether no document is held by a term.
+    /// Whether no document is held or kept back by a term.
     pub fn is_empty(&self) -> bool {
-        self.docs.is_empty()
+        self.docs.is_empty() && self.kept_back.is_empty()
     }
 }
 
@@ -157,6 +181,14 @@ pub struct ExportPlan {
     /// export's pending set, not as strangers to it. Always empty for an
     /// export with no hold.
     pub held: Vec<ExportDoc>,
+    /// Documents the gate admits that are kept back from this export alone,
+    /// by naming its gate value under the withhold field
+    /// (`withheld_from: [reunion]` under an export with
+    /// `withhold: withheld_from`), in path order. Carried as [`ExportDoc`]s
+    /// for the same reason as [`held`](Self::held): a preview counts them as
+    /// what the author chose to keep back. Always empty for an export with no
+    /// withhold.
+    pub kept_back: Vec<ExportDoc>,
     /// Reachable documents the gate holds back, each with what it declared.
     /// The bulk of any workspace — closed by default means most documents
     /// are here — reported so *withheld* is an answer, never a silence.
@@ -190,6 +222,7 @@ pub fn compose(
     let reach = Reach::of(&spec.gate).widened(reach.values().iter().cloned());
     let mut entries = Vec::new();
     let mut held = Vec::new();
+    let mut kept_back = Vec::new();
     let mut withheld = Vec::new();
     for row in rows {
         let title = row.title();
@@ -200,11 +233,16 @@ pub fn compose(
                     title,
                     declared,
                 };
-                // The hold is judged only here, on a document the gate has
-                // already admitted: it can move a document from `entries` to
-                // `held`, and nothing can move one the other way. A withheld
-                // document's hold field is never read.
-                if spec.holds(&row.meta) || (spec.hold.is_some() && term_holds.contains(&row.path))
+                // The keep-back and the hold are judged only here, on a
+                // document the gate has already admitted: each can move a
+                // document out of `entries`, and nothing can move one back. A
+                // withheld document's hold and withhold fields are never read.
+                if spec.withholds(&row.meta)
+                    || (spec.withhold.is_some() && term_holds.keeps_back(&row.path))
+                {
+                    kept_back.push(doc);
+                } else if spec.holds(&row.meta)
+                    || (spec.hold.is_some() && term_holds.contains(&row.path))
                 {
                     held.push(doc);
                 } else {
@@ -238,6 +276,7 @@ pub fn compose(
         entries,
         outside_view,
         held,
+        kept_back,
         withheld,
         reach,
     }
@@ -318,6 +357,7 @@ mod tests {
                 value: value.to_string(),
             },
             hold: None,
+            withhold: None,
             view: view.map(str::to_string),
         }
     }
@@ -639,6 +679,113 @@ mod tests {
         );
     }
 
+    /// A space reading the family: gated on `reunion`, reaching `family`,
+    /// keeping back on `withheld_from`.
+    fn space_spec() -> ExportSpec {
+        ExportSpec {
+            hold: Some("draft".into()),
+            withhold: Some("withheld_from".into()),
+            ..spec("reunion", "reunion", None)
+        }
+    }
+
+    fn space_reach() -> Reach {
+        Reach::of(&space_spec().gate).widened(["family".to_string()])
+    }
+
+    /// A row that also names terms under the withhold field.
+    fn row_kept(path: &str, audience: &[&str], from: &[&str]) -> Row {
+        let mut row = row(path, Some(audience));
+        let Value::Mapping(meta) = &mut row.meta else {
+            unreachable!("row() builds a mapping");
+        };
+        meta.insert(
+            "withheld_from".into(),
+            Value::Sequence(from.iter().map(|v| Value::String((*v).into())).collect()),
+        );
+        row
+    }
+
+    /// The keep-back's whole job: a family page that names the space under
+    /// the withhold field reaches the family and not the space, and is
+    /// reported as kept back. Naming another space keeps nothing back here.
+    #[test]
+    fn a_kept_back_document_is_admitted_but_does_not_leave() {
+        let rows = [
+            row("letters.md", Some(&["family"])),
+            row_kept("private.md", &["family"], &["reunion"]),
+            row_kept("church.md", &["family"], &["church"]),
+        ];
+        let plan = compose(
+            &space_spec(),
+            &rows,
+            None,
+            &TermHolds::none(),
+            &space_reach(),
+        );
+        assert_eq!(entry_paths(&plan), ["letters.md", "church.md"]);
+        assert_eq!(plan.kept_back.len(), 1);
+        assert_eq!(plan.kept_back[0].path, PathBuf::from("private.md"));
+        assert!(plan.held.is_empty() && plan.withheld.is_empty());
+
+        // The family's own export has no withhold here, and keeps nothing
+        // back: a keep-back changes only the readership it names.
+        let family = compose(
+            &held_spec(None),
+            &rows,
+            None,
+            &TermHolds::none(),
+            &unwidened(),
+        );
+        assert_eq!(family.entries.len(), 3);
+        assert!(family.kept_back.is_empty());
+    }
+
+    /// A draft kept back from the space is reported as kept back, not held:
+    /// the space is not waiting for it.
+    #[test]
+    fn a_kept_back_draft_is_kept_back() {
+        let mut row = row_kept("draft.md", &["family"], &["reunion"]);
+        let Value::Mapping(meta) = &mut row.meta else {
+            unreachable!("row() builds a mapping");
+        };
+        meta.insert("draft".into(), Value::Bool(true));
+        let plan = compose(
+            &space_spec(),
+            &[row],
+            None,
+            &TermHolds::none(),
+            &space_reach(),
+        );
+        assert_eq!(plan.kept_back.len(), 1);
+        assert!(plan.held.is_empty());
+    }
+
+    /// The workspace's half: a document it resolved as linking to the space's
+    /// term node is kept back, and only by an export that has a withhold. A
+    /// document the gate refuses is withheld whatever it names.
+    #[test]
+    fn a_resolved_keep_back_narrows_and_never_widens() {
+        let rows = [row("linked.md", Some(&["family"])), row("private.md", None)];
+        let holds = TermHolds::none()
+            .with_kept_back([PathBuf::from("linked.md"), PathBuf::from("private.md")]);
+        let plan = compose(&space_spec(), &rows, None, &holds, &space_reach());
+        assert!(plan.entries.is_empty());
+        assert_eq!(plan.kept_back[0].path, PathBuf::from("linked.md"));
+        assert_eq!(plan.withheld[0].path, PathBuf::from("private.md"));
+
+        let open = ExportSpec {
+            withhold: None,
+            ..space_spec()
+        };
+        let plan = compose(&open, &rows, None, &holds, &space_reach());
+        assert_eq!(
+            entry_paths(&plan),
+            ["linked.md"],
+            "no withhold, none kept back"
+        );
+    }
+
     /// A draft the view would also have scoped out is reported as held: the
     /// document's own word about itself comes before the workspace's
     /// arrangement, and one document is on exactly one side.
@@ -726,6 +873,7 @@ mod fs_tests {
                 value: "family".into(),
             },
             hold: None,
+            withhold: None,
             view: view.map(str::to_string),
         }
     }

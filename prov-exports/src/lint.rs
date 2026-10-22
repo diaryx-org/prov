@@ -44,9 +44,10 @@ pub enum ExportIssueKind {
     /// and there is no shorthand form — a gate that does not say both halves
     /// would have to guess one, and either guess exports a set nobody chose.
     NoGate,
-    /// `hold:` is present but does not name a field — empty, null, or not a
-    /// string. Fatal, like a missing gate: the author wrote down something to
-    /// keep back, and an export that cannot read what would let it leave.
+    /// `hold:` or `withhold:` is present but does not name a field — empty,
+    /// null, or not a string. Fatal, like a missing gate: the author wrote
+    /// down something to keep back, and an export that cannot read what would
+    /// let it leave. The issue's key says which of the two.
     HoldNotAField,
     /// A key this format does not define, at the entry level.
     UnknownKey,
@@ -101,9 +102,9 @@ pub fn diagnose_export(name: &str, value: &Value) -> Vec<ExportIssue> {
     for (key, value) in map {
         match key.as_str() {
             "label" | "view" => {}
-            "hold" => {
+            "hold" | "withhold" => {
                 if non_empty(Some(value)).is_none() {
-                    issues.push(issue("hold", ExportIssueKind::HoldNotAField));
+                    issues.push(issue(key, ExportIssueKind::HoldNotAField));
                 }
             }
             "gate" => {
@@ -283,6 +284,11 @@ mod tests {
             entry(&[("gate", good_gate()), ("hold", Value::String("".into()))]),
             entry(&[("gate", good_gate()), ("hold", Value::Bool(true))]),
             entry(&[("hold", Value::Null)]),
+            entry(&[
+                ("gate", good_gate()),
+                ("withhold", Value::String("withheld_from".into())),
+            ]),
+            entry(&[("gate", good_gate()), ("withhold", Value::Null)]),
             entry(&[(
                 "gate",
                 gate(&[("field", "audience"), ("value", "family"), ("extra", "x")]),

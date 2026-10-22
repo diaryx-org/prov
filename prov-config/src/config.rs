@@ -3166,6 +3166,7 @@ mod tests {
                         value: "family".to_string(),
                     },
                     hold: Some("draft".to_string()),
+                    withhold: None,
                     view: Some("daily".to_string()),
                 },
                 ExportSpec {
@@ -3176,6 +3177,7 @@ mod tests {
                         value: "public".to_string(),
                     },
                     hold: None,
+                    withhold: None,
                     view: None,
                 },
             ],

@@ -10,6 +10,12 @@
 //! under `Tasks` and another under `Proposals`. [`Workspace::term_holds`] asks
 //! all three and hands `prov-exports` the answer as a set of paths.
 //!
+//! An export's `withhold` is answered here too, for its links: a document
+//! that keeps itself back from a readership by linking that readership's term
+//! node (`withheld_from: ["[The Reunion](/audiences/reunion.md)"]`) needs the
+//! link resolved and the gate value's term node found, and both are the
+//! workspace's. The answer goes into the same [`TermHolds`].
+//!
 //! [`Workspace::export_plan`] is the whole plan with that answer in it, and the
 //! one a consumer should call: `prov_exports::plan` takes the answer as a
 //! required argument precisely so that a caller who never asked cannot let
@@ -30,8 +36,12 @@ use prov_graph::fs::ReadStorage;
 use prov_graph::index::IdIndex;
 use prov_views::ViewSpec;
 
+use prov_graph::graph::Target;
+use prov_graph::link::Link;
+use prov_graph::meta::Value;
+
 use crate::vocabulary::Vocabulary;
-use crate::workspace::Workspace;
+use crate::workspace::{VocabularyShape, Workspace};
 
 impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// The documents reachable from `root_doc` that `spec`'s hold keeps back by
@@ -43,7 +53,88 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
     /// vocabulary — such a field holds by the literal `true` alone. A store
     /// that will not load holds nothing back by term: its own finding is
     /// `check`'s, and the literal `true` still holds.
+    ///
+    /// Also the documents `spec`'s withhold keeps back by linking the node of
+    /// the gate value's term ([`kept_back_by_link`](Self::kept_back_by_link)).
     pub async fn term_holds(&self, root_doc: &Path, spec: &ExportSpec) -> Result<TermHolds> {
+        let kept_back = self.kept_back_by_link(root_doc, spec).await?;
+        Ok(self
+            .held_by_term(root_doc, spec)
+            .await?
+            .with_kept_back(kept_back))
+    }
+
+    /// The documents reachable from `root_doc` whose value under `spec`'s
+    /// withhold field links to the node of the gate value's term, in the
+    /// vocabulary that governs the gate's field where the walk starts (as
+    /// for [`gate_reach`](Self::gate_reach)).
+    ///
+    /// Empty for an export with no withhold, and for a gate field whose
+    /// vocabulary is not a store of term nodes or has no term for the gate's
+    /// value: a keep-back written as the bare value is
+    /// [`ExportSpec::withholds`]'s to read, and needs nothing from here. A
+    /// link that resolves to nothing keeps nothing back; it is the census's to
+    /// report, as any broken link is.
+    pub async fn kept_back_by_link(
+        &self,
+        root_doc: &Path,
+        spec: &ExportSpec,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        let Some(field) = spec.withhold.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let gate_field = spec.gate.field.as_str();
+        let config = self.effective_config(root_doc).await?;
+        let Some(declarations) = config.fields.get(gate_field) else {
+            return Ok(Vec::new());
+        };
+        let scopes = self.field_scopes_of(root_doc, &config).await?;
+        let Some(index) = scopes.index_for(&config, gate_field, root_doc) else {
+            return Ok(Vec::new());
+        };
+        let Some(pointer) = declarations[index].vocabulary.as_deref() else {
+            return Ok(Vec::new());
+        };
+        if self
+            .vocabulary_shape(root_doc, pointer)
+            .await
+            .ok()
+            .flatten()
+            != Some(VocabularyShape::Reified)
+        {
+            return Ok(Vec::new());
+        }
+        let Ok(Some(terms)) = self.reified_terms(root_doc, Some(pointer)).await else {
+            return Ok(Vec::new());
+        };
+        let Some((node, _)) = terms.get(spec.gate.value.trim()) else {
+            return Ok(Vec::new());
+        };
+        let rows = prov_views::documents(self.graph(), root_doc)
+            .await
+            .map_err(|prov_views::Error::Graph(error)| error)?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row.meta
+                    .get(field)
+                    .map(Value::link_strings)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|raw| {
+                        matches!(
+                            self.resolve_link(&row.path, &Link::parse(raw)),
+                            Target::Path(target) if target == *node
+                        )
+                    })
+            })
+            .map(|row| row.path)
+            .collect())
+    }
+
+    /// The hold's half of [`term_holds`](Self::term_holds): what a term that
+    /// `holds: true` keeps back.
+    async fn held_by_term(&self, root_doc: &Path, spec: &ExportSpec) -> Result<TermHolds> {
         let Some(field) = spec.hold.as_deref() else {
             return Ok(TermHolds::none());
         };
@@ -216,6 +307,7 @@ mod tests {
                 value: "public".into(),
             },
             hold: hold.map(str::to_string),
+            withhold: None,
             view: None,
         }
     }
@@ -288,6 +380,7 @@ mod tests {
                 value: value.into(),
             },
             hold: None,
+            withhold: None,
             view: None,
         }
     }
@@ -361,6 +454,73 @@ mod tests {
                 .iter()
                 .any(|f| f.kind() == "reads_cycle")
         );
+    }
+
+    /// A space that reads the family: a term node `reunion` reading
+    /// `family.md`, and family pages keeping back from it by link, by name,
+    /// or not at all.
+    fn space(tag: &str) -> PathBuf {
+        let dir = circles(tag);
+        write(
+            &dir,
+            "audiences/audiences.md",
+            "---\ntitle: Audiences\npart_of: ../index.md\ncontents:\n- closest.md\n- family.md\n- friends.md\n- public.md\n- work.md\n- reunion.md\n---\n",
+        );
+        write(
+            &dir,
+            "audiences/reunion.md",
+            "---\nterm: reunion\ntitle: The Reunion\npart_of: audiences.md\nalso_reads:\n- family.md\n---\n",
+        );
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\ncontents:\n- audiences/audiences.md\n- letter.md\n- lake.md\n- party.md\n- work.md\n- secret.md\n- linked.md\n- named.md\n- elsewhere.md\n---\n",
+        );
+        for (page, from) in [
+            ("linked", "'[The Reunion](/audiences/reunion.md)'"),
+            ("named", "reunion"),
+            ("elsewhere", "'[Family](/audiences/family.md)'"),
+        ] {
+            write(
+                &dir,
+                &format!("{page}.md"),
+                format!(
+                    "---\ntitle: {page}\npart_of: index.md\naudience: family\nwithheld_from:\n- {from}\n---\n"
+                ),
+            );
+        }
+        dir
+    }
+
+    /// A family page kept back from the space, by a link to its term node or
+    /// by its name, reaches the family and not the space. One kept back from
+    /// the family reaches the space and not the family.
+    #[test]
+    fn a_page_keeps_back_from_the_term_it_names() {
+        let dir = space("withhold");
+        let ws = Workspace::builder(StdFs).root(&dir).build();
+        let root = Path::new("index.md");
+        let withholding = |value: &str| ExportSpec {
+            withhold: Some("withheld_from".into()),
+            ..gated(value)
+        };
+
+        let reunion = block_on(ws.export_plan(root, &withholding("reunion"), &[])).unwrap();
+        let mut entries = paths(&reunion.entries);
+        entries.retain(|p| !p.starts_with("audiences/"));
+        entries.sort();
+        assert_eq!(
+            entries,
+            ["elsewhere.md", "lake.md", "letter.md", "party.md"]
+        );
+        assert_eq!(paths(&reunion.kept_back), ["linked.md", "named.md"]);
+
+        let family = block_on(ws.export_plan(root, &withholding("family"), &[])).unwrap();
+        assert_eq!(paths(&family.kept_back), ["elsewhere.md"]);
+
+        // No withhold reads no withhold field.
+        let open = block_on(ws.export_plan(root, &gated("reunion"), &[])).unwrap();
+        assert!(open.kept_back.is_empty());
     }
 
     #[test]
