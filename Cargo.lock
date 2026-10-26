@@ -1237,8 +1237,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "twig-djot"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df7623ba396e17d9890d2432249002f76780b1b44b6a8f8791cd2e8806ec899"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -1246,8 +1247,9 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43059a77c9c1b7e56f38a74917a4e446da813388ab9a6227520081abf4fb5ebc"
 dependencies = [
  "fig",
  "fig-figl",
@@ -1259,8 +1261,9 @@ dependencies = [
 
 [[package]]
 name = "twig-html"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d0f5733e9d1cf54d306105e89d9a4388a36e1a77110065214dacc681adfcacc"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -1268,13 +1271,15 @@ dependencies = [
 
 [[package]]
 name = "twig-kit"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "547e69372eacfac62d3bc3c0433683894d9b0743aa413311c50a0732ae890397"
 
 [[package]]
 name = "twig-markdown"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/twig?branch=html-script-metadata#98f852c8e79c7aaad35801fc30ba95d5b3416c17"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e82b47b5b941022c8ce086f8c32c36e563482c1a2a74805abd2398eadbacd1"
 dependencies = [
  "twig-doc",
  "twig-html",

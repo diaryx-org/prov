@@ -66,10 +66,10 @@ thiserror = "2.0"
 # editor back into it. twig 6 is pure Rust, and like fig its core names no
 # language: each one prov parses a body in is a crate of its own, registered
 # on first use.
-twig-doc = "6"
-twig-markdown = "6"
-twig-djot = "6"
-twig-html = "6"
+twig-doc = "7"
+twig-markdown = "7"
+twig-djot = "7"
+twig-html = "7"
 
 # Opaque document-ID minting: NOID xdigit alphabet + NOID check character
 # over a seeded PRNG. Prov supplies its own seed (uniqueness is enforced by
@@ -145,13 +145,3 @@ prov-filing = { path = "prov-filing", version = "0.18.0", default-features = fal
 prov-exports = { path = "prov-exports", version = "0.18.0", default-features = false }
 # Workspace configuration policy, codecs, diagnostics, and vocabularies.
 prov-config = { path = "prov-config", version = "0.18.0", default-features = false }
-
-# twig's HTML `<script>` data island, which `prov_graph::document` reads as an
-# HTML page's metadata, is on twig's `html-script-metadata` branch until a
-# twig release carries it. Replace this with that release's version above.
-[patch.crates-io]
-twig-doc = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
-twig-kit = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
-twig-markdown = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
-twig-djot = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
-twig-html = { git = "https://github.com/diaryx-org/twig", branch = "html-script-metadata" }
