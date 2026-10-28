@@ -648,6 +648,17 @@ pub(crate) enum Command {
         /// a document, or one already listed.
         #[arg(long, value_name = "FILE", num_args = 1..)]
         add: Vec<PathBuf>,
+        /// Say that NAME keeps the files, so a device that carries the
+        /// manifest without them reads them as held elsewhere rather than
+        /// missing. Set it where the files are, before the manifest travels.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["update", "verify", "add", "not_held"])]
+        held_by: Option<String>,
+        /// Where a device asks the keeper for a file. Not a secret.
+        #[arg(long, value_name = "ADDRESS", requires = "held_by")]
+        held_at: Option<String>,
+        /// Say that every device carrying the manifest has its files again.
+        #[arg(long, conflicts_with_all = ["update", "verify", "add"])]
+        not_held: bool,
     },
     /// Gather attachments into one manifest: their files move into a new
     /// directory, their sidecars go, and one node takes the first one's place

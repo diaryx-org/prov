@@ -2522,13 +2522,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 }
             };
             let root = manifest.covered_root(&manifest_doc);
-            if !self
-                .graph()
-                .stat(&root)
-                .await
-                .map(|m| m.is_dir())
-                .unwrap_or(false)
-            {
+            if !self.is_dir_here(&root).await {
+                // Its files are kept somewhere else, and this device was told
+                // so: nothing here to compare, and nothing broken.
+                if manifest.held.is_some() {
+                    continue;
+                }
                 findings.push(Finding::BrokenLink {
                     doc: manifest_doc,
                     site: LinkSite::field(prov_graph::manifest::ROOT_KEY),

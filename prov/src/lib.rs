@@ -307,6 +307,7 @@ pub use mutate::{
     PlannedIndex, RegroupOptions, Reordered, Reparented, ScatterPlan,
 };
 pub use prov_exports::ExportSpec;
+pub use prov_graph::manifest::Held;
 pub use prov_views::ViewSpec;
 pub use provenance::{Actor, Confirmation, Confirmations, Generated, Tier};
 pub use remedy::{Fix, Remedy, RemedyKind, Warrant};

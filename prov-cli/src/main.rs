@@ -170,7 +170,17 @@ fn main() -> ExitCode {
             update,
             verify,
             add,
-        } => check::cmd_manifest(&target, update, verify, &add),
+            held_by,
+            held_at,
+            not_held,
+        } => {
+            let held = match held_by {
+                Some(by) => Some(Some(prov::Held { by, at: held_at })),
+                None if not_held => Some(None),
+                None => None,
+            };
+            check::cmd_manifest(&target, update, verify, &add, held)
+        }
         Command::Gather {
             cards,
             into,
