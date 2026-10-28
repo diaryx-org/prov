@@ -61,6 +61,13 @@
 //! drift. An excluded directory is not walked at all. See
 //! [`Manifest::excludes`] for the syntax.
 //!
+//! And a manifest may say its files are kept somewhere else: `held:` names the
+//! machine that holds them (`by`) and, optionally, where to ask it for one
+//! (`at`). On a device without the covered directory, a held manifest's rows
+//! are elsewhere rather than missing — a photo archive on a NAS, described in a
+//! library every device carries, whose files only the NAS has. Where the
+//! directory is present nothing changes. See [`Held`].
+//!
 //! This module is the model and its serialization, which is all the read core
 //! needs; the verbs that build, refresh and verify one are `prov`'s.
 
@@ -84,6 +91,9 @@ pub const VERBATIM_KEY: &str = "verbatim";
 /// The manifest key listing patterns for files under `root` the manifest does
 /// not claim — see [`Manifest::excludes`].
 pub const EXCLUDE_KEY: &str = "exclude";
+
+/// The manifest key saying who keeps the covered files — see [`Held`].
+pub const HELD_KEY: &str = "held";
 
 /// The manifest key holding the rows.
 pub const FILES_KEY: &str = "files";
@@ -113,6 +123,67 @@ pub struct ManifestEntry {
     pub fields: Mapping,
 }
 
+/// Who keeps a manifest's files, when they are not on every device that
+/// carries the manifest ([`HELD_KEY`]).
+///
+/// Written as `held: {by: Harris NAS, at: https://nas.example/}`. Neither is a
+/// secret: who may ask is the keeper's to decide, never settled by knowing the
+/// address.
+///
+/// It changes what an absent root means and nothing else. Without it, a
+/// covered directory that is not there is a broken link and every row is
+/// missing; with it, the rows are held elsewhere, `check` says nothing about
+/// them, and the verbs that would rebuild the rows from the directory refuse
+/// rather than empty the manifest. Where the directory is present — on the
+/// keeper itself — the manifest is checked exactly as an unheld one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Held {
+    /// The keeper, named for a person: `Harris NAS`.
+    pub by: String,
+    /// Where a device asks the keeper for a file, if it can be asked at all.
+    pub at: Option<String>,
+}
+
+impl Held {
+    fn from_value(value: &Value) -> Result<Self> {
+        let refuse = || {
+            Error::Structure(format!(
+                "manifest `{HELD_KEY}` must be `{{by: <name>, at: <address>}}`"
+            ))
+        };
+        let map = value.as_mapping().ok_or_else(refuse)?;
+        let mut by = None;
+        let mut at = None;
+        for (key, value) in map {
+            match key.as_str() {
+                "by" => by = Some(value.as_str().ok_or_else(refuse)?),
+                "at" => match value {
+                    Value::Null => {}
+                    value => at = Some(value.as_str().ok_or_else(refuse)?.to_string()),
+                },
+                _ => return Err(refuse()),
+            }
+        }
+        let by = by
+            .map(str::trim)
+            .filter(|by| !by.is_empty())
+            .ok_or_else(refuse)?;
+        Ok(Held {
+            by: by.to_string(),
+            at,
+        })
+    }
+
+    fn to_value(&self) -> Value {
+        let mut map = Mapping::new();
+        map.insert("by".into(), Value::String(self.by.clone()));
+        if let Some(at) = &self.at {
+            map.insert("at".into(), Value::String(at.clone()));
+        }
+        Value::Mapping(map)
+    }
+}
+
 /// A parsed manifest document: the directory it claims, and the files it says
 /// are in it.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -129,6 +200,8 @@ pub struct Manifest {
     /// Patterns for files under `root` that the manifest does not claim
     /// ([`EXCLUDE_KEY`]), as written. See [`excludes`](Self::excludes).
     pub exclude: Vec<String>,
+    /// Who keeps the files, when not every device has them ([`HELD_KEY`]).
+    pub held: Option<Held>,
 }
 
 impl Manifest {
@@ -177,6 +250,10 @@ impl Manifest {
                 patterns
             }
         };
+        let held = match meta.get(HELD_KEY) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(Held::from_value(value)?),
+        };
         let rows = match meta.get(FILES_KEY) {
             // A manifest over an empty directory has no rows at all, which is a
             // legitimate state (`files:` written as null, or absent).
@@ -218,6 +295,7 @@ impl Manifest {
             files,
             verbatim,
             exclude,
+            held,
         })
     }
 
@@ -233,6 +311,9 @@ impl Manifest {
         map.insert(ROOT_KEY.into(), Value::String(self.root.clone()));
         if self.verbatim {
             map.insert(VERBATIM_KEY.into(), Value::Bool(true));
+        }
+        if let Some(held) = &self.held {
+            map.insert(HELD_KEY.into(), held.to_value());
         }
         if !self.exclude.is_empty() {
             map.insert(
@@ -697,6 +778,46 @@ mod tests {
             parse("root: photos/\nexclude:\n- '@eaDir/'\n- '*@SynoEAStream'\n").unwrap();
         assert_eq!(excluding.exclude, ["@eaDir/", "*@SynoEAStream"]);
         assert_eq!(parse(&text(&excluding)).unwrap(), excluding);
+    }
+
+    #[test]
+    fn held_round_trips_and_is_left_out_when_absent() {
+        let text = |m: &Manifest| {
+            crate::meta::serialize_mapping(
+                &m.to_mapping("Photo — manifest"),
+                crate::MetaFormat::Yaml,
+            )
+            .unwrap()
+        };
+        let plain = parse("root: photo/\n").unwrap();
+        assert_eq!(plain.held, None);
+        assert!(!text(&plain).contains("held"), "{}", text(&plain));
+        let held =
+            parse("root: photo/\nheld:\n  by: Harris NAS\n  at: https://nas.example/\n").unwrap();
+        assert_eq!(
+            held.held,
+            Some(Held {
+                by: "Harris NAS".into(),
+                at: Some("https://nas.example/".into()),
+            })
+        );
+        assert_eq!(parse(&text(&held)).unwrap(), held);
+        let nameless = parse("root: photo/\nheld: {by: Harris NAS}\n").unwrap();
+        assert_eq!(nameless.held.unwrap().at, None);
+    }
+
+    #[test]
+    fn a_held_it_cannot_read_is_refused() {
+        for bad in [
+            "held: Harris NAS\n",
+            "held: {at: https://nas.example/}\n",
+            "held: {by: '  '}\n",
+            "held: {by: 3}\n",
+            "held: {by: NAS, where: attic}\n",
+        ] {
+            let text = format!("root: photo/\n{bad}");
+            assert!(parse(&text).is_err(), "{bad}");
+        }
     }
 
     #[test]

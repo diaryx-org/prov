@@ -127,6 +127,12 @@ pub struct ManifestStatus {
     pub missing: Vec<PathBuf>,
     /// Opaque files under `root` that no row claims, relative to `root`.
     pub extra: Vec<PathBuf>,
+    /// Who keeps the files, when the manifest says ([`Held`](prov_graph::manifest::Held)).
+    pub held: Option<prov_graph::manifest::Held>,
+    /// Whether the files are held elsewhere and not here: the manifest is
+    /// held and its directory is absent. Then nothing is missing or extra —
+    /// there was nothing here to compare.
+    pub elsewhere: bool,
 }
 
 impl ManifestStatus {
@@ -230,6 +236,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             files,
             verbatim: claim.verbatim,
             exclude: claim.exclude.clone(),
+            held: claim.held.clone(),
         };
         manifest.sort();
         Ok(manifest)
@@ -289,8 +296,13 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             return Ok(None);
         };
         let root = manifest.checked_root(&manifest_doc)?;
-        let on_disk = self.graph().scan_manifest(&manifest_doc, &manifest).await?;
-        let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
+        let elsewhere = manifest.held.is_some() && !self.is_dir_here(&root).await;
+        let (missing, extra) = if elsewhere {
+            (Vec::new(), Vec::new())
+        } else {
+            let on_disk = self.graph().scan_manifest(&manifest_doc, &manifest).await?;
+            prov_graph::manifest::diff(&manifest.files, &on_disk)
+        };
         Ok(Some(ManifestStatus {
             node: node.to_path_buf(),
             manifest: manifest_doc,
@@ -299,7 +311,37 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             listed: manifest.files.len(),
             missing,
             extra,
+            held: manifest.held,
+            elsewhere,
         }))
+    }
+
+    /// Whether `dir` is a directory on this device — following a link, as the
+    /// scan does.
+    pub(crate) async fn is_dir_here(&self, dir: &Path) -> bool {
+        self.graph()
+            .stat(dir)
+            .await
+            .map(|m| m.is_dir())
+            .unwrap_or(false)
+    }
+
+    /// Refuse to rebuild or extend a held manifest's rows from a directory
+    /// that is not here: the scan would find nothing, and an update would empty
+    /// the record of an archive this device simply does not carry.
+    async fn refuse_held_elsewhere(&self, manifest_doc: &Path, manifest: &Manifest) -> Result<()> {
+        let Some(held) = &manifest.held else {
+            return Ok(());
+        };
+        let root = manifest.checked_root(manifest_doc)?;
+        if self.is_dir_here(&root).await {
+            return Ok(());
+        }
+        Err(Error::Structure(format!(
+            "{}: its files are held by {} and are not on this device; refresh it where they are",
+            manifest_doc.display(),
+            held.by
+        )))
     }
 
     /// **Deep** verification of the manifest `node` declares: read every listed
@@ -370,6 +412,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 node.display()
             )));
         };
+        self.refuse_held_elsewhere(&manifest_doc, &current).await?;
         // An empty manifest has no mode to preserve, so it takes the
         // workspace's: a directory that was empty when it was covered and has
         // files in it now should record them the way this workspace records
@@ -512,6 +555,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         if paths.is_empty() {
             return Ok((update, Vec::new()));
         }
+        self.refuse_held_elsewhere(&manifest_doc, &current).await?;
         let root = current.checked_root(&manifest_doc)?;
         let mut listed: std::collections::BTreeSet<PathBuf> =
             current.files.iter().map(|e| e.path.clone()).collect();
@@ -842,6 +886,41 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         }
         self.commit(cs).await?;
         Ok(update)
+    }
+
+    /// Say who keeps `node`'s files — or, with `None`, that every device
+    /// carrying the manifest has them — and re-pin the node over the result,
+    /// in one change set. Answers whether anything was written: setting what
+    /// is already set writes nothing.
+    ///
+    /// The rows are kept as they are. Marking a manifest held is what makes it
+    /// safe to carry to a device without its directory, so it is done where
+    /// the files are, before the manifest travels.
+    pub async fn set_manifest_held(
+        &mut self,
+        node: &Path,
+        held: Option<prov_graph::manifest::Held>,
+    ) -> Result<bool> {
+        let node = link::normalize(node);
+        let Some((manifest_doc, mut manifest)) = self.manifest_of(&node).await? else {
+            return Err(Error::Structure(format!(
+                "{} declares no manifest",
+                node.display()
+            )));
+        };
+        if manifest.held == held {
+            return Ok(false);
+        }
+        manifest.held = held;
+        let writes = self
+            .manifest_rewrite(&node, &manifest_doc, &manifest)
+            .await?;
+        let mut cs = self.change();
+        for (path, text) in writes {
+            cs.write(&path, text);
+        }
+        self.commit(cs).await?;
+        Ok(true)
     }
 
     /// Append rows for `paths` — workspace-relative files under `node`'s
@@ -1698,6 +1777,52 @@ mod tests {
         write(&dir, "photos/2019/b.jpg@SynoEAStream", [3]);
         write(&dir, "photos/#recycle/gone.jpg", [4]);
         dir
+    }
+
+    #[test]
+    fn a_held_manifest_is_elsewhere_where_its_directory_is_not() {
+        use prov_graph::manifest::Held;
+        let dir = photos("held");
+        let mut w = ws(&dir);
+        let node = block_on(w.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+        let nas = Held {
+            by: "Harris NAS".into(),
+            at: Some("https://nas.example/".into()),
+        };
+        assert!(block_on(w.set_manifest_held(&node, Some(nas.clone()))).unwrap());
+        assert!(!block_on(w.set_manifest_held(&node, Some(nas.clone()))).unwrap());
+        let manifest = read(&dir, "photos.manifest.yaml");
+        assert!(manifest.contains("by: Harris NAS"), "{manifest}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // On the keeper, a held manifest is checked as any other.
+        write(&dir, "photos/stray.jpg", [0xff, 0xd8, 0x09]);
+        assert!(
+            !block_on(w.manifest_status(&node))
+                .unwrap()
+                .unwrap()
+                .agrees()
+        );
+        std::fs::remove_file(dir.join("photos/stray.jpg")).unwrap();
+
+        // Carried to a device without the photographs: elsewhere, not missing.
+        std::fs::rename(dir.join("photos"), dir.join("away")).unwrap();
+        let status = block_on(w.manifest_status(&node)).unwrap().unwrap();
+        assert!(status.elsewhere && status.agrees(), "{status:?}");
+        assert_eq!(status.held, Some(nas));
+        assert_eq!(status.listed, 2);
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // And nothing here may rebuild the rows from a directory it lacks.
+        let before = read(&dir, "photos.manifest.yaml");
+        let refused = block_on(w.update_manifest(&node)).unwrap_err().to_string();
+        assert!(refused.contains("held by Harris NAS"), "{refused}");
+        assert!(block_on(w.extend_manifest(&node, &[PathBuf::from("photos/c.jpg")])).is_err());
+        assert_eq!(read(&dir, "photos.manifest.yaml"), before);
+
+        // Unheld, the same absence is a broken root again.
+        assert!(block_on(w.set_manifest_held(&node, None)).unwrap());
+        assert!(!block_on(w.check("index.md")).unwrap().is_empty());
     }
 
     #[test]

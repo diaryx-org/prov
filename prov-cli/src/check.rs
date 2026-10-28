@@ -359,10 +359,29 @@ pub(crate) fn cmd_manifest(
     update: bool,
     verify: bool,
     add: &[PathBuf],
+    held: Option<Option<prov::Held>>,
 ) -> CmdResult {
     let mut session = Session::open()?;
     let target_rel = ws_rel(&session.ctx, target)?;
     let node = resolve_manifest_node(&session.ws, &target_rel)?;
+
+    if let Some(held) = held {
+        let said = match &held {
+            Some(held) => format!("held by {}", held.by),
+            None => "not held".to_string(),
+        };
+        let wrote = block_on(session.ws.set_manifest_held(&node, held))?;
+        session.commit()?;
+        let status = block_on(session.ws.manifest_status(&node))?
+            .ok_or_else(|| format!("{} declares no manifest", node.display()))?;
+        if wrote {
+            eprintln!("{}: now {said}", status.manifest.display());
+        } else {
+            eprintln!("{}: already {said}", status.manifest.display());
+        }
+        println!("{}", status.manifest.display());
+        return Ok(ExitCode::SUCCESS);
+    }
 
     if !add.is_empty() {
         let paths = add
@@ -401,6 +420,16 @@ pub(crate) fn cmd_manifest(
     }
 
     if verify {
+        let status = block_on(session.ws.manifest_status(&node))?
+            .ok_or_else(|| format!("{} declares no manifest", node.display()))?;
+        if let (true, Some(held)) = (status.elsewhere, &status.held) {
+            eprintln!(
+                "{}: nothing verified — its files are held by {} and are not on this device",
+                status.manifest.display(),
+                held.by
+            );
+            return Ok(ExitCode::FAILURE);
+        }
         let findings = block_on(session.ws.verify_manifest(&node))?;
         for finding in &findings {
             println!("{finding}");
@@ -427,6 +456,18 @@ pub(crate) fn cmd_manifest(
             ", no checksums (an inventory)"
         }
     );
+    if let Some(held) = &status.held {
+        let at = held
+            .at
+            .as_deref()
+            .map(|at| format!(", at {at}"))
+            .unwrap_or_default();
+        if status.elsewhere {
+            eprintln!("  held by {}{at}; not on this device", held.by);
+        } else {
+            eprintln!("  held by {}{at}", held.by);
+        }
+    }
     for path in &status.missing {
         eprintln!("  missing: {}", path.display());
     }

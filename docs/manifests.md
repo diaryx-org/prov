@@ -79,6 +79,7 @@ spec §5's MUST, which a list of rows prov re-lays-out plainly falls under.
 | `files` | yes | The rows. Absent or null means an empty directory. |
 | `verbatim` | no | `true` claims every file under `root`, documents included (§3.1). Absent means `false`; any value but a boolean is refused. |
 | `exclude` | no | Patterns for files under `root` the manifest does not claim (§3.2). A list of strings; a pattern outside the syntax is refused. |
+| `held` | no | Who keeps the files when not every device has them (§3.5): `by`, a name, required; `at`, an address, optional. Anything else is refused. |
 
 Each row:
 
@@ -122,6 +123,19 @@ directory then rewrites one line instead of ten thousand.
   the sidecar beside the file it is made about.
 - A nested manifest's directory belongs to its own node, so two manifests can
   never claim one file.
+
+Completeness is what makes the interesting question answerable. A covered file is
+not a document, so §8's orphan walk cannot see it, and it is not a link, so the
+census cannot either. Without a claim over the whole directory, a photograph
+could vanish and no prov surface would ever say so.
+
+**Hashes are optional, per row.** A manifest with no hashes is an *inventory* —
+what is supposed to be here. One with hashes is that plus a fixity baseline.
+Hashing reads every file, at mint and at every refresh, which is a real cost over
+an archive and a reasonable one to decline for a directory of scans while still
+wanting checksums everywhere else (`attach --manifest --no-hash`). A refresh
+**preserves the mode**: an inventory that quietly began recording digests would
+be claiming a guarantee nobody asked for.
 
 ### 3.1 Verbatim: claiming the documents too
 
@@ -214,18 +228,35 @@ the same either way, and a backend that cannot read in parts reads the file
 whole, as before. This holds for every checksum prov records over a payload:
 manifest rows, attachment sidecars, inline rows, and `check`.
 
-Completeness is what makes the interesting question answerable. A covered file is
-not a document, so §8's orphan walk cannot see it, and it is not a link, so the
-census cannot either. Without a claim over the whole directory, a photograph
-could vanish and no prov surface would ever say so.
+### 3.5 Held: files kept on another machine
 
-**Hashes are optional, per row.** A manifest with no hashes is an *inventory* —
-what is supposed to be here. One with hashes is that plus a fixity baseline.
-Hashing reads every file, at mint and at every refresh, which is a real cost over
-an archive and a reasonable one to decline for a directory of scans while still
-wanting checksums everywhere else (`attach --manifest --no-hash`). A refresh
-**preserves the mode**: an inventory that quietly began recording digests would
-be claiming a guarantee nobody asked for.
+An archive too large for every device stays on the machine that keeps it,
+while its workspace — the description and the manifest — travels. On a
+device without the files, every row would read as missing and the root as a
+broken link. `held` says that is expected:
+
+```yaml
+root: photo/
+held:
+  by: Harris NAS                       # the keeper, named for a person
+  at: https://nas.example:8765/        # where to ask it for a file; optional
+```
+
+- **Where `root` is a directory, nothing changes.** That is the keeper, or a
+  full copy, and the manifest is checked, refreshed and verified exactly as
+  an unheld one.
+- **Where it is not, the rows are held elsewhere.** `check` says nothing
+  about them; `manifest` reports *held by Harris NAS; not on this device*;
+  `--verify` verifies nothing and says so, exiting non-zero; and `--update`
+  and `--add` refuse, because rebuilding the rows from a directory that is
+  not there would empty the record.
+- **Without `held`, an absent root is a broken link, as ever.** A manifest
+  must say its files are elsewhere before their absence stops counting.
+
+Neither `by` nor `at` is a secret: who may ask the keeper is the keeper's to
+decide. `manifest TARGET --held-by NAME [--held-at ADDRESS]` sets it, and
+`--not-held` clears it; either rewrites the manifest and re-pins the node.
+Set it where the files are, before the manifest travels.
 
 ## 4. The chain
 
@@ -383,6 +414,7 @@ Each verb is one change set: moved, written and removed together.
 | `manifest TARGET --update` | rebuild the rows from the directory as it is now, keeping each row's fields, re-stamping the node |
 | `manifest TARGET --add FILE...` | append rows for the named files only, checksumming just those; every other row stays, its file present or not (§5) |
 | `manifest TARGET --verify` | re-read every listed file and compare its checksum |
+| `manifest TARGET --held-by NAME [--held-at ADDRESS]` | say who keeps the files, so a device without them reads them as held elsewhere (§3.5); `--not-held` clears it |
 | `gather ATTACHMENT... --into DIR [--title T] [--discard FIELD] [--dry-run]` | attachments of one index into one manifest over `DIR` (§7) |
 | `scatter TARGET [--into INDEX] [--discard FIELD] [--dry-run]` | a manifest back into one attachment per file (§7) |
 
