@@ -178,12 +178,34 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         hash: bool,
         verbatim: bool,
     ) -> Result<Manifest> {
-        let covered = link::resolve(manifest_doc, root);
-        let paths = self.graph().scan_claimed(&covered, verbatim).await?;
+        let claim = Manifest {
+            root: root.to_string(),
+            verbatim,
+            ..Default::default()
+        };
+        self.build_manifest_like(manifest_doc, &claim, hash).await
+    }
+
+    /// [`build_manifest`](Self::build_manifest) for what `claim` claims: its
+    /// `root`, whether it is [`verbatim`](Manifest::verbatim), and its
+    /// [`exclude`](Manifest::exclude) patterns, which the result carries too.
+    /// `claim`'s own rows are not consulted.
+    pub async fn build_manifest_like(
+        &self,
+        manifest_doc: &Path,
+        claim: &Manifest,
+        hash: bool,
+    ) -> Result<Manifest> {
+        let covered = link::resolve(manifest_doc, &claim.root);
+        let paths = self
+            .graph()
+            .scan_excluding(&covered, claim.verbatim, &claim.exclude)
+            .await?;
         let files = if hash {
             let mut digests = crate::fixity::Digests::new();
             for rel in &paths {
-                digests.push(self.read_bytes(&link::normalize(covered.join(rel))).await?);
+                self.push_file_digest(&mut digests, &link::normalize(covered.join(rel)))
+                    .await?;
             }
             paths
                 .into_iter()
@@ -204,9 +226,10 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 .collect()
         };
         let mut manifest = Manifest {
-            root: root.to_string(),
+            root: claim.root.clone(),
             files,
-            verbatim,
+            verbatim: claim.verbatim,
+            exclude: claim.exclude.clone(),
         };
         manifest.sort();
         Ok(manifest)
@@ -266,7 +289,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             return Ok(None);
         };
         let root = manifest.checked_root(&manifest_doc)?;
-        let on_disk = self.graph().scan_claimed(&root, manifest.verbatim).await?;
+        let on_disk = self.graph().scan_manifest(&manifest_doc, &manifest).await?;
         let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
         Ok(Some(ManifestStatus {
             node: node.to_path_buf(),
@@ -307,10 +330,9 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
                 continue;
             }
             let path = manifest.file_path(&manifest_doc, entry);
-            let Ok(bytes) = self.read_bytes(&path).await else {
+            if self.push_file_digest(&mut digests, &path).await.is_err() {
                 continue; // absent: the drift pass's finding, not this one's
-            };
-            digests.push(bytes);
+            }
             read.push((path, recorded));
         }
         Ok(read
@@ -357,10 +379,11 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         } else {
             current.is_hashed()
         };
-        // Whether it claims documents too is a decision made at attach, and
-        // kept, as the hashing mode is.
+        // Whether it claims documents too, and what it leaves out, are
+        // decisions made at attach or written since, and kept, as the hashing
+        // mode is.
         let mut fresh = self
-            .build_manifest_claiming(&manifest_doc, &current.root, hashed, current.verbatim)
+            .build_manifest_like(&manifest_doc, &current, hashed)
             .await?;
         // What a row says about its file is the one thing the directory cannot
         // say again: it stays on the row while the file does, bytes changed or
@@ -518,6 +541,9 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             if rel.iter().any(|c| c.to_string_lossy().starts_with('.')) {
                 return refuse("a hidden file is never listed");
             }
+            if current.excludes_file(&rel) {
+                return refuse("the manifest excludes it");
+            }
             if !self
                 .graph()
                 .stat(&path)
@@ -552,7 +578,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         let digests: Vec<Option<String>> = if hashed {
             let mut digests = crate::fixity::Digests::new();
             for (path, _) in &added {
-                digests.push(self.read_bytes(path).await?);
+                self.push_file_digest(&mut digests, path).await?;
             }
             digests.finish().into_iter().map(Some).collect()
         } else {
@@ -663,6 +689,30 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         hash: bool,
         verbatim: bool,
     ) -> Result<PathBuf> {
+        self.attach_manifest_excluding(dir, parent, title_override, hash, verbatim, &[])
+            .await
+    }
+
+    /// [`attach_manifest_claiming`](Self::attach_manifest_claiming), leaving
+    /// out of the manifest what the `exclude` patterns name and writing the
+    /// patterns into it, so every later refresh and `check` leaves the same
+    /// files out. For a directory something else also keeps files in — a
+    /// NAS's thumbnail folders beside the photographs, a recycle bin — whose
+    /// files are neither the archive nor drift. See
+    /// [`Manifest::excludes`] for the syntax; a pattern it does not read is
+    /// refused before anything is written.
+    pub async fn attach_manifest_excluding(
+        &mut self,
+        dir: &Path,
+        parent: &Path,
+        title_override: Option<&str>,
+        hash: bool,
+        verbatim: bool,
+        exclude: &[String],
+    ) -> Result<PathBuf> {
+        for pattern in exclude {
+            prov_graph::manifest::check_pattern(pattern)?;
+        }
         let dir = link::normalize(dir);
         let parent = link::normalize(parent);
         self.check_attach_manifest(&dir).await?;
@@ -690,8 +740,14 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             "{}/",
             link::relative(manifest_doc.parent().unwrap_or(Path::new("")), &dir)
         );
+        let claim = Manifest {
+            root,
+            verbatim,
+            exclude: exclude.to_vec(),
+            ..Default::default()
+        };
         let manifest = self
-            .build_manifest_claiming(&manifest_doc, &root, hash, verbatim)
+            .build_manifest_like(&manifest_doc, &claim, hash)
             .await?;
         let manifest_text = prov_graph::meta::serialize_mapping(
             &manifest.to_mapping(&format!("{title} — manifest")),
@@ -1624,5 +1680,180 @@ mod tests {
             block_on(ws(&dir).verify_manifest(Path::new("photos.yaml"))).unwrap(),
             vec![]
         );
+    }
+
+    /// The patterns a Synology share needs: its thumbnail folders, its
+    /// extended-attribute streams, and its recycle bin.
+    fn synology() -> Vec<String> {
+        ["@eaDir/", "*@SynoEAStream", "/#recycle/"]
+            .map(String::from)
+            .to_vec()
+    }
+
+    /// `photos("…")` with what a Synology keeps beside the photographs.
+    fn nas_share(tag: &str) -> PathBuf {
+        let dir = photos(tag);
+        write(&dir, "photos/@eaDir/a.jpg/SYNOPHOTO_THUMB_XL.jpg", [1]);
+        write(&dir, "photos/2019/@eaDir/b.jpg/SYNOPHOTO_THUMB_M.jpg", [2]);
+        write(&dir, "photos/2019/b.jpg@SynoEAStream", [3]);
+        write(&dir, "photos/#recycle/gone.jpg", [4]);
+        dir
+    }
+
+    #[test]
+    fn excluded_files_are_neither_listed_nor_drift() {
+        let dir = nas_share("exclude");
+        let mut w = ws(&dir);
+        let node = block_on(w.attach_manifest_excluding(
+            Path::new("photos"),
+            Path::new("index.md"),
+            None,
+            true,
+            false,
+            &synology(),
+        ))
+        .unwrap();
+
+        let manifest = read(&dir, "photos.manifest.yaml");
+        assert!(manifest.contains("exclude:"), "{manifest}");
+        let status = block_on(w.manifest_status(&node)).unwrap().unwrap();
+        assert_eq!(status.listed, 2, "{manifest}");
+        assert!(status.agrees(), "{status:?}");
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // Synology makes a thumbnail for a new photograph: still not drift.
+        write(&dir, "photos/2019/@eaDir/c.jpg/SYNOPHOTO_THUMB_M.jpg", [5]);
+        assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+
+        // A refresh keeps the patterns, and what they leave out stays out.
+        write(&dir, "photos/2019/c.jpg", [0xff, 0xd8, 0x03]);
+        let update = block_on(w.update_manifest(&node)).unwrap();
+        assert_eq!(update.added, vec![PathBuf::from("2019/c.jpg")]);
+        let manifest = read(&dir, "photos.manifest.yaml");
+        assert!(manifest.contains("'@eaDir/'"), "{manifest}");
+        assert!(!manifest.contains("THUMB"), "{manifest}");
+
+        // An add of an excluded file is refused, not listed.
+        let refused = block_on(w.extend_manifest(
+            &node,
+            &[PathBuf::from("photos/@eaDir/a.jpg/SYNOPHOTO_THUMB_XL.jpg")],
+        ))
+        .unwrap_err();
+        assert!(refused.to_string().contains("excludes it"), "{refused}");
+    }
+
+    #[test]
+    fn a_pattern_the_manifest_cannot_read_is_refused_before_anything_is_written() {
+        let dir = photos("exclude-refused");
+        for pattern in ["!keep.jpg", "[ab].jpg", "../outside", "/"] {
+            let refused = block_on(ws(&dir).attach_manifest_excluding(
+                Path::new("photos"),
+                Path::new("index.md"),
+                None,
+                true,
+                false,
+                &[pattern.to_string()],
+            ))
+            .unwrap_err();
+            assert!(
+                refused.to_string().contains(pattern),
+                "{pattern}: {refused}"
+            );
+        }
+        assert!(!dir.join("photos.yaml").exists());
+        assert!(!dir.join("photos.manifest.yaml").exists());
+    }
+
+    #[test]
+    fn a_large_file_hashes_to_the_digest_of_its_bytes() {
+        // The streaming path, taken on purpose: the threshold only decides
+        // which of two equal answers is computed.
+        let dir = photos("stream");
+        let bytes: Vec<u8> = (0..3 * crate::fixity::STREAM_CHUNK as u32 / 2)
+            .map(|i| (i % 253) as u8)
+            .collect();
+        write(&dir, "photos/video.mov", &bytes);
+        let w = ws(&dir);
+        assert_eq!(
+            block_on(w.graph().digest_file(Path::new("photos/video.mov"))).unwrap(),
+            crate::fixity::digest(&bytes)
+        );
+        assert_eq!(
+            block_on(w.file_digest(Path::new("photos/video.mov"))).unwrap(),
+            crate::fixity::digest(&bytes)
+        );
+    }
+
+    #[cfg(unix)]
+    mod linked {
+        use super::*;
+        use std::os::unix::fs::symlink;
+
+        /// A workspace whose `photos` is a link to an archive kept outside it,
+        /// as a NAS share is linked into a workspace kept on another.
+        fn linked_share(tag: &str) -> (PathBuf, PathBuf) {
+            let dir = tempdir(tag);
+            write(&dir, "ws/index.md", b"---\ntitle: Home\n---\n");
+            write(&dir, "share/a.jpg", [0xff, 0xd8, 0x01]);
+            write(&dir, "share/2019/b.jpg", [0xff, 0xd8, 0x02]);
+            symlink(dir.join("share"), dir.join("ws/photos")).unwrap();
+            (dir.join("ws"), dir.join("share"))
+        }
+
+        #[test]
+        fn a_linked_root_is_covered_checked_and_ruled_out_as_claimed() {
+            let (ws_dir, _) = linked_share("linked-root");
+            let mut w = ws(&ws_dir);
+            let node =
+                block_on(w.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+            let status = block_on(w.manifest_status(&node)).unwrap().unwrap();
+            assert_eq!(status.listed, 2);
+            assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+            assert_eq!(block_on(w.verify_manifest(&node)).unwrap(), vec![]);
+
+            // A tool recording the folder meets a link, and must be told to
+            // leave it — as the link it is, so gitignore can match it.
+            let list = block_on(w.ignore_list(Path::new("index.md"))).unwrap();
+            assert!(
+                list.render().lines().any(|line| line == "/photos"),
+                "{}",
+                list.render()
+            );
+        }
+
+        #[test]
+        fn a_link_inside_a_covered_directory_is_followed_and_a_dangling_one_skipped() {
+            let (ws_dir, share) = linked_share("linked-inside");
+            write(&share, "../elsewhere/c.jpg", [0xff, 0xd8, 0x03]);
+            symlink("../../elsewhere", share.join("2019/more")).unwrap();
+            symlink("../a.jpg", share.join("2019/same.jpg")).unwrap();
+            symlink("nowhere.jpg", share.join("gone.jpg")).unwrap();
+
+            let mut w = ws(&ws_dir);
+            let node =
+                block_on(w.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+            let (_, manifest) = block_on(w.manifest_of(&node)).unwrap().unwrap();
+            let paths: Vec<_> = manifest.files.iter().map(|e| e.path.clone()).collect();
+            assert_eq!(
+                paths,
+                ["2019/b.jpg", "2019/more/c.jpg", "2019/same.jpg", "a.jpg"].map(PathBuf::from)
+            );
+            let same = &manifest.files[2];
+            assert_eq!(
+                same.hash.as_deref(),
+                Some(crate::fixity::digest(&[0xff, 0xd8, 0x01]).as_str())
+            );
+            assert_eq!(block_on(w.check("index.md")).unwrap(), vec![]);
+        }
+
+        #[test]
+        fn a_link_that_leads_back_to_itself_is_refused() {
+            let (ws_dir, share) = linked_share("linked-loop");
+            symlink("..", share.join("2019/again")).unwrap();
+            let refused =
+                block_on(ws(&ws_dir).attach_manifest(Path::new("photos"), Path::new("index.md")))
+                    .unwrap_err();
+            assert!(refused.to_string().contains("leads back"), "{refused}");
+        }
     }
 }

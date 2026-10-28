@@ -1728,6 +1728,23 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.read_bytes(path).await
     }
 
+    /// The fixity digest of the file at `path`, read whole when small and a
+    /// piece at a time when large — see
+    /// [`Graph::file_digest`](prov_graph::graph::Graph::file_digest).
+    pub async fn file_digest(&self, path: &Path) -> Result<String> {
+        self.graph.file_digest(path).await
+    }
+
+    /// Queue the digest of the file at `path` on `digests` — see
+    /// [`Graph::push_file_digest`](prov_graph::graph::Graph::push_file_digest).
+    pub async fn push_file_digest(
+        &self,
+        digests: &mut crate::fixity::Digests,
+        path: &Path,
+    ) -> Result<()> {
+        self.graph.push_file_digest(digests, path).await
+    }
+
     /// The raw text at `path` — for something that is not a document.
     pub async fn read_text(&self, path: &Path) -> Result<String> {
         self.graph.read_text(path).await

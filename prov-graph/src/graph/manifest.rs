@@ -22,7 +22,25 @@ use crate::error::{Error, Result};
 use crate::fs::ReadStorage;
 use crate::index::IdIndex;
 use crate::link;
-use crate::manifest::{Manifest, manifest_node_candidates};
+use crate::manifest::{Manifest, excluded_by, manifest_node_candidates};
+
+/// How many symbolic links to directories a covered walk follows along one
+/// path before it takes them for a loop and refuses.
+///
+/// Well under the kernel's own bound (40 links in resolving one path, on
+/// Linux), on purpose: past that bound every listing and stat fails, and a
+/// walk that ran into it would end quietly with each file already listed
+/// once per lap of the loop. Eight is more links in one path than an archive
+/// linked together on purpose has a reason for.
+pub const LINKED_DIRECTORIES: usize = 8;
+
+/// What one covered walk is asked: where, whether documents are claimed, and
+/// what is left out.
+struct Walk<'a> {
+    root: &'a Path,
+    verbatim: bool,
+    exclude: &'a [String],
+}
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// The manifest document `node` declares, loaded and parsed, with its
@@ -139,8 +157,49 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// files prov can read are listed too, since such a manifest claims them.
     /// Hidden entries and nested manifests' directories are still left out.
     pub async fn scan_claimed(&self, root: &Path, verbatim: bool) -> Result<Vec<PathBuf>> {
+        self.scan_excluding(root, verbatim, &[]).await
+    }
+
+    /// What `manifest`, declared by the manifest document at `manifest_doc`,
+    /// claims under its root as the directory stands: [`scan_claimed`]
+    /// narrowed by the manifest's [`exclude`] patterns. An excluded directory
+    /// is not walked.
+    ///
+    /// [`scan_claimed`]: Self::scan_claimed
+    /// [`exclude`]: crate::manifest::Manifest::exclude
+    pub async fn scan_manifest(
+        &self,
+        manifest_doc: &Path,
+        manifest: &Manifest,
+    ) -> Result<Vec<PathBuf>> {
+        let root = manifest.checked_root(manifest_doc)?;
+        self.scan_excluding(&root, manifest.verbatim, &manifest.exclude)
+            .await
+    }
+
+    /// [`scan_claimed`](Self::scan_claimed), leaving out what `exclude` names.
+    ///
+    /// A **symbolic link** is followed: one to a file is listed as that file,
+    /// whose bytes a hash then reads, and one to a directory is walked as that
+    /// directory. That is what lets a covered directory, or one below it, live
+    /// somewhere the workspace does not — a share on the machine the archive
+    /// is kept on, linked in under the name the manifest's `root` gives. A
+    /// link to nothing is not a file and is not listed; a chain of more than
+    /// [`LINKED_DIRECTORIES`] linked directories on one path is taken for a
+    /// loop and refused.
+    pub async fn scan_excluding(
+        &self,
+        root: &Path,
+        verbatim: bool,
+        exclude: &[String],
+    ) -> Result<Vec<PathBuf>> {
         let mut found = Vec::new();
-        self.scan_covered_into(root, PathBuf::new(), verbatim, &mut found)
+        let walk = Walk {
+            root,
+            verbatim,
+            exclude,
+        };
+        self.scan_covered_into(&walk, PathBuf::new(), 0, &mut found)
             .await?;
         found.sort_by(|a, b| {
             crate::manifest::path_sort_key(a).cmp(&crate::manifest::path_sort_key(b))
@@ -150,17 +209,18 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
     fn scan_covered_into<'a>(
         &'a self,
-        root: &'a Path,
+        walk: &'a Walk<'a>,
         rel: PathBuf,
-        verbatim: bool,
+        links: usize,
         out: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            let root = walk.root;
             let dir = link::normalize(root.join(&rel));
             let Ok(entries) = self.listing(&dir).await else {
                 return Ok(());
             };
-            let mut names: Vec<(String, bool)> = Vec::new();
+            let mut names: Vec<(String, bool, bool)> = Vec::new();
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -172,14 +232,29 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 if name.starts_with('.') {
                     continue;
                 }
-                names.push((name, entry.file_type().is_dir()));
+                let file_type = entry.file_type();
+                let (is_dir, linked) = if file_type.is_symlink() {
+                    // What the link leads to decides; a link to nothing is
+                    // not a file of the archive.
+                    match self.stat(&dir.join(&name)).await {
+                        Ok(target) if target.is_dir() => (true, true),
+                        Ok(target) if target.is_file() => (false, true),
+                        _ => continue,
+                    }
+                } else {
+                    (file_type.is_dir(), false)
+                };
+                names.push((name, is_dir, linked));
             }
-            for (name, is_dir) in names {
+            for (name, is_dir, linked) in names {
                 let child = if rel.as_os_str().is_empty() {
                     PathBuf::from(&name)
                 } else {
                     rel.join(&name)
                 };
+                if excluded_by(walk.exclude, &child, is_dir) {
+                    continue;
+                }
                 if is_dir {
                     // A nested manifest owns its own subtree.
                     if self
@@ -189,8 +264,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     {
                         continue;
                     }
-                    self.scan_covered_into(root, child, verbatim, out).await?;
-                } else if verbatim || is_opaque_payload(&child) {
+                    let links = links + usize::from(linked);
+                    if links > LINKED_DIRECTORIES {
+                        return Err(Error::Structure(format!(
+                            "{}: more than {LINKED_DIRECTORIES} linked directories deep — \
+                             a symbolic link that leads back to itself?",
+                            link::normalize(root.join(&child)).display()
+                        )));
+                    }
+                    self.scan_covered_into(walk, child, links, out).await?;
+                } else if walk.verbatim || is_opaque_payload(&child) {
                     out.push(child);
                 }
             }

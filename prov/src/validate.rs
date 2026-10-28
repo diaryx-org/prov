@@ -2433,15 +2433,14 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             // the same relationship an attachment sidecar has with its payload —
             // and it is what makes the per-row digests inside worth anything,
             // since a rewritten row is then a rewritten file the node has hashed.
-            let covered = match doc.content_attr().or_else(|| doc.manifest_attr()) {
+            match doc.content_attr().or_else(|| doc.manifest_attr()) {
                 Some(raw) => {
                     let dir = path.parent().unwrap_or(Path::new(""));
                     let target = link::normalize(dir.join(raw));
-                    match self.read_bytes(&target).await {
-                        Ok(bytes) => bytes,
-                        // A missing payload is a broken-`content` matter, not a
-                        // fixity one — leave it for that check, don't double-report.
-                        Err(_) => continue,
+                    // A missing payload is a broken-`content` matter, not a
+                    // fixity one — leave it for that check, don't double-report.
+                    if self.push_file_digest(&mut digests, &target).await.is_err() {
+                        continue;
                     }
                 }
                 // Neither pointer: the hash covers this document's own parsed
@@ -2451,10 +2450,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 None => {
                     body_hashed.0 += 1;
                     body_hashed.1.get_or_insert_with(|| path.clone());
-                    doc.body.into_bytes()
+                    digests.push(doc.body.into_bytes());
                 }
-            };
-            digests.push(covered);
+            }
             recorded_hashes.push((path, recorded.to_string()));
         }
         for ((path, recorded), actual) in recorded_hashes.into_iter().zip(digests.finish()) {
@@ -2539,7 +2537,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 continue;
             }
 
-            let on_disk = self.graph().scan_claimed(&root, manifest.verbatim).await?;
+            let on_disk = self
+                .graph()
+                .scan_excluding(&root, manifest.verbatim, &manifest.exclude)
+                .await?;
             let (missing, extra) = prov_graph::manifest::diff(&manifest.files, &on_disk);
             if !missing.is_empty() || !extra.is_empty() {
                 findings.push(Finding::ManifestDrift {

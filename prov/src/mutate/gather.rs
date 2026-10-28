@@ -519,6 +519,7 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             root: root_text,
             files: entries,
             verbatim: false,
+            exclude: Vec::new(),
         };
         manifest.sort();
         let manifest_text = prov_graph::meta::serialize_mapping(

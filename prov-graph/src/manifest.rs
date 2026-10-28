@@ -54,6 +54,13 @@
 //! page anyone writes — so the promise is visible where it is made, as
 //! `attach --opaque`'s is in its sidecar.
 //!
+//! The other narrowing is written in the manifest too: `exclude:` lists
+//! patterns, in a subset of gitignore's syntax, for files under `root` that
+//! belong to whatever else keeps the directory — a NAS's thumbnail folders, a
+//! recycle bin, a desktop's index files — and are neither the archive nor
+//! drift. An excluded directory is not walked at all. See
+//! [`Manifest::excludes`] for the syntax.
+//!
 //! This module is the model and its serialization, which is all the read core
 //! needs; the verbs that build, refresh and verify one are `prov`'s.
 
@@ -73,6 +80,10 @@ pub const ROOT_KEY: &str = "root";
 /// The manifest key that, set to `true`, claims every file under `root` —
 /// documents included — instead of the opaque payloads alone.
 pub const VERBATIM_KEY: &str = "verbatim";
+
+/// The manifest key listing patterns for files under `root` the manifest does
+/// not claim — see [`Manifest::excludes`].
+pub const EXCLUDE_KEY: &str = "exclude";
 
 /// The manifest key holding the rows.
 pub const FILES_KEY: &str = "files";
@@ -115,6 +126,9 @@ pub struct Manifest {
     /// Whether the manifest claims every file under `root`, documents
     /// included ([`VERBATIM_KEY`]), rather than the opaque payloads alone.
     pub verbatim: bool,
+    /// Patterns for files under `root` that the manifest does not claim
+    /// ([`EXCLUDE_KEY`]), as written. See [`excludes`](Self::excludes).
+    pub exclude: Vec<String>,
 }
 
 impl Manifest {
@@ -141,6 +155,27 @@ impl Manifest {
             Some(value) => value.as_bool().ok_or_else(|| {
                 Error::Structure(format!("manifest `{VERBATIM_KEY}` must be true or false"))
             })?,
+        };
+        let exclude = match meta.get(EXCLUDE_KEY) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(value) => {
+                let items = value.as_sequence().ok_or_else(|| {
+                    Error::Structure(format!(
+                        "manifest `{EXCLUDE_KEY}` must be a list of patterns"
+                    ))
+                })?;
+                let mut patterns = Vec::with_capacity(items.len());
+                for item in items {
+                    let pattern = item.as_str().ok_or_else(|| {
+                        Error::Structure(format!(
+                            "manifest `{EXCLUDE_KEY}` must be a list of patterns"
+                        ))
+                    })?;
+                    check_pattern(pattern)?;
+                    patterns.push(pattern.to_string());
+                }
+                patterns
+            }
         };
         let rows = match meta.get(FILES_KEY) {
             // A manifest over an empty directory has no rows at all, which is a
@@ -182,6 +217,7 @@ impl Manifest {
             root,
             files,
             verbatim,
+            exclude,
         })
     }
 
@@ -197,6 +233,12 @@ impl Manifest {
         map.insert(ROOT_KEY.into(), Value::String(self.root.clone()));
         if self.verbatim {
             map.insert(VERBATIM_KEY.into(), Value::Bool(true));
+        }
+        if !self.exclude.is_empty() {
+            map.insert(
+                EXCLUDE_KEY.into(),
+                Value::Sequence(self.exclude.iter().cloned().map(Value::String).collect()),
+            );
         }
         map.insert(
             FILES_KEY.into(),
@@ -267,6 +309,42 @@ impl Manifest {
         self.verbatim || crate::document::is_opaque_payload(rel)
     }
 
+    /// Whether one of the manifest's [`exclude`](Self::exclude) patterns
+    /// leaves out the entry at `rel`, relative to the covered root — a
+    /// directory when `is_dir`, a file otherwise. The entry alone is judged,
+    /// not the directories above it: a walk never enters an excluded
+    /// directory, so it never asks about what is inside one.
+    /// [`excludes_file`](Self::excludes_file) asks about all of them.
+    ///
+    /// The syntax is a subset of gitignore's, so a list can be copied from
+    /// one: a pattern with no `/` but a trailing one matches an entry's
+    /// *name* at any depth (`@eaDir`, `*@SynoEAStream`, `.DS_Store`); one
+    /// with a `/` before its end is anchored to the root (`/#recycle`,
+    /// `2019/raw`); a trailing `/` matches directories only. `*` matches
+    /// within one name, `?` one character, `**` as a whole name any number of
+    /// directories, and `\` makes the next character literal. Negation
+    /// (`!`) and character classes are refused when the manifest is read
+    /// rather than misread.
+    pub fn excludes(&self, rel: &Path, is_dir: bool) -> bool {
+        excluded_by(&self.exclude, rel, is_dir)
+    }
+
+    /// Whether the file at `rel` is left out, by a pattern naming it or one
+    /// naming a directory above it — the question for a file named from
+    /// outside a walk.
+    pub fn excludes_file(&self, rel: &Path) -> bool {
+        let mut prefix = PathBuf::new();
+        let mut segments = rel.iter().peekable();
+        while let Some(segment) = segments.next() {
+            prefix.push(segment);
+            let is_dir = segments.peek().is_some();
+            if self.excludes(&prefix, is_dir) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Whether every row carries a digest — the difference between an inventory
     /// and a fixity baseline. An empty manifest counts as hashed: it makes the
     /// same promise about all zero of its files.
@@ -334,6 +412,103 @@ pub fn manifest_sibling(node: &Path) -> PathBuf {
 /// hit.
 pub fn manifest_node_candidates(dir: &Path) -> impl Iterator<Item = PathBuf> + '_ {
     crate::graph::sidecar_candidates(dir)
+}
+
+/// [`Manifest::excludes`] over a bare list of patterns, for a walk that holds
+/// the patterns but not the manifest.
+pub fn excluded_by(patterns: &[String], rel: &Path, is_dir: bool) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let segments: Vec<String> = rel
+        .iter()
+        .map(|segment| segment.to_string_lossy().into_owned())
+        .collect();
+    patterns
+        .iter()
+        .any(|pattern| pattern_matches(pattern, &segments, is_dir))
+}
+
+/// Refuse what [`Manifest::excludes`] does not read, so a pattern copied from
+/// a gitignore that means more there is never quietly taken to mean less.
+pub fn check_pattern(pattern: &str) -> Result<()> {
+    let refuse = |why: &str| {
+        Err(Error::Structure(format!(
+            "manifest `{EXCLUDE_KEY}` pattern `{pattern}`: {why}"
+        )))
+    };
+    let body = pattern.trim_end_matches('/');
+    if body.trim_start_matches('/').is_empty() {
+        return refuse("it names nothing");
+    }
+    if pattern.starts_with('!') {
+        return refuse("negation is not supported");
+    }
+    let mut escaped = false;
+    for character in pattern.chars() {
+        match (escaped, character) {
+            (true, _) => escaped = false,
+            (false, '\\') => escaped = true,
+            (false, '[' | ']') => return refuse("character classes are not supported"),
+            _ => {}
+        }
+    }
+    if body.split('/').any(|segment| segment == "..") {
+        return refuse("it climbs outside the manifest's root");
+    }
+    Ok(())
+}
+
+/// Whether `pattern` matches the entry whose path below the root is
+/// `segments` — see [`Manifest::excludes`].
+fn pattern_matches(pattern: &str, segments: &[String], is_dir: bool) -> bool {
+    let dir_only = pattern.ends_with('/');
+    if dir_only && !is_dir {
+        return false;
+    }
+    let body = pattern.trim_end_matches('/');
+    let anchored = body.contains('/');
+    let body = body.trim_start_matches('/');
+    if anchored {
+        let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
+        segments_match(&parts, segments)
+    } else {
+        segments.last().is_some_and(|name| name_matches(body, name))
+    }
+}
+
+/// Whether the pattern segments `parts` match the path `segments` whole, `**`
+/// standing for any number of them.
+fn segments_match(parts: &[&str], segments: &[String]) -> bool {
+    match parts.split_first() {
+        None => segments.is_empty(),
+        Some((&"**", rest)) => {
+            (0..=segments.len()).any(|skip| segments_match(rest, &segments[skip..]))
+        }
+        Some((part, rest)) => segments
+            .split_first()
+            .is_some_and(|(name, tail)| name_matches(part, name) && segments_match(rest, tail)),
+    }
+}
+
+/// Whether the one-name glob `pattern` matches `name`: `*` any run of
+/// characters, `?` one, `\` the next character literally.
+fn name_matches(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    glob(&pattern, &name)
+}
+
+fn glob(pattern: &[char], name: &[char]) -> bool {
+    match pattern.split_first() {
+        None => name.is_empty(),
+        Some(('*', rest)) => (0..=name.len()).any(|skip| glob(rest, &name[skip..])),
+        Some(('?', rest)) => !name.is_empty() && glob(rest, &name[1..]),
+        Some(('\\', rest)) if !rest.is_empty() => {
+            name.first() == Some(&rest[0]) && glob(&rest[1..], &name[1..])
+        }
+        Some((literal, rest)) => name.first() == Some(literal) && glob(rest, &name[1..]),
+    }
 }
 
 #[cfg(test)]
@@ -504,5 +679,86 @@ mod tests {
             manifest_sibling(Path::new("photos.yaml")),
             PathBuf::from("photos.yaml")
         );
+    }
+
+    #[test]
+    fn exclude_round_trips_and_is_left_out_when_empty() {
+        let text = |m: &Manifest| {
+            crate::meta::serialize_mapping(
+                &m.to_mapping("Photos — manifest"),
+                crate::MetaFormat::Yaml,
+            )
+            .unwrap()
+        };
+        let plain = parse("root: photos/\n").unwrap();
+        assert!(plain.exclude.is_empty());
+        assert!(!text(&plain).contains("exclude"), "{}", text(&plain));
+        let excluding =
+            parse("root: photos/\nexclude:\n- '@eaDir/'\n- '*@SynoEAStream'\n").unwrap();
+        assert_eq!(excluding.exclude, ["@eaDir/", "*@SynoEAStream"]);
+        assert_eq!(parse(&text(&excluding)).unwrap(), excluding);
+    }
+
+    #[test]
+    fn an_exclude_it_cannot_read_is_refused() {
+        for bad in [
+            "exclude: '@eaDir'\n",
+            "exclude:\n- 3\n",
+            "exclude:\n- '!keep.jpg'\n",
+            "exclude:\n- '[ab].jpg'\n",
+            "exclude:\n- ../up\n",
+            "exclude:\n- /\n",
+        ] {
+            assert!(parse(&format!("root: photos/\n{bad}")).is_err(), "{bad}");
+        }
+        // An escaped bracket is a literal one, and fine.
+        assert!(parse("root: photos/\nexclude:\n- 'x\\[1\\].jpg'\n").is_ok());
+    }
+
+    #[test]
+    fn exclude_patterns_read_as_gitignore_reads_them() {
+        let m = |patterns: &[&str]| Manifest {
+            root: "photos/".into(),
+            exclude: patterns.iter().map(|p| p.to_string()).collect(),
+            ..Default::default()
+        };
+        let p = Path::new;
+
+        // No slash: a name at any depth, file or directory.
+        let name = m(&["@eaDir", "*@SynoEAStream", "Thumbs.db"]);
+        assert!(name.excludes(p("@eaDir"), true));
+        assert!(name.excludes(p("2019/07/@eaDir"), true));
+        assert!(name.excludes(p("2019/a.jpg@SynoEAStream"), false));
+        assert!(name.excludes(p("Thumbs.db"), false));
+        assert!(!name.excludes(p("2019/a.jpg"), false));
+        assert!(!name.excludes(p("@eaDirectory"), true));
+
+        // A trailing slash: directories only.
+        let dirs = m(&["raw/"]);
+        assert!(dirs.excludes(p("2019/raw"), true));
+        assert!(!dirs.excludes(p("2019/raw"), false));
+
+        // A slash before the end: anchored to the root.
+        let anchored = m(&["/#recycle", "2019/raw", "**/cache/*.tmp"]);
+        assert!(anchored.excludes(p("#recycle"), true));
+        assert!(!anchored.excludes(p("2019/#recycle"), true));
+        assert!(anchored.excludes(p("2019/raw"), true));
+        assert!(!anchored.excludes(p("2020/2019/raw"), true));
+        assert!(anchored.excludes(p("cache/a.tmp"), false));
+        assert!(anchored.excludes(p("a/b/cache/x.tmp"), false));
+        assert!(!anchored.excludes(p("a/b/cache/x.jpg"), false));
+
+        // `?` is one character, `\` makes the next literal.
+        let globs = m(&["IMG_????.HEIC", "star\\*.jpg"]);
+        assert!(globs.excludes(p("IMG_0001.HEIC"), false));
+        assert!(!globs.excludes(p("IMG_01.HEIC"), false));
+        assert!(globs.excludes(p("star*.jpg"), false));
+        assert!(!globs.excludes(p("starry.jpg"), false));
+
+        // A file named from outside a walk is out when any directory above it is.
+        assert!(name.excludes_file(p("2019/@eaDir/a.jpg/THUMB.jpg")));
+        assert!(!name.excludes_file(p("2019/a.jpg")));
+        assert!(!dirs.excludes_file(p("2019/raw")));
+        assert!(dirs.excludes_file(p("2019/raw/a.dng")));
     }
 }

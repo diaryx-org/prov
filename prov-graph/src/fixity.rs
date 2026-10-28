@@ -141,13 +141,53 @@ impl Fixity {
 /// the form [`verify`] checks against. The `sha256:` prefix names the algorithm,
 /// so the record is self-describing and a future digest can be distinguished.
 pub fn digest(bytes: &[u8]) -> String {
+    spelled(&Sha256::digest(bytes))
+}
+
+/// A digest spelled `sha256:<lowercase-hex>`.
+fn spelled(hash: &[u8]) -> String {
     let mut s = String::with_capacity(7 + 64);
     s.push_str("sha256:");
-    for byte in Sha256::digest(bytes) {
+    for byte in hash {
         s.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
         s.push(char::from_digit((byte & 0xf) as u32, 16).unwrap());
     }
     s
+}
+
+/// Files larger than this are hashed a piece at a time rather than read whole:
+/// see [`Hasher`]. Below it, a whole read is cheaper and lets [`Digests`] hash
+/// on another core while the next file is read.
+pub const STREAM_ABOVE: u64 = 64 * 1024 * 1024;
+
+/// How much of a large file is held at once while it is hashed.
+pub const STREAM_CHUNK: usize = 8 * 1024 * 1024;
+
+/// The fixity digest of bytes handed over a piece at a time — [`digest`] for a
+/// file too large to hold in memory.
+///
+/// An archive's largest files are its videos, gigabytes each, and the machine
+/// holding the archive may be a home server with less memory than one of them.
+/// Fed every piece in order, [`finish`](Hasher::finish) is exactly what
+/// [`digest`] would have returned for the concatenation.
+#[derive(Debug, Clone, Default)]
+pub struct Hasher(Sha256);
+
+impl Hasher {
+    /// A digest of nothing yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take in the next piece.
+    pub fn update(&mut self, piece: &[u8]) {
+        self.0.update(piece);
+    }
+
+    /// The digest of every piece taken in, spelled as [`digest`] spells one.
+    pub fn finish(self) -> String {
+        spelled(&self.0.finalize())
+    }
 }
 
 /// Digests of many byte buffers, in the order they were handed over — the bulk
@@ -197,6 +237,18 @@ impl Digests {
             return;
         }
         self.done.push(digest(&bytes));
+    }
+
+    /// Queue a digest already worked out — a file too large to push whole,
+    /// hashed with a [`Hasher`] as it was read. It takes its place in the order
+    /// exactly as a [`push`](Digests::push) would have.
+    pub fn push_digest(&mut self, digest: String) {
+        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+        if let Some(pool) = &mut self.pool {
+            pool.push_digest(digest);
+            return;
+        }
+        self.done.push(digest);
     }
 
     /// Every digest, in the order its bytes were pushed, once all are done.
@@ -295,6 +347,13 @@ mod pool {
             });
         }
 
+        pub(super) fn push_digest(&mut self, hash: String) {
+            let index = self.pushed;
+            self.pushed += 1;
+            // The receiver is ours and still held, so this cannot fail.
+            let _ = self.tx.send((index, hash));
+        }
+
         pub(super) fn finish(self) -> Vec<String> {
             let Pool { tx, rx, pushed, .. } = self;
             drop(tx);
@@ -391,6 +450,29 @@ mod tests {
         let expected: Vec<String> = buffers.iter().map(|b| digest(b)).collect();
         assert_eq!(digests.finish(), expected);
         assert!(Digests::new().finish().is_empty());
+    }
+
+    #[test]
+    fn a_digest_taken_in_pieces_is_the_digest_of_the_whole() {
+        let million_a = vec![b'a'; 1_000_000];
+        let mut hasher = Hasher::new();
+        for piece in million_a.chunks(4093) {
+            hasher.update(piece);
+        }
+        assert_eq!(hasher.finish(), digest(&million_a));
+        assert_eq!(Hasher::new().finish(), digest(b""));
+    }
+
+    #[test]
+    fn a_worked_out_digest_keeps_its_place_among_pushed_bytes() {
+        let mut digests = Digests::new();
+        digests.push(b"one".to_vec());
+        digests.push_digest(digest(b"two"));
+        digests.push(b"three".to_vec());
+        assert_eq!(
+            digests.finish(),
+            vec![digest(b"one"), digest(b"two"), digest(b"three")]
+        );
     }
 
     #[test]
