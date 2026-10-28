@@ -46,6 +46,12 @@ use prov_store::index::IndexStore;
 
 use super::Workspace;
 
+/// The largest document [`Workspace::ignore_list`] reads as a possible
+/// manifest node before it knows which documents are record stores. A node
+/// is a few lines of metadata; a store of 80,000 rows is ten megabytes, and
+/// reading it as a candidate would parse it twice.
+const NODE_AT_MOST: u64 = 64 * 1024;
+
 /// One level of the recursion, boxed — the async walk refers to itself.
 type Walked<'a> = Pin<Box<dyn Future<Output = Result<(Vec<Ignore>, bool)>> + 'a>>;
 
@@ -148,6 +154,9 @@ impl<FS: Storage + Clone, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// it is the policy the workspace runs under: a folder copied without it
     /// is not the workspace it was.
     pub async fn ignore_list(&self, root_doc: &Path) -> Result<IgnoreList> {
+        // One scope, so the manifest nodes the last pass reads are answered
+        // from the walk's own reads.
+        let _scope = self.read_scope();
         let scan = Scan {
             reachable: slashed(self.reachable_files(root_doc).await?),
             bookkeeping: self
@@ -177,31 +186,70 @@ impl<FS: Storage + Clone, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
     /// kept on another machine (`held`), or one not yet brought here. The walk
     /// never meets it, and a rule for it all the same is what keeps a copy
     /// put there later from being taken for content — the manifest already
-    /// pins every file that belongs there, by hash.
+    /// pins every file that belongs there, by hash. The one rule on the list
+    /// for a path that is not on disk.
     ///
     /// Ruled without a trailing `/`, as a linked root is: whatever arrives
     /// there, a link or a directory, gitignore matches it by a rule that names
-    /// the path alone. Found from the reachable nodes named by the `<dir>.<ext>`
-    /// convention, the one [`manifest_node_for`](Self::manifest_node_for)
-    /// confirms, so a page costs no probe at all.
+    /// the path alone. The root is the one the manifest declares, wherever a
+    /// rename left its node.
+    ///
+    /// A record store is never read as a candidate node: the nodes are found
+    /// among the reachable documents small enough to be one
+    /// ([`NODE_AT_MOST`]), and a larger document only when no node names it
+    /// as its store. So each store is parsed once, by
+    /// [`manifest_of`](Self::manifest_of), and only for its root.
     async fn absent_roots(&self, scan: &Scan, ruled: &[Ignore]) -> Result<Vec<Ignore>> {
-        let mut rules = Vec::new();
-        for node in &scan.reachable {
-            let node = Path::new(node);
-            let Some(root) = node.file_stem().map(|stem| node.with_file_name(stem)) else {
-                continue;
-            };
-            if !prov_graph::graph::sidecar_candidates(&root).any(|candidate| candidate == node) {
+        let graph = self.graph();
+        let mut nodes = Vec::new();
+        let mut stores = BTreeSet::new();
+        let mut large = Vec::new();
+        for path in &scan.reachable {
+            let path = Path::new(path);
+            if prov_graph::is_opaque_payload(path) {
                 continue;
             }
-            let Some(rel) = slash(&root) else {
+            match graph.stat(path).await {
+                Ok(meta) if meta.len() > NODE_AT_MOST => {
+                    large.push(path);
+                    continue;
+                }
+                Ok(_) => {}
+                Err(_) => continue,
+            }
+            if let Ok(doc) = graph.document(path).await
+                && let Some(raw) = doc.manifest_attr()
+            {
+                stores.insert(prov_graph::link::resolve(path, raw));
+                nodes.push(path.to_path_buf());
+            }
+        }
+        for path in large {
+            if stores.contains(path) {
+                continue;
+            }
+            if let Ok(doc) = graph.document(path).await
+                && doc.is_manifest_node()
+            {
+                nodes.push(path.to_path_buf());
+            }
+        }
+
+        let mut rules: Vec<Ignore> = Vec::new();
+        for node in nodes {
+            let Ok(Some((store, manifest))) = self.manifest_of(&node).await else {
                 continue;
             };
-            if ruled
-                .iter()
-                .any(|rule| rule.path == rel || under(&rel, &rule.path))
-                || self.graph().exists(&root).await?
-                || self.manifest_node_for(&root).await?.as_deref() != Some(node)
+            let Ok(root) = manifest.checked_root(&store) else {
+                continue;
+            };
+            let Some(rel) = slash(&root).map(|rel| rel.trim_end_matches('/').to_owned()) else {
+                continue;
+            };
+            let covered = |rule: &Ignore| rule.path == rel || under(&rel, &rule.path);
+            if rel.is_empty()
+                || ruled.iter().chain(&rules).any(covered)
+                || graph.exists(&root).await?
             {
                 continue;
             }

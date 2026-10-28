@@ -201,6 +201,21 @@ fn a_claimed_archive_not_on_this_device_is_ruled_all_the_same() {
 }
 
 #[test]
+fn a_renamed_node_s_absent_root_is_the_one_it_declares() {
+    let dir = tempdir("claimed-renamed");
+    root(&dir, &[]);
+    write(&dir, "photos/2024/a.jpg", "JPEG");
+
+    let mut workspace = ws(&dir);
+    block_on(workspace.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
+    // A rename moves the node and its manifest, and leaves the archive.
+    block_on(workspace.rename(Path::new("photos.yaml"), Path::new("catalog/album.yaml"))).unwrap();
+    std::fs::remove_dir_all(dir.join("photos")).unwrap();
+
+    assert_eq!(lines(&list(&dir)), ["/photos"]);
+}
+
+#[test]
 fn another_tool_s_store_beside_the_workspace_is_one_rule() {
     // prov knows nothing about what such a store is — it is simply a folder
     // the graph reaches nothing in, which is exactly what makes it one line
