@@ -385,10 +385,26 @@ fn walk<'a, FS: Storage + Clone, Id, Ix: IndexStore>(
                     whole_dir: false,
                     reason,
                 });
+            } else if entry.file_type().is_symlink()
+                && workspace
+                    .manifest_node_for(Path::new(&rel))
+                    .await?
+                    .is_some()
+            {
+                // A covered directory linked in from elsewhere — an archive on
+                // a share the workspace does not hold. Claimed like any covered
+                // directory, but ruled as the link it is, without a trailing
+                // `/`: a tool reading the folder meets a link, and gitignore
+                // matches a link only by a rule that names a file.
+                rules.push(Ignore {
+                    path: rel,
+                    whole_dir: false,
+                    reason: Reason::Claimed,
+                });
             }
-            // Neither a file nor a directory — a symlink, a socket. A rule
-            // could silence it, but the consuming tool's own refusal names it
-            // better than a silent skip would.
+            // Otherwise neither a file nor a directory — a symlink, a socket.
+            // A rule could silence it, but the consuming tool's own refusal
+            // names it better than a silent skip would.
         }
 
         Ok((rules, any_reachable))

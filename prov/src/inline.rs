@@ -171,10 +171,9 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             {
                 continue;
             }
-            let Ok(bytes) = self.read_bytes(&owned.target).await else {
+            let Ok(digest) = self.file_digest(&owned.target).await else {
                 continue;
             };
-            let digest = crate::fixity::digest(&bytes);
             if owned.hash.as_ref().map(|(_, h)| h) != Some(&digest) {
                 owed.push((at, digest));
             }
@@ -255,10 +254,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let spelled = link::path_text(self.site_path_style(&site), &doc, &payload);
         let mut row = vec![(fig::Value::Str(key.to_string()), fig::Value::Str(spelled))];
         if self.fixity().is_on() {
-            let bytes = self.read_bytes(&payload).await?;
             row.push((
                 fig::Value::Str(HASH_KEY.to_string()),
-                fig::Value::Str(crate::fixity::digest(&bytes)),
+                fig::Value::Str(self.file_digest(&payload).await?),
             ));
         }
         let row = fig::Value::Map(row);
@@ -509,10 +507,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             row.push((fig::Value::Str(k.clone()), fig::Value::from(v)));
         }
         if self.fixity().is_on() && !mapping.contains_key(HASH_KEY) {
-            let bytes = self.read_bytes(&payload).await?;
             row.push((
                 fig::Value::Str(HASH_KEY.to_string()),
-                fig::Value::Str(crate::fixity::digest(&bytes)),
+                fig::Value::Str(self.file_digest(&payload).await?),
             ));
         }
         let row = fig::Value::Map(row);

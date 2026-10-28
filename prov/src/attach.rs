@@ -448,10 +448,9 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // and this verb is what writes it. The payload is read once here, at
         // attach time, unless the caller carried a checksum already.
         if self.fixity().is_on() && !map.contains_key("content_hash") {
-            let bytes = self.read_bytes(payload).await?;
             map.insert(
                 "content_hash".into(),
-                Value::String(crate::fixity::digest(&bytes)),
+                Value::String(self.file_digest(payload).await?),
             );
         }
         let text = prov_graph::meta::serialize_mapping(&map, format)?;

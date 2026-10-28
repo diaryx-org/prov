@@ -28,6 +28,51 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
         Ok(self.fs().read(&self.root().join(path)).await?)
     }
 
+    /// The fixity digest of the workspace-relative `path`'s bytes, holding no
+    /// more of the file at once than
+    /// [`STREAM_CHUNK`](crate::fixity::STREAM_CHUNK) when the backend can read
+    /// it in pieces ([`ReadStorage::read_chunks`]).
+    pub async fn digest_file(&self, path: &Path) -> Result<String> {
+        let mut hasher = crate::fixity::Hasher::new();
+        self.fs()
+            .read_chunks(
+                &self.root().join(path),
+                crate::fixity::STREAM_CHUNK,
+                |piece| hasher.update(piece),
+            )
+            .await?;
+        Ok(hasher.finish())
+    }
+
+    /// Queue the digest of the workspace-relative `path` on `digests`. A file
+    /// up to [`STREAM_ABOVE`](crate::fixity::STREAM_ABOVE) is read whole and
+    /// hashed on the pool while the caller reads on; a larger one is hashed a
+    /// piece at a time here ([`digest_file`](Self::digest_file)), so a pass
+    /// over an archive never holds a whole video in memory.
+    pub async fn push_file_digest(
+        &self,
+        digests: &mut crate::fixity::Digests,
+        path: &Path,
+    ) -> Result<()> {
+        if self.stat(path).await?.len() > crate::fixity::STREAM_ABOVE {
+            digests.push_digest(self.digest_file(path).await?);
+        } else {
+            digests.push(self.read_bytes(path).await?);
+        }
+        Ok(())
+    }
+
+    /// The fixity digest of the workspace-relative `path`: one file's
+    /// [`push_file_digest`](Self::push_file_digest), read whole when small and
+    /// in pieces when not.
+    pub async fn file_digest(&self, path: &Path) -> Result<String> {
+        if self.stat(path).await?.len() > crate::fixity::STREAM_ABOVE {
+            self.digest_file(path).await
+        } else {
+            Ok(crate::fixity::digest(&self.read_bytes(path).await?))
+        }
+    }
+
     /// Read the entire contents of the workspace-relative `path` as a
     /// string. Mirrors [`ReadStorage::read_to_string`], joined to the workspace
     /// root.

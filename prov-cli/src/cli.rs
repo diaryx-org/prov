@@ -1372,6 +1372,16 @@ pub(crate) struct AttachArgs {
     /// whose notes stay documents of the workspace.
     #[arg(long, requires = "manifest")]
     pub(crate) verbatim: bool,
+    /// With `--manifest`, leave out of it the files and directories this
+    /// pattern names, and write the pattern into the manifest so every
+    /// refresh and `check` leaves them out too. Repeatable. For what
+    /// something else keeps beside an archive — a Synology's `@eaDir`
+    /// thumbnails, a `#recycle` bin, `.DS_Store`-like index files. A subset of
+    /// gitignore syntax: a pattern with no `/` but a trailing one names an
+    /// entry at any depth, one with a `/` is anchored to the directory, a
+    /// trailing `/` means directories only, and `*`, `?` and `**` glob.
+    #[arg(long, value_name = "PATTERN", requires = "manifest")]
+    pub(crate) exclude: Vec<String>,
     /// Attach the file *inline*: append a row naming it to the metadata of
     /// the document `--in` names, in a field the workspace declares
     /// `type: payload`, instead of minting a sidecar. The document then owns
