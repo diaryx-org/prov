@@ -252,6 +252,11 @@ held:
   not there would empty the record.
 - **Without `held`, an absent root is a broken link, as ever.** A manifest
   must say its files are elsewhere before their absence stops counting.
+- **Either way, `prov ignore` still rules the root out** as *claimed*,
+  named alone (`/photo`) so it matches whatever later appears there, a link
+  or a directory. A device the files never reach would otherwise hand a
+  copy put there to whatever syncs the folder, though the manifest already
+  pins every file that belongs there.
 
 Neither `by` nor `at` is a secret: who may ask the keeper is the keeper's to
 decide. `manifest TARGET --held-by NAME [--held-at ADDRESS]` sets it, and

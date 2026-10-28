@@ -166,9 +166,52 @@ impl<FS: Storage + Clone, Id, Ix: IndexStore> Workspace<FS, Id, Ix> {
         };
 
         let (mut rules, _) = walk(self, &scan, String::new()).await?;
-        rules.extend(scan.nested_rules.into_inner());
+        rules.extend(scan.nested_rules.take());
+        let absent = self.absent_roots(&scan, &rules).await?;
+        rules.extend(absent);
         rules.sort_by(|a, b| order(a).cmp(&order(b)));
         Ok(IgnoreList { rules })
+    }
+
+    /// A rule for each manifest's root that is not on this device: an archive
+    /// kept on another machine (`held`), or one not yet brought here. The walk
+    /// never meets it, and a rule for it all the same is what keeps a copy
+    /// put there later from being taken for content — the manifest already
+    /// pins every file that belongs there, by hash.
+    ///
+    /// Ruled without a trailing `/`, as a linked root is: whatever arrives
+    /// there, a link or a directory, gitignore matches it by a rule that names
+    /// the path alone. Found from the reachable nodes named by the `<dir>.<ext>`
+    /// convention, the one [`manifest_node_for`](Self::manifest_node_for)
+    /// confirms, so a page costs no probe at all.
+    async fn absent_roots(&self, scan: &Scan, ruled: &[Ignore]) -> Result<Vec<Ignore>> {
+        let mut rules = Vec::new();
+        for node in &scan.reachable {
+            let node = Path::new(node);
+            let Some(root) = node.file_stem().map(|stem| node.with_file_name(stem)) else {
+                continue;
+            };
+            if !prov_graph::graph::sidecar_candidates(&root).any(|candidate| candidate == node) {
+                continue;
+            }
+            let Some(rel) = slash(&root) else {
+                continue;
+            };
+            if ruled
+                .iter()
+                .any(|rule| rule.path == rel || under(&rel, &rule.path))
+                || self.graph().exists(&root).await?
+                || self.manifest_node_for(&root).await?.as_deref() != Some(node)
+            {
+                continue;
+            }
+            rules.push(Ignore {
+                path: rel,
+                whole_dir: false,
+                reason: Reason::Claimed,
+            });
+        }
+        Ok(rules)
     }
 
     /// The path prefixes that are prov's own bookkeeping rather than content —
