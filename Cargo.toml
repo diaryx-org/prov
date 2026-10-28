@@ -128,7 +128,7 @@ prov-store = { path = "prov-store", version = "0.18.0", default-features = false
 #
 # prov configures its journal name rather than taking the default — see
 # `prov::journal::workspace_journal` for why `.prov-journal` has to stay.
-fs-transaction = { version = "0.4" }
+fs-transaction = { version = "0.4.1" }
 # Test scaffolding, shared so it cannot drift. Never published — see its manifest.
 prov-testkit = { path = "prov-testkit" }
 # Grains: how a value is cut into groups, and the chain a nest builds. Shared
