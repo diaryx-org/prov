@@ -272,10 +272,23 @@ mod pool {
     use std::sync::mpsc::{Receiver, Sender, channel};
     use std::sync::{Arc, Condvar, Mutex};
 
-    /// How many bytes may be read and waiting for a hash at once. Enough to
-    /// keep every core busy on files of any ordinary size; small enough that
-    /// verifying an archive never holds more than a sliver of it in memory.
+    /// How many bytes may be read and waiting for a hash at once, at most.
+    /// Enough to keep every core busy on files of any ordinary size; small
+    /// enough that verifying an archive never holds more than a sliver of it
+    /// in memory.
     const BUDGET: usize = 256 * 1024 * 1024;
+
+    /// The bytes each hashing thread may have waiting. Bytes queued past what
+    /// the threads can take on only sit in memory, so a machine with few cores
+    /// gets a smaller budget: a two-core NAS, whose threads also lose the CPU
+    /// to everything else it runs, filled the whole of [`BUDGET`] while
+    /// covering a photo share, on 2 GB of RAM.
+    const PER_THREAD: usize = 32 * 1024 * 1024;
+
+    /// The budget for a pool of `threads`.
+    fn budget(threads: usize) -> usize {
+        threads.max(1).saturating_mul(PER_THREAD).min(BUDGET)
+    }
 
     /// The bytes in flight, and a signal when some are done.
     struct InFlight {
@@ -313,7 +326,7 @@ mod pool {
 
     impl Pool {
         pub(super) fn new() -> Self {
-            Self::with_budget(BUDGET)
+            Self::with_budget(budget(rayon::current_num_threads()))
         }
 
         fn with_budget(budget: usize) -> Self {
@@ -380,6 +393,13 @@ mod pool {
             }
             let expected: Vec<String> = buffers.iter().map(|b| super::super::digest(b)).collect();
             assert_eq!(pool.finish(), expected);
+        }
+
+        #[test]
+        fn the_budget_grows_with_the_threads_up_to_its_ceiling() {
+            assert_eq!(budget(0), PER_THREAD);
+            assert_eq!(budget(2), 2 * PER_THREAD);
+            assert_eq!(budget(64), BUDGET);
         }
     }
 }
