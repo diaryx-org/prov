@@ -26,6 +26,7 @@ fig-toml.workspace = true
 fig-figl.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
+foldhash.workspace = true
 
 # Opaque document-ID verification *and* minting — the alphabet, the
 # check-character arithmetic that says whether a string is a well-formed id, and

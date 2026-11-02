@@ -13,7 +13,7 @@
 //! not found by probing, which is why `attach`'s own sweep confirms the pointer
 //! rather than trusting the name.
 
-use std::collections::HashMap;
+use crate::hash::FastMap;
 use std::path::{Path, PathBuf};
 
 use super::{Graph, Target};
@@ -64,13 +64,13 @@ pub fn sidecar_candidates(payload: &Path) -> impl Iterator<Item = PathBuf> + '_ 
 pub struct ShadowProbe {
     /// Payload path → the conventionally named sidecars actually present, in
     /// [`sidecar_candidates`]' preference order.
-    sidecars: HashMap<PathBuf, Vec<PathBuf>>,
+    sidecars: FastMap<PathBuf, Vec<PathBuf>>,
 }
 
 impl ShadowProbe {
     /// Index the workspace-relative files a scan enumerated.
     pub fn over<'a>(listing: impl IntoIterator<Item = &'a PathBuf>) -> Self {
-        let mut ranked: HashMap<PathBuf, Vec<(usize, PathBuf)>> = HashMap::new();
+        let mut ranked: FastMap<PathBuf, Vec<(usize, PathBuf)>> = FastMap::default();
         for entry in listing {
             let Some(rank) = entry
                 .extension()

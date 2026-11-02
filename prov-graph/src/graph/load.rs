@@ -100,7 +100,7 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
             if rayon::current_thread_index().is_some() || !self.memo_in_scope() {
                 return;
             }
-            let mut asked = std::collections::HashSet::new();
+            let mut asked = crate::hash::FastSet::default();
             let mut wanted: Vec<PathBuf> = paths
                 .into_iter()
                 .filter(|path| {

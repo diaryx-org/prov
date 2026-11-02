@@ -61,6 +61,7 @@ pub mod fixity;
 pub mod format;
 pub mod fs;
 pub mod graph;
+pub mod hash;
 pub mod identity;
 pub mod index;
 pub mod kind;

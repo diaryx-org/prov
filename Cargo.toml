@@ -107,6 +107,11 @@ sha2 = "0.11.0"
 # Work-stealing threads for `prov_graph::fixity::Digests`, behind prov's
 # `parallel` feature. See prov-graph's manifest.
 rayon = "1.12"
+# The hasher behind `prov_graph::hash`'s maps and sets keyed by path: a walk
+# asks them once per link per document, and std's SipHash was a twentieth of
+# a `check`. Pure Rust, no dependencies and no build script; seeded per
+# process, so still not predictable from outside.
+foldhash = "0.2"
 
 # Unicode NFD, for `prov_views::search`: a query and a text compare with case
 # and diacritics removed, so `alesund` finds `Ålesund`. Pure Rust, no

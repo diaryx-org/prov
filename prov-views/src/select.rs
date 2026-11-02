@@ -25,7 +25,7 @@
 //! which is how [`group`](fn@crate::group) files both documents under the
 //! record they point at rather than under two spellings of it.
 
-use std::collections::HashMap;
+use prov_graph::hash::FastMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -249,8 +249,8 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
 
     // Shared with the read memo, so a row's metadata is copied once, into
     // the row, rather than out of the memo and then again.
-    let mut metas: HashMap<PathBuf, std::sync::Arc<prov_graph::Loaded>> =
-        HashMap::with_capacity(reached.len());
+    let mut metas: FastMap<PathBuf, std::sync::Arc<prov_graph::Loaded>> =
+        FastMap::with_capacity_and_hasher(reached.len(), Default::default());
     for (path, _) in &reached {
         metas.insert(
             path.clone(),
@@ -301,7 +301,8 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
 /// its title; one that cannot be read resolves to nothing, as a dead link does.
 async fn resolve_references<FS: ReadStorage, Ix: IdIndex>(graph: &Graph<FS, Ix>, rows: &mut [Row]) {
     let mut titles = TitleIndex::new();
-    let mut title_of: HashMap<PathBuf, Option<String>> = HashMap::with_capacity(rows.len());
+    let mut title_of: FastMap<PathBuf, Option<String>> =
+        FastMap::with_capacity_and_hasher(rows.len(), Default::default());
     for row in rows.iter() {
         if let Some(stem) = row.path.file_stem().and_then(|s| s.to_str()) {
             titles.insert(stem, row.path.clone());

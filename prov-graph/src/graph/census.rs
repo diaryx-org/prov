@@ -2,7 +2,9 @@
 //! reachability views built over the result. See the module doc at
 //! [`crate::graph`] for why the census is ground truth.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::hash::FastSet;
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -328,7 +330,7 @@ pub fn reachable_set(
     let mut reachable: Vec<PathBuf> = Vec::with_capacity(census.len() + 1);
     reachable.push(link::normalize(start));
     reachable.extend(content_bodies.iter().cloned());
-    let mut seen: HashSet<&Path> = HashSet::new();
+    let mut seen: FastSet<&Path> = FastSet::default();
     for entry in census {
         match &entry.resolution {
             Resolution::Path(p) | Resolution::Id { to: p, .. } => {
@@ -427,7 +429,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // reached `<dir>.<ext>` names a directory that has a node beside it, so
         // the per-ancestor question is one hash lookup rather than a candidate
         // per extension probed against an ordered set.
-        let node_dirs: HashSet<PathBuf> = readable
+        let node_dirs: FastSet<PathBuf> = readable
             .iter()
             .filter(|c| {
                 c.extension()
@@ -617,13 +619,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // Everything the walk will read, read ahead in parallel and kept in
         // the memo, so the loop below meets it as hits.
         self.prefetch_tree(start, true).await;
-        let mut visited = HashSet::new();
+        let mut visited = FastSet::default();
         let mut queue = vec![link::normalize(start)];
         // What `queue` holds, for the duplicate-containment check: a path is
         // pushed only when it is neither visited nor queued, so the stack never
         // holds one twice and the set mirrors it exactly. Scanning the stack
         // instead was a path comparison per queued document per spanning link.
-        let mut queued: HashSet<PathBuf> = queue.iter().cloned().collect();
+        let mut queued: FastSet<PathBuf> = queue.iter().cloned().collect();
 
         // The nominal-resolution index, built lazily — only if a `[[alias]]` link
         // is actually encountered. A path/id workspace never scans (which, at the
@@ -894,7 +896,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let Some(spanning) = self.relations().spanning_relation().map(str::to_owned) else {
                 return;
             };
-            let mut seen: HashSet<PathBuf> = HashSet::new();
+            let mut seen: FastSet<PathBuf> = FastSet::default();
             let mut level = vec![link::normalize(start)];
             while !level.is_empty() && !self.memo_spent() {
                 level.retain(|path| seen.insert(path.clone()));

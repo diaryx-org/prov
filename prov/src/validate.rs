@@ -40,7 +40,9 @@
 //! statements admit several defensible answers. Nothing in this module knows
 //! how to change a document, and that is what keeps it a view.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
+
+use prov_graph::hash::FastSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -2601,7 +2603,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let verbatim = self.graph().verbatim_roots_reached(reachable).await;
         let mut docs: Vec<PathBuf> = Vec::new();
         let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
-        let reached: HashSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
+        let reached: FastSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
         for path in self.direct_child_files(&reached_dirs).await? {
             if reached.contains(path.as_path()) || island.contains(&path) {
                 continue;
@@ -2679,7 +2681,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut claims: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut payloads: Vec<(PathBuf, PathBuf)> = Vec::new();
         // Asked once per document on disk: a hash lookup, not an ordered one.
-        let reached: HashSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
+        let reached: FastSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
         for doc in self.all_documents().await? {
             if reached.contains(doc.as_path()) || parked.iter().any(|dir| doc.starts_with(dir)) {
                 continue;

@@ -66,7 +66,7 @@
 //! [`load`]: crate::graph::Graph::load
 //! [`Workspace::commit`]: https://docs.rs/prov
 
-use std::collections::{HashMap, HashSet};
+use crate::hash::{FastMap, FastSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -120,12 +120,12 @@ const MAX_DOCUMENT: usize = 1024 * 1024;
 #[derive(Debug, Default)]
 pub(crate) struct DirNames {
     /// Every entry name, as listed.
-    exact: HashSet<OsString>,
+    exact: FastSet<OsString>,
     /// ASCII-lowercased name → the name as listed. Last writer wins, which only
     /// matters when a directory holds two names differing in case, and then only
     /// for the *inexact* answer — [`exact`](Self::exact) has already settled the
     /// other one.
-    folded: HashMap<OsString, OsString>,
+    folded: FastMap<OsString, OsString>,
 }
 
 impl DirNames {
@@ -187,8 +187,8 @@ const DISCARD_ELSEWHERE: usize = 1024;
 /// it.
 fn discard(
     remembered: (
-        HashMap<PathBuf, Remembered>,
-        HashMap<PathBuf, Arc<DirNames>>,
+        FastMap<PathBuf, Remembered>,
+        FastMap<PathBuf, Arc<DirNames>>,
     ),
 ) {
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
@@ -223,10 +223,10 @@ pub struct ReadMemo {
     /// Scope nesting depth. Nothing is remembered outside a scope, and the
     /// outermost exit is what clears it.
     depth: usize,
-    docs: HashMap<PathBuf, Remembered>,
+    docs: FastMap<PathBuf, Remembered>,
     /// Listings held, keyed workspace-relative like [`docs`](Self::docs) — which
     /// is what lets [`forget`](Self::forget) drop the one a write invalidates.
-    dirs: HashMap<PathBuf, Arc<DirNames>>,
+    dirs: FastMap<PathBuf, Arc<DirNames>>,
     /// Text and listing names held, against [`BUDGET`].
     bytes: usize,
 }
