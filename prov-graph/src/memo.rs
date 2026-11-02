@@ -72,6 +72,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::document::Loaded;
+use crate::graph::prepare::Prepared;
 use crate::link::BodyLink;
 
 /// Take a lock, recovering from a panic that poisoned it.
@@ -219,6 +220,9 @@ fn discard(
 struct Remembered {
     read: Arc<Loaded>,
     links: Option<Arc<[BodyLink]>>,
+    /// The document's links prepared for the walk — see
+    /// [`crate::graph::prepare`].
+    prepared: Option<Arc<Prepared>>,
 }
 
 impl Remembered {
@@ -323,6 +327,37 @@ impl ReadMemo {
         }
     }
 
+    /// The links prepared for `path`, when they were prepared from the very
+    /// read the memo holds for it.
+    pub(crate) fn prepared(&self, path: &Path, read: &Arc<Loaded>) -> Option<Arc<Prepared>> {
+        if self.depth == 0 {
+            return None;
+        }
+        let hit = self.docs.get(path.as_os_str())?;
+        Arc::ptr_eq(&hit.read, read)
+            .then(|| hit.prepared.clone())
+            .flatten()
+    }
+
+    /// Remember the links prepared from `read`, beside `path`'s document. A
+    /// no-op unless that is the read the memo holds.
+    pub(crate) fn remember_prepared(
+        &mut self,
+        path: &Path,
+        read: &Arc<Loaded>,
+        prepared: Arc<Prepared>,
+    ) {
+        if self.depth == 0 {
+            return;
+        }
+        if let Some(hit) = self.docs.get_mut(path.as_os_str())
+            && Arc::ptr_eq(&hit.read, read)
+            && hit.prepared.is_none()
+        {
+            hit.prepared = Some(prepared);
+        }
+    }
+
     /// Remember what `path` read as. A no-op outside a scope, over the
     /// per-document ceiling, or once the budget is spent.
     pub(crate) fn remember(&mut self, path: &Path, read: Arc<Loaded>) {
@@ -331,7 +366,11 @@ impl ReadMemo {
             return;
         }
         self.bytes += len;
-        let remembered = Remembered { read, links: None };
+        let remembered = Remembered {
+            read,
+            links: None,
+            prepared: None,
+        };
         if let Some(stale) = self.docs.insert(path.as_os_str().to_owned(), remembered) {
             self.bytes -= stale.read.text.len();
         }

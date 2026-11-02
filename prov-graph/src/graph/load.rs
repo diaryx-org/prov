@@ -20,9 +20,16 @@ use crate::link::{self, BodyLink};
 const PARALLEL_BATCH: usize = 16;
 
 /// One document [`prefetch`](Graph::prefetch) read: its path, its text, its
-/// parse, and the links in its body when they were asked for.
+/// parse, the links in its body and those prepared for a walk when they were
+/// asked for, and where its spanning links lead.
 #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
-pub(crate) type Prefetched = (PathBuf, Arc<Loaded>, Option<Arc<[BodyLink]>>);
+pub(crate) type Prefetched = (
+    PathBuf,
+    Arc<Loaded>,
+    Option<Arc<[BodyLink]>>,
+    Option<Arc<super::prepare::Prepared>>,
+    Vec<super::prepare::Pre>,
+);
 
 impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// Read and parse the workspace-relative document at `path`, returning the
@@ -76,6 +83,28 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
         links.to_vec()
     }
 
+    /// The links of the document `read` found at `path`, prepared for the
+    /// walk — answered from the read memo when the prefetch prepared them, and
+    /// prepared here, and remembered, otherwise.
+    pub(crate) fn prepared(
+        &self,
+        path: &Path,
+        read: &Arc<Loaded>,
+    ) -> Arc<super::prepare::Prepared> {
+        if let Some(hit) = self.memo_prepared(path, read) {
+            return hit;
+        }
+        let body = self.body_links(path, &read.doc);
+        let prepared = Arc::new(super::prepare::prepare(
+            &self.settings,
+            path,
+            &read.doc,
+            &body,
+        ));
+        self.memo_remember_prepared(path, read, Arc::clone(&prepared));
+        prepared
+    }
+
     /// Read the documents at `paths` that this operation has not read yet,
     /// parse them on rayon's pool, and remember them for the rest of the
     /// operation, so that the [`load`](Self::load) each will get is answered
@@ -93,12 +122,20 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// feature on a target with threads; from inside rayon's pool, or outside
     /// a read scope (where nothing would be kept), it does nothing.
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
-    pub(crate) async fn prefetch(&self, paths: impl IntoIterator<Item = PathBuf>, links: bool) {
+    ///
+    /// Returns, for each document parsed on the pool, where its spanning links
+    /// lead ([`spanning_children`](super::prepare::spanning_children)), so a
+    /// tree prefetch need not work that out on its own thread.
+    pub(crate) async fn prefetch(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        links: bool,
+    ) -> Vec<(PathBuf, Vec<super::prepare::Pre>)> {
         {
             use rayon::prelude::*;
 
             if rayon::current_thread_index().is_some() || !self.memo_in_scope() {
-                return;
+                return Vec::new();
             }
             let mut asked = crate::hash::FastSet::default();
             let mut wanted: Vec<PathBuf> = paths
@@ -117,16 +154,29 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
                     if let Ok(read) = self.read(&path).await
                         && links
                     {
-                        self.body_links(&path, &read.doc);
+                        self.prepared(&path, &read);
                     }
                 }
-                return;
+                return Vec::new();
             }
+            // With `links`, the reader is a census walk, and the links it will
+            // resolve are prepared here too, off its thread.
+            let settings = &self.settings;
             let parse = |path: PathBuf, text: String| -> Option<Prefetched> {
                 let doc = Document::parse(&path, &text).ok()?;
                 let found: Option<Arc<[BodyLink]>> =
                     links.then(|| link::scan_body_links(&path, &doc.body).into());
-                Some((path, Arc::new(Loaded { text, doc }), found))
+                let prepared = found
+                    .as_ref()
+                    .map(|body| Arc::new(super::prepare::prepare(settings, &path, &doc, body)));
+                let children = super::prepare::spanning_children(settings, &path, &doc);
+                Some((
+                    path,
+                    Arc::new(Loaded { text, doc }),
+                    found,
+                    prepared,
+                    children,
+                ))
             };
             let parsed: Vec<Prefetched> = match self.fs().shared_reader() {
                 Some(reader) => {
@@ -151,7 +201,12 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
                         .collect()
                 }
             };
+            let children = parsed
+                .iter()
+                .map(|(path, .., children)| (path.clone(), children.clone()))
+                .collect();
             self.memo_remember_all(parsed);
+            children
         }
     }
 

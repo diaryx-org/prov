@@ -661,7 +661,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 }
             };
             let doc = &read.doc;
-            let meta = fig::Value::from(&doc.meta);
+            // What this document's links say before anything is asked of the
+            // filesystem or the registry — prepared by the prefetch off this
+            // thread, or here when it was not. See `prepare`.
+            let prepared = self.prepared(&path, &read);
 
             // Reconcile a self-stored `id` against the registry (frontmatter
             // storage, DESIGN §5). Three outcomes when a document carries its own
@@ -669,7 +672,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // *different* id for this path, or hands this id to another document
             // (`IdMismatch` — a drift); or the registry has never heard of the id
             // (`UnregisteredId` — the shadow got ahead of the cache).
-            if let Some(fm) = meta.get("id").and_then(fig::Value::as_str)
+            if let Some(fm) = doc.meta.get("id").and_then(crate::meta::Value::as_str)
                 && !fm.trim().is_empty()
             {
                 let fm = Id(fm.trim().to_string());
@@ -714,14 +717,17 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
             // Frontmatter links — relation edges, the only links that can be
             // spanning, and the values of path-valued fields, which never are.
-            for FrontmatterLink { site, raw, .. } in self.frontmatter_links(&meta) {
-                // Parse once: `link.target` is the bare target (any `[label](…)`
-                // stripped), which is what both the census and findings record.
-                let link = Link::parse(&raw);
-                if titles.is_none() && title::is_alias_shaped(&link.target) {
+            for front in &prepared.front {
+                // `link.target` is the bare target (any `[label](…)` stripped),
+                // which is what both the census and findings record.
+                let site = &front.site.site;
+                let link = &front.link;
+                if titles.is_none() && front.alias_shaped {
                     titles = Some(self.title_index_scoped(start, parked).await?);
                 }
-                let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
+                let resolution = self
+                    .resolve_prepared(&path, link, &front.pre, titles.as_ref())
+                    .await;
 
                 if site.relation() == spanning.as_deref()
                     && site.relation().is_some()
@@ -740,22 +746,18 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                             && let Ok(child) = self.read(&resolved).await
                             && child.doc.has_meta()
                         {
-                            let child_meta = fig::Value::from(&child.doc.meta);
-                            let inverse_targets = child_meta
-                                .get(inverse)
-                                .map(crate::meta::link_strings)
-                                .unwrap_or_default();
+                            let child_links = self.prepared(&resolved, &child);
                             // Build the title index if a nominal inverse link needs it.
                             if titles.is_none()
-                                && inverse_targets
-                                    .iter()
-                                    .any(|t| title::is_alias_shaped(&Link::parse(t).target))
+                                && child_links.inverse.iter().any(|l| l.alias_shaped)
                             {
                                 titles = Some(self.title_index_scoped(start, parked).await?);
                             }
-                            let points_back = inverse_targets.iter().any(|t| {
-                                self.resolve_link_with(&resolved, &Link::parse(t), titles.as_ref())
-                                    == Target::Path(path.clone())
+                            let points_back = child_links.inverse.iter().any(|l| {
+                                matches!(
+                                    self.target_prepared(&resolved, &l.link, &l.pre, titles.as_ref()),
+                                    Target::Path(back) if back == path
+                                )
                             });
                             if !points_back {
                                 structural.push(StructuralFact::MissingInverse {
@@ -772,9 +774,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
                 census.push(CensusEntry {
                     source: path.clone(),
-                    site,
-                    label: link.label,
-                    target_text: link.target,
+                    site: site.clone(),
+                    label: link.label.clone(),
+                    target_text: link.target.clone(),
                     resolution,
                 });
             }
@@ -788,20 +790,20 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // image is a file that is missing, never a nominal reference to a
             // document by title, and it neither builds the title index nor
             // resolves through it.
-            for body_link in self.body_links(&path, doc) {
-                let image = body_link.image;
-                let wl = body_link.link;
-                if !image && titles.is_none() && title::is_alias_shaped(&wl.target) {
+            for body in &prepared.body {
+                let image = body.site.image;
+                let wl = &body.link;
+                if titles.is_none() && body.alias_shaped {
                     titles = Some(self.title_index_scoped(start, parked).await?);
                 }
                 let resolution = self
-                    .resolve_forward(&path, &wl, titles.as_ref().filter(|_| !image))
+                    .resolve_prepared(&path, wl, &body.pre, titles.as_ref().filter(|_| !image))
                     .await;
                 census.push(CensusEntry {
                     source: path.clone(),
-                    site: LinkSite::Body(body_link.span),
-                    label: wl.label,
-                    target_text: wl.target,
+                    site: LinkSite::Body(body.site.span.clone()),
+                    label: wl.label.clone(),
+                    target_text: wl.target.clone(),
                     resolution,
                 });
             }
@@ -905,9 +907,23 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let mut level = vec![link::normalize(start)];
             while !level.is_empty() && !self.memo_spent() {
                 level.retain(|path| seen.insert(path.clone()));
-                self.prefetch(level.iter().cloned(), links).await;
+                // Where the pool's documents lead, worked out beside their parse.
+                let mut from_pool: crate::hash::FastMap<PathBuf, Vec<super::prepare::Pre>> = self
+                    .prefetch(level.iter().cloned(), links)
+                    .await
+                    .into_iter()
+                    .collect();
                 let mut next = Vec::new();
                 for path in &level {
+                    if let Some(children) = from_pool.remove(path) {
+                        next.extend(
+                            children
+                                .iter()
+                                .filter_map(|pre| self.spanning_target(pre))
+                                .filter(|child| !seen.contains(child)),
+                        );
+                        continue;
+                    }
                     let Some(read) = self.memo_hit(path) else {
                         continue;
                     };
@@ -931,6 +947,18 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         let _ = (start, links);
     }
 
+    /// Where a spanning link whose [`Pre`](super::prepare::Pre) is known leads,
+    /// as [`spanning_guess`](Self::spanning_guess) would guess it.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    fn spanning_target(&self, pre: &super::prepare::Pre) -> Option<PathBuf> {
+        use super::prepare::Pre;
+        match pre {
+            Pre::Local(id) => self.index().resolve(id).map(link::normalize),
+            Pre::Path(path) => Some(path.clone()),
+            _ => None,
+        }
+    }
+
     /// Where the spanning link `raw`, declared in the document at `source`,
     /// most likely leads — what [`prefetch_tree`](Self::prefetch_tree) reads
     /// next. A guess, so it skips what it cannot make cheaply: a foreign or
@@ -946,6 +974,81 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             Some(crate::link::IdRef::Local(id)) => self.index().resolve(&id).map(link::normalize),
             Some(_) => None,
             None => Some(link::resolve(source, &link.target)),
+        }
+    }
+
+    /// [`resolve_forward`](Self::resolve_forward) for a link whose
+    /// [`Pre`](super::prepare::Pre) is already known: the same answer, with
+    /// only the registry and the directory listing left to ask. A nominal link
+    /// goes to `resolve_forward` whole.
+    async fn resolve_prepared(
+        &self,
+        source: &Path,
+        link: &Link,
+        pre: &super::prepare::Pre,
+        titles: Option<&TitleIndex>,
+    ) -> Resolution {
+        use super::prepare::Pre;
+        match pre {
+            Pre::External => Resolution::External,
+            Pre::SameDocument => Resolution::SameDocument,
+            Pre::Foreign { workspace, id } => Resolution::Foreign {
+                workspace: workspace.clone(),
+                id: id.clone(),
+            },
+            Pre::Malformed => Resolution::MalformedId,
+            Pre::Local(id) => {
+                if !identity::verify(id.as_str()) {
+                    return Resolution::MalformedId;
+                }
+                match self.index().resolve(id) {
+                    Some(path) => Resolution::Id {
+                        id: id.clone(),
+                        to: link::normalize(path),
+                    },
+                    None => Resolution::DanglingId {
+                        tombstoned: self.index().is_known(id),
+                        id: id.clone(),
+                    },
+                }
+            }
+            Pre::Nominal => self.resolve_forward(source, link, titles).await,
+            Pre::Path(resolved) => match self.exact_name(resolved).await {
+                NameMatch::Exact => Resolution::Path(resolved.clone()),
+                NameMatch::CaseOnly(actual) => Resolution::CaseMismatch {
+                    got: resolved.clone(),
+                    actual,
+                },
+                NameMatch::None => Resolution::Broken,
+            },
+        }
+    }
+
+    /// [`resolve_link_with`](Self::resolve_link_with) for a link whose
+    /// [`Pre`](super::prepare::Pre) is already known — the inverse check's
+    /// resolver, which neither verifies an id nor looks at the filesystem.
+    fn target_prepared(
+        &self,
+        source: &Path,
+        link: &Link,
+        pre: &super::prepare::Pre,
+        titles: Option<&TitleIndex>,
+    ) -> Target {
+        use super::prepare::Pre;
+        match pre {
+            Pre::External => Target::External,
+            Pre::SameDocument => Target::SameDocument,
+            Pre::Foreign { workspace, id } => Target::Foreign {
+                workspace: workspace.clone(),
+                id: id.clone(),
+            },
+            Pre::Malformed => Target::UnresolvedId(Id(link.target.clone())),
+            Pre::Local(id) => match self.index().resolve(id) {
+                Some(path) => Target::Path(link::normalize(path)),
+                None => Target::UnresolvedId(id.clone()),
+            },
+            Pre::Nominal => self.resolve_link_with(source, link, titles),
+            Pre::Path(resolved) => Target::Path(resolved.clone()),
         }
     }
 
