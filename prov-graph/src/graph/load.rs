@@ -320,7 +320,10 @@ mod tests {
 
         let first = block_on(ws.read(a)).unwrap();
         let again = block_on(ws.read(a)).unwrap();
-        assert!(!Arc::ptr_eq(&first, &again), "nothing is shared outside a scope");
+        assert!(
+            !Arc::ptr_eq(&first, &again),
+            "nothing is shared outside a scope"
+        );
 
         let _scope = ws.read_scope();
         let first = block_on(ws.read(a)).unwrap();
