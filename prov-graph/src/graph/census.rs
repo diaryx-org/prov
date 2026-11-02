@@ -325,24 +325,43 @@ pub fn reachable_set(
     census: &[CensusEntry],
     content_bodies: &[PathBuf],
 ) -> BTreeSet<PathBuf> {
-    let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
-    reachable.insert(link::normalize(start));
+    let mut reachable: Vec<PathBuf> = Vec::with_capacity(census.len() + 1);
+    reachable.push(link::normalize(start));
     reachable.extend(content_bodies.iter().cloned());
     let mut seen: HashSet<&Path> = HashSet::new();
     for entry in census {
         match &entry.resolution {
             Resolution::Path(p) | Resolution::Id { to: p, .. } => {
                 if seen.insert(p) {
-                    reachable.insert(p.clone());
+                    reachable.push(p.clone());
                 }
             }
             Resolution::CaseMismatch { got, actual } => {
-                reachable.insert(got.with_file_name(actual));
+                reachable.push(got.with_file_name(actual));
             }
             _ => {}
         }
     }
-    reachable
+    path_set(reachable)
+}
+
+/// `paths` as an ordered set, built for less than inserting them one by one.
+///
+/// [`Path`]'s order compares component by component, which is several times
+/// the cost of comparing bytes, and inserting ten thousand paths costs a
+/// dozen comparisons each. So the paths are sorted by their bytes first: that
+/// order is [`Path`]'s except where a name holds a byte below `/` (`a-b`
+/// sorts before `a/b` by bytes, after it by components), so the stable sort
+/// that collecting into the set performs finds them almost in order, and
+/// costs about one comparison each.
+pub(crate) fn path_set(mut paths: Vec<PathBuf>) -> BTreeSet<PathBuf> {
+    paths.sort_unstable_by(|a, b| {
+        a.as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.as_os_str().as_encoded_bytes())
+    });
+    paths.dedup();
+    paths.into_iter().collect()
 }
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
@@ -429,7 +448,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         } else {
             Vec::new()
         };
-        let mut documents = BTreeSet::new();
+        // Kept in `reachable`'s order, so collecting them is a bulk build
+        // rather than an insert, and its comparisons, per document.
+        let mut documents = Vec::with_capacity(reachable.len());
         for path in reachable {
             if covered.iter().any(|(root, verbatim)| {
                 path.starts_with(root) && (*verbatim || is_opaque_payload(path))
@@ -437,10 +458,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 continue;
             }
             if !self.is_shadowed_payload(path, &probe).await {
-                documents.insert(path.clone());
+                documents.push(path.clone());
             }
         }
-        Ok(documents)
+        Ok(documents.into_iter().collect())
     }
 
     /// Every file the workspace reaches from `start` that actually exists on
@@ -1125,6 +1146,21 @@ pub fn inbound_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_set_is_the_set_that_inserting_each_path_builds() {
+        let paths: Vec<PathBuf> = [
+            "a/b.md", "a-b.md", "a.b/c.md", "a/b/c.md", "a b/c.md", "a", "a/", "a!/x.md", "a/b.md",
+            "Z.md", "z/a.md", "é/x.md", "e/x.md", "", "./a.md", "a//b.md",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+        let inserted: BTreeSet<PathBuf> = paths.iter().cloned().collect();
+        let built = path_set(paths);
+        assert_eq!(built, inserted);
+        assert!(built.iter().zip(built.iter().skip(1)).all(|(a, b)| a < b));
+    }
     use crate::exec::block_on;
     use crate::fs::StdFs;
     use crate::graph::ReadSettings;

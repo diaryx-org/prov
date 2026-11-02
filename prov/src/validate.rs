@@ -40,7 +40,7 @@
 //! statements admit several defensible answers. Nothing in this module knows
 //! how to change a document, and that is what keeps it a view.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -2601,8 +2601,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let verbatim = self.graph().verbatim_roots_reached(reachable).await;
         let mut docs: Vec<PathBuf> = Vec::new();
         let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
+        let reached: HashSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
         for path in self.direct_child_files(&reached_dirs).await? {
-            if reachable.contains(&path) || island.contains(&path) {
+            if reached.contains(path.as_path()) || island.contains(&path) {
                 continue;
             }
             if verbatim.iter().any(|root| path.starts_with(root)) {
@@ -2677,8 +2678,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // rest of the whole-file documents are machinery and claim nothing.
         let mut claims: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut payloads: Vec<(PathBuf, PathBuf)> = Vec::new();
+        // Asked once per document on disk: a hash lookup, not an ordered one.
+        let reached: HashSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
         for doc in self.all_documents().await? {
-            if reachable.contains(&doc) || parked.iter().any(|dir| doc.starts_with(dir)) {
+            if reached.contains(doc.as_path()) || parked.iter().any(|dir| doc.starts_with(dir)) {
                 continue;
             }
             let Ok(read) = self.read(&doc).await else {
@@ -2706,7 +2709,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         loop {
             let before = island.len();
             for (doc, parent) in &claims {
-                if !island.contains(doc) && (reachable.contains(parent) || island.contains(parent))
+                if !island.contains(doc)
+                    && (reached.contains(parent.as_path()) || island.contains(parent))
                 {
                     island.insert(doc.clone());
                 }
