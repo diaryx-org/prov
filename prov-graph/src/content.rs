@@ -193,8 +193,17 @@ pub struct BodySpans {
 /// returned it.
 pub fn code_and_link_spans(body: &str, format: ContentFormat) -> crate::error::Result<BodySpans> {
     let mut doc = parse(body, format)?;
+    // Only the kinds sorted below, rather than a copy of every node's text
+    // and attributes to throw most of away.
     let nodes = doc
-        .nodes()
+        .nodes_of_kind(&[
+            twig::Kind::Verbatim,
+            twig::Kind::CodeBlock,
+            twig::Kind::RawInline,
+            twig::Kind::RawBlock,
+            twig::Kind::Link,
+            twig::Kind::Image,
+        ])
         .map_err(|e| crate::error::Error::Content(format!("twig nodes: {e}")))?;
     let mut code = Vec::new();
     let mut links = Vec::new();

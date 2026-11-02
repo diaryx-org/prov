@@ -196,54 +196,14 @@ pub fn frontmatter_block(text: &str) -> Option<(MetaFormat, twig::meta::Block)> 
     Some((format, block))
 }
 
-/// `text`'s front metadata block, parsing it as `format`.
-///
-/// Markdown is asked only about the lines up to the frontmatter's closing
-/// fence, when there is one. Its parser consumes frontmatter before reading
-/// anything else, and takes the first line after the opening fence that
-/// matches it as the closing one, so those lines produce the same block at
-/// the same offsets as the whole text would. Parsing the body as well was
-/// most of what reading a workspace cost. A prefix that yields no block
-/// (because the opening fence names no language) falls back to the whole
-/// text, which may still hold a data island further down.
+/// `text`'s front metadata block, as `format` reads it. twig's
+/// [`find_front`](twig::meta::find_front) parses only as much of `text` as
+/// locating it takes — for Markdown, the lines up to the frontmatter's close
+/// — and gives what a parse of the whole text would.
 fn located(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
-    if format == twig_markdown::format()
-        && let Some(prefix) = fenced_prefix(text)
-        && let Some(block) = parse_front(prefix, format)
-    {
-        return Some(block);
-    }
-    parse_front(text, format)
-}
-
-fn parse_front(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
-    let parsed = twig::meta::parse_host(text.as_bytes(), format).ok()?;
-    twig::meta::find(&parsed.doc, twig::meta::Where::Front)
-}
-
-/// `text` up to and including the line that closes the fence opening it, or
-/// `None` when its first line opens no fence or nothing closes it. Lines are
-/// split as twig-markdown splits them: on `\n`, with a trailing `\r`
-/// dropped, and a fence line compared without trailing spaces and tabs.
-fn fenced_prefix(text: &str) -> Option<&str> {
-    fn fence_line(line: &str) -> &str {
-        let line = line.strip_suffix('\n').unwrap_or(line);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        line.trim_end_matches([' ', '\t'])
-    }
-    let mut lines = text.split_inclusive('\n');
-    let first = lines.next()?;
-    let delim = ["---", "+++"]
-        .into_iter()
-        .find(|d| fence_line(first).starts_with(d))?;
-    let mut end = first.len();
-    for line in lines {
-        end += line.len();
-        if fence_line(line) == delim {
-            return Some(&text[..end]);
-        }
-    }
-    None
+    twig::meta::find_front(text.as_bytes(), format)
+        .ok()
+        .flatten()
 }
 
 /// A parsed document: its path, its embedded metadata, and its body text.
@@ -572,11 +532,10 @@ mod tests {
             "---",
         ];
         for text in texts {
-            assert_eq!(
-                located(text, twig_markdown::format()),
-                parse_front(text, twig_markdown::format()),
-                "{text:?}"
-            );
+            let whole = twig::meta::parse_host(text.as_bytes(), twig_markdown::format())
+                .ok()
+                .and_then(|parsed| twig::meta::find(&parsed.doc, twig::meta::Where::Front));
+            assert_eq!(located(text, twig_markdown::format()), whole, "{text:?}");
         }
     }
 
