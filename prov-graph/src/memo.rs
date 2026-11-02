@@ -172,6 +172,33 @@ impl DirNames {
     }
 }
 
+/// How many documents a memo must hold before freeing them is worth handing
+/// to another thread. Below it, the hand-off costs more than it saves.
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+const DISCARD_ELSEWHERE: usize = 1024;
+
+/// Free what an operation remembered, without making the operation wait.
+///
+/// Dropping ten thousand documents is a free per string and per value in
+/// each, and it was a tenth of a `check`'s main thread, spent after the
+/// answer was known. With the `parallel` feature, a large memo is dropped on
+/// rayon's pool instead, so the caller returns at once; a process that exits
+/// first simply never pays. Nothing observes the memory, so nothing waits on
+/// it.
+fn discard(
+    remembered: (
+        HashMap<PathBuf, Remembered>,
+        HashMap<PathBuf, Arc<DirNames>>,
+    ),
+) {
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    if remembered.0.len() >= DISCARD_ELSEWHERE {
+        rayon::spawn(move || drop(remembered));
+        return;
+    }
+    drop(remembered);
+}
+
 /// One document as read, shared with whoever asked for it, and once someone
 /// has asked, the links in its body.
 #[derive(Debug)]
@@ -321,9 +348,10 @@ impl ReadMemo {
     }
 
     pub(crate) fn clear(&mut self) {
-        self.docs.clear();
-        self.dirs.clear();
+        let docs = std::mem::take(&mut self.docs);
+        let dirs = std::mem::take(&mut self.dirs);
         self.bytes = 0;
+        discard((docs, dirs));
     }
 
     /// How many documents are remembered — the observable the tests assert on.
