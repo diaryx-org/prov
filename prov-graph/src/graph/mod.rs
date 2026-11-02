@@ -346,12 +346,12 @@ impl<FS, Ix> Graph<FS, Ix> {
         crate::memo::lock(&self.memo)
     }
 
-    pub(crate) fn memo_hit(&self, path: &Path) -> Option<(String, crate::document::Document)> {
-        self.memo.lock().unwrap().get(path)
+    pub(crate) fn memo_hit(&self, path: &Path) -> Option<Arc<crate::document::Loaded>> {
+        crate::memo::lock(&self.memo).get(path)
     }
 
-    pub(crate) fn memo_remember(&self, path: &Path, text: &str, doc: &crate::document::Document) {
-        self.memo.lock().unwrap().remember(path, text, doc);
+    pub(crate) fn memo_remember(&self, path: &Path, read: Arc<crate::document::Loaded>) {
+        crate::memo::lock(&self.memo).remember(path, read);
     }
 
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
@@ -385,13 +385,14 @@ impl<FS, Ix> Graph<FS, Ix> {
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
     pub(crate) fn memo_remember_all(&self, read: Vec<load::Prefetched>) {
         let mut memo = crate::memo::lock(&self.memo);
-        for (path, text, doc, links) in read {
+        for (path, read, links) in read {
             if memo.holds(&path) {
                 continue;
             }
-            memo.remember(&path, &text, &doc);
+            let body = Arc::clone(&read);
+            memo.remember(&path, read);
             if let Some(links) = links {
-                memo.remember_links(&path, &doc.body, links);
+                memo.remember_links(&path, &body.doc.body, links);
             }
         }
     }

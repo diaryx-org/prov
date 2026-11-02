@@ -562,23 +562,26 @@ pub async fn corpus<FS: ReadStorage, Ix: IdIndex>(
     let rows = documents(graph, root_doc).await?;
     let mut docs = Vec::with_capacity(rows.len());
     for row in rows {
-        let doc = graph.document(&row.path).await?;
+        let path = prov_graph::link::normalize(&row.path);
+        let read = graph.read(&path).await?;
+        let doc = &read.doc;
         let has_body = !doc.is_attachment()
             && !(matches!(doc.carrier, Some(MetaCarrier::WholeFile(_)))
                 && doc.content_attr().is_none());
-        let body = if has_body {
-            Some(graph.body(&row.path).await?.text)
+        // A combined document's body is the one just read, folded where it
+        // sits; only a separated one has a second file to fetch.
+        let separate = if has_body && doc.content_path(&path).is_some() {
+            Some(graph.body(&path).await?.text)
         } else {
             None
         };
+        let body = match (&separate, has_body) {
+            (Some(text), _) => Some(text.as_str()),
+            (None, true) => Some(doc.body.as_str()),
+            (None, false) => None,
+        };
         let title = row.title().unwrap_or_else(|| stem_title(&row.path));
-        docs.push(IndexedDoc::new(
-            row.path,
-            title,
-            &row.meta,
-            body.as_deref(),
-            &excluded,
-        ));
+        docs.push(IndexedDoc::new(row.path, title, &row.meta, body, &excluded));
     }
     Ok(Corpus { docs })
 }

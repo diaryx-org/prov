@@ -247,10 +247,15 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
     reached.sort_by(|a, b| a.0.cmp(&b.0));
     reached.dedup_by(|a, b| a.0 == b.0);
 
-    let mut metas: HashMap<PathBuf, Value> = HashMap::with_capacity(reached.len());
+    // Shared with the read memo, so a row's metadata is copied once, into
+    // the row, rather than out of the memo and then again.
+    let mut metas: HashMap<PathBuf, std::sync::Arc<prov_graph::Loaded>> =
+        HashMap::with_capacity(reached.len());
     for (path, _) in &reached {
-        let doc = graph.document(path).await?;
-        metas.insert(path.clone(), doc.meta);
+        metas.insert(
+            path.clone(),
+            graph.read(&prov_graph::link::normalize(path)).await?,
+        );
     }
     let id_of = |path: &Path, meta: &Value| {
         meta.get("id")
@@ -259,7 +264,7 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
             .or_else(|| graph.index().id_for_path(path).map(|id| id.0))
     };
     let ancestor = |path: &PathBuf| {
-        let meta = metas.get(path);
+        let meta = metas.get(path).map(|read| &read.doc.meta);
         Ancestor {
             path: path.clone(),
             title: meta
@@ -271,7 +276,9 @@ pub async fn documents<FS: ReadStorage, Ix: IdIndex>(
 
     let mut rows = Vec::with_capacity(reached.len());
     for (path, above) in &reached {
-        let meta = metas.get(path).cloned().unwrap_or(Value::Null);
+        let meta = metas
+            .get(path)
+            .map_or(Value::Null, |read| read.doc.meta.clone());
         rows.push(Row {
             path: path.clone(),
             id: id_of(path, &meta),

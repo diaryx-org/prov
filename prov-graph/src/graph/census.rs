@@ -621,8 +621,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if !visited.insert(path.clone()) {
                 continue;
             }
-            let doc = match self.load(&path).await {
-                Ok((_, doc)) => doc,
+            let read = match self.read(&path).await {
+                Ok(read) => read,
                 Err(e) => {
                     structural.push(StructuralFact::Unreadable {
                         doc: path,
@@ -631,6 +631,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     continue;
                 }
             };
+            let doc = &read.doc;
             let meta = fig::Value::from(&doc.meta);
 
             // Reconcile a self-stored `id` against the registry (frontmatter
@@ -714,10 +715,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                         });
                     } else {
                         if let Some(inverse) = inverse.as_deref()
-                            && let Ok((_, child_doc)) = self.load(&resolved).await
-                            && child_doc.has_meta()
+                            && let Ok(child) = self.read(&resolved).await
+                            && child.doc.has_meta()
                         {
-                            let child_meta = fig::Value::from(&child_doc.meta);
+                            let child_meta = fig::Value::from(&child.doc.meta);
                             let inverse_targets = child_meta
                                 .get(inverse)
                                 .map(crate::meta::link_strings)
@@ -765,7 +766,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // image is a file that is missing, never a nominal reference to a
             // document by title, and it neither builds the title index nor
             // resolves through it.
-            for body_link in self.body_links(&path, &doc) {
+            for body_link in self.body_links(&path, doc) {
                 let image = body_link.image;
                 let wl = body_link.link;
                 if !image && titles.is_none() && title::is_alias_shaped(&wl.target) {

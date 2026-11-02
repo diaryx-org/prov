@@ -220,8 +220,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // first also meant stat-ing an escaping target (`../../etc/passwd`)
             // before `load`'s root clamp got to refuse it; now the clamp is
             // first.
-            let doc = match self.load(&path).await {
-                Ok((_, doc)) => doc,
+            let read = match self.read(&path).await {
+                Ok(read) => read,
                 Err(e) if is_missing(&e) => {
                     return Ok(Node {
                         path,
@@ -241,6 +241,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     });
                 }
             };
+            let doc = &read.doc;
             let meta = fig::Value::from(&doc.meta);
             let title = doc.meta.get("title").and_then(crate::title::title_text);
 

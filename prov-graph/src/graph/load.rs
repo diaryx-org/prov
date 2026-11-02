@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::Graph;
-use crate::document::{Body, Document};
+use crate::document::{Body, Document, Loaded};
 use crate::error::{Error, Result};
 use crate::fs::ReadStorage;
 use crate::link::{self, BodyLink};
@@ -15,13 +15,26 @@ use crate::link::{self, BodyLink};
 /// One document [`prefetch`](Graph::prefetch) read: its path, its text, its
 /// parse, and the links in its body when they were asked for.
 #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
-pub(crate) type Prefetched = (PathBuf, String, Document, Option<Arc<[BodyLink]>>);
+pub(crate) type Prefetched = (PathBuf, Arc<Loaded>, Option<Arc<[BodyLink]>>);
 
 impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// Read and parse the workspace-relative document at `path`, returning the
     /// raw text alongside. The building block traversal, validation, and
     /// mutation share.
+    ///
+    /// The owned form of [`read`](Self::read): a caller that only looks at
+    /// what it gets should ask `read`, which inside a read scope hands back
+    /// the memo's own copy rather than a fresh one.
     pub async fn load(&self, path: &Path) -> Result<(String, Document)> {
+        let read = self.read(path).await?;
+        let Loaded { text, doc } = Arc::try_unwrap(read).unwrap_or_else(|shared| (*shared).clone());
+        Ok((text, doc))
+    }
+
+    /// [`load`](Self::load), shared: the document at `path` as one read found
+    /// it. Inside a read scope a document already read this operation is the
+    /// same [`Loaded`], so asking again costs a reference count.
+    pub async fn read(&self, path: &Path) -> Result<Arc<Loaded>> {
         // Clamp reads to the workspace root: `path` may originate in a document's
         // own metadata (a `contents`/`part_of` target), so a hostile or careless
         // `../../../etc/passwd` must be refused here rather than opened. The
@@ -38,8 +51,9 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
         }
         let text = self.fs().read_to_string(&self.root().join(path)).await?;
         let doc = Document::parse(path, &text)?;
-        self.memo_remember(path, &text, &doc);
-        Ok((text, doc))
+        let read = Arc::new(Loaded { text, doc });
+        self.memo_remember(path, Arc::clone(&read));
+        Ok(read)
     }
 
     /// The links in `doc`'s body, as [`link::scan_body_links`] finds them —
@@ -91,7 +105,7 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
                 let doc = Document::parse(&path, &text).ok()?;
                 let found: Option<Arc<[BodyLink]>> =
                     links.then(|| link::scan_body_links(&path, &doc.body).into());
-                Some((path, text, doc, found))
+                Some((path, Arc::new(Loaded { text, doc }), found))
             };
             let parsed: Vec<Prefetched> = match self.fs().shared_reader() {
                 Some(reader) => {
@@ -135,7 +149,8 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// know why it failed, not to receive a placeholder.
     pub async fn document(&self, path: impl AsRef<Path>) -> Result<Document> {
         let path = link::normalize(path);
-        self.load(&path).await.map(|(_, doc)| doc)
+        let read = self.read(&path).await?;
+        Ok(Arc::try_unwrap(read).map_or_else(|shared| shared.doc.clone(), |own| own.doc))
     }
 
     /// The prose body of the document at `path`, wherever it physically lives —
@@ -162,10 +177,11 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// anyway, which is a confusing way to learn the file was never prose.
     pub async fn body(&self, path: impl AsRef<Path>) -> Result<Body> {
         let path = link::normalize(path);
-        let (_, doc) = self.load(&path).await?;
+        let read = self.read(&path).await?;
+        let doc = &read.doc;
         let Some(content) = doc.content_path(&path) else {
             return Ok(Body {
-                text: doc.body,
+                text: doc.body.clone(),
                 path,
             });
         };
@@ -293,6 +309,26 @@ mod tests {
             ws.memo_links(Path::new("a.md"), &a.body).map(|l| l.len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn a_read_inside_a_scope_shares_what_the_first_read_found() {
+        let dir = tempdir("read-shared");
+        write(&dir, "a.md", "---\ntitle: A\n---\nbody\n");
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let a = Path::new("a.md");
+
+        let first = block_on(ws.read(a)).unwrap();
+        let again = block_on(ws.read(a)).unwrap();
+        assert!(!Arc::ptr_eq(&first, &again), "nothing is shared outside a scope");
+
+        let _scope = ws.read_scope();
+        let first = block_on(ws.read(a)).unwrap();
+        let again = block_on(ws.read(a)).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        let (text, doc) = block_on(ws.load(a)).unwrap();
+        assert_eq!(text, first.text);
+        assert_eq!(doc.body, first.doc.body);
     }
 
     #[test]

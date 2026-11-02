@@ -206,6 +206,18 @@ fn located(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
         .flatten()
 }
 
+/// A document as one read found it: the text it was parsed from, and the
+/// parse. What [`Graph::read`](crate::graph::Graph::read) hands out, shared,
+/// so that asking for a document a second time in one operation costs a
+/// reference count rather than a copy of both.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    /// The file's text, exactly as read.
+    pub text: String,
+    /// What [`Document::parse`] made of it.
+    pub doc: Document,
+}
+
 /// A parsed document: its path, its embedded metadata, and its body text.
 ///
 /// Metadata is stored as a dynamic [`Value`] (a mapping, or [`Value::Null`] when

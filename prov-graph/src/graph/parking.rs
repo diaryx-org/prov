@@ -84,7 +84,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             return Ok(dirs);
         }
         let root_doc = link::normalize(root_doc);
-        let (_, doc) = self.load(&root_doc).await?;
+        let read = self.read(&root_doc).await?;
+        let doc = &read.doc;
         for store in &parking.stores {
             for pointer in &store.pointers {
                 let Some(raw) = doc

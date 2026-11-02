@@ -71,7 +71,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::document::Document;
+use crate::document::Loaded;
 use crate::link::BodyLink;
 
 /// Take a lock, recovering from a panic that poisoned it.
@@ -172,13 +172,22 @@ impl DirNames {
     }
 }
 
-/// One document as read: its text, its parse, and once someone has asked,
-/// the links in its body.
+/// One document as read, shared with whoever asked for it, and once someone
+/// has asked, the links in its body.
 #[derive(Debug)]
 struct Remembered {
-    text: String,
-    doc: Document,
+    read: Arc<Loaded>,
     links: Option<Arc<[BodyLink]>>,
+}
+
+impl Remembered {
+    /// Whether `body` is the body this document was remembered with. Almost
+    /// always asked of the very string the memo handed out, so the pointer
+    /// settles it before any byte is compared.
+    fn has_body(&self, body: &str) -> bool {
+        let ours = self.read.doc.body.as_str();
+        std::ptr::eq(ours, body) || ours == body
+    }
 }
 
 /// What one operation has already read.
@@ -211,13 +220,11 @@ impl ReadMemo {
 
     /// What was read for `path` this operation, if anything. `None` outside a
     /// scope, always: a memo nobody opened holds nothing.
-    pub(crate) fn get(&self, path: &Path) -> Option<(String, Document)> {
+    pub(crate) fn get(&self, path: &Path) -> Option<Arc<Loaded>> {
         if self.depth == 0 {
             return None;
         }
-        self.docs
-            .get(path)
-            .map(|hit| (hit.text.clone(), hit.doc.clone()))
+        self.docs.get(path).map(|hit| Arc::clone(&hit.read))
     }
 
     /// Whether a read would be answered here: a scope is open and `path` is
@@ -241,7 +248,7 @@ impl ReadMemo {
             return None;
         }
         let hit = self.docs.get(path)?;
-        (hit.doc.body == body).then(|| hit.links.clone()).flatten()
+        hit.has_body(body).then(|| hit.links.clone()).flatten()
     }
 
     /// Remember the links found in `body`, beside `path`'s document. A no-op
@@ -252,7 +259,7 @@ impl ReadMemo {
             return;
         }
         if let Some(hit) = self.docs.get_mut(path)
-            && hit.doc.body == body
+            && hit.has_body(body)
             && hit.links.is_none()
         {
             hit.links = Some(links);
@@ -261,18 +268,15 @@ impl ReadMemo {
 
     /// Remember what `path` read as. A no-op outside a scope, over the
     /// per-document ceiling, or once the budget is spent.
-    pub(crate) fn remember(&mut self, path: &Path, text: &str, doc: &Document) {
-        if self.depth == 0 || text.len() > MAX_DOCUMENT || self.bytes + text.len() > BUDGET {
+    pub(crate) fn remember(&mut self, path: &Path, read: Arc<Loaded>) {
+        let len = read.text.len();
+        if self.depth == 0 || len > MAX_DOCUMENT || self.bytes + len > BUDGET {
             return;
         }
-        self.bytes += text.len();
-        let remembered = Remembered {
-            text: text.to_string(),
-            doc: doc.clone(),
-            links: None,
-        };
+        self.bytes += len;
+        let remembered = Remembered { read, links: None };
         if let Some(stale) = self.docs.insert(path.to_path_buf(), remembered) {
-            self.bytes -= stale.text.len();
+            self.bytes -= stale.read.text.len();
         }
     }
 
@@ -307,7 +311,7 @@ impl ReadMemo {
     /// directory as it stood beforehand.
     pub fn forget(&mut self, path: &Path) {
         if let Some(forgotten) = self.docs.remove(path) {
-            self.bytes -= forgotten.text.len();
+            self.bytes -= forgotten.read.text.len();
         }
         if let Some(parent) = path.parent()
             && let Some(names) = self.dirs.remove(parent)
@@ -384,14 +388,23 @@ impl std::fmt::Debug for ReadScope {
 mod tests {
     use super::*;
 
+    use crate::document::Document;
+
     fn doc(text: &str) -> Document {
         Document::parse("a.md", text).unwrap()
+    }
+
+    fn loaded(text: &str) -> Arc<Loaded> {
+        Arc::new(Loaded {
+            text: text.into(),
+            doc: doc(text),
+        })
     }
 
     #[test]
     fn nothing_is_remembered_outside_a_scope() {
         let mut memo = ReadMemo::default();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         assert_eq!(memo.len(), 0);
         assert!(memo.get(Path::new("a.md")).is_none());
     }
@@ -400,9 +413,9 @@ mod tests {
     fn a_scope_remembers_and_its_exit_forgets() {
         let mut memo = ReadMemo::default();
         memo.enter();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         assert_eq!(
-            memo.get(Path::new("a.md")).map(|(text, _)| text),
+            memo.get(Path::new("a.md")).map(|read| read.text.clone()),
             Some("hello".to_string())
         );
         memo.leave();
@@ -415,7 +428,7 @@ mod tests {
     fn an_inner_scope_does_not_end_the_outer_one() {
         let mut memo = ReadMemo::default();
         memo.enter();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         memo.enter();
         memo.leave();
         assert!(
@@ -430,7 +443,7 @@ mod tests {
     fn a_write_forgets_the_document_it_wrote() {
         let mut memo = ReadMemo::default();
         memo.enter();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         memo.forget(Path::new("a.md"));
         assert!(memo.get(Path::new("a.md")).is_none());
         assert_eq!(memo.len(), 0);
@@ -446,7 +459,13 @@ mod tests {
         memo.enter();
         let text = "---\ntitle: A\n---\nsee [b](b.md)\n";
         let read = doc(text);
-        memo.remember(Path::new("a.md"), text, &read);
+        memo.remember(
+            Path::new("a.md"),
+            Arc::new(Loaded {
+                text: text.into(),
+                doc: read.clone(),
+            }),
+        );
         memo.remember_links(Path::new("a.md"), &read.body, links(&read.body));
         assert_eq!(
             memo.links(Path::new("a.md"), &read.body).map(|l| l.len()),
@@ -552,7 +571,13 @@ mod tests {
         let mut memo = ReadMemo::default();
         memo.enter();
         let huge = "x".repeat(MAX_DOCUMENT + 1);
-        memo.remember(Path::new("big.md"), &huge, &doc("body"));
+        memo.remember(
+            Path::new("big.md"),
+            Arc::new(Loaded {
+                text: huge.clone(),
+                doc: doc("body"),
+            }),
+        );
         assert_eq!(memo.len(), 0);
     }
 }

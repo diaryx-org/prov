@@ -113,9 +113,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// and prov must keep scanning it. Unreadable or unparsable candidates simply
     /// do not claim (this runs inside best-effort scans).
     pub async fn sidecar_claims(&self, candidate: &Path, payload: &Path) -> bool {
-        let Ok((_, doc)) = self.load(candidate).await else {
+        let Ok(read) = self.read(candidate).await else {
             return false;
         };
+        let doc = &read.doc;
         let Some(content) = doc.content_attr() else {
             return false;
         };
@@ -162,7 +163,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     pub async fn attachment_payload(&self, path: &Path) -> Option<PathBuf> {
         let path = link::normalize(path);
         whole_file_format(&path)?;
-        let (_, doc) = self.load(&path).await.ok()?;
+        let read = self.read(&path).await.ok()?;
+        let doc = &read.doc;
         if !doc.is_attachment() {
             return None;
         }
