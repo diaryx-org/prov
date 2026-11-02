@@ -342,12 +342,15 @@ reaches, and the work goes into making that read cheap rather than avoidable:
 - **Parse once.** A body's links are remembered in the read memo beside the
   document they were found in, so the census and the inbound index built from
   it share one parse.
-- **Parse in parallel.** With the `parallel` feature, the walk reads a
-  document's spanning children before resolving them and parses them, bodies
-  included, on rayon's pool. The reads themselves stay sequential, since
-  `ReadStorage` promises nothing about being shared across threads; the walk
-  is otherwise unchanged and meets them as memo hits, so its order and its
-  findings do not depend on the feature.
+- **Read and parse in parallel.** With the `parallel` feature, the census
+  walk and the tree descent read a document's spanning children together
+  before descending, and parse them (with their bodies' links, for the
+  census) on rayon's pool. The reads run there too when the storage hands
+  over a `SharedRead` (`ReadStorage::shared_reader`, which `std::fs` and the
+  in-memory backend offer). Otherwise they stay sequential, since a backend
+  that declines promises nothing about being shared across threads. Either
+  way the walks are unchanged and meet the children as memo hits, so their
+  order and their findings do not depend on the feature.
 - **Index by hash.** A lookup that runs once per document per link goes
   through a hash set, never a scan of a list or a probe of an ordered set.
 

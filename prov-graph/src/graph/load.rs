@@ -61,14 +61,15 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// from the memo. With `links`, each body's links are found there too
     /// ([`body_links`](Self::body_links)).
     ///
-    /// A warmer and nothing else. The reads go through the storage one at a
-    /// time, as `load`'s do, since [`ReadStorage`] promises nothing about
-    /// being shared across threads; what runs in parallel is the parsing,
-    /// which is most of what a read costs. A path that fails to read or parse,
-    /// or that the caller guessed wrong, is simply not remembered, and `load`
-    /// meets it as it would have. Without the `parallel` feature, on a target
-    /// without threads, from inside rayon's pool, or outside a read scope
-    /// (where nothing would be kept) it does nothing at all.
+    /// A warmer and nothing else. Where the storage hands over a
+    /// [`SharedRead`](crate::fs::SharedRead), each document is read and parsed
+    /// in one task on the pool. Otherwise the reads go through the storage one
+    /// at a time, as `load`'s do, and only the parsing runs in parallel. A
+    /// path that fails to read or parse, or that the caller guessed wrong, is
+    /// simply not remembered, and `load` meets it as it would have. Without
+    /// the `parallel` feature, on a target without threads, from inside
+    /// rayon's pool, or outside a read scope (where nothing would be kept) it
+    /// does nothing at all.
     pub(crate) async fn prefetch(&self, paths: impl IntoIterator<Item = PathBuf>, links: bool) {
         #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
         {
@@ -78,27 +79,43 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
                 return;
             }
             let mut asked = std::collections::HashSet::new();
-            let mut read = Vec::new();
-            for path in paths {
-                if link::escapes_root(&path)
-                    || self.memo_holds(&path)
-                    || !asked.insert(path.clone())
-                {
-                    continue;
-                }
-                if let Ok(text) = self.fs().read_to_string(&self.root().join(&path)).await {
-                    read.push((path, text));
-                }
-            }
-            let parsed: Vec<_> = read
-                .into_par_iter()
-                .filter_map(|(path, text)| {
-                    let doc = Document::parse(&path, &text).ok()?;
-                    let found: Option<Arc<[BodyLink]>> =
-                        links.then(|| link::scan_body_links(&path, &doc.body).into());
-                    Some((path, text, doc, found))
+            let wanted: Vec<PathBuf> = paths
+                .into_iter()
+                .filter(|path| {
+                    !link::escapes_root(path)
+                        && !self.memo_holds(path)
+                        && asked.insert(path.clone())
                 })
                 .collect();
+            let parse = |path: PathBuf, text: String| -> Option<Prefetched> {
+                let doc = Document::parse(&path, &text).ok()?;
+                let found: Option<Arc<[BodyLink]>> =
+                    links.then(|| link::scan_body_links(&path, &doc.body).into());
+                Some((path, text, doc, found))
+            };
+            let parsed: Vec<Prefetched> = match self.fs().shared_reader() {
+                Some(reader) => {
+                    let root = self.root();
+                    wanted
+                        .into_par_iter()
+                        .filter_map(|path| {
+                            let text = reader.read_to_string(&root.join(&path)).ok()?;
+                            parse(path, text)
+                        })
+                        .collect()
+                }
+                None => {
+                    let mut read = Vec::new();
+                    for path in wanted {
+                        if let Ok(text) = self.fs().read_to_string(&self.root().join(&path)).await {
+                            read.push((path, text));
+                        }
+                    }
+                    read.into_par_iter()
+                        .filter_map(|(path, text)| parse(path, text))
+                        .collect()
+                }
+            };
             self.memo_remember_all(parsed);
         }
         #[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
@@ -233,6 +250,48 @@ mod tests {
         assert_eq!(
             ws.body_links(Path::new("a.md"), &a),
             link::scan_body_links(Path::new("a.md"), &a.body)
+        );
+    }
+
+    /// `std::fs`, minus the shared reader: a backend whose reads prov must
+    /// make one at a time.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    struct OneAtATime;
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    impl ReadStorage for OneAtATime {
+        async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            StdFs.read(path).await
+        }
+        async fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+            StdFs.read_to_string(path).await
+        }
+        async fn read_dir(&self, path: &Path) -> std::io::Result<Vec<crate::fs::DirEntry>> {
+            StdFs.read_dir(path).await
+        }
+        async fn metadata(&self, path: &Path) -> std::io::Result<crate::fs::Metadata> {
+            StdFs.metadata(path).await
+        }
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    #[test]
+    fn a_prefetch_without_a_shared_reader_reads_in_turn_and_remembers_the_same() {
+        let dir = tempdir("prefetch-in-turn");
+        write(&dir, "a.md", "---\ntitle: A\n---\nsee [b](b.md)\n");
+        write(&dir, "b.md", "---\ntitle: B\n---\nno links\n");
+        let ws = Graph::new(OneAtATime, &dir, NoIndex, ReadSettings::default());
+        assert!(ws.fs().shared_reader().is_none());
+
+        let _scope = ws.read_scope();
+        block_on(ws.prefetch(["a.md", "b.md", "gone.md"].map(PathBuf::from), true));
+        assert!(ws.memo_holds(Path::new("a.md")));
+        assert!(ws.memo_holds(Path::new("b.md")));
+        assert!(!ws.memo_holds(Path::new("gone.md")));
+        let (_, a) = block_on(ws.load(Path::new("a.md"))).unwrap();
+        assert_eq!(
+            ws.memo_links(Path::new("a.md"), &a.body).map(|l| l.len()),
+            Some(1)
         );
     }
 

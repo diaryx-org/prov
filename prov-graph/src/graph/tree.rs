@@ -245,8 +245,21 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let title = doc.meta.get("title").and_then(crate::title::title_text);
 
             trail.push(path.clone());
+            let raws = self.relations().children(&meta);
+            // Each child is read when the descent reaches it; read them together
+            // here instead, so their reads and parsing can share the cores.
+            let guesses: Vec<PathBuf> = raws
+                .iter()
+                .filter_map(|raw| {
+                    match self.resolve_link_with(&path, &Link::parse(raw), titles.as_ref()) {
+                        Target::Path(p) => Some(p),
+                        _ => None,
+                    }
+                })
+                .collect();
+            self.prefetch(guesses, false).await;
             let mut children = Vec::new();
-            for raw in self.relations().children(&meta) {
+            for raw in raws {
                 let child = Link::parse(&raw);
                 // Build the title index on first sight of a nominal link, never
                 // before — this is the only place the tree walk can need it.
