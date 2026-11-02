@@ -197,9 +197,53 @@ pub fn frontmatter_block(text: &str) -> Option<(MetaFormat, twig::meta::Block)> 
 }
 
 /// `text`'s front metadata block, parsing it as `format`.
+///
+/// Markdown is asked only about the lines up to the frontmatter's closing
+/// fence, when there is one. Its parser consumes frontmatter before reading
+/// anything else, and takes the first line after the opening fence that
+/// matches it as the closing one, so those lines produce the same block at
+/// the same offsets as the whole text would. Parsing the body as well was
+/// most of what reading a workspace cost. A prefix that yields no block
+/// (because the opening fence names no language) falls back to the whole
+/// text, which may still hold a data island further down.
 fn located(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
+    if format == twig_markdown::format()
+        && let Some(prefix) = fenced_prefix(text)
+        && let Some(block) = parse_front(prefix, format)
+    {
+        return Some(block);
+    }
+    parse_front(text, format)
+}
+
+fn parse_front(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
     let parsed = twig::meta::parse_host(text.as_bytes(), format).ok()?;
     twig::meta::find(&parsed.doc, twig::meta::Where::Front)
+}
+
+/// `text` up to and including the line that closes the fence opening it, or
+/// `None` when its first line opens no fence or nothing closes it. Lines are
+/// split as twig-markdown splits them: on `\n`, with a trailing `\r`
+/// dropped, and a fence line compared without trailing spaces and tabs.
+fn fenced_prefix(text: &str) -> Option<&str> {
+    fn fence_line(line: &str) -> &str {
+        let line = line.strip_suffix('\n').unwrap_or(line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        line.trim_end_matches([' ', '\t'])
+    }
+    let mut lines = text.split_inclusive('\n');
+    let first = lines.next()?;
+    let delim = ["---", "+++"]
+        .into_iter()
+        .find(|d| fence_line(first).starts_with(d))?;
+    let mut end = first.len();
+    for line in lines {
+        end += line.len();
+        if fence_line(line) == delim {
+            return Some(&text[..end]);
+        }
+    }
+    None
 }
 
 /// A parsed document: its path, its embedded metadata, and its body text.
@@ -502,6 +546,38 @@ mod tests {
         let doc = Document::parse("note.md", text).unwrap();
         assert_eq!(doc.carrier, None);
         assert_eq!(doc.body, text);
+    }
+
+    #[test]
+    fn frontmatter_found_in_the_fenced_prefix_is_what_the_whole_text_holds() {
+        let texts = [
+            "---\ntitle: a\n---\nbody [x](y.md)\n",
+            "---\ntitle: a\n---",
+            "---\n---\nbody\n",
+            "---  \r\ntitle: a\r\n---\t \r\nbody\r\n",
+            "---\ntitle: a\n---\r\r\n---\nbody\n",
+            "--- \ntitle: a\n----\n---\nbody\n",
+            "---\ntitle: a\n --- \n---\nbody\n",
+            "+++\ntitle = \"a\"\n+++\nbody\n",
+            "+++\ntitle = \"a\"\n---\n+++\n",
+            "---figl\ntitle: a\n---\n",
+            "---toml\ntitle = \"a\"\n---\n\nbody\n\n---\n",
+            "---zon\n.{}\n---\nbody\n",
+            "--- not a tag\ntitle: a\n---\nbody\n",
+            "---\nunterminated\n",
+            "----\ntitle: a\n----\n",
+            "\n---\ntitle: a\n---\n",
+            "body\n\n---yaml\ntitle: a\n---\n",
+            "",
+            "---",
+        ];
+        for text in texts {
+            assert_eq!(
+                located(text, twig_markdown::format()),
+                parse_front(text, twig_markdown::format()),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
