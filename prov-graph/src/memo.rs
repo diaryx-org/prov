@@ -119,6 +119,9 @@ const MAX_DOCUMENT: usize = 1024 * 1024;
 /// [`OsStr`]: std::ffi::OsStr
 #[derive(Debug, Default)]
 pub(crate) struct DirNames {
+    /// The listing itself, for a scan that walks the directory rather than
+    /// asking it about one name.
+    entries: Vec<crate::fs::DirEntry>,
     /// Every entry name, as listed.
     exact: FastSet<OsString>,
     /// ASCII-lowercased name → the name as listed. Last writer wins, which only
@@ -130,9 +133,9 @@ pub(crate) struct DirNames {
 
 impl DirNames {
     /// Index a directory read.
-    pub(crate) fn index(entries: &[crate::fs::DirEntry]) -> Self {
+    pub(crate) fn index(entries: Vec<crate::fs::DirEntry>) -> Self {
         let mut names = Self::default();
-        for entry in entries {
+        for entry in &entries {
             let Some(name) = entry.file_name() else {
                 continue;
             };
@@ -141,7 +144,13 @@ impl DirNames {
                 .insert(name.to_ascii_lowercase(), name.to_os_string());
             names.exact.insert(name.to_os_string());
         }
+        names.entries = entries;
         names
+    }
+
+    /// The directory's entries, as listed.
+    pub(crate) fn entries(&self) -> &[crate::fs::DirEntry] {
+        &self.entries
     }
 
     /// Whether the directory holds exactly this name.
@@ -162,7 +171,12 @@ impl DirNames {
     /// purpose — the budget is a ceiling that keeps an unusual workspace from
     /// eating memory, not an allocator.
     fn weight(&self) -> usize {
-        let names = self.exact.iter().map(|n| n.len()).sum::<usize>();
+        let listed = self
+            .entries
+            .iter()
+            .map(|e| e.path().as_os_str().len())
+            .sum::<usize>();
+        let names = listed + self.exact.iter().map(|n| n.len()).sum::<usize>();
         let folded = self
             .folded
             .iter()
@@ -339,19 +353,20 @@ impl ReadMemo {
 
     /// Forget `path` — what a write to it means.
     ///
-    /// Its **parent's listing** goes too. A write may create the name or a
-    /// remove may take it away, and the listing that enumerated the parent is
-    /// the only one that can be wrong about it — so the operation that stages a
-    /// change and then reads the workspace back does not resolve against a
-    /// directory as it stood beforehand.
+    /// Every **ancestor's listing** goes too. A write may create the name or a
+    /// remove may take it away, which only the parent's listing can be wrong
+    /// about — but a write may also create the directories above it, and a
+    /// scan that walks the tree lists those. So the operation that stages a
+    /// change and then reads the workspace back never meets a directory as it
+    /// stood beforehand.
     pub fn forget(&mut self, path: &Path) {
         if let Some(forgotten) = self.docs.remove(path) {
             self.bytes -= forgotten.read.text.len();
         }
-        if let Some(parent) = path.parent()
-            && let Some(names) = self.dirs.remove(parent)
-        {
-            self.bytes -= names.weight();
+        for dir in path.ancestors().skip(1) {
+            if let Some(names) = self.dirs.remove(dir) {
+                self.bytes -= names.weight();
+            }
         }
     }
 
@@ -532,7 +547,7 @@ mod tests {
             .iter()
             .map(|n| crate::fs::DirEntry::new(*n, crate::fs::FileType::FILE))
             .collect();
-        Arc::new(DirNames::index(&entries))
+        Arc::new(DirNames::index(entries))
     }
 
     #[test]
@@ -587,6 +602,36 @@ mod tests {
             memo.dir(Path::new("other")).is_some(),
             "an unrelated directory was dropped"
         );
+    }
+
+    /// A write may create every directory above it, and a scan that walks the
+    /// tree lists them, so each listing above the write goes, and only those.
+    #[test]
+    fn forgetting_a_written_document_forgets_every_listing_above_it() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        for dir in ["", "a", "a/b", "a/b/c", "a/x"] {
+            memo.remember_dir(Path::new(dir), names(&["n.md"]));
+        }
+        memo.forget(Path::new("a/b/c/new.md"));
+        for dir in ["", "a", "a/b", "a/b/c"] {
+            assert!(memo.dir(Path::new(dir)).is_none(), "{dir:?} kept");
+        }
+        assert!(
+            memo.dir(Path::new("a/x")).is_some(),
+            "a sibling was dropped"
+        );
+    }
+
+    #[test]
+    fn a_listing_keeps_its_entries() {
+        let listing = names(&["b.md", "a.md"]);
+        let listed: Vec<_> = listing
+            .entries()
+            .iter()
+            .filter_map(|e| e.file_name())
+            .collect();
+        assert_eq!(listed, ["b.md", "a.md"]);
     }
 
     /// A write at the workspace root forgets the root listing — `parent()` of a

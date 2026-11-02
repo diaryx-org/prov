@@ -395,6 +395,25 @@ title: N
     }
 
     #[test]
+    fn a_scope_lists_a_directory_once_and_a_write_lists_it_again() {
+        let dir = tempdir("listing-shared");
+        write(&dir, "notes/a.md", "a\n");
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let notes = Path::new("notes");
+
+        let _scope = ws.read_scope();
+        let first = block_on(ws.listing_shared(notes)).unwrap();
+        let again = block_on(ws.listing_shared(notes)).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(first.entries().len(), 1);
+
+        write(&dir, "notes/b.md", "b\n");
+        ws.memo_lock().forget(Path::new("notes/b.md"));
+        let after = block_on(ws.listing_shared(notes)).unwrap();
+        assert_eq!(after.entries().len(), 2);
+    }
+
+    #[test]
     fn a_read_inside_a_scope_shares_what_the_first_read_found() {
         let dir = tempdir("read-shared");
         write(&dir, "a.md", "---\ntitle: A\n---\nbody\n");

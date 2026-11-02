@@ -8,7 +8,6 @@ use crate::hash::FastSet;
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use super::Graph;
 use crate::document::is_opaque_payload;
@@ -17,7 +16,6 @@ use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
 use crate::index::IdIndex;
 use crate::link::{self, Link};
-use crate::memo::DirNames;
 use crate::title::{self, TitleIndex, TitleMatch};
 
 use super::Target;
@@ -1050,16 +1048,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return NameMatch::None;
         };
-        let names = match self.memo_dir(parent) {
-            Some(hit) => hit,
-            None => {
-                let Ok(entries) = self.fs().read_dir(&self.root().join(parent)).await else {
-                    return NameMatch::None;
-                };
-                let names = Arc::new(DirNames::index(&entries));
-                self.memo_remember_dir(parent, Arc::clone(&names));
-                names
-            }
+        let Ok(names) = self.listing_shared(parent).await else {
+            return NameMatch::None;
         };
         if names.holds(name) {
             return NameMatch::Exact;

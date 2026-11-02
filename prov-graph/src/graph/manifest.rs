@@ -219,9 +219,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         Box::pin(async move {
             let root = walk.root;
             let dir = link::normalize(root.join(&rel));
-            let Ok(entries) = self.listing(&dir).await else {
+            let Ok(listing) = self.listing_shared(&dir).await else {
                 return Ok(());
             };
+            let entries = listing.entries();
             let mut names: Vec<(String, bool, bool)> = Vec::new();
             for entry in entries {
                 let Some(name) = entry

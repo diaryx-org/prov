@@ -193,10 +193,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if parked.iter().any(|p| rel_dir.starts_with(p)) {
                 return Ok(());
             }
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 found.push(rel_dir);
                 return Ok(());
             }
@@ -371,9 +372,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     pub async fn direct_child_files(&self, dirs: &BTreeSet<PathBuf>) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for dir in dirs {
-            let Ok(entries) = self.listing(dir).await else {
+            let Ok(listing) = self.listing_shared(dir).await else {
                 continue;
             };
+            let entries = listing.entries();
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -417,10 +419,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         docs: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 return Ok(());
             }
             for entry in entries {
@@ -457,14 +460,15 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         ids: &'a mut Vec<(crate::identity::Id, PathBuf)>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 return Ok(());
             }
-            let probe = shadow_probe(&rel_dir, &entries);
-            let siblings = file_names(&entries);
+            let probe = shadow_probe(&rel_dir, entries);
+            let siblings = file_names(entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -525,14 +529,15 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if parked.iter().any(|p| rel_dir.starts_with(p)) {
                 return Ok(());
             }
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 return Ok(());
             }
-            let probe = shadow_probe(&rel_dir, &entries);
-            let siblings = file_names(&entries);
+            let probe = shadow_probe(&rel_dir, entries);
+            let siblings = file_names(entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
