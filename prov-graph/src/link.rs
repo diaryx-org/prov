@@ -1384,13 +1384,20 @@ mod tests {
             ("a.md", "[[ unclosed and ] ] [ [x]]\n"),
             ("a.md", "`[x](b.md)` inside code\n"),
             ("a.dj", "[x][ref]\n\n[ref]: b.dj\n"),
-            ("a.html", "<p><a href=\"b.html\">b</a> <img src=\"c.png\"></p>\n"),
+            (
+                "a.html",
+                "<p><a href=\"b.html\">b</a> <img src=\"c.png\"></p>\n",
+            ),
             ("a.md", "[x](b.md)\n"),
             ("a.md", "![alt](c.png) and [[d]]\n"),
         ];
         for (path, body) in bodies {
             let path = Path::new(path);
-            assert_eq!(scan_body_links(path, body), parse_body_links(path, body), "{body:?}");
+            assert_eq!(
+                scan_body_links(path, body),
+                parse_body_links(path, body),
+                "{body:?}"
+            );
         }
     }
 

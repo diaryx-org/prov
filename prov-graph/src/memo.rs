@@ -46,6 +46,15 @@
 //! outer one, which is exactly the composition case (`prov`'s `check` opens a
 //! scope and then calls `walk`, which is welcome to open its own).
 //!
+//! ## Links, beside the document they were read from
+//!
+//! A body's links are a pure function of its text, and finding them means
+//! parsing the prose, which costs more than reading it. The census does it for
+//! every document it reaches, and a mutation asking who links to a document
+//! builds an inbound index that does it again. So a remembered document can
+//! carry its links too, held only while the body they were scanned from is
+//! the body remembered.
+//!
 //! ## What is not memoized
 //!
 //! Failures. A read that errored is not remembered, so a missing file is
@@ -63,6 +72,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::document::Document;
+use crate::link::BodyLink;
 
 /// Take a lock, recovering from a panic that poisoned it.
 ///
@@ -162,13 +172,22 @@ impl DirNames {
     }
 }
 
+/// One document as read: its text, its parse, and once someone has asked,
+/// the links in its body.
+#[derive(Debug)]
+struct Remembered {
+    text: String,
+    doc: Document,
+    links: Option<Arc<[BodyLink]>>,
+}
+
 /// What one operation has already read.
 #[derive(Debug, Default)]
 pub struct ReadMemo {
     /// Scope nesting depth. Nothing is remembered outside a scope, and the
     /// outermost exit is what clears it.
     depth: usize,
-    docs: HashMap<PathBuf, (String, Document)>,
+    docs: HashMap<PathBuf, Remembered>,
     /// Listings held, keyed workspace-relative like [`docs`](Self::docs) — which
     /// is what lets [`forget`](Self::forget) drop the one a write invalidates.
     dirs: HashMap<PathBuf, Arc<DirNames>>,
@@ -196,7 +215,48 @@ impl ReadMemo {
         if self.depth == 0 {
             return None;
         }
-        self.docs.get(path).cloned()
+        self.docs
+            .get(path)
+            .map(|hit| (hit.text.clone(), hit.doc.clone()))
+    }
+
+    /// Whether a read would be answered here: a scope is open and `path` is
+    /// remembered.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn holds(&self, path: &Path) -> bool {
+        self.depth > 0 && self.docs.contains_key(path)
+    }
+
+    /// Whether a scope is open, so that something remembered now is still
+    /// here for the rest of the operation.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn in_scope(&self) -> bool {
+        self.depth > 0
+    }
+
+    /// The links found in `path`'s body, when they were found in this
+    /// operation and in a body that is still `body`.
+    pub(crate) fn links(&self, path: &Path, body: &str) -> Option<Arc<[BodyLink]>> {
+        if self.depth == 0 {
+            return None;
+        }
+        let hit = self.docs.get(path)?;
+        (hit.doc.body == body).then(|| hit.links.clone()).flatten()
+    }
+
+    /// Remember the links found in `body`, beside `path`'s document. A no-op
+    /// unless that document is remembered with that body: links outlive
+    /// nothing they were read from.
+    pub(crate) fn remember_links(&mut self, path: &Path, body: &str, links: Arc<[BodyLink]>) {
+        if self.depth == 0 {
+            return;
+        }
+        if let Some(hit) = self.docs.get_mut(path)
+            && hit.doc.body == body
+            && hit.links.is_none()
+        {
+            hit.links = Some(links);
+        }
     }
 
     /// Remember what `path` read as. A no-op outside a scope, over the
@@ -206,8 +266,14 @@ impl ReadMemo {
             return;
         }
         self.bytes += text.len();
-        self.docs
-            .insert(path.to_path_buf(), (text.to_string(), doc.clone()));
+        let remembered = Remembered {
+            text: text.to_string(),
+            doc: doc.clone(),
+            links: None,
+        };
+        if let Some(stale) = self.docs.insert(path.to_path_buf(), remembered) {
+            self.bytes -= stale.text.len();
+        }
     }
 
     /// The indexed listing of the workspace-relative directory `path`, if it
@@ -240,8 +306,8 @@ impl ReadMemo {
     /// change and then reads the workspace back does not resolve against a
     /// directory as it stood beforehand.
     pub fn forget(&mut self, path: &Path) {
-        if let Some((text, _)) = self.docs.remove(path) {
-            self.bytes -= text.len();
+        if let Some(forgotten) = self.docs.remove(path) {
+            self.bytes -= forgotten.text.len();
         }
         if let Some(parent) = path.parent()
             && let Some(names) = self.dirs.remove(parent)
@@ -368,6 +434,42 @@ mod tests {
         memo.forget(Path::new("a.md"));
         assert!(memo.get(Path::new("a.md")).is_none());
         assert_eq!(memo.len(), 0);
+    }
+
+    fn links(body: &str) -> Arc<[BodyLink]> {
+        crate::link::scan_body_links(Path::new("a.md"), body).into()
+    }
+
+    #[test]
+    fn links_are_remembered_beside_the_body_they_were_found_in() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        let text = "---\ntitle: A\n---\nsee [b](b.md)\n";
+        let read = doc(text);
+        memo.remember(Path::new("a.md"), text, &read);
+        memo.remember_links(Path::new("a.md"), &read.body, links(&read.body));
+        assert_eq!(
+            memo.links(Path::new("a.md"), &read.body).map(|l| l.len()),
+            Some(1)
+        );
+        assert!(
+            memo.links(Path::new("a.md"), "see [c](c.md)\n").is_none(),
+            "links found in one body answered for another"
+        );
+        memo.forget(Path::new("a.md"));
+        assert!(memo.links(Path::new("a.md"), &read.body).is_none());
+    }
+
+    #[test]
+    fn links_are_not_remembered_for_a_document_that_is_not() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        memo.remember_links(
+            Path::new("a.md"),
+            "see [b](b.md)\n",
+            links("see [b](b.md)\n"),
+        );
+        assert!(memo.links(Path::new("a.md"), "see [b](b.md)\n").is_none());
     }
 
     fn names(entries: &[&str]) -> Arc<DirNames> {

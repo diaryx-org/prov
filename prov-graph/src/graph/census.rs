@@ -684,7 +684,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
             // Frontmatter links — relation edges, the only links that can be
             // spanning, and the values of path-valued fields, which never are.
-            for FrontmatterLink { site, raw, .. } in self.frontmatter_links(&meta) {
+            let links = self.frontmatter_links(&meta);
+            // The children are each loaded below for the inverse check, and
+            // again when they are popped: read them together first, so their
+            // parsing — and their bodies' — can share the cores.
+            self.prefetch(
+                self.spanning_guesses(&path, &links, spanning.as_deref()),
+                true,
+            )
+            .await;
+            for FrontmatterLink { site, raw, .. } in links {
                 // Parse once: `link.target` is the bare target (any `[label](…)`
                 // stripped), which is what both the census and findings record.
                 let link = Link::parse(&raw);
@@ -756,7 +765,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // image is a file that is missing, never a nominal reference to a
             // document by title, and it neither builds the title index nor
             // resolves through it.
-            for body_link in link::scan_body_links(&path, &doc.body) {
+            for body_link in self.body_links(&path, &doc) {
                 let image = body_link.image;
                 let wl = body_link.link;
                 if !image && titles.is_none() && title::is_alias_shaped(&wl.target) {
@@ -843,6 +852,39 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             facts: structural,
             content_bodies,
         })
+    }
+
+    /// Where the `spanning` links among `links`, declared in the document at
+    /// `source`, most likely lead — what [`prefetch`](Self::prefetch) is
+    /// handed before they are resolved. A guess, so it skips what it cannot
+    /// make cheaply: a nominal link would need the title index, and a foreign
+    /// or external one leads nowhere to read. A wrong guess costs one read.
+    pub(crate) fn spanning_guesses(
+        &self,
+        source: &Path,
+        links: &[FrontmatterLink],
+        spanning: Option<&str>,
+    ) -> Vec<PathBuf> {
+        let Some(spanning) = spanning else {
+            return Vec::new();
+        };
+        links
+            .iter()
+            .filter(|l| l.site.relation() == Some(spanning))
+            .filter_map(|l| {
+                let link = Link::parse(&l.raw);
+                if link.is_external() || link.is_same_document() {
+                    return None;
+                }
+                match link.id_ref() {
+                    Some(crate::link::IdRef::Local(id)) => {
+                        self.index().resolve(&id).map(link::normalize)
+                    }
+                    Some(_) => None,
+                    None => Some(link::resolve(source, &link.target)),
+                }
+            })
+            .collect()
     }
 
     /// Resolve one forward link (declared in the document at `source`) into a

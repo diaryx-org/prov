@@ -3,13 +3,19 @@
 //! See the module doc at [`crate::graph`] for how this sits beside
 //! [`resolve`](super::resolve) and the census.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::Graph;
 use crate::document::{Body, Document};
 use crate::error::{Error, Result};
 use crate::fs::ReadStorage;
-use crate::link;
+use crate::link::{self, BodyLink};
+
+/// One document [`prefetch`](Graph::prefetch) read: its path, its text, its
+/// parse, and the links in its body when they were asked for.
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+pub(crate) type Prefetched = (PathBuf, String, Document, Option<Arc<[BodyLink]>>);
 
 impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// Read and parse the workspace-relative document at `path`, returning the
@@ -34,6 +40,69 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
         let doc = Document::parse(path, &text)?;
         self.memo_remember(path, &text, &doc);
         Ok((text, doc))
+    }
+
+    /// The links in `doc`'s body, as [`link::scan_body_links`] finds them —
+    /// answered from the read memo when this operation has already scanned
+    /// the body `path` was remembered with, and remembered there otherwise.
+    /// Finding them is a parse of the prose, which costs more than reading it.
+    pub fn body_links(&self, path: &Path, doc: &Document) -> Vec<BodyLink> {
+        if let Some(links) = self.memo_links(path, &doc.body) {
+            return links.to_vec();
+        }
+        let links: Arc<[BodyLink]> = link::scan_body_links(path, &doc.body).into();
+        self.memo_remember_links(path, &doc.body, Arc::clone(&links));
+        links.to_vec()
+    }
+
+    /// Read the documents at `paths` that this operation has not read yet,
+    /// parse them on rayon's pool, and remember them for the rest of the
+    /// operation, so that the [`load`](Self::load) each will get is answered
+    /// from the memo. With `links`, each body's links are found there too
+    /// ([`body_links`](Self::body_links)).
+    ///
+    /// A warmer and nothing else. The reads go through the storage one at a
+    /// time, as `load`'s do, since [`ReadStorage`] promises nothing about
+    /// being shared across threads; what runs in parallel is the parsing,
+    /// which is most of what a read costs. A path that fails to read or parse,
+    /// or that the caller guessed wrong, is simply not remembered, and `load`
+    /// meets it as it would have. Without the `parallel` feature, on a target
+    /// without threads, from inside rayon's pool, or outside a read scope
+    /// (where nothing would be kept) it does nothing at all.
+    pub(crate) async fn prefetch(&self, paths: impl IntoIterator<Item = PathBuf>, links: bool) {
+        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+        {
+            use rayon::prelude::*;
+
+            if rayon::current_thread_index().is_some() || !self.memo_in_scope() {
+                return;
+            }
+            let mut asked = std::collections::HashSet::new();
+            let mut read = Vec::new();
+            for path in paths {
+                if link::escapes_root(&path)
+                    || self.memo_holds(&path)
+                    || !asked.insert(path.clone())
+                {
+                    continue;
+                }
+                if let Ok(text) = self.fs().read_to_string(&self.root().join(&path)).await {
+                    read.push((path, text));
+                }
+            }
+            let parsed: Vec<_> = read
+                .into_par_iter()
+                .filter_map(|(path, text)| {
+                    let doc = Document::parse(&path, &text).ok()?;
+                    let found: Option<Arc<[BodyLink]>> =
+                        links.then(|| link::scan_body_links(&path, &doc.body).into());
+                    Some((path, text, doc, found))
+                })
+                .collect();
+            self.memo_remember_all(parsed);
+        }
+        #[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
+        let _ = (paths, links);
     }
 
     /// Read and parse the workspace-relative document at `path`, returning its
@@ -136,6 +205,35 @@ mod tests {
         assert_eq!(meta.get("title").and_then(fig::Value::as_str), Some("A"));
         assert_eq!(meta.get("author").and_then(fig::Value::as_str), Some("Ada"));
         assert_eq!(doc.body, "body text\n");
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    #[test]
+    fn a_prefetch_remembers_what_it_read_and_nothing_it_could_not() {
+        let dir = tempdir("prefetch");
+        write(&dir, "a.md", "---\ntitle: A\n---\nsee [b](b.md)\n");
+        write(&dir, "b.md", "---\ntitle: B\n---\nno links\n");
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+        let paths = || ["a.md", "b.md", "gone.md", "../outside.md"].map(PathBuf::from);
+
+        block_on(ws.prefetch(paths(), true));
+        assert!(!ws.memo_holds(Path::new("a.md")), "kept outside a scope");
+
+        let _scope = ws.read_scope();
+        block_on(ws.prefetch(paths(), true));
+        assert!(ws.memo_holds(Path::new("a.md")));
+        assert!(ws.memo_holds(Path::new("b.md")));
+        assert!(!ws.memo_holds(Path::new("gone.md")));
+        assert!(!ws.memo_holds(Path::new("../outside.md")));
+        let (_, a) = block_on(ws.load(Path::new("a.md"))).unwrap();
+        assert_eq!(
+            ws.memo_links(Path::new("a.md"), &a.body).map(|l| l.len()),
+            Some(1)
+        );
+        assert_eq!(
+            ws.body_links(Path::new("a.md"), &a),
+            link::scan_body_links(Path::new("a.md"), &a.body)
+        );
     }
 
     #[test]

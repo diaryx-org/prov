@@ -354,6 +354,48 @@ impl<FS, Ix> Graph<FS, Ix> {
         self.memo.lock().unwrap().remember(path, text, doc);
     }
 
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_holds(&self, path: &Path) -> bool {
+        crate::memo::lock(&self.memo).holds(path)
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_in_scope(&self) -> bool {
+        crate::memo::lock(&self.memo).in_scope()
+    }
+
+    pub(crate) fn memo_links(
+        &self,
+        path: &Path,
+        body: &str,
+    ) -> Option<Arc<[crate::link::BodyLink]>> {
+        crate::memo::lock(&self.memo).links(path, body)
+    }
+
+    pub(crate) fn memo_remember_links(
+        &self,
+        path: &Path,
+        body: &str,
+        links: Arc<[crate::link::BodyLink]>,
+    ) {
+        crate::memo::lock(&self.memo).remember_links(path, body, links);
+    }
+
+    /// Remember what a [`prefetch`](Self::prefetch) read, under one lock.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_remember_all(&self, read: Vec<load::Prefetched>) {
+        let mut memo = crate::memo::lock(&self.memo);
+        for (path, text, doc, links) in read {
+            if memo.holds(&path) {
+                continue;
+            }
+            memo.remember(&path, &text, &doc);
+            if let Some(links) = links {
+                memo.remember_links(&path, &doc.body, links);
+            }
+        }
+    }
+
     /// The indexed listing of the workspace-relative directory `path`, if this
     /// operation has already read it.
     pub(crate) fn memo_dir(&self, path: &Path) -> Option<Arc<crate::memo::DirNames>> {
