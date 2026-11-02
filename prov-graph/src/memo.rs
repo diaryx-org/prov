@@ -68,7 +68,7 @@
 
 use crate::hash::{FastMap, FastSet};
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::document::Loaded;
@@ -201,8 +201,8 @@ const DISCARD_ELSEWHERE: usize = 1024;
 /// it.
 fn discard(
     remembered: (
-        FastMap<PathBuf, Remembered>,
-        FastMap<PathBuf, Arc<DirNames>>,
+        FastMap<OsString, Remembered>,
+        FastMap<OsString, Arc<DirNames>>,
     ),
 ) {
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
@@ -232,15 +232,21 @@ impl Remembered {
 }
 
 /// What one operation has already read.
+///
+/// Keyed by a path's bytes rather than by [`Path`]: `Path`'s hash walks it a
+/// component at a time, a hasher call per component, and the memo is asked
+/// once per link per document. The paths prov asks about are normalized, so
+/// the two agree; where a caller spells one path two ways (`a//b`), the worst
+/// is a second read.
 #[derive(Debug, Default)]
 pub struct ReadMemo {
     /// Scope nesting depth. Nothing is remembered outside a scope, and the
     /// outermost exit is what clears it.
     depth: usize,
-    docs: FastMap<PathBuf, Remembered>,
+    docs: FastMap<OsString, Remembered>,
     /// Listings held, keyed workspace-relative like [`docs`](Self::docs) — which
     /// is what lets [`forget`](Self::forget) drop the one a write invalidates.
-    dirs: FastMap<PathBuf, Arc<DirNames>>,
+    dirs: FastMap<OsString, Arc<DirNames>>,
     /// Text and listing names held, against [`BUDGET`].
     bytes: usize,
 }
@@ -265,14 +271,16 @@ impl ReadMemo {
         if self.depth == 0 {
             return None;
         }
-        self.docs.get(path).map(|hit| Arc::clone(&hit.read))
+        self.docs
+            .get(path.as_os_str())
+            .map(|hit| Arc::clone(&hit.read))
     }
 
     /// Whether a read would be answered here: a scope is open and `path` is
     /// remembered.
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
     pub(crate) fn holds(&self, path: &Path) -> bool {
-        self.depth > 0 && self.docs.contains_key(path)
+        self.depth > 0 && self.docs.contains_key(path.as_os_str())
     }
 
     /// Whether the budget is spent: another document of any size the memo
@@ -296,7 +304,7 @@ impl ReadMemo {
         if self.depth == 0 {
             return None;
         }
-        let hit = self.docs.get(path)?;
+        let hit = self.docs.get(path.as_os_str())?;
         hit.has_body(body).then(|| hit.links.clone()).flatten()
     }
 
@@ -307,7 +315,7 @@ impl ReadMemo {
         if self.depth == 0 {
             return;
         }
-        if let Some(hit) = self.docs.get_mut(path)
+        if let Some(hit) = self.docs.get_mut(path.as_os_str())
             && hit.has_body(body)
             && hit.links.is_none()
         {
@@ -324,7 +332,7 @@ impl ReadMemo {
         }
         self.bytes += len;
         let remembered = Remembered { read, links: None };
-        if let Some(stale) = self.docs.insert(path.to_path_buf(), remembered) {
+        if let Some(stale) = self.docs.insert(path.as_os_str().to_owned(), remembered) {
             self.bytes -= stale.read.text.len();
         }
     }
@@ -336,7 +344,7 @@ impl ReadMemo {
         if self.depth == 0 {
             return None;
         }
-        self.dirs.get(path).cloned()
+        self.dirs.get(path.as_os_str()).cloned()
     }
 
     /// Remember a directory read. A no-op outside a scope or once the budget is
@@ -348,7 +356,7 @@ impl ReadMemo {
             return;
         }
         self.bytes += weight;
-        self.dirs.insert(path.to_path_buf(), names);
+        self.dirs.insert(path.as_os_str().to_owned(), names);
     }
 
     /// Forget `path` — what a write to it means.
@@ -360,11 +368,11 @@ impl ReadMemo {
     /// change and then reads the workspace back never meets a directory as it
     /// stood beforehand.
     pub fn forget(&mut self, path: &Path) {
-        if let Some(forgotten) = self.docs.remove(path) {
+        if let Some(forgotten) = self.docs.remove(path.as_os_str()) {
             self.bytes -= forgotten.read.text.len();
         }
         for dir in path.ancestors().skip(1) {
-            if let Some(names) = self.dirs.remove(dir) {
+            if let Some(names) = self.dirs.remove(dir.as_os_str()) {
                 self.bytes -= names.weight();
             }
         }

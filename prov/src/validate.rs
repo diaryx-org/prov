@@ -2603,9 +2603,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let verbatim = self.graph().verbatim_roots_reached(reachable).await;
         let mut docs: Vec<PathBuf> = Vec::new();
         let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
-        let reached: FastSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
+        let reached: FastSet<&std::ffi::OsStr> = reachable.iter().map(|p| p.as_os_str()).collect();
         for path in self.direct_child_files(&reached_dirs).await? {
-            if reached.contains(path.as_path()) || island.contains(&path) {
+            if reached.contains(path.as_os_str()) || island.contains(&path) {
                 continue;
             }
             if verbatim.iter().any(|root| path.starts_with(root)) {
@@ -2681,9 +2681,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut claims: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut payloads: Vec<(PathBuf, PathBuf)> = Vec::new();
         // Asked once per document on disk: a hash lookup, not an ordered one.
-        let reached: FastSet<&Path> = reachable.iter().map(PathBuf::as_path).collect();
+        let reached: FastSet<&std::ffi::OsStr> = reachable.iter().map(|p| p.as_os_str()).collect();
         for doc in self.all_documents().await? {
-            if reached.contains(doc.as_path()) || parked.iter().any(|dir| doc.starts_with(dir)) {
+            if reached.contains(doc.as_os_str()) || parked.iter().any(|dir| doc.starts_with(dir)) {
                 continue;
             }
             let Ok(read) = self.read(&doc).await else {
@@ -2712,7 +2712,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             let before = island.len();
             for (doc, parent) in &claims {
                 if !island.contains(doc)
-                    && (reached.contains(parent.as_path()) || island.contains(parent))
+                    && (reached.contains(parent.as_os_str()) || island.contains(parent))
                 {
                     island.insert(doc.clone());
                 }

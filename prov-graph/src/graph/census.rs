@@ -328,11 +328,13 @@ pub fn reachable_set(
     let mut reachable: Vec<PathBuf> = Vec::with_capacity(census.len() + 1);
     reachable.push(link::normalize(start));
     reachable.extend(content_bodies.iter().cloned());
-    let mut seen: FastSet<&Path> = FastSet::default();
+    // By the paths' bytes: `Path`'s hash is a hasher call per component, and
+    // this runs once per link in the workspace.
+    let mut seen: FastSet<&std::ffi::OsStr> = FastSet::default();
     for entry in census {
         match &entry.resolution {
             Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                if seen.insert(p) {
+                if seen.insert(p.as_os_str()) {
                     reachable.push(p.clone());
                 }
             }
@@ -617,13 +619,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // Everything the walk will read, read ahead in parallel and kept in
         // the memo, so the loop below meets it as hits.
         self.prefetch_tree(start, true).await;
-        let mut visited = FastSet::default();
+        // Keyed by the paths' bytes, as the read memo is: `Path`'s hash is a
+        // hasher call per component. The walk's paths are normalized.
+        let mut visited: FastSet<std::ffi::OsString> = FastSet::default();
         let mut queue = vec![link::normalize(start)];
         // What `queue` holds, for the duplicate-containment check: a path is
         // pushed only when it is neither visited nor queued, so the stack never
         // holds one twice and the set mirrors it exactly. Scanning the stack
         // instead was a path comparison per queued document per spanning link.
-        let mut queued: FastSet<PathBuf> = queue.iter().cloned().collect();
+        let mut queued: FastSet<std::ffi::OsString> =
+            queue.iter().map(|p| p.as_os_str().to_owned()).collect();
 
         // The nominal-resolution index, built lazily — only if a `[[alias]]` link
         // is actually encountered. A path/id workspace never scans (which, at the
@@ -641,8 +646,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         });
 
         while let Some(path) = queue.pop() {
-            queued.remove(&path);
-            if !visited.insert(path.clone()) {
+            queued.remove(path.as_os_str());
+            if !visited.insert(path.as_os_str().to_owned()) {
                 continue;
             }
             let read = match self.read(&path).await {
@@ -723,7 +728,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     && let Some(resolved) = resolution.resolved_path().cloned()
                 {
                     // Single-parent check, inverse check, descent.
-                    if visited.contains(&resolved) || queued.contains(&resolved) {
+                    if visited.contains(resolved.as_os_str())
+                        || queued.contains(resolved.as_os_str())
+                    {
                         structural.push(StructuralFact::DuplicateContainment {
                             doc: path.clone(),
                             target: link.target.clone(),
@@ -758,7 +765,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                                 });
                             }
                         }
-                        queued.insert(resolved.clone());
+                        queued.insert(resolved.as_os_str().to_owned());
                         queue.push(resolved);
                     }
                 }
