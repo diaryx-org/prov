@@ -220,7 +220,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             }
             edges.targets.entry(target).or_default().add(&link);
         }
-        for body in link::scan_body_links(path, &doc.body) {
+        for body in self.graph().body_links(path, doc) {
             if let Target::Path(target) = self.resolve_link(path, &body.link) {
                 edges.targets.entry(target).or_default().add(&body.link);
             }
