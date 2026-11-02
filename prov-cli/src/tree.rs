@@ -6,6 +6,7 @@
 //! called in any output. `check --follow` and `explore` borrow all three so a
 //! boundary reads the same wherever it is crossed.
 
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -26,7 +27,9 @@ pub(crate) fn cmd_tree(root: Option<&Path>, follow: Option<usize>, unverified: b
     // unfollowed path should not pay for a peer map it never consults.
     let Some(depth) = follow else {
         let node = block_on(session.ws.tree(&root))?;
-        print_node(&node, "", true, true);
+        let mut out = BufWriter::new(io::stdout().lock());
+        print_node(&mut out, &node, "", true, true)?;
+        out.flush()?;
         return Ok(ExitCode::SUCCESS);
     };
     let peers = peer::PeerMap::for_session(&session)?;
@@ -36,7 +39,9 @@ pub(crate) fn cmd_tree(root: Option<&Path>, follow: Option<usize>, unverified: b
         &peers,
         &descent(depth, unverified),
     ))?;
-    print_crossed_node(&federation, &federation.tree, "", true, true);
+    let mut out = BufWriter::new(io::stdout().lock());
+    print_crossed_node(&mut out, &federation, &federation.tree, "", true, true)?;
+    out.flush()?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -60,18 +65,36 @@ pub(crate) fn trust(unverified: bool) -> prov::Trust {
 
 /// Render one tree node: `path — title (marker)`, then its children with
 /// box-drawing connectors.
-fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
+///
+/// Written to `out`, buffered by the caller: a tree is a line per document,
+/// and stdout flushes at every newline, so printing it directly was a write
+/// call per document.
+fn print_node(
+    out: &mut impl Write,
+    node: &Node,
+    prefix: &str,
+    is_last: bool,
+    is_root: bool,
+) -> io::Result<()> {
     print_tree_line(
+        out,
         prefix,
         is_last,
         is_root,
         &node_name(&node.path, node.title.as_deref(), node.label.as_deref()),
         &node_marker(&node.kind),
-    );
+    )?;
     let child_prefix = child_prefix(prefix, is_last, is_root);
     for (i, child) in node.children.iter().enumerate() {
-        print_node(child, &child_prefix, i + 1 == node.children.len(), false);
+        print_node(
+            out,
+            child,
+            &child_prefix,
+            i + 1 == node.children.len(),
+            false,
+        )?;
     }
+    Ok(())
 }
 
 /// [`print_node`]'s sibling for a tree that crossed a boundary. The connectors,
@@ -79,38 +102,47 @@ fn print_node(node: &Node, prefix: &str, is_last: bool, is_root: bool) {
 /// ones — what a crossing adds is a marker at the boundary itself, and nowhere
 /// else, so a federated tree with no crossings in it renders identically.
 fn print_crossed_node(
+    out: &mut impl Write,
     federation: &prov::Federation,
     node: &prov::crossing::Node,
     prefix: &str,
     is_last: bool,
     is_root: bool,
-) {
+) -> io::Result<()> {
     print_tree_line(
+        out,
         prefix,
         is_last,
         is_root,
         &node_name(&node.path, node.title.as_deref(), node.label.as_deref()),
         &boundary_marker(federation, node),
-    );
+    )?;
     let child_prefix = child_prefix(prefix, is_last, is_root);
     for (i, child) in node.children.iter().enumerate() {
         print_crossed_node(
+            out,
             federation,
             child,
             &child_prefix,
             i + 1 == node.children.len(),
             false,
-        );
+        )?;
     }
+    Ok(())
 }
 
-fn print_tree_line(prefix: &str, is_last: bool, is_root: bool, name: &str, marker: &str) {
-    let connector = if is_root {
-        String::new()
-    } else {
-        format!("{prefix}{}", if is_last { "└── " } else { "├── " })
-    };
-    println!("{connector}{name}{marker}");
+fn print_tree_line(
+    out: &mut impl Write,
+    prefix: &str,
+    is_last: bool,
+    is_root: bool,
+    name: &str,
+    marker: &str,
+) -> io::Result<()> {
+    if !is_root {
+        write!(out, "{prefix}{}", if is_last { "└── " } else { "├── " })?;
+    }
+    writeln!(out, "{name}{marker}")
 }
 
 fn child_prefix(prefix: &str, is_last: bool, is_root: bool) -> String {

@@ -176,6 +176,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // is actually encountered. A path/id workspace never needs it, so it never
         // pays for a full-workspace scan (which, at the root of a larger repo,
         // would read every file under `target/`, vendored trees, and the rest).
+        // Read the tree ahead of the descent, in parallel; see `prefetch_tree`.
+        self.prefetch_tree(&start, false).await;
         let mut titles: Option<crate::title::TitleIndex> = None;
         let mut trail: Vec<PathBuf> = Vec::new();
         let root = start.clone();
@@ -220,8 +222,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // first also meant stat-ing an escaping target (`../../etc/passwd`)
             // before `load`'s root clamp got to refuse it; now the clamp is
             // first.
-            let doc = match self.load(&path).await {
-                Ok((_, doc)) => doc,
+            let read = match self.read(&path).await {
+                Ok(read) => read,
                 Err(e) if is_missing(&e) => {
                     return Ok(Node {
                         path,
@@ -241,6 +243,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     });
                 }
             };
+            let doc = &read.doc;
             let meta = fig::Value::from(&doc.meta);
             let title = doc.meta.get("title").and_then(crate::title::title_text);
 

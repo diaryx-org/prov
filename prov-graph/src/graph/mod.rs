@@ -88,6 +88,7 @@ pub mod census;
 pub mod load;
 pub mod manifest;
 pub mod parking;
+pub(crate) mod prepare;
 pub mod probe;
 pub mod resolve;
 pub mod scan;
@@ -296,33 +297,7 @@ impl<FS, Ix> Graph<FS, Ix> {
     /// inbound index and every rewriter share, so that a field declared a
     /// link is a link to all of them or to none.
     pub fn frontmatter_links(&self, meta: &fig::Value) -> Vec<FrontmatterLink> {
-        let mut out = Vec::new();
-        for edge in self.relations().edges(meta) {
-            let mut address = Address::key(&edge.relation);
-            if let Some(i) = edge.index {
-                address = address.item(i);
-            }
-            out.push(FrontmatterLink {
-                site: LinkSite::Relation {
-                    field: edge.relation,
-                    index: edge.index,
-                },
-                address,
-                raw: edge.target,
-            });
-        }
-        for path in self.references() {
-            for (address, raw) in crate::field::strings_at(meta, path) {
-                out.push(FrontmatterLink {
-                    site: LinkSite::Field {
-                        path: address.to_string(),
-                    },
-                    address,
-                    raw,
-                });
-            }
-        }
-        out
+        frontmatter_links_in(&self.settings, meta)
     }
 
     /// What this workspace calls itself; empty means anonymous.
@@ -346,12 +321,80 @@ impl<FS, Ix> Graph<FS, Ix> {
         crate::memo::lock(&self.memo)
     }
 
-    pub(crate) fn memo_hit(&self, path: &Path) -> Option<(String, crate::document::Document)> {
-        self.memo.lock().unwrap().get(path)
+    pub(crate) fn memo_hit(&self, path: &Path) -> Option<Arc<crate::document::Loaded>> {
+        crate::memo::lock(&self.memo).get(path)
     }
 
-    pub(crate) fn memo_remember(&self, path: &Path, text: &str, doc: &crate::document::Document) {
-        self.memo.lock().unwrap().remember(path, text, doc);
+    pub(crate) fn memo_remember(&self, path: &Path, read: Arc<crate::document::Loaded>) {
+        crate::memo::lock(&self.memo).remember(path, read);
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_holds(&self, path: &Path) -> bool {
+        crate::memo::lock(&self.memo).holds(path)
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_spent(&self) -> bool {
+        crate::memo::lock(&self.memo).spent()
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_in_scope(&self) -> bool {
+        crate::memo::lock(&self.memo).in_scope()
+    }
+
+    pub(crate) fn memo_links(
+        &self,
+        path: &Path,
+        body: &str,
+    ) -> Option<Arc<[crate::link::BodyLink]>> {
+        crate::memo::lock(&self.memo).links(path, body)
+    }
+
+    pub(crate) fn memo_remember_links(
+        &self,
+        path: &Path,
+        body: &str,
+        links: Arc<[crate::link::BodyLink]>,
+    ) {
+        crate::memo::lock(&self.memo).remember_links(path, body, links);
+    }
+
+    pub(crate) fn memo_prepared(
+        &self,
+        path: &Path,
+        read: &Arc<crate::document::Loaded>,
+    ) -> Option<Arc<prepare::Prepared>> {
+        crate::memo::lock(&self.memo).prepared(path, read)
+    }
+
+    pub(crate) fn memo_remember_prepared(
+        &self,
+        path: &Path,
+        read: &Arc<crate::document::Loaded>,
+        prepared: Arc<prepare::Prepared>,
+    ) {
+        crate::memo::lock(&self.memo).remember_prepared(path, read, prepared);
+    }
+
+    /// Remember what a [`prefetch`](Self::prefetch) read, under one lock.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_remember_all(&self, read: Vec<load::Prefetched>) {
+        let mut memo = crate::memo::lock(&self.memo);
+        for (path, read, links, prepared, _) in read {
+            if memo.holds(&path) {
+                continue;
+            }
+            let kept = Arc::clone(&read);
+            memo.remember(&path, read);
+            if let Some(links) = links {
+                memo.remember_links(&path, &kept.doc.body, links);
+            }
+            if let Some(prepared) = prepared {
+                memo.remember_prepared(&path, &kept, prepared);
+            }
+        }
     }
 
     /// The indexed listing of the workspace-relative directory `path`, if this
@@ -377,4 +420,40 @@ impl<FS: Clone, Ix: Clone> Clone for Graph<FS, Ix> {
             bulk: self.bulk.clone(),
         }
     }
+}
+
+/// [`Graph::frontmatter_links`] under `settings`, for a caller that holds the
+/// settings but not the graph: the prefetch's workers, preparing a document's
+/// links beside its parse.
+pub(crate) fn frontmatter_links_in(
+    settings: &ReadSettings,
+    meta: &fig::Value,
+) -> Vec<FrontmatterLink> {
+    let mut out = Vec::new();
+    for edge in settings.relations.edges(meta) {
+        let mut address = Address::key(&edge.relation);
+        if let Some(i) = edge.index {
+            address = address.item(i);
+        }
+        out.push(FrontmatterLink {
+            site: LinkSite::Relation {
+                field: edge.relation,
+                index: edge.index,
+            },
+            address,
+            raw: edge.target,
+        });
+    }
+    for path in &settings.references {
+        for (address, raw) in crate::field::strings_at(meta, path) {
+            out.push(FrontmatterLink {
+                site: LinkSite::Field {
+                    path: address.to_string(),
+                },
+                address,
+                raw,
+            });
+        }
+    }
+    out
 }

@@ -9,6 +9,7 @@
 //! that went unread over a misspelled key is invisible everywhere else by
 //! design. `docs` declares nothing and lists what they all select from.
 
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -81,7 +82,7 @@ pub(crate) fn cmd_views(name: Option<&str>, as_json: bool) -> CmdResult {
 
     let ws = workspace(&ctx)?;
     let selection = block_on(ws.select_view(&ctx.root_doc, view))?;
-    print_grouped(&selection, &view.key, as_json);
+    print_grouped(&selection, &view.key, as_json)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -111,7 +112,7 @@ pub(crate) fn cmd_query(condition: Option<&str>, key: Option<&str>, as_json: boo
     };
     let selection = prov::views::narrow("query", &spec, rows);
     match &key {
-        Some(key) => print_grouped(&selection, key, as_json),
+        Some(key) => print_grouped(&selection, key, as_json)?,
         None if as_json => {
             let records = selection.rows.iter().map(json::census_row).collect();
             print!(
@@ -138,35 +139,45 @@ pub(crate) fn cmd_query(condition: Option<&str>, key: Option<&str>, as_json: boo
 
 /// Group a selection and print it — the half `views NAME` and `query --key`
 /// share.
-fn print_grouped(selection: &prov::views::Selection, key: &prov::views::Expression, as_json: bool) {
+fn print_grouped(
+    selection: &prov::views::Selection,
+    key: &prov::views::Expression,
+    as_json: bool,
+) -> io::Result<()> {
     let rows = prov::views::group(selection, key);
     if as_json {
         print!("{}", json::view_result(selection, &rows).render());
-        return;
+        return Ok(());
     }
+    // A line per row, so buffered — and flushed before the failures go to
+    // stderr, so a terminal still shows the answer first.
+    let mut out = BufWriter::new(io::stdout().lock());
     for group in &rows.groups {
-        println!("{} ({})", group.label, group.rows.len());
+        writeln!(out, "{} ({})", group.label, group.rows.len())?;
         for row in &group.rows {
-            print_view_row(row);
+            print_view_row(&mut out, row)?;
         }
     }
     // Named rather than silently omitted: a view whose entries have all stopped
     // grouping looks exactly like an empty archive, and the difference is the
     // whole diagnosis.
     if !rows.ungrouped.is_empty() {
-        println!("(ungrouped) ({})", rows.ungrouped.len());
+        writeln!(out, "(ungrouped) ({})", rows.ungrouped.len())?;
         for row in &rows.ungrouped {
-            print_view_row(row);
+            print_view_row(&mut out, row)?;
         }
     }
     // The document count, not the row count: a document under two groups is
     // one document in two places, and a total that counted it twice would
     // claim the view covers more than the workspace holds.
     match selection.len() {
-        0 => println!("no documents match"),
-        n => println!("\n{n} document(s), {} row(s)", rows.placements()),
+        0 => writeln!(out, "no documents match")?,
+        n => writeln!(out, "\n{n} document(s), {} row(s)", rows.placements())?,
     }
+    out.flush()?;
+    drop(out);
     report_failures(&selection.failures, &rows.failures);
+    Ok(())
 }
 
 /// The documents an expression could not be evaluated on, on stderr — beside
@@ -188,10 +199,10 @@ fn report_failures(selecting: &[prov::views::Failure], grouping: &[prov::views::
 }
 
 /// One row of a view: `  path — title`.
-fn print_view_row(row: &prov::views::Row) {
+fn print_view_row(out: &mut impl Write, row: &prov::views::Row) -> io::Result<()> {
     match row.title() {
-        Some(title) => println!("  {} — {title}", row.path.display()),
-        None => println!("  {}", row.path.display()),
+        Some(title) => writeln!(out, "  {} — {title}", row.path.display()),
+        None => writeln!(out, "  {}", row.path.display()),
     }
 }
 
@@ -235,12 +246,15 @@ pub(crate) fn cmd_docs(as_json: bool, with_body: bool) -> CmdResult {
         print!("{}", json::J::Arr(records).render());
         return Ok(ExitCode::SUCCESS);
     }
+    // A line per document, so buffered: stdout flushes at every newline.
+    let mut out = BufWriter::new(io::stdout().lock());
     for row in &rows {
         match row.title() {
-            Some(title) => println!("{} — {title}", row.path.display()),
-            None => println!("{}", row.path.display()),
+            Some(title) => writeln!(out, "{} — {title}", row.path.display())?,
+            None => writeln!(out, "{}", row.path.display())?,
         }
     }
+    out.flush()?;
     Ok(ExitCode::SUCCESS)
 }
 

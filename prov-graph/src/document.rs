@@ -196,10 +196,26 @@ pub fn frontmatter_block(text: &str) -> Option<(MetaFormat, twig::meta::Block)> 
     Some((format, block))
 }
 
-/// `text`'s front metadata block, parsing it as `format`.
+/// `text`'s front metadata block, as `format` reads it. twig's
+/// [`find_front`](twig::meta::find_front) parses only as much of `text` as
+/// locating it takes — for Markdown, the lines up to the frontmatter's close
+/// — and gives what a parse of the whole text would.
 fn located(text: &str, format: twig::Format) -> Option<twig::meta::Block> {
-    let parsed = twig::meta::parse_host(text.as_bytes(), format).ok()?;
-    twig::meta::find(&parsed.doc, twig::meta::Where::Front)
+    twig::meta::find_front(text.as_bytes(), format)
+        .ok()
+        .flatten()
+}
+
+/// A document as one read found it: the text it was parsed from, and the
+/// parse. What [`Graph::read`](crate::graph::Graph::read) hands out, shared,
+/// so that asking for a document a second time in one operation costs a
+/// reference count rather than a copy of both.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    /// The file's text, exactly as read.
+    pub text: String,
+    /// What [`Document::parse`] made of it.
+    pub doc: Document,
 }
 
 /// A parsed document: its path, its embedded metadata, and its body text.
@@ -502,6 +518,37 @@ mod tests {
         let doc = Document::parse("note.md", text).unwrap();
         assert_eq!(doc.carrier, None);
         assert_eq!(doc.body, text);
+    }
+
+    #[test]
+    fn frontmatter_found_in_the_fenced_prefix_is_what_the_whole_text_holds() {
+        let texts = [
+            "---\ntitle: a\n---\nbody [x](y.md)\n",
+            "---\ntitle: a\n---",
+            "---\n---\nbody\n",
+            "---  \r\ntitle: a\r\n---\t \r\nbody\r\n",
+            "---\ntitle: a\n---\r\r\n---\nbody\n",
+            "--- \ntitle: a\n----\n---\nbody\n",
+            "---\ntitle: a\n --- \n---\nbody\n",
+            "+++\ntitle = \"a\"\n+++\nbody\n",
+            "+++\ntitle = \"a\"\n---\n+++\n",
+            "---figl\ntitle: a\n---\n",
+            "---toml\ntitle = \"a\"\n---\n\nbody\n\n---\n",
+            "---zon\n.{}\n---\nbody\n",
+            "--- not a tag\ntitle: a\n---\nbody\n",
+            "---\nunterminated\n",
+            "----\ntitle: a\n----\n",
+            "\n---\ntitle: a\n---\n",
+            "body\n\n---yaml\ntitle: a\n---\n",
+            "",
+            "---",
+        ];
+        for text in texts {
+            let whole = twig::meta::parse_host(text.as_bytes(), twig_markdown::format())
+                .ok()
+                .and_then(|parsed| twig::meta::find(&parsed.doc, twig::meta::Where::Front));
+            assert_eq!(located(text, twig_markdown::format()), whole, "{text:?}");
+        }
     }
 
     #[test]

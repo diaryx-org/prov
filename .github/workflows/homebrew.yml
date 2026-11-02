@@ -38,6 +38,8 @@ jobs:
       desc: "Command-line companion for the prov self-describing workspace library"
       language: rust
       cargo-package: prov-cli
+      # The native binaries allocate with mimalloc; see prov-cli's features.
+      cargo-features: mimalloc
       wasi: true
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}

@@ -126,8 +126,12 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
                 index.insert(stem, rel.clone());
             }
-            if let Ok((_, doc)) = self.load(rel).await
-                && let Some(title) = doc.meta.get("title").and_then(crate::title::title_text)
+            if let Ok(read) = self.read(rel).await
+                && let Some(title) = read
+                    .doc
+                    .meta
+                    .get("title")
+                    .and_then(crate::title::title_text)
             {
                 index.insert(&title, rel.clone());
             }
@@ -189,10 +193,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if parked.iter().any(|p| rel_dir.starts_with(p)) {
                 return Ok(());
             }
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 found.push(rel_dir);
                 return Ok(());
             }
@@ -252,9 +257,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 continue;
             }
             dirs.insert(dir);
-            let Ok((_, doc)) = self.load(&path).await else {
+            let Ok(read) = self.read(&path).await else {
                 continue;
             };
+            let doc = &read.doc;
             let meta = fig::Value::from(&doc.meta);
             for edge in self.relations().edges(&meta) {
                 let link = Link::parse(&edge.target);
@@ -366,9 +372,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     pub async fn direct_child_files(&self, dirs: &BTreeSet<PathBuf>) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for dir in dirs {
-            let Ok(entries) = self.listing(dir).await else {
+            let Ok(listing) = self.listing_shared(dir).await else {
                 continue;
             };
+            let entries = listing.entries();
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -412,10 +419,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         docs: &'a mut Vec<PathBuf>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 return Ok(());
             }
             for entry in entries {
@@ -452,14 +460,15 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         ids: &'a mut Vec<(crate::identity::Id, PathBuf)>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 return Ok(());
             }
-            let probe = shadow_probe(&rel_dir, &entries);
-            let siblings = file_names(&entries);
+            let probe = shadow_probe(&rel_dir, entries);
+            let siblings = file_names(entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -487,9 +496,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     // An `id:` inside a shadowed payload is an example, not a
                     // claim on the registry (see `attach_opaque`).
                     && !self.is_shadowed_payload(&rel, &probe).await
-                    && let Ok((_, doc)) = self.load(&rel).await
+                    && let Ok(read) = self.read(&rel).await
                 {
-                    let meta = fig::Value::from(&doc.meta);
+                    let meta = fig::Value::from(&read.doc.meta);
                     if let Some(id) = meta.get("id").and_then(fig::Value::as_str)
                         && !id.trim().is_empty()
                     {
@@ -520,14 +529,15 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             if parked.iter().any(|p| rel_dir.starts_with(p)) {
                 return Ok(());
             }
-            let Ok(entries) = self.listing(&rel_dir).await else {
+            let Ok(listing) = self.listing_shared(&rel_dir).await else {
                 return Ok(());
             };
-            if self.nests_workspace(&rel_dir, &entries).await {
+            let entries = listing.entries();
+            if self.nests_workspace(&rel_dir, entries).await {
                 return Ok(());
             }
-            let probe = shadow_probe(&rel_dir, &entries);
-            let siblings = file_names(&entries);
+            let probe = shadow_probe(&rel_dir, entries);
+            let siblings = file_names(entries);
             for entry in entries {
                 let Some(name) = entry
                     .file_name()
@@ -561,9 +571,12 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                         index.insert(stem, rel.clone());
                     }
                     // …and by the declared `title` when the document parses.
-                    if let Ok((_, doc)) = self.load(&rel).await
-                        && let Some(title) =
-                            doc.meta.get("title").and_then(crate::title::title_text)
+                    if let Ok(read) = self.read(&rel).await
+                        && let Some(title) = read
+                            .doc
+                            .meta
+                            .get("title")
+                            .and_then(crate::title::title_text)
                     {
                         index.insert(&title, rel.clone());
                     }

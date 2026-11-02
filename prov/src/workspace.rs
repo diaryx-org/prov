@@ -1706,6 +1706,12 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
         self.graph.load(path).await
     }
 
+    /// [`load`](Self::load), shared — [`Graph::read`]. What a pass that only
+    /// looks at each document should ask for.
+    pub(crate) async fn read(&self, path: &Path) -> Result<std::sync::Arc<prov_graph::Loaded>> {
+        self.graph.read(path).await
+    }
+
     /// The parsed document at a workspace-relative `path`.
     pub async fn document(&self, path: impl AsRef<Path>) -> Result<Document> {
         self.graph.document(path).await

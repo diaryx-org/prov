@@ -1158,6 +1158,18 @@ impl BodyLink {
 /// runs once per document in every census: 41% of a `check` over twenty
 /// thousand documents was that second parse.
 pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
+    // Every link kept below is a lexical `[[…]]` or a span `Link::parse` reads
+    // as `[label](target)`, which needs a `](` in it. A body holding neither
+    // has no link to find, so it is not parsed: most of a census's cost was
+    // parsing prose to learn that.
+    if !body.contains("[[") && !body.contains("](") {
+        return Vec::new();
+    }
+    parse_body_links(path, body)
+}
+
+/// [`scan_body_links`] without the lexical guard: every body parsed.
+fn parse_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
     // No grammar for this extension, or a parse that failed: the lexical scan
     // over the whole body, and no markdown links — exactly what the two finders
     // degrade to on their own.
@@ -1361,6 +1373,33 @@ pub fn relative(from_dir: &Path, to: &Path) -> String {
 mod tests {
     use super::*;
     use std::path::Component;
+
+    #[test]
+    fn a_body_the_guard_skips_is_one_the_parse_finds_no_links_in() {
+        let bodies = [
+            ("a.md", "[x][ref]\n\n[ref]: b.md\n"),
+            ("a.md", "![alt][ref]\n\n[ref]: b.png\n"),
+            ("a.md", "<https://example.com> and <b.md>\n"),
+            ("a.md", "[x] (b.md) and [y]\n(c.md)\n"),
+            ("a.md", "[[ unclosed and ] ] [ [x]]\n"),
+            ("a.md", "`[x](b.md)` inside code\n"),
+            ("a.dj", "[x][ref]\n\n[ref]: b.dj\n"),
+            (
+                "a.html",
+                "<p><a href=\"b.html\">b</a> <img src=\"c.png\"></p>\n",
+            ),
+            ("a.md", "[x](b.md)\n"),
+            ("a.md", "![alt](c.png) and [[d]]\n"),
+        ];
+        for (path, body) in bodies {
+            let path = Path::new(path);
+            assert_eq!(
+                scan_body_links(path, body),
+                parse_body_links(path, body),
+                "{body:?}"
+            );
+        }
+    }
 
     #[test]
     fn locator_splits_at_the_first_separator_and_round_trips() {

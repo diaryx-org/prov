@@ -220,7 +220,7 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
             }
             edges.targets.entry(target).or_default().add(&link);
         }
-        for body in link::scan_body_links(path, &doc.body) {
+        for body in self.graph().body_links(path, doc) {
             if let Target::Path(target) = self.resolve_link(path, &body.link) {
                 edges.targets.entry(target).or_default().add(&body.link);
             }
@@ -365,8 +365,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for path in visited {
             // A document the walk could not read has no links to remember,
             // and a stamp that will change when it is repaired.
-            let edges = match self.load(&path).await {
-                Ok((_, doc)) => self.edges_of(&path, &doc),
+            let edges = match self.read(&path).await {
+                Ok(read) => self.edges_of(&path, &read.doc),
                 Err(_) => DocEdges::default(),
             };
             let stamp = self.stamp(&path).await.ok().flatten();

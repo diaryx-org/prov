@@ -480,10 +480,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "fs-transaction"
-version = "0.4.1"
+name = "foldhash"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e968c94d635cfa7ac0c3157f6504f0ab3bb4135f5915ee45f43db6733578336"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "fs-transaction"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac4c49756d29a08e84aab322991dae72a3e2ae26bf10f268b145db3cee732610"
 
 [[package]]
 name = "futures-core"
@@ -632,6 +638,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -657,6 +672,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
+]
 
 [[package]]
 name = "minimal-lexical"
@@ -827,6 +851,7 @@ dependencies = [
  "cliclack",
  "fig",
  "libc",
+ "mimalloc",
  "prov",
  "prov-testkit",
 ]
@@ -880,6 +905,7 @@ dependencies = [
  "fig-json",
  "fig-toml",
  "fig-yaml",
+ "foldhash",
  "fs-transaction",
  "indexmap",
  "moid",
@@ -1237,9 +1263,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "twig-djot"
-version = "7.0.0"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9df7623ba396e17d9890d2432249002f76780b1b44b6a8f8791cd2e8806ec899"
+checksum = "09e36d2e526c1a1271ba0c28dcbccca3fe9823340551b1a8cf0aeba2c54be604"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -1247,9 +1273,9 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "7.0.0"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43059a77c9c1b7e56f38a74917a4e446da813388ab9a6227520081abf4fb5ebc"
+checksum = "7af891a5126a77f2498a56b7207129a5f5622f07c8158c4651b4cba4cb4ca670"
 dependencies = [
  "fig",
  "fig-figl",
@@ -1261,9 +1287,9 @@ dependencies = [
 
 [[package]]
 name = "twig-html"
-version = "7.0.0"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d0f5733e9d1cf54d306105e89d9a4388a36e1a77110065214dacc681adfcacc"
+checksum = "6926e16122e07870ab80acb498d65db8c8dff30d04b1d11502e79e2720709f21"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -1271,15 +1297,15 @@ dependencies = [
 
 [[package]]
 name = "twig-kit"
-version = "7.0.0"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "547e69372eacfac62d3bc3c0433683894d9b0743aa413311c50a0732ae890397"
+checksum = "12f37d71b106d4cafc2db29f6adaa7bbc530da7cb707a2b6db4a5ffcc42bd857"
 
 [[package]]
 name = "twig-markdown"
-version = "7.0.0"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3e82b47b5b941022c8ce086f8c32c36e563482c1a2a74805abd2398eadbacd1"
+checksum = "f26867c35dfcc2bca2815faa4dc52f55f3fa609dec6576981b3c31bf3afabf9c"
 dependencies = [
  "twig-doc",
  "twig-html",

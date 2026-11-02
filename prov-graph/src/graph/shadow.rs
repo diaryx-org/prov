@@ -13,7 +13,7 @@
 //! not found by probing, which is why `attach`'s own sweep confirms the pointer
 //! rather than trusting the name.
 
-use std::collections::HashMap;
+use crate::hash::FastMap;
 use std::path::{Path, PathBuf};
 
 use super::{Graph, Target};
@@ -64,13 +64,13 @@ pub fn sidecar_candidates(payload: &Path) -> impl Iterator<Item = PathBuf> + '_ 
 pub struct ShadowProbe {
     /// Payload path → the conventionally named sidecars actually present, in
     /// [`sidecar_candidates`]' preference order.
-    sidecars: HashMap<PathBuf, Vec<PathBuf>>,
+    sidecars: FastMap<PathBuf, Vec<PathBuf>>,
 }
 
 impl ShadowProbe {
     /// Index the workspace-relative files a scan enumerated.
     pub fn over<'a>(listing: impl IntoIterator<Item = &'a PathBuf>) -> Self {
-        let mut ranked: HashMap<PathBuf, Vec<(usize, PathBuf)>> = HashMap::new();
+        let mut ranked: FastMap<PathBuf, Vec<(usize, PathBuf)>> = FastMap::default();
         for entry in listing {
             let Some(rank) = entry
                 .extension()
@@ -113,9 +113,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// and prov must keep scanning it. Unreadable or unparsable candidates simply
     /// do not claim (this runs inside best-effort scans).
     pub async fn sidecar_claims(&self, candidate: &Path, payload: &Path) -> bool {
-        let Ok((_, doc)) = self.load(candidate).await else {
+        let Ok(read) = self.read(candidate).await else {
             return false;
         };
+        let doc = &read.doc;
         let Some(content) = doc.content_attr() else {
             return false;
         };
@@ -162,7 +163,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     pub async fn attachment_payload(&self, path: &Path) -> Option<PathBuf> {
         let path = link::normalize(path);
         whole_file_format(&path)?;
-        let (_, doc) = self.load(&path).await.ok()?;
+        let read = self.read(&path).await.ok()?;
+        let doc = &read.doc;
         if !doc.is_attachment() {
             return None;
         }

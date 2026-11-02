@@ -86,6 +86,24 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
         Ok(self.fs().read_dir(&self.root().join(path)).await?)
     }
 
+    /// [`listing`](Self::listing), remembered for the operation: inside a read
+    /// scope a directory is read once however many scans walk it — `check`
+    /// lists most of the tree in four passes and the walk lists every
+    /// directory a link points into. For the read-only scans; a mutation
+    /// lists what it is about to change with `listing`, fresh.
+    pub(crate) async fn listing_shared(
+        &self,
+        path: &Path,
+    ) -> Result<std::sync::Arc<crate::memo::DirNames>> {
+        if let Some(hit) = self.memo_dir(path) {
+            return Ok(hit);
+        }
+        let entries = self.fs().read_dir(&self.root().join(path)).await?;
+        let listing = std::sync::Arc::new(crate::memo::DirNames::index(entries));
+        self.memo_remember_dir(path, std::sync::Arc::clone(&listing));
+        Ok(listing)
+    }
+
     /// Metadata about the entry at the workspace-relative `path`. Mirrors
     /// [`ReadStorage::metadata`], joined to the workspace root.
     pub async fn stat(&self, path: &Path) -> Result<Metadata> {

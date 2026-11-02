@@ -41,6 +41,8 @@
 //! how to change a document, and that is what keeps it a view.
 
 use std::collections::BTreeSet;
+
+use prov_graph::hash::FastSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -1727,10 +1729,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for path in documents {
             // A reached payload file will not parse as a document — nothing to
             // read, and not this pass's business.
-            let Ok((text, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
-            let standing = self.standing(&text, &doc);
+            let doc = &read.doc;
+            let text = read.text.as_str();
+            let standing = self.standing(text, doc);
             // A live entry is one made after the last change, so the document
             // has been confirmed since and its older entries are history. Only
             // a document nothing stands for is reported, naming the newest
@@ -1766,17 +1770,19 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut handles: std::collections::BTreeMap<String, Vec<PathBuf>> =
             std::collections::BTreeMap::new();
         for path in documents {
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
+            let doc = &read.doc;
             for handle in crate::provenance::handles_of(&doc.meta) {
                 handles.entry(handle).or_default().push(path.clone());
             }
-            loaded.push((path.clone(), doc));
+            loaded.push((path.clone(), std::sync::Arc::clone(&read)));
         }
 
         let mut findings = Vec::new();
-        for (path, doc) in &loaded {
+        for (path, read) in &loaded {
+            let doc = &read.doc;
             for (field, actor, sealed) in crate::provenance::actors_of(&doc.meta) {
                 if !crate::provenance::is_bare_person(&actor) {
                     continue;
@@ -2067,9 +2073,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             if config_doc.as_deref() == Some(path.as_path()) {
                 continue;
             }
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
+            let doc = &read.doc;
             for (field, index, values, vocab) in &vocabs {
                 // A declaration names a top-level key, a dotted path into a
                 // mapping (`generated.how`), or a path through every item of
@@ -2157,9 +2164,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             if config_doc.as_deref() == Some(path.as_path()) {
                 continue;
             }
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
+            let doc = &read.doc;
             for (field, index) in &dated {
                 if scopes.index_for(&config, field, path) != Some(*index) {
                     continue;
@@ -2350,9 +2358,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let mut owners: std::collections::BTreeMap<PathBuf, (PathBuf, String)> =
             std::collections::BTreeMap::new();
         for path in documents {
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
+            let doc = &read.doc;
             let meta = fig::Value::from(&doc.meta);
             for owned in crate::inline::owned_payloads(self.payloads(), path, &meta) {
                 let address = owned.address.to_string();
@@ -2417,9 +2426,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         for path in documents {
             // A reached payload file (a `.png`) will not parse as a document —
             // skip it; it is verified through its sidecar, not on its own.
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
+            let doc = &read.doc;
             let meta = fig::Value::from(&doc.meta);
             let Some(recorded) = meta.get("content_hash").and_then(fig::Value::as_str) else {
                 continue;
@@ -2450,7 +2460,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 None => {
                     body_hashed.0 += 1;
                     body_hashed.1.get_or_insert_with(|| path.clone());
-                    digests.push(doc.body.into_bytes());
+                    digests.push(doc.body.as_bytes().to_vec());
                 }
             }
             recorded_hashes.push((path, recorded.to_string()));
@@ -2498,9 +2508,10 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
     async fn manifest_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         for path in documents {
-            let Ok((_, doc)) = self.load(path).await else {
+            let Ok(read) = self.read(path).await else {
                 continue;
             };
+            let doc = &read.doc;
             let Some(raw) = doc.manifest_attr() else {
                 continue;
             };
@@ -2592,8 +2603,9 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         let verbatim = self.graph().verbatim_roots_reached(reachable).await;
         let mut docs: Vec<PathBuf> = Vec::new();
         let mut payloads: BTreeSet<PathBuf> = BTreeSet::new();
+        let reached: FastSet<&std::ffi::OsStr> = reachable.iter().map(|p| p.as_os_str()).collect();
         for path in self.direct_child_files(&reached_dirs).await? {
-            if reachable.contains(&path) || island.contains(&path) {
+            if reached.contains(path.as_os_str()) || island.contains(&path) {
                 continue;
             }
             if verbatim.iter().any(|root| path.starts_with(root)) {
@@ -2668,13 +2680,16 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         // rest of the whole-file documents are machinery and claim nothing.
         let mut claims: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut payloads: Vec<(PathBuf, PathBuf)> = Vec::new();
+        // Asked once per document on disk: a hash lookup, not an ordered one.
+        let reached: FastSet<&std::ffi::OsStr> = reachable.iter().map(|p| p.as_os_str()).collect();
         for doc in self.all_documents().await? {
-            if reachable.contains(&doc) || parked.iter().any(|dir| doc.starts_with(dir)) {
+            if reached.contains(doc.as_os_str()) || parked.iter().any(|dir| doc.starts_with(dir)) {
                 continue;
             }
-            let Ok((_, parsed)) = self.load(&doc).await else {
+            let Ok(read) = self.read(&doc).await else {
                 continue;
             };
+            let parsed = &read.doc;
             if ContentFormat::from_extension(&doc).is_none() {
                 let Some(payload) = parsed
                     .is_attachment()
@@ -2685,7 +2700,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                 };
                 payloads.push((doc.clone(), payload));
             }
-            if let Some(parent) = self.single_target(&parsed, &inverse, &doc) {
+            if let Some(parent) = self.single_target(parsed, &inverse, &doc) {
                 claims.push((doc, parent));
             }
         }
@@ -2696,7 +2711,8 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         loop {
             let before = island.len();
             for (doc, parent) in &claims {
-                if !island.contains(doc) && (reachable.contains(parent) || island.contains(parent))
+                if !island.contains(doc)
+                    && (reached.contains(parent.as_os_str()) || island.contains(parent))
                 {
                     island.insert(doc.clone());
                 }
@@ -2714,11 +2730,12 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
             if !island.contains(doc) {
                 continue;
             }
-            let Ok((_, parent_doc)) = self.load(parent).await else {
+            let Ok(read) = self.read(parent).await else {
                 continue;
             };
+            let parent_doc = &read.doc;
             if self
-                .entry_index(&parent_doc, &spanning, parent, doc)
+                .entry_index(parent_doc, &spanning, parent, doc)
                 .is_some()
             {
                 continue;

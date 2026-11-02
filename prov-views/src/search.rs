@@ -93,6 +93,11 @@ const PASSAGE_HALF: usize = 90;
 /// result do not correspond to offsets into the input — the passage cutter
 /// keeps its own map back where that matters.
 pub fn fold(text: &str) -> String {
+    // ASCII is its own decomposition, has no combining marks, and lowercases
+    // byte for byte — and it is most of what a corpus folds.
+    if text.is_ascii() {
+        return text.to_ascii_lowercase();
+    }
     text.nfd()
         .filter(|c| !is_combining_mark(*c))
         .flat_map(char::to_lowercase)
@@ -106,6 +111,11 @@ fn fold_with_origins(text: &str) -> (String, Vec<usize>) {
     let mut folded = String::with_capacity(text.len());
     let mut origins = Vec::with_capacity(text.len());
     for (at, c) in text.char_indices() {
+        if c.is_ascii() {
+            folded.push(c.to_ascii_lowercase());
+            origins.push(at);
+            continue;
+        }
         let start = folded.len();
         for d in c.nfd().filter(|d| !is_combining_mark(*d)) {
             for l in d.to_lowercase() {
@@ -552,23 +562,26 @@ pub async fn corpus<FS: ReadStorage, Ix: IdIndex>(
     let rows = documents(graph, root_doc).await?;
     let mut docs = Vec::with_capacity(rows.len());
     for row in rows {
-        let doc = graph.document(&row.path).await?;
+        let path = prov_graph::link::normalize(&row.path);
+        let read = graph.read(&path).await?;
+        let doc = &read.doc;
         let has_body = !doc.is_attachment()
             && !(matches!(doc.carrier, Some(MetaCarrier::WholeFile(_)))
                 && doc.content_attr().is_none());
-        let body = if has_body {
-            Some(graph.body(&row.path).await?.text)
+        // A combined document's body is the one just read, folded where it
+        // sits; only a separated one has a second file to fetch.
+        let separate = if has_body && doc.content_path(&path).is_some() {
+            Some(graph.body(&path).await?.text)
         } else {
             None
         };
+        let body = match (&separate, has_body) {
+            (Some(text), _) => Some(text.as_str()),
+            (None, true) => Some(doc.body.as_str()),
+            (None, false) => None,
+        };
         let title = row.title().unwrap_or_else(|| stem_title(&row.path));
-        docs.push(IndexedDoc::new(
-            row.path,
-            title,
-            &row.meta,
-            body.as_deref(),
-            &excluded,
-        ));
+        docs.push(IndexedDoc::new(row.path, title, &row.meta, body, &excluded));
     }
     Ok(Corpus { docs })
 }
@@ -654,6 +667,28 @@ mod tests {
         assert_eq!(fold("Ålesund"), "alesund");
         assert_eq!(fold("CAFÉ"), "cafe");
         assert_eq!(fold("Straße"), "straße");
+    }
+
+    #[test]
+    fn the_ascii_shortcuts_fold_as_decomposition_does() {
+        let by_decomposition = |text: &str| -> String {
+            text.nfd()
+                .filter(|c| !is_combining_mark(*c))
+                .flat_map(char::to_lowercase)
+                .collect()
+        };
+        for text in [
+            "Plain ASCII, With Caps & [links](a.md)\n\ttabs",
+            "Ålesund CAFÉ Straße",
+            "Mixed: Cafe\u{301} na\u{EF}ve İstanbul ΣΊΣΥΦΟΣ",
+            "e\u{301}\u{323}x and 한국어",
+            "",
+        ] {
+            assert_eq!(fold(text), by_decomposition(text), "{text:?}");
+            let (folded, origins) = fold_with_origins(text);
+            assert_eq!(folded, fold(text), "{text:?}");
+            assert_eq!(origins.len(), folded.len(), "{text:?}");
+        }
     }
 
     #[test]

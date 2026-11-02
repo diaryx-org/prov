@@ -17,4 +17,4 @@
 //!
 //! [`Storage`]: fs_transaction::fs::Storage
 
-pub use fs_transaction::fs::{DirEntry, FileType, Metadata, ReadStorage, StdFs};
+pub use fs_transaction::fs::{DirEntry, FileType, Metadata, ReadStorage, SharedRead, StdFs};

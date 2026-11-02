@@ -2,11 +2,12 @@
 //! reachability views built over the result. See the module doc at
 //! [`crate::graph`] for why the census is ground truth.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::hash::FastSet;
 use std::fmt;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use super::Graph;
 use crate::document::is_opaque_payload;
@@ -15,7 +16,6 @@ use crate::fs::ReadStorage;
 use crate::identity::{self, Id};
 use crate::index::IdIndex;
 use crate::link::{self, Link};
-use crate::memo::DirNames;
 use crate::title::{self, TitleIndex, TitleMatch};
 
 use super::Target;
@@ -325,24 +325,45 @@ pub fn reachable_set(
     census: &[CensusEntry],
     content_bodies: &[PathBuf],
 ) -> BTreeSet<PathBuf> {
-    let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
-    reachable.insert(link::normalize(start));
+    let mut reachable: Vec<PathBuf> = Vec::with_capacity(census.len() + 1);
+    reachable.push(link::normalize(start));
     reachable.extend(content_bodies.iter().cloned());
-    let mut seen: HashSet<&Path> = HashSet::new();
+    // By the paths' bytes: `Path`'s hash is a hasher call per component, and
+    // this runs once per link in the workspace.
+    let mut seen: FastSet<&std::ffi::OsStr> = FastSet::default();
     for entry in census {
         match &entry.resolution {
             Resolution::Path(p) | Resolution::Id { to: p, .. } => {
-                if seen.insert(p) {
-                    reachable.insert(p.clone());
+                if seen.insert(p.as_os_str()) {
+                    reachable.push(p.clone());
                 }
             }
             Resolution::CaseMismatch { got, actual } => {
-                reachable.insert(got.with_file_name(actual));
+                reachable.push(got.with_file_name(actual));
             }
             _ => {}
         }
     }
-    reachable
+    path_set(reachable)
+}
+
+/// `paths` as an ordered set, built for less than inserting them one by one.
+///
+/// [`Path`]'s order compares component by component, which is several times
+/// the cost of comparing bytes, and inserting ten thousand paths costs a
+/// dozen comparisons each. So the paths are sorted by their bytes first: that
+/// order is [`Path`]'s except where a name holds a byte below `/` (`a-b`
+/// sorts before `a/b` by bytes, after it by components), so the stable sort
+/// that collecting into the set performs finds them almost in order, and
+/// costs about one comparison each.
+pub(crate) fn path_set(mut paths: Vec<PathBuf>) -> BTreeSet<PathBuf> {
+    paths.sort_unstable_by(|a, b| {
+        a.as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.as_os_str().as_encoded_bytes())
+    });
+    paths.dedup();
+    paths.into_iter().collect()
 }
 
 impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
@@ -404,11 +425,23 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             .filter(|p| !is_opaque_payload(p))
             .cloned()
             .collect();
-        let beside_a_node = |path: &PathBuf| {
-            path.ancestors().skip(1).any(|dir| {
-                !dir.as_os_str().is_empty()
-                    && crate::manifest::manifest_node_candidates(dir).any(|c| readable.contains(&c))
+        // The convention read backwards, as `ShadowProbe` reads it: every
+        // reached `<dir>.<ext>` names a directory that has a node beside it, so
+        // the per-ancestor question is one hash lookup rather than a candidate
+        // per extension probed against an ordered set.
+        let node_dirs: FastSet<PathBuf> = readable
+            .iter()
+            .filter(|c| {
+                c.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| super::shadow::SIDECAR_EXTENSIONS.contains(&ext))
             })
+            .map(|c| c.with_extension(""))
+            .collect();
+        let beside_a_node = |path: &PathBuf| {
+            path.ancestors()
+                .skip(1)
+                .any(|dir| !dir.as_os_str().is_empty() && node_dirs.contains(dir))
         };
         let covered = if reachable.iter().any(|p| is_opaque_payload(p))
             || readable.iter().any(beside_a_node)
@@ -417,7 +450,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         } else {
             Vec::new()
         };
-        let mut documents = BTreeSet::new();
+        // Kept in `reachable`'s order, so collecting them is a bulk build
+        // rather than an insert, and its comparisons, per document.
+        let mut documents = Vec::with_capacity(reachable.len());
         for path in reachable {
             if covered.iter().any(|(root, verbatim)| {
                 path.starts_with(root) && (*verbatim || is_opaque_payload(path))
@@ -425,10 +460,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                 continue;
             }
             if !self.is_shadowed_payload(path, &probe).await {
-                documents.insert(path.clone());
+                documents.push(path.clone());
             }
         }
-        Ok(documents)
+        Ok(documents.into_iter().collect())
     }
 
     /// Every file the workspace reaches from `start` that actually exists on
@@ -581,8 +616,19 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // Kept out of the census (not a graph edge), but tracked so the orphan
         // check does not mistake a linked body file for an unlinked one.
         let mut content_bodies = Vec::new();
-        let mut visited = BTreeSet::new();
+        // Everything the walk will read, read ahead in parallel and kept in
+        // the memo, so the loop below meets it as hits.
+        self.prefetch_tree(start, true).await;
+        // Keyed by the paths' bytes, as the read memo is: `Path`'s hash is a
+        // hasher call per component. The walk's paths are normalized.
+        let mut visited: FastSet<std::ffi::OsString> = FastSet::default();
         let mut queue = vec![link::normalize(start)];
+        // What `queue` holds, for the duplicate-containment check: a path is
+        // pushed only when it is neither visited nor queued, so the stack never
+        // holds one twice and the set mirrors it exactly. Scanning the stack
+        // instead was a path comparison per queued document per spanning link.
+        let mut queued: FastSet<std::ffi::OsString> =
+            queue.iter().map(|p| p.as_os_str().to_owned()).collect();
 
         // The nominal-resolution index, built lazily — only if a `[[alias]]` link
         // is actually encountered. A path/id workspace never scans (which, at the
@@ -600,11 +646,12 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         });
 
         while let Some(path) = queue.pop() {
-            if !visited.insert(path.clone()) {
+            queued.remove(path.as_os_str());
+            if !visited.insert(path.as_os_str().to_owned()) {
                 continue;
             }
-            let doc = match self.load(&path).await {
-                Ok((_, doc)) => doc,
+            let read = match self.read(&path).await {
+                Ok(read) => read,
                 Err(e) => {
                     structural.push(StructuralFact::Unreadable {
                         doc: path,
@@ -613,7 +660,11 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     continue;
                 }
             };
-            let meta = fig::Value::from(&doc.meta);
+            let doc = &read.doc;
+            // What this document's links say before anything is asked of the
+            // filesystem or the registry — prepared by the prefetch off this
+            // thread, or here when it was not. See `prepare`.
+            let prepared = self.prepared(&path, &read);
 
             // Reconcile a self-stored `id` against the registry (frontmatter
             // storage, DESIGN §5). Three outcomes when a document carries its own
@@ -621,7 +672,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // *different* id for this path, or hands this id to another document
             // (`IdMismatch` — a drift); or the registry has never heard of the id
             // (`UnregisteredId` — the shadow got ahead of the cache).
-            if let Some(fm) = meta.get("id").and_then(fig::Value::as_str)
+            if let Some(fm) = doc.meta.get("id").and_then(crate::meta::Value::as_str)
                 && !fm.trim().is_empty()
             {
                 let fm = Id(fm.trim().to_string());
@@ -666,46 +717,47 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
             // Frontmatter links — relation edges, the only links that can be
             // spanning, and the values of path-valued fields, which never are.
-            for FrontmatterLink { site, raw, .. } in self.frontmatter_links(&meta) {
-                // Parse once: `link.target` is the bare target (any `[label](…)`
-                // stripped), which is what both the census and findings record.
-                let link = Link::parse(&raw);
-                if titles.is_none() && title::is_alias_shaped(&link.target) {
+            for front in &prepared.front {
+                // `link.target` is the bare target (any `[label](…)` stripped),
+                // which is what both the census and findings record.
+                let site = &front.site.site;
+                let link = &front.link;
+                if titles.is_none() && front.alias_shaped {
                     titles = Some(self.title_index_scoped(start, parked).await?);
                 }
-                let resolution = self.resolve_forward(&path, &link, titles.as_ref()).await;
+                let resolution = self
+                    .resolve_prepared(&path, link, &front.pre, titles.as_ref())
+                    .await;
 
                 if site.relation() == spanning.as_deref()
                     && site.relation().is_some()
                     && let Some(resolved) = resolution.resolved_path().cloned()
                 {
                     // Single-parent check, inverse check, descent.
-                    if visited.contains(&resolved) || queue.contains(&resolved) {
+                    if visited.contains(resolved.as_os_str())
+                        || queued.contains(resolved.as_os_str())
+                    {
                         structural.push(StructuralFact::DuplicateContainment {
                             doc: path.clone(),
                             target: link.target.clone(),
                         });
                     } else {
                         if let Some(inverse) = inverse.as_deref()
-                            && let Ok((_, child_doc)) = self.load(&resolved).await
-                            && child_doc.has_meta()
+                            && let Ok(child) = self.read(&resolved).await
+                            && child.doc.has_meta()
                         {
-                            let child_meta = fig::Value::from(&child_doc.meta);
-                            let inverse_targets = child_meta
-                                .get(inverse)
-                                .map(crate::meta::link_strings)
-                                .unwrap_or_default();
+                            let child_links = self.prepared(&resolved, &child);
                             // Build the title index if a nominal inverse link needs it.
                             if titles.is_none()
-                                && inverse_targets
-                                    .iter()
-                                    .any(|t| title::is_alias_shaped(&Link::parse(t).target))
+                                && child_links.inverse.iter().any(|l| l.alias_shaped)
                             {
                                 titles = Some(self.title_index_scoped(start, parked).await?);
                             }
-                            let points_back = inverse_targets.iter().any(|t| {
-                                self.resolve_link_with(&resolved, &Link::parse(t), titles.as_ref())
-                                    == Target::Path(path.clone())
+                            let points_back = child_links.inverse.iter().any(|l| {
+                                matches!(
+                                    self.target_prepared(&resolved, &l.link, &l.pre, titles.as_ref()),
+                                    Target::Path(back) if back == path
+                                )
                             });
                             if !points_back {
                                 structural.push(StructuralFact::MissingInverse {
@@ -715,15 +767,16 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                                 });
                             }
                         }
+                        queued.insert(resolved.as_os_str().to_owned());
                         queue.push(resolved);
                     }
                 }
 
                 census.push(CensusEntry {
                     source: path.clone(),
-                    site,
-                    label: link.label,
-                    target_text: link.target,
+                    site: site.clone(),
+                    label: link.label.clone(),
+                    target_text: link.target.clone(),
                     resolution,
                 });
             }
@@ -737,20 +790,20 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             // image is a file that is missing, never a nominal reference to a
             // document by title, and it neither builds the title index nor
             // resolves through it.
-            for body_link in link::scan_body_links(&path, &doc.body) {
-                let image = body_link.image;
-                let wl = body_link.link;
-                if !image && titles.is_none() && title::is_alias_shaped(&wl.target) {
+            for body in &prepared.body {
+                let image = body.site.image;
+                let wl = &body.link;
+                if titles.is_none() && body.alias_shaped {
                     titles = Some(self.title_index_scoped(start, parked).await?);
                 }
                 let resolution = self
-                    .resolve_forward(&path, &wl, titles.as_ref().filter(|_| !image))
+                    .resolve_prepared(&path, wl, &body.pre, titles.as_ref().filter(|_| !image))
                     .await;
                 census.push(CensusEntry {
                     source: path.clone(),
-                    site: LinkSite::Body(body_link.span),
-                    label: wl.label,
-                    target_text: wl.target,
+                    site: LinkSite::Body(body.site.span.clone()),
+                    label: wl.label.clone(),
+                    target_text: wl.target.clone(),
                     resolution,
                 });
             }
@@ -824,6 +877,191 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             facts: structural,
             content_bodies,
         })
+    }
+
+    /// Read the spanning tree under `start` ahead of a walk over it, one level
+    /// at a time, into the read memo: every document at one depth is read and
+    /// parsed in one [`prefetch`](Self::prefetch) batch, and its children are
+    /// the next. With `links`, each body's links are found there too.
+    ///
+    /// A batch per level rather than per parent is what makes the reading
+    /// parallel whatever shape the tree is: a journal three children wide and
+    /// eight deep has levels of thousands of documents, where a batch per
+    /// parent would hold three, and waking the pool for three costs more than
+    /// reading them. The walk that follows is unchanged and meets what was
+    /// read as memo hits, so its order and findings do not depend on this.
+    ///
+    /// Stops when the memo's budget is spent, since a document read past it
+    /// is not kept; the walk then reads the rest itself. Does nothing where
+    /// [`prefetch`](Self::prefetch) does nothing.
+    pub(crate) async fn prefetch_tree(&self, start: &Path, links: bool) {
+        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+        {
+            if rayon::current_thread_index().is_some() || !self.memo_in_scope() {
+                return;
+            }
+            let Some(spanning) = self.relations().spanning_relation().map(str::to_owned) else {
+                return;
+            };
+            let mut seen: FastSet<PathBuf> = FastSet::default();
+            let mut level = vec![link::normalize(start)];
+            while !level.is_empty() && !self.memo_spent() {
+                level.retain(|path| seen.insert(path.clone()));
+                // Where the pool's documents lead, worked out beside their parse.
+                let mut from_pool: crate::hash::FastMap<PathBuf, Vec<super::prepare::Pre>> = self
+                    .prefetch(level.iter().cloned(), links)
+                    .await
+                    .into_iter()
+                    .collect();
+                let mut next = Vec::new();
+                for path in &level {
+                    if let Some(children) = from_pool.remove(path) {
+                        next.extend(
+                            children
+                                .iter()
+                                .filter_map(|pre| self.spanning_target(pre))
+                                .filter(|child| !seen.contains(child)),
+                        );
+                        continue;
+                    }
+                    let Some(read) = self.memo_hit(path) else {
+                        continue;
+                    };
+                    let children = read
+                        .doc
+                        .meta
+                        .get(&spanning)
+                        .map(crate::meta::Value::link_strings)
+                        .unwrap_or_default();
+                    next.extend(
+                        children
+                            .iter()
+                            .filter_map(|raw| self.spanning_guess(path, raw))
+                            .filter(|child| !seen.contains(child)),
+                    );
+                }
+                // The directories the next level lives in, which the walk asks
+                // about for every link into them: listed now, on the pool.
+                if links {
+                    let mut dirs: FastSet<&std::ffi::OsStr> = FastSet::default();
+                    let parents = next
+                        .iter()
+                        .map(|child| child.parent().unwrap_or(Path::new("")).as_os_str())
+                        .filter(|dir| dirs.insert(dir))
+                        .map(PathBuf::from)
+                        .collect::<Vec<_>>();
+                    self.prefetch_listings(parents);
+                }
+                level = next;
+            }
+        }
+        #[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
+        let _ = (start, links);
+    }
+
+    /// Where a spanning link whose [`Pre`](super::prepare::Pre) is known leads,
+    /// as [`spanning_guess`](Self::spanning_guess) would guess it.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    fn spanning_target(&self, pre: &super::prepare::Pre) -> Option<PathBuf> {
+        use super::prepare::Pre;
+        match pre {
+            Pre::Local(id) => self.index().resolve(id).map(link::normalize),
+            Pre::Path(path) => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Where the spanning link `raw`, declared in the document at `source`,
+    /// most likely leads — what [`prefetch_tree`](Self::prefetch_tree) reads
+    /// next. A guess, so it skips what it cannot make cheaply: a foreign or
+    /// external link leads nowhere to read, and a nominal one is guessed as
+    /// the path it spells. A wrong guess costs one failed read.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    fn spanning_guess(&self, source: &Path, raw: &str) -> Option<PathBuf> {
+        let link = Link::parse(raw);
+        if link.is_external() || link.is_same_document() {
+            return None;
+        }
+        match link.id_ref() {
+            Some(crate::link::IdRef::Local(id)) => self.index().resolve(&id).map(link::normalize),
+            Some(_) => None,
+            None => Some(link::resolve(source, &link.target)),
+        }
+    }
+
+    /// [`resolve_forward`](Self::resolve_forward) for a link whose
+    /// [`Pre`](super::prepare::Pre) is already known: the same answer, with
+    /// only the registry and the directory listing left to ask. A nominal link
+    /// goes to `resolve_forward` whole.
+    async fn resolve_prepared(
+        &self,
+        source: &Path,
+        link: &Link,
+        pre: &super::prepare::Pre,
+        titles: Option<&TitleIndex>,
+    ) -> Resolution {
+        use super::prepare::Pre;
+        match pre {
+            Pre::External => Resolution::External,
+            Pre::SameDocument => Resolution::SameDocument,
+            Pre::Foreign { workspace, id } => Resolution::Foreign {
+                workspace: workspace.clone(),
+                id: id.clone(),
+            },
+            Pre::Malformed => Resolution::MalformedId,
+            Pre::Local(id) => {
+                if !identity::verify(id.as_str()) {
+                    return Resolution::MalformedId;
+                }
+                match self.index().resolve(id) {
+                    Some(path) => Resolution::Id {
+                        id: id.clone(),
+                        to: link::normalize(path),
+                    },
+                    None => Resolution::DanglingId {
+                        tombstoned: self.index().is_known(id),
+                        id: id.clone(),
+                    },
+                }
+            }
+            Pre::Nominal => self.resolve_forward(source, link, titles).await,
+            Pre::Path(resolved) => match self.exact_name(resolved).await {
+                NameMatch::Exact => Resolution::Path(resolved.clone()),
+                NameMatch::CaseOnly(actual) => Resolution::CaseMismatch {
+                    got: resolved.clone(),
+                    actual,
+                },
+                NameMatch::None => Resolution::Broken,
+            },
+        }
+    }
+
+    /// [`resolve_link_with`](Self::resolve_link_with) for a link whose
+    /// [`Pre`](super::prepare::Pre) is already known — the inverse check's
+    /// resolver, which neither verifies an id nor looks at the filesystem.
+    fn target_prepared(
+        &self,
+        source: &Path,
+        link: &Link,
+        pre: &super::prepare::Pre,
+        titles: Option<&TitleIndex>,
+    ) -> Target {
+        use super::prepare::Pre;
+        match pre {
+            Pre::External => Target::External,
+            Pre::SameDocument => Target::SameDocument,
+            Pre::Foreign { workspace, id } => Target::Foreign {
+                workspace: workspace.clone(),
+                id: id.clone(),
+            },
+            Pre::Malformed => Target::UnresolvedId(Id(link.target.clone())),
+            Pre::Local(id) => match self.index().resolve(id) {
+                Some(path) => Target::Path(link::normalize(path)),
+                None => Target::UnresolvedId(id.clone()),
+            },
+            Pre::Nominal => self.resolve_link_with(source, link, titles),
+            Pre::Path(resolved) => Target::Path(resolved.clone()),
+        }
     }
 
     /// Resolve one forward link (declared in the document at `source`) into a
@@ -932,16 +1170,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
             return NameMatch::None;
         };
-        let names = match self.memo_dir(parent) {
-            Some(hit) => hit,
-            None => {
-                let Ok(entries) = self.fs().read_dir(&self.root().join(parent)).await else {
-                    return NameMatch::None;
-                };
-                let names = Arc::new(DirNames::index(&entries));
-                self.memo_remember_dir(parent, Arc::clone(&names));
-                names
-            }
+        let Ok(names) = self.listing_shared(parent).await else {
+            return NameMatch::None;
         };
         if names.holds(name) {
             return NameMatch::Exact;
@@ -1030,6 +1260,21 @@ pub fn inbound_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_set_is_the_set_that_inserting_each_path_builds() {
+        let paths: Vec<PathBuf> = [
+            "a/b.md", "a-b.md", "a.b/c.md", "a/b/c.md", "a b/c.md", "a", "a/", "a!/x.md", "a/b.md",
+            "Z.md", "z/a.md", "é/x.md", "e/x.md", "", "./a.md", "a//b.md",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+        let inserted: BTreeSet<PathBuf> = paths.iter().cloned().collect();
+        let built = path_set(paths);
+        assert_eq!(built, inserted);
+        assert!(built.iter().zip(built.iter().skip(1)).all(|(a, b)| a < b));
+    }
     use crate::exec::block_on;
     use crate::fs::StdFs;
     use crate::graph::ReadSettings;

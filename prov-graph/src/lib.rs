@@ -61,6 +61,7 @@ pub mod fixity;
 pub mod format;
 pub mod fs;
 pub mod graph;
+pub mod hash;
 pub mod identity;
 pub mod index;
 pub mod kind;
@@ -76,8 +77,8 @@ pub mod title;
 pub use bulk::BulkReads;
 pub use content::{ContentFormat, code_spans, render_html};
 pub use document::{
-    Body, Document, EmbedStyle, MetaCarrier, embed_carrier, embed_style_of, is_opaque_payload,
-    require_whole_file,
+    Body, Document, EmbedStyle, Loaded, MetaCarrier, embed_carrier, embed_style_of,
+    is_opaque_payload, require_whole_file,
 };
 pub use error::{Error, Result};
 pub use exec::block_on;

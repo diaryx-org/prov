@@ -50,7 +50,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
     /// a markdown carrier has no stable home for them and is refused here, at
     /// the one choke point every reader passes through.
     pub async fn manifest_of(&self, node: &Path) -> Result<Option<(PathBuf, Manifest)>> {
-        let (_, doc) = self.load(node).await?;
+        let read = self.read(node).await?;
+        let doc = &read.doc;
         let Some(raw) = doc.manifest_attr() else {
             return Ok(None);
         };
@@ -61,7 +62,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
     /// Read and parse the manifest document at `path` itself.
     pub async fn read_manifest(&self, path: &Path) -> Result<Manifest> {
-        let (_, doc) = self.load(path).await?;
+        let read = self.read(path).await?;
+        let doc = &read.doc;
         let carrier = doc
             .carrier
             .ok_or_else(|| Error::Structure(format!("{} carries no metadata", path.display())))?;
@@ -217,9 +219,10 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         Box::pin(async move {
             let root = walk.root;
             let dir = link::normalize(root.join(&rel));
-            let Ok(entries) = self.listing(&dir).await else {
+            let Ok(listing) = self.listing_shared(&dir).await else {
                 return Ok(());
             };
+            let entries = listing.entries();
             let mut names: Vec<(String, bool, bool)> = Vec::new();
             for entry in entries {
                 let Some(name) = entry

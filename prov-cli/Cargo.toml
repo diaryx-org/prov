@@ -36,6 +36,21 @@ cliclack = "0.5.5"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The allocator behind the `mimalloc` feature. It is C, compiled by a build
+# script, which is why it is a feature and off: building prov from source
+# needs a Rust toolchain and nothing else. Not on wasm, where it has no port
+# and the feature does nothing.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false, optional = true }
+
+[features]
+# Allocate with mimalloc rather than the system allocator: a `check` or a move
+# over ten thousand documents is 5–15% faster, nearly all of it in freeing
+# memory another thread allocated. The release binaries turn it on
+# (`.github/workflows/homebrew.yml`); a build from source does not, since it
+# needs a C compiler.
+mimalloc = ["dep:mimalloc"]
+
 [dev-dependencies]
 prov-testkit = { workspace = true }
 

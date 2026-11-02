@@ -46,6 +46,15 @@
 //! outer one, which is exactly the composition case (`prov`'s `check` opens a
 //! scope and then calls `walk`, which is welcome to open its own).
 //!
+//! ## Links, beside the document they were read from
+//!
+//! A body's links are a pure function of its text, and finding them means
+//! parsing the prose, which costs more than reading it. The census does it for
+//! every document it reaches, and a mutation asking who links to a document
+//! builds an inbound index that does it again. So a remembered document can
+//! carry its links too, held only while the body they were scanned from is
+//! the body remembered.
+//!
 //! ## What is not memoized
 //!
 //! Failures. A read that errored is not remembered, so a missing file is
@@ -57,12 +66,14 @@
 //! [`load`]: crate::graph::Graph::load
 //! [`Workspace::commit`]: https://docs.rs/prov
 
-use std::collections::{HashMap, HashSet};
+use crate::hash::{FastMap, FastSet};
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::document::Document;
+use crate::document::Loaded;
+use crate::graph::prepare::Prepared;
+use crate::link::BodyLink;
 
 /// Take a lock, recovering from a panic that poisoned it.
 ///
@@ -109,20 +120,23 @@ const MAX_DOCUMENT: usize = 1024 * 1024;
 /// [`OsStr`]: std::ffi::OsStr
 #[derive(Debug, Default)]
 pub(crate) struct DirNames {
+    /// The listing itself, for a scan that walks the directory rather than
+    /// asking it about one name.
+    entries: Vec<crate::fs::DirEntry>,
     /// Every entry name, as listed.
-    exact: HashSet<OsString>,
+    exact: FastSet<OsString>,
     /// ASCII-lowercased name → the name as listed. Last writer wins, which only
     /// matters when a directory holds two names differing in case, and then only
     /// for the *inexact* answer — [`exact`](Self::exact) has already settled the
     /// other one.
-    folded: HashMap<OsString, OsString>,
+    folded: FastMap<OsString, OsString>,
 }
 
 impl DirNames {
     /// Index a directory read.
-    pub(crate) fn index(entries: &[crate::fs::DirEntry]) -> Self {
+    pub(crate) fn index(entries: Vec<crate::fs::DirEntry>) -> Self {
         let mut names = Self::default();
-        for entry in entries {
+        for entry in &entries {
             let Some(name) = entry.file_name() else {
                 continue;
             };
@@ -131,7 +145,13 @@ impl DirNames {
                 .insert(name.to_ascii_lowercase(), name.to_os_string());
             names.exact.insert(name.to_os_string());
         }
+        names.entries = entries;
         names
+    }
+
+    /// The directory's entries, as listed.
+    pub(crate) fn entries(&self) -> &[crate::fs::DirEntry] {
+        &self.entries
     }
 
     /// Whether the directory holds exactly this name.
@@ -152,7 +172,12 @@ impl DirNames {
     /// purpose — the budget is a ceiling that keeps an unusual workspace from
     /// eating memory, not an allocator.
     fn weight(&self) -> usize {
-        let names = self.exact.iter().map(|n| n.len()).sum::<usize>();
+        let listed = self
+            .entries
+            .iter()
+            .map(|e| e.path().as_os_str().len())
+            .sum::<usize>();
+        let names = listed + self.exact.iter().map(|n| n.len()).sum::<usize>();
         let folded = self
             .folded
             .iter()
@@ -162,16 +187,70 @@ impl DirNames {
     }
 }
 
+/// How many documents a memo must hold before freeing them is worth handing
+/// to another thread. Below it, the hand-off costs more than it saves.
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+const DISCARD_ELSEWHERE: usize = 1024;
+
+/// Free what an operation remembered, without making the operation wait.
+///
+/// Dropping ten thousand documents is a free per string and per value in
+/// each, and it was a tenth of a `check`'s main thread, spent after the
+/// answer was known. With the `parallel` feature, a large memo is dropped on
+/// rayon's pool instead, so the caller returns at once; a process that exits
+/// first simply never pays. Nothing observes the memory, so nothing waits on
+/// it.
+fn discard(
+    remembered: (
+        FastMap<OsString, Remembered>,
+        FastMap<OsString, Arc<DirNames>>,
+    ),
+) {
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    if remembered.0.len() >= DISCARD_ELSEWHERE {
+        rayon::spawn(move || drop(remembered));
+        return;
+    }
+    drop(remembered);
+}
+
+/// One document as read, shared with whoever asked for it, and once someone
+/// has asked, the links in its body.
+#[derive(Debug)]
+struct Remembered {
+    read: Arc<Loaded>,
+    links: Option<Arc<[BodyLink]>>,
+    /// The document's links prepared for the walk — see
+    /// [`crate::graph::prepare`].
+    prepared: Option<Arc<Prepared>>,
+}
+
+impl Remembered {
+    /// Whether `body` is the body this document was remembered with. Almost
+    /// always asked of the very string the memo handed out, so the pointer
+    /// settles it before any byte is compared.
+    fn has_body(&self, body: &str) -> bool {
+        let ours = self.read.doc.body.as_str();
+        std::ptr::eq(ours, body) || ours == body
+    }
+}
+
 /// What one operation has already read.
+///
+/// Keyed by a path's bytes rather than by [`Path`]: `Path`'s hash walks it a
+/// component at a time, a hasher call per component, and the memo is asked
+/// once per link per document. The paths prov asks about are normalized, so
+/// the two agree; where a caller spells one path two ways (`a//b`), the worst
+/// is a second read.
 #[derive(Debug, Default)]
 pub struct ReadMemo {
     /// Scope nesting depth. Nothing is remembered outside a scope, and the
     /// outermost exit is what clears it.
     depth: usize,
-    docs: HashMap<PathBuf, (String, Document)>,
+    docs: FastMap<OsString, Remembered>,
     /// Listings held, keyed workspace-relative like [`docs`](Self::docs) — which
     /// is what lets [`forget`](Self::forget) drop the one a write invalidates.
-    dirs: HashMap<PathBuf, Arc<DirNames>>,
+    dirs: FastMap<OsString, Arc<DirNames>>,
     /// Text and listing names held, against [`BUDGET`].
     bytes: usize,
 }
@@ -192,22 +271,109 @@ impl ReadMemo {
 
     /// What was read for `path` this operation, if anything. `None` outside a
     /// scope, always: a memo nobody opened holds nothing.
-    pub(crate) fn get(&self, path: &Path) -> Option<(String, Document)> {
+    pub(crate) fn get(&self, path: &Path) -> Option<Arc<Loaded>> {
         if self.depth == 0 {
             return None;
         }
-        self.docs.get(path).cloned()
+        self.docs
+            .get(path.as_os_str())
+            .map(|hit| Arc::clone(&hit.read))
+    }
+
+    /// Whether a read would be answered here: a scope is open and `path` is
+    /// remembered.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn holds(&self, path: &Path) -> bool {
+        self.depth > 0 && self.docs.contains_key(path.as_os_str())
+    }
+
+    /// Whether the budget is spent: another document of any size the memo
+    /// keeps might not fit. What tells a prefetch that reading further ahead
+    /// would read what cannot be kept.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn spent(&self) -> bool {
+        self.bytes + MAX_DOCUMENT > BUDGET
+    }
+
+    /// Whether a scope is open, so that something remembered now is still
+    /// here for the rest of the operation.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn in_scope(&self) -> bool {
+        self.depth > 0
+    }
+
+    /// The links found in `path`'s body, when they were found in this
+    /// operation and in a body that is still `body`.
+    pub(crate) fn links(&self, path: &Path, body: &str) -> Option<Arc<[BodyLink]>> {
+        if self.depth == 0 {
+            return None;
+        }
+        let hit = self.docs.get(path.as_os_str())?;
+        hit.has_body(body).then(|| hit.links.clone()).flatten()
+    }
+
+    /// Remember the links found in `body`, beside `path`'s document. A no-op
+    /// unless that document is remembered with that body: links outlive
+    /// nothing they were read from.
+    pub(crate) fn remember_links(&mut self, path: &Path, body: &str, links: Arc<[BodyLink]>) {
+        if self.depth == 0 {
+            return;
+        }
+        if let Some(hit) = self.docs.get_mut(path.as_os_str())
+            && hit.has_body(body)
+            && hit.links.is_none()
+        {
+            hit.links = Some(links);
+        }
+    }
+
+    /// The links prepared for `path`, when they were prepared from the very
+    /// read the memo holds for it.
+    pub(crate) fn prepared(&self, path: &Path, read: &Arc<Loaded>) -> Option<Arc<Prepared>> {
+        if self.depth == 0 {
+            return None;
+        }
+        let hit = self.docs.get(path.as_os_str())?;
+        Arc::ptr_eq(&hit.read, read)
+            .then(|| hit.prepared.clone())
+            .flatten()
+    }
+
+    /// Remember the links prepared from `read`, beside `path`'s document. A
+    /// no-op unless that is the read the memo holds.
+    pub(crate) fn remember_prepared(
+        &mut self,
+        path: &Path,
+        read: &Arc<Loaded>,
+        prepared: Arc<Prepared>,
+    ) {
+        if self.depth == 0 {
+            return;
+        }
+        if let Some(hit) = self.docs.get_mut(path.as_os_str())
+            && Arc::ptr_eq(&hit.read, read)
+            && hit.prepared.is_none()
+        {
+            hit.prepared = Some(prepared);
+        }
     }
 
     /// Remember what `path` read as. A no-op outside a scope, over the
     /// per-document ceiling, or once the budget is spent.
-    pub(crate) fn remember(&mut self, path: &Path, text: &str, doc: &Document) {
-        if self.depth == 0 || text.len() > MAX_DOCUMENT || self.bytes + text.len() > BUDGET {
+    pub(crate) fn remember(&mut self, path: &Path, read: Arc<Loaded>) {
+        let len = read.text.len();
+        if self.depth == 0 || len > MAX_DOCUMENT || self.bytes + len > BUDGET {
             return;
         }
-        self.bytes += text.len();
-        self.docs
-            .insert(path.to_path_buf(), (text.to_string(), doc.clone()));
+        self.bytes += len;
+        let remembered = Remembered {
+            read,
+            links: None,
+            prepared: None,
+        };
+        if let Some(stale) = self.docs.insert(path.as_os_str().to_owned(), remembered) {
+            self.bytes -= stale.read.text.len();
+        }
     }
 
     /// The indexed listing of the workspace-relative directory `path`, if it
@@ -217,7 +383,7 @@ impl ReadMemo {
         if self.depth == 0 {
             return None;
         }
-        self.dirs.get(path).cloned()
+        self.dirs.get(path.as_os_str()).cloned()
     }
 
     /// Remember a directory read. A no-op outside a scope or once the budget is
@@ -229,31 +395,33 @@ impl ReadMemo {
             return;
         }
         self.bytes += weight;
-        self.dirs.insert(path.to_path_buf(), names);
+        self.dirs.insert(path.as_os_str().to_owned(), names);
     }
 
     /// Forget `path` — what a write to it means.
     ///
-    /// Its **parent's listing** goes too. A write may create the name or a
-    /// remove may take it away, and the listing that enumerated the parent is
-    /// the only one that can be wrong about it — so the operation that stages a
-    /// change and then reads the workspace back does not resolve against a
-    /// directory as it stood beforehand.
+    /// Every **ancestor's listing** goes too. A write may create the name or a
+    /// remove may take it away, which only the parent's listing can be wrong
+    /// about — but a write may also create the directories above it, and a
+    /// scan that walks the tree lists those. So the operation that stages a
+    /// change and then reads the workspace back never meets a directory as it
+    /// stood beforehand.
     pub fn forget(&mut self, path: &Path) {
-        if let Some((text, _)) = self.docs.remove(path) {
-            self.bytes -= text.len();
+        if let Some(forgotten) = self.docs.remove(path.as_os_str()) {
+            self.bytes -= forgotten.read.text.len();
         }
-        if let Some(parent) = path.parent()
-            && let Some(names) = self.dirs.remove(parent)
-        {
-            self.bytes -= names.weight();
+        for dir in path.ancestors().skip(1) {
+            if let Some(names) = self.dirs.remove(dir.as_os_str()) {
+                self.bytes -= names.weight();
+            }
         }
     }
 
     pub(crate) fn clear(&mut self) {
-        self.docs.clear();
-        self.dirs.clear();
+        let docs = std::mem::take(&mut self.docs);
+        let dirs = std::mem::take(&mut self.dirs);
         self.bytes = 0;
+        discard((docs, dirs));
     }
 
     /// How many documents are remembered — the observable the tests assert on.
@@ -318,14 +486,23 @@ impl std::fmt::Debug for ReadScope {
 mod tests {
     use super::*;
 
+    use crate::document::Document;
+
     fn doc(text: &str) -> Document {
         Document::parse("a.md", text).unwrap()
+    }
+
+    fn loaded(text: &str) -> Arc<Loaded> {
+        Arc::new(Loaded {
+            text: text.into(),
+            doc: doc(text),
+        })
     }
 
     #[test]
     fn nothing_is_remembered_outside_a_scope() {
         let mut memo = ReadMemo::default();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         assert_eq!(memo.len(), 0);
         assert!(memo.get(Path::new("a.md")).is_none());
     }
@@ -334,9 +511,9 @@ mod tests {
     fn a_scope_remembers_and_its_exit_forgets() {
         let mut memo = ReadMemo::default();
         memo.enter();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         assert_eq!(
-            memo.get(Path::new("a.md")).map(|(text, _)| text),
+            memo.get(Path::new("a.md")).map(|read| read.text.clone()),
             Some("hello".to_string())
         );
         memo.leave();
@@ -349,7 +526,7 @@ mod tests {
     fn an_inner_scope_does_not_end_the_outer_one() {
         let mut memo = ReadMemo::default();
         memo.enter();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         memo.enter();
         memo.leave();
         assert!(
@@ -364,10 +541,52 @@ mod tests {
     fn a_write_forgets_the_document_it_wrote() {
         let mut memo = ReadMemo::default();
         memo.enter();
-        memo.remember(Path::new("a.md"), "hello", &doc("hello"));
+        memo.remember(Path::new("a.md"), loaded("hello"));
         memo.forget(Path::new("a.md"));
         assert!(memo.get(Path::new("a.md")).is_none());
         assert_eq!(memo.len(), 0);
+    }
+
+    fn links(body: &str) -> Arc<[BodyLink]> {
+        crate::link::scan_body_links(Path::new("a.md"), body).into()
+    }
+
+    #[test]
+    fn links_are_remembered_beside_the_body_they_were_found_in() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        let text = "---\ntitle: A\n---\nsee [b](b.md)\n";
+        let read = doc(text);
+        memo.remember(
+            Path::new("a.md"),
+            Arc::new(Loaded {
+                text: text.into(),
+                doc: read.clone(),
+            }),
+        );
+        memo.remember_links(Path::new("a.md"), &read.body, links(&read.body));
+        assert_eq!(
+            memo.links(Path::new("a.md"), &read.body).map(|l| l.len()),
+            Some(1)
+        );
+        assert!(
+            memo.links(Path::new("a.md"), "see [c](c.md)\n").is_none(),
+            "links found in one body answered for another"
+        );
+        memo.forget(Path::new("a.md"));
+        assert!(memo.links(Path::new("a.md"), &read.body).is_none());
+    }
+
+    #[test]
+    fn links_are_not_remembered_for_a_document_that_is_not() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        memo.remember_links(
+            Path::new("a.md"),
+            "see [b](b.md)\n",
+            links("see [b](b.md)\n"),
+        );
+        assert!(memo.links(Path::new("a.md"), "see [b](b.md)\n").is_none());
     }
 
     fn names(entries: &[&str]) -> Arc<DirNames> {
@@ -375,7 +594,7 @@ mod tests {
             .iter()
             .map(|n| crate::fs::DirEntry::new(*n, crate::fs::FileType::FILE))
             .collect();
-        Arc::new(DirNames::index(&entries))
+        Arc::new(DirNames::index(entries))
     }
 
     #[test]
@@ -432,6 +651,36 @@ mod tests {
         );
     }
 
+    /// A write may create every directory above it, and a scan that walks the
+    /// tree lists them, so each listing above the write goes, and only those.
+    #[test]
+    fn forgetting_a_written_document_forgets_every_listing_above_it() {
+        let mut memo = ReadMemo::default();
+        memo.enter();
+        for dir in ["", "a", "a/b", "a/b/c", "a/x"] {
+            memo.remember_dir(Path::new(dir), names(&["n.md"]));
+        }
+        memo.forget(Path::new("a/b/c/new.md"));
+        for dir in ["", "a", "a/b", "a/b/c"] {
+            assert!(memo.dir(Path::new(dir)).is_none(), "{dir:?} kept");
+        }
+        assert!(
+            memo.dir(Path::new("a/x")).is_some(),
+            "a sibling was dropped"
+        );
+    }
+
+    #[test]
+    fn a_listing_keeps_its_entries() {
+        let listing = names(&["b.md", "a.md"]);
+        let listed: Vec<_> = listing
+            .entries()
+            .iter()
+            .filter_map(|e| e.file_name())
+            .collect();
+        assert_eq!(listed, ["b.md", "a.md"]);
+    }
+
     /// A write at the workspace root forgets the root listing — `parent()` of a
     /// bare name is the empty path, which is how the root is keyed.
     #[test]
@@ -450,7 +699,13 @@ mod tests {
         let mut memo = ReadMemo::default();
         memo.enter();
         let huge = "x".repeat(MAX_DOCUMENT + 1);
-        memo.remember(Path::new("big.md"), &huge, &doc("body"));
+        memo.remember(
+            Path::new("big.md"),
+            Arc::new(Loaded {
+                text: huge.clone(),
+                doc: doc("body"),
+            }),
+        );
         assert_eq!(memo.len(), 0);
     }
 }

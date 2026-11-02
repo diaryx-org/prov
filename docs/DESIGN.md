@@ -328,6 +328,35 @@ keeps what the walk read for the rest of the operation, so the rewrites a
 mutation loads afterwards cost the backend nothing. A graph built without a
 hook is told nothing and behaves as before.
 
+**prov keeps no persisted cache, and is made fast without one.** Everything a
+pass knows, it learned from the documents during the operation that asked: the
+read memo lasts one operation, the inbound index one `Workspace`, and nothing
+derived is written down, because anything written down can be stale in a way
+no document shows. A whole-workspace pass therefore costs a read of what it
+reaches, and the work goes into making that read cheap rather than avoidable:
+
+- **Parse no more than the question needs.** Frontmatter is located from the
+  lines its fences span, not by parsing the whole document as Markdown. A
+  body is parsed for links only when it holds a `[[` or a `](`, the shapes
+  every kept link needs. Search folds ASCII without Unicode decomposition.
+- **Parse once.** A body's links are remembered in the read memo beside the
+  document they were found in, so the census and the inbound index built from
+  it share one parse.
+- **Read and parse in parallel.** With the `parallel` feature, the census
+  walk and the tree descent read a document's spanning children together
+  before descending, and parse them (with their bodies' links, for the
+  census) on rayon's pool. The reads run there too when the storage hands
+  over a `SharedRead` (`ReadStorage::shared_reader`, which `std::fs` and the
+  in-memory backend offer). Otherwise they stay sequential, since a backend
+  that declines promises nothing about being shared across threads. Either
+  way the walks are unchanged and meet the children as memo hits, so their
+  order and their findings do not depend on the feature.
+- **Index by hash.** A lookup that runs once per document per link goes
+  through a hash set, never a scan of a list or a probe of an ordered set.
+
+A host whose storage is slow or remote is the case this cannot cover: there a
+read is what costs, and the bulk-read hook is the lever prov offers.
+
 ## 6. Wikilinks and positioning
 
 The user-facing payoff of registered identity is stable, location-independent
