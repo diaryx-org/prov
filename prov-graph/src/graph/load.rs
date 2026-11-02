@@ -210,6 +210,48 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
         }
     }
 
+    /// List the directories `dirs` that this operation has not listed yet, on
+    /// rayon's pool, into the read memo — so the walk's
+    /// [`listing_shared`](Self::listing_shared), asked once per directory a
+    /// link points into, finds them there. Only where the storage hands over
+    /// a [`SharedRead`](crate::fs::SharedRead) and there are enough to be
+    /// worth the pool; otherwise the walk lists them as it meets them, as it
+    /// always has.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn prefetch_listings(&self, dirs: impl IntoIterator<Item = PathBuf>) {
+        use rayon::prelude::*;
+
+        if rayon::current_thread_index().is_some() || !self.memo_in_scope() {
+            return;
+        }
+        let Some(reader) = self.fs().shared_reader() else {
+            return;
+        };
+        let mut asked = crate::hash::FastSet::default();
+        let wanted: Vec<PathBuf> = dirs
+            .into_iter()
+            .filter(|dir| {
+                !link::escapes_root(dir)
+                    && self.memo_dir(dir).is_none()
+                    && asked.insert(dir.clone())
+            })
+            .collect();
+        if wanted.len() < PARALLEL_BATCH {
+            return;
+        }
+        let root = self.root();
+        let listed: Vec<(PathBuf, Arc<crate::memo::DirNames>)> = wanted
+            .into_par_iter()
+            .filter_map(|dir| {
+                let entries = reader.read_dir(&root.join(&dir)).ok()?;
+                Some((dir, Arc::new(crate::memo::DirNames::index(entries))))
+            })
+            .collect();
+        for (dir, names) in listed {
+            self.memo_remember_dir(&dir, names);
+        }
+    }
+
     /// Read and parse the workspace-relative document at `path`, returning its
     /// full [`Document`] — the public counterpart to [`load`](Self::load), for
     /// a caller walking a [`Node`](crate::graph::Node) tree who needs more than
@@ -442,6 +484,12 @@ title: N
         }
         assert!(!ws.memo_holds(Path::new("c7/gone.md")));
         assert!(!ws.memo_holds(Path::new("unlisted.md")));
+        // The directories the second level lives in were listed on the pool,
+        // ready for the walk's questions about the links into them.
+        for i in (0..20).filter(|i| *i != 7) {
+            let dir = PathBuf::from(format!("c{i}"));
+            assert!(ws.memo_dir(&dir).is_some(), "{}", dir.display());
+        }
     }
 
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]

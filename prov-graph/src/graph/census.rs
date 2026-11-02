@@ -940,6 +940,18 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                             .filter(|child| !seen.contains(child)),
                     );
                 }
+                // The directories the next level lives in, which the walk asks
+                // about for every link into them: listed now, on the pool.
+                if links {
+                    let mut dirs: FastSet<&std::ffi::OsStr> = FastSet::default();
+                    let parents = next
+                        .iter()
+                        .map(|child| child.parent().unwrap_or(Path::new("")).as_os_str())
+                        .filter(|dir| dirs.insert(dir))
+                        .map(PathBuf::from)
+                        .collect::<Vec<_>>();
+                    self.prefetch_listings(parents);
+                }
                 level = next;
             }
         }
