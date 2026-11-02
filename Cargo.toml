@@ -66,10 +66,10 @@ thiserror = "2.0"
 # editor back into it. twig 6 is pure Rust, and like fig its core names no
 # language: each one prov parses a body in is a crate of its own, registered
 # on first use.
-twig-doc = "7"
-twig-markdown = "7"
-twig-djot = "7"
-twig-html = "7"
+twig-doc = "7.1"
+twig-markdown = "7.1"
+twig-djot = "7.1"
+twig-html = "7.1"
 
 # Opaque document-ID minting: NOID xdigit alphabet + NOID check character
 # over a seeded PRNG. Prov supplies its own seed (uniqueness is enforced by
@@ -133,7 +133,7 @@ prov-store = { path = "prov-store", version = "0.18.0", default-features = false
 #
 # prov configures its journal name rather than taking the default — see
 # `prov::journal::workspace_journal` for why `.prov-journal` has to stay.
-fs-transaction = { version = "0.4.1" }
+fs-transaction = { version = "0.4.2" }
 # Test scaffolding, shared so it cannot drift. Never published — see its manifest.
 prov-testkit = { path = "prov-testkit" }
 # Grains: how a value is cut into groups, and the chain a nest builds. Shared
