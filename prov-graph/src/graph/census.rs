@@ -404,11 +404,23 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             .filter(|p| !is_opaque_payload(p))
             .cloned()
             .collect();
-        let beside_a_node = |path: &PathBuf| {
-            path.ancestors().skip(1).any(|dir| {
-                !dir.as_os_str().is_empty()
-                    && crate::manifest::manifest_node_candidates(dir).any(|c| readable.contains(&c))
+        // The convention read backwards, as `ShadowProbe` reads it: every
+        // reached `<dir>.<ext>` names a directory that has a node beside it, so
+        // the per-ancestor question is one hash lookup rather than a candidate
+        // per extension probed against an ordered set.
+        let node_dirs: HashSet<PathBuf> = readable
+            .iter()
+            .filter(|c| {
+                c.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| super::shadow::SIDECAR_EXTENSIONS.contains(&ext))
             })
+            .map(|c| c.with_extension(""))
+            .collect();
+        let beside_a_node = |path: &PathBuf| {
+            path.ancestors()
+                .skip(1)
+                .any(|dir| !dir.as_os_str().is_empty() && node_dirs.contains(dir))
         };
         let covered = if reachable.iter().any(|p| is_opaque_payload(p))
             || readable.iter().any(beside_a_node)
@@ -581,8 +593,13 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // Kept out of the census (not a graph edge), but tracked so the orphan
         // check does not mistake a linked body file for an unlinked one.
         let mut content_bodies = Vec::new();
-        let mut visited = BTreeSet::new();
+        let mut visited = HashSet::new();
         let mut queue = vec![link::normalize(start)];
+        // What `queue` holds, for the duplicate-containment check: a path is
+        // pushed only when it is neither visited nor queued, so the stack never
+        // holds one twice and the set mirrors it exactly. Scanning the stack
+        // instead was a path comparison per queued document per spanning link.
+        let mut queued: HashSet<PathBuf> = queue.iter().cloned().collect();
 
         // The nominal-resolution index, built lazily — only if a `[[alias]]` link
         // is actually encountered. A path/id workspace never scans (which, at the
@@ -600,6 +617,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         });
 
         while let Some(path) = queue.pop() {
+            queued.remove(&path);
             if !visited.insert(path.clone()) {
                 continue;
             }
@@ -680,7 +698,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                     && let Some(resolved) = resolution.resolved_path().cloned()
                 {
                     // Single-parent check, inverse check, descent.
-                    if visited.contains(&resolved) || queue.contains(&resolved) {
+                    if visited.contains(&resolved) || queued.contains(&resolved) {
                         structural.push(StructuralFact::DuplicateContainment {
                             doc: path.clone(),
                             target: link.target.clone(),
@@ -715,6 +733,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
                                 });
                             }
                         }
+                        queued.insert(resolved.clone());
                         queue.push(resolved);
                     }
                 }
