@@ -65,6 +65,11 @@ type CmdResult = Result<ExitCode, Box<dyn std::error::Error>>;
 /// failure is reported as a line of text and never matched on.
 type AnyError = Box<dyn std::error::Error>;
 
+/// See the `mimalloc` feature in `Cargo.toml`.
+#[cfg(all(feature = "mimalloc", not(target_family = "wasm")))]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> ExitCode {
     // The Rust runtime ignores `SIGPIPE` before `main`, so a write to a
     // reader that has gone away comes back as `EPIPE` — and `print!` answers
