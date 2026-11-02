@@ -360,6 +360,11 @@ impl<FS, Ix> Graph<FS, Ix> {
     }
 
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn memo_spent(&self) -> bool {
+        crate::memo::lock(&self.memo).spent()
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
     pub(crate) fn memo_in_scope(&self) -> bool {
         crate::memo::lock(&self.memo).in_scope()
     }

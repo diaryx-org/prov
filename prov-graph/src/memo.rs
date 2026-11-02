@@ -261,6 +261,14 @@ impl ReadMemo {
         self.depth > 0 && self.docs.contains_key(path)
     }
 
+    /// Whether the budget is spent: another document of any size the memo
+    /// keeps might not fit. What tells a prefetch that reading further ahead
+    /// would read what cannot be kept.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    pub(crate) fn spent(&self) -> bool {
+        self.bytes + MAX_DOCUMENT > BUDGET
+    }
+
     /// Whether a scope is open, so that something remembered now is still
     /// here for the rest of the operation.
     #[cfg(all(feature = "parallel", not(target_family = "wasm")))]

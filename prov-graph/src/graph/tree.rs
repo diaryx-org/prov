@@ -176,6 +176,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // is actually encountered. A path/id workspace never needs it, so it never
         // pays for a full-workspace scan (which, at the root of a larger repo,
         // would read every file under `target/`, vendored trees, and the rest).
+        // Read the tree ahead of the descent, in parallel; see `prefetch_tree`.
+        self.prefetch_tree(&start, false).await;
         let mut titles: Option<crate::title::TitleIndex> = None;
         let mut trail: Vec<PathBuf> = Vec::new();
         let root = start.clone();
@@ -246,21 +248,8 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
             let title = doc.meta.get("title").and_then(crate::title::title_text);
 
             trail.push(path.clone());
-            let raws = self.relations().children(&meta);
-            // Each child is read when the descent reaches it; read them together
-            // here instead, so their reads and parsing can share the cores.
-            let guesses: Vec<PathBuf> = raws
-                .iter()
-                .filter_map(|raw| {
-                    match self.resolve_link_with(&path, &Link::parse(raw), titles.as_ref()) {
-                        Target::Path(p) => Some(p),
-                        _ => None,
-                    }
-                })
-                .collect();
-            self.prefetch(guesses, false).await;
             let mut children = Vec::new();
-            for raw in raws {
+            for raw in self.relations().children(&meta) {
                 let child = Link::parse(&raw);
                 // Build the title index on first sight of a nominal link, never
                 // before — this is the only place the tree walk can need it.

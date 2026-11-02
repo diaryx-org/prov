@@ -593,6 +593,9 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         // Kept out of the census (not a graph edge), but tracked so the orphan
         // check does not mistake a linked body file for an unlinked one.
         let mut content_bodies = Vec::new();
+        // Everything the walk will read, read ahead in parallel and kept in
+        // the memo, so the loop below meets it as hits.
+        self.prefetch_tree(start, true).await;
         let mut visited = HashSet::new();
         let mut queue = vec![link::normalize(start)];
         // What `queue` holds, for the duplicate-containment check: a path is
@@ -685,16 +688,7 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
 
             // Frontmatter links — relation edges, the only links that can be
             // spanning, and the values of path-valued fields, which never are.
-            let links = self.frontmatter_links(&meta);
-            // The children are each loaded below for the inverse check, and
-            // again when they are popped: read them together first, so their
-            // parsing — and their bodies' — can share the cores.
-            self.prefetch(
-                self.spanning_guesses(&path, &links, spanning.as_deref()),
-                true,
-            )
-            .await;
-            for FrontmatterLink { site, raw, .. } in links {
+            for FrontmatterLink { site, raw, .. } in self.frontmatter_links(&meta) {
                 // Parse once: `link.target` is the bare target (any `[label](…)`
                 // stripped), which is what both the census and findings record.
                 let link = Link::parse(&raw);
@@ -855,37 +849,76 @@ impl<FS: ReadStorage, Ix: IdIndex> Graph<FS, Ix> {
         })
     }
 
-    /// Where the `spanning` links among `links`, declared in the document at
-    /// `source`, most likely lead — what [`prefetch`](Self::prefetch) is
-    /// handed before they are resolved. A guess, so it skips what it cannot
-    /// make cheaply: a nominal link would need the title index, and a foreign
-    /// or external one leads nowhere to read. A wrong guess costs one read.
-    pub(crate) fn spanning_guesses(
-        &self,
-        source: &Path,
-        links: &[FrontmatterLink],
-        spanning: Option<&str>,
-    ) -> Vec<PathBuf> {
-        let Some(spanning) = spanning else {
-            return Vec::new();
-        };
-        links
-            .iter()
-            .filter(|l| l.site.relation() == Some(spanning))
-            .filter_map(|l| {
-                let link = Link::parse(&l.raw);
-                if link.is_external() || link.is_same_document() {
-                    return None;
+    /// Read the spanning tree under `start` ahead of a walk over it, one level
+    /// at a time, into the read memo: every document at one depth is read and
+    /// parsed in one [`prefetch`](Self::prefetch) batch, and its children are
+    /// the next. With `links`, each body's links are found there too.
+    ///
+    /// A batch per level rather than per parent is what makes the reading
+    /// parallel whatever shape the tree is: a journal three children wide and
+    /// eight deep has levels of thousands of documents, where a batch per
+    /// parent would hold three, and waking the pool for three costs more than
+    /// reading them. The walk that follows is unchanged and meets what was
+    /// read as memo hits, so its order and findings do not depend on this.
+    ///
+    /// Stops when the memo's budget is spent, since a document read past it
+    /// is not kept; the walk then reads the rest itself. Does nothing where
+    /// [`prefetch`](Self::prefetch) does nothing.
+    pub(crate) async fn prefetch_tree(&self, start: &Path, links: bool) {
+        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+        {
+            if rayon::current_thread_index().is_some() || !self.memo_in_scope() {
+                return;
+            }
+            let Some(spanning) = self.relations().spanning_relation().map(str::to_owned) else {
+                return;
+            };
+            let mut seen: HashSet<PathBuf> = HashSet::new();
+            let mut level = vec![link::normalize(start)];
+            while !level.is_empty() && !self.memo_spent() {
+                level.retain(|path| seen.insert(path.clone()));
+                self.prefetch(level.iter().cloned(), links).await;
+                let mut next = Vec::new();
+                for path in &level {
+                    let Some(read) = self.memo_hit(path) else {
+                        continue;
+                    };
+                    let children = read
+                        .doc
+                        .meta
+                        .get(&spanning)
+                        .map(crate::meta::Value::link_strings)
+                        .unwrap_or_default();
+                    next.extend(
+                        children
+                            .iter()
+                            .filter_map(|raw| self.spanning_guess(path, raw))
+                            .filter(|child| !seen.contains(child)),
+                    );
                 }
-                match link.id_ref() {
-                    Some(crate::link::IdRef::Local(id)) => {
-                        self.index().resolve(&id).map(link::normalize)
-                    }
-                    Some(_) => None,
-                    None => Some(link::resolve(source, &link.target)),
-                }
-            })
-            .collect()
+                level = next;
+            }
+        }
+        #[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
+        let _ = (start, links);
+    }
+
+    /// Where the spanning link `raw`, declared in the document at `source`,
+    /// most likely leads — what [`prefetch_tree`](Self::prefetch_tree) reads
+    /// next. A guess, so it skips what it cannot make cheaply: a foreign or
+    /// external link leads nowhere to read, and a nominal one is guessed as
+    /// the path it spells. A wrong guess costs one failed read.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    fn spanning_guess(&self, source: &Path, raw: &str) -> Option<PathBuf> {
+        let link = Link::parse(raw);
+        if link.is_external() || link.is_same_document() {
+            return None;
+        }
+        match link.id_ref() {
+            Some(crate::link::IdRef::Local(id)) => self.index().resolve(&id).map(link::normalize),
+            Some(_) => None,
+            None => Some(link::resolve(source, &link.target)),
+        }
     }
 
     /// Resolve one forward link (declared in the document at `source`) into a

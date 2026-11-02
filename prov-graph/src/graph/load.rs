@@ -3,7 +3,9 @@
 //! See the module doc at [`crate::graph`] for how this sits beside
 //! [`resolve`](super::resolve) and the census.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::Graph;
@@ -11,6 +13,11 @@ use crate::document::{Body, Document, Loaded};
 use crate::error::{Error, Result};
 use crate::fs::ReadStorage;
 use crate::link::{self, BodyLink};
+
+/// How many documents a [`prefetch`](Graph::prefetch) batch must hold before
+/// it is worth parsing on rayon's pool rather than in place.
+#[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+const PARALLEL_BATCH: usize = 16;
 
 /// One document [`prefetch`](Graph::prefetch) read: its path, its text, its
 /// parse, and the links in its body when they were asked for.
@@ -80,12 +87,13 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
     /// in one task on the pool. Otherwise the reads go through the storage one
     /// at a time, as `load`'s do, and only the parsing runs in parallel. A
     /// path that fails to read or parse, or that the caller guessed wrong, is
-    /// simply not remembered, and `load` meets it as it would have. Without
-    /// the `parallel` feature, on a target without threads, from inside
-    /// rayon's pool, or outside a read scope (where nothing would be kept) it
-    /// does nothing at all.
+    /// simply not remembered, and `load` meets it as it would have. A batch
+    /// smaller than `PARALLEL_BATCH` is read in place, since waking the pool
+    /// for it costs more than it saves. Exists only with the `parallel`
+    /// feature on a target with threads; from inside rayon's pool, or outside
+    /// a read scope (where nothing would be kept), it does nothing.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
     pub(crate) async fn prefetch(&self, paths: impl IntoIterator<Item = PathBuf>, links: bool) {
-        #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
         {
             use rayon::prelude::*;
 
@@ -93,7 +101,7 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
                 return;
             }
             let mut asked = std::collections::HashSet::new();
-            let wanted: Vec<PathBuf> = paths
+            let mut wanted: Vec<PathBuf> = paths
                 .into_iter()
                 .filter(|path| {
                     !link::escapes_root(path)
@@ -101,6 +109,19 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
                         && asked.insert(path.clone())
                 })
                 .collect();
+            // Waking the pool for a handful of documents costs more than
+            // parsing them: every worker wakes, finds nothing, and spins. A
+            // small batch is read here, as `load` would read it.
+            if wanted.len() < PARALLEL_BATCH {
+                for path in wanted.drain(..) {
+                    if let Ok(read) = self.read(&path).await
+                        && links
+                    {
+                        self.body_links(&path, &read.doc);
+                    }
+                }
+                return;
+            }
             let parse = |path: PathBuf, text: String| -> Option<Prefetched> {
                 let doc = Document::parse(&path, &text).ok()?;
                 let found: Option<Arc<[BodyLink]>> =
@@ -132,8 +153,6 @@ impl<FS: ReadStorage, Ix> Graph<FS, Ix> {
             };
             self.memo_remember_all(parsed);
         }
-        #[cfg(not(all(feature = "parallel", not(target_family = "wasm"))))]
-        let _ = (paths, links);
     }
 
     /// Read and parse the workspace-relative document at `path`, returning its
@@ -299,16 +318,80 @@ mod tests {
         let ws = Graph::new(OneAtATime, &dir, NoIndex, ReadSettings::default());
         assert!(ws.fs().shared_reader().is_none());
 
+        // Enough documents that the batch goes to the pool, which is the path
+        // a backend without a shared reader changes.
+        let others: Vec<PathBuf> = (0..PARALLEL_BATCH)
+            .map(|i| {
+                let path = PathBuf::from(format!("n{i}.md"));
+                write(
+                    &dir,
+                    path.to_str().unwrap(),
+                    "---
+title: N
+---
+",
+                );
+                path
+            })
+            .collect();
+
         let _scope = ws.read_scope();
-        block_on(ws.prefetch(["a.md", "b.md", "gone.md"].map(PathBuf::from), true));
+        let paths = ["a.md", "b.md", "gone.md"].map(PathBuf::from);
+        block_on(ws.prefetch(paths.into_iter().chain(others.iter().cloned()), true));
         assert!(ws.memo_holds(Path::new("a.md")));
         assert!(ws.memo_holds(Path::new("b.md")));
+        assert!(others.iter().all(|path| ws.memo_holds(path)));
         assert!(!ws.memo_holds(Path::new("gone.md")));
         let (_, a) = block_on(ws.load(Path::new("a.md"))).unwrap();
         assert_eq!(
             ws.memo_links(Path::new("a.md"), &a.body).map(|l| l.len()),
             Some(1)
         );
+    }
+
+    /// A root with twenty children (a batch the pool parses), each with one
+    /// child (batches read in place), one of them missing.
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    #[test]
+    fn a_tree_prefetch_reads_every_level_and_nothing_outside_it() {
+        let dir = tempdir("prefetch-tree");
+        let mut root = String::from("---\ntitle: Root\ncontents:\n");
+        for i in 0..20 {
+            root.push_str(&format!("- '[c{i}](/c{i}.md)'\n"));
+            let leaf = if i == 7 { "gone" } else { "leaf" };
+            write(
+                &dir,
+                &format!("c{i}.md"),
+                format!("---\ncontents:\n- '[l](/c{i}/{leaf}.md)'\n---\nsee [r](/README.md)\n"),
+            );
+            if i != 7 {
+                write(&dir, &format!("c{i}/leaf.md"), "---\ntitle: Leaf\n---\n");
+            }
+        }
+        root.push_str("---\n");
+        write(&dir, "README.md", &root);
+        write(&dir, "unlisted.md", "---\ntitle: U\n---\n");
+        let ws = Graph::new(StdFs, &dir, NoIndex, ReadSettings::default());
+
+        let _scope = ws.read_scope();
+        block_on(ws.prefetch_tree(Path::new("README.md"), true));
+        assert!(ws.memo_holds(Path::new("README.md")));
+        for i in 0..20 {
+            let child = PathBuf::from(format!("c{i}.md"));
+            assert!(ws.memo_holds(&child), "{}", child.display());
+            let (_, doc) = block_on(ws.load(&child)).unwrap();
+            assert_eq!(ws.memo_links(&child, &doc.body).map(|l| l.len()), Some(1));
+            if i != 7 {
+                assert!(ws.memo_holds(&dir_leaf(i)), "{}", dir_leaf(i).display());
+            }
+        }
+        assert!(!ws.memo_holds(Path::new("c7/gone.md")));
+        assert!(!ws.memo_holds(Path::new("unlisted.md")));
+    }
+
+    #[cfg(all(feature = "parallel", not(target_family = "wasm")))]
+    fn dir_leaf(i: usize) -> PathBuf {
+        PathBuf::from(format!("c{i}/leaf.md"))
     }
 
     #[test]
