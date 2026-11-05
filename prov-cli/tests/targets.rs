@@ -27,10 +27,8 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String) {
 /// A date-nested journal: each index's title mirrors its own directory's name
 /// (`2026` in `2026/`, `07` in `07/`) — the shape that made a path and a route
 /// indistinguishable under the old flag pair, and the shape routes exist for.
-fn journal(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-targets-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn journal(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("targets", tag);
     run(&dir, &["init", "--yes"]);
     let (ok, out) = run(&dir, &["new", "2026-07-14", "--in", "@Daily/2026/07", "-p"]);
     assert!(ok, "fixture route must build: {out}");
@@ -137,9 +135,7 @@ fn a_bare_path_needs_no_workspace() {
     // @ and id: make the argument mean a *node*. Losing that would have made every
     // read command require a workspace, which is a real regression the grammar
     // must not smuggle in.
-    let dir = std::env::temp_dir().join(format!("prov-targets-loose-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = prov_testkit::scratch("targets", "loose");
     std::fs::write(dir.join("loose.md"), "---\ntitle: Loose\n---\nbody\n").unwrap();
     // No `init` — there is no workspace here at all.
     let (ok, out) = run(&dir, &["get", "loose.md", "title"]);
@@ -149,9 +145,7 @@ fn a_bare_path_needs_no_workspace() {
 
 #[test]
 fn a_route_outside_a_workspace_says_so_rather_than_reading_a_file() {
-    let dir = std::env::temp_dir().join(format!("prov-targets-noroot-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = prov_testkit::scratch("targets", "noroot");
     let (ok, _) = run(&dir, &["show", "@Daily/2026"]);
     assert!(!ok, "a route has no meaning without a workspace");
 }
@@ -197,10 +191,8 @@ fn a_route_subject_refuses_to_create_what_it_cannot_find() {
 // ── config vocabulary (docs/config-vocab.md) ────────────────────────────────
 
 /// A throwaway workspace initialized fresh in a temp dir.
-fn workspace(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-cfg-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn workspace(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("cfg", tag);
     let (ok, out) = run(&dir, &["init", "--yes"]);
     assert!(ok, "init: {out}");
     dir

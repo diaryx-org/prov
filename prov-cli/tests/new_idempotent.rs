@@ -17,10 +17,8 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String) {
     (out.status.success(), text)
 }
 
-fn vault(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-new-idem-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn vault(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("new-idem", tag);
     assert!(run(&dir, &["init", "--yes"]).0, "init");
     dir
 }

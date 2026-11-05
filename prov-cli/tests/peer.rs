@@ -38,15 +38,13 @@ fn run(dir: &Path, peers: &Path, args: &[&str]) -> (bool, String, String) {
 /// A scratch directory holding two workspaces and a peer map, all thrown away
 /// together.
 struct Scratch {
-    root: PathBuf,
+    root: prov_testkit::Scratch,
     peers: PathBuf,
 }
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("prov-peer-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let root = prov_testkit::scratch("peer", tag);
         let peers = root.join("peers");
         Self { root, peers }
     }
@@ -73,12 +71,6 @@ impl Scratch {
 
     fn run(&self, dir: &Path, args: &[&str]) -> (bool, String, String) {
         run(dir, &self.peers, args)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

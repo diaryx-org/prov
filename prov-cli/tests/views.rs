@@ -41,10 +41,8 @@ fn write(dir: &Path, rel: &str, text: &str) {
 /// and an unscoped field. `readme.md` carries a `created` stamp and is *not*
 /// under `Daily` — it is what makes the scoped view's scope observable.
 /// `extra` is spliced into the `daily` entry.
-fn vault(tag: &str, extra: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn vault(tag: &str, extra: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("views-cli", tag);
     write(
         &dir,
         "index.md",
@@ -83,11 +81,8 @@ fn vault(tag: &str, extra: &str) -> std::path::PathBuf {
     dir
 }
 
-fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-views-cli-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("views-cli", tag)
 }
 
 #[test]

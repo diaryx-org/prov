@@ -26,9 +26,8 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String, String) {
 /// A fresh `base/vault` — `vault` an initialized workspace with a nested
 /// document and a hidden file, `base` a neutral sibling directory to hold
 /// backup destinations outside the vault.
-fn isolated(tag: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("prov-backup-cli-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+fn isolated(tag: &str) -> (prov_testkit::Scratch, PathBuf) {
+    let base = prov_testkit::scratch("backup-cli", tag);
     let vault = base.join("vault");
     std::fs::create_dir_all(&vault).unwrap();
     let (ok, _, err) = run(&vault, &["init", "--yes"]);

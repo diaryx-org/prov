@@ -502,11 +502,8 @@ mod tests {
     use super::*;
     use prov_graph::exec::block_on;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-fsfault-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tmp(name: &str) -> prov_testkit::Scratch {
+        prov_testkit::scratch("fsfault", name)
     }
 
     #[test]
@@ -581,7 +578,7 @@ mod tests {
                 FsEvent::Write(temp.clone()),
                 FsEvent::Sync(temp.clone(), Durability::Ordered),
                 FsEvent::Rename(temp.clone(), target.clone()),
-                FsEvent::Sync(root.clone(), Durability::Durable),
+                FsEvent::Sync(root.to_path_buf(), Durability::Durable),
             ],
             "the atomic-replace protocol ran out of order"
         );
@@ -663,7 +660,7 @@ mod tests {
                 // No rename to fold it into, so the entry naming a *newly created*
                 // file needs a flush of its own — the one case where the caller,
                 // not `sync`, has to ask for the directory.
-                FsEvent::Sync(root.clone(), Durability::Durable),
+                FsEvent::Sync(root.to_path_buf(), Durability::Durable),
             ],
             "the fallback must write the target directly, with no staging rename"
         );

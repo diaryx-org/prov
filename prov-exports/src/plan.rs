@@ -822,7 +822,7 @@ mod fs_tests {
     use prov_views::Expression;
 
     use prov_testkit::write;
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("exports", tag)
     }
 
@@ -830,7 +830,7 @@ mod fs_tests {
     /// is `audience`; the interesting documents are `07-24.md` (gated in,
     /// inside the view) and `note.md` (gated in, outside the view), and
     /// `2026.md` (inside the view, undeclared — the one the valve must hold).
-    fn journal(tag: &str) -> PathBuf {
+    fn journal(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

@@ -478,7 +478,7 @@ mod tests {
     use prov_graph::fs::StdFs;
 
     use prov_testkit::{read, write};
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("route", tag)
     }
 

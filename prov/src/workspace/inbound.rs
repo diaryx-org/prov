@@ -479,7 +479,7 @@ mod tests {
     /// A root with three children, `c.md` linked by its parent (a labeled
     /// `contents` entry) and by `a.md` (a labeled `links` entry); `b.md`
     /// links to nothing but its parent.
-    fn tree(tag: &str) -> PathBuf {
+    fn tree(tag: &str) -> prov_testkit::Scratch {
         let dir = scratch("inbound", tag);
         write(
             &dir,
@@ -548,7 +548,7 @@ mod tests {
         let dir = tree("batched-census");
         let hook = Arc::new(Batching {
             log: Default::default(),
-            dir: dir.clone(),
+            dir: dir.to_path_buf(),
         });
         let mut w = Workspace::builder(CountingFs::default())
             .root(&dir)

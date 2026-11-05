@@ -335,7 +335,7 @@ mod tests {
     use crate::index::NoIndex;
 
     use prov_testkit::write;
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("load", tag)
     }
 

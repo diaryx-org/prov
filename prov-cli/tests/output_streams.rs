@@ -68,11 +68,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (out, err)
 }
 
-fn sandbox(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-streams-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("streams", tag)
 }
 
 #[test]
@@ -400,9 +397,7 @@ fn ignore_keeps_the_rules_on_stdout_and_the_narration_on_stderr() {
 fn a_closed_stdout_ends_the_process_silently() {
     use std::os::unix::process::ExitStatusExt;
     use std::process::Stdio;
-    let dir = std::env::temp_dir().join(format!("prov-cli-sigpipe-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = prov_testkit::scratch("cli", "sigpipe");
     // Enough rows that the JSON is larger than a pipe buffer, so the write
     // cannot complete before the reader is gone.
     let mut contents = String::from("---\ntitle: Home\ncontents:\n");

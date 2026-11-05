@@ -31,10 +31,8 @@ fn write(dir: &Path, rel: &str, text: &str) {
 /// A root with two children, one of them an index over a third document, and
 /// a `stray/` directory nothing links into. `b.md` has no title, so the text
 /// line has no dash to drop and the JSON has a `null` to keep.
-fn vault(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-docs-cli-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn vault(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("docs-cli", tag);
     write(
         &dir,
         "index.md",
@@ -101,9 +99,7 @@ fn json_is_one_array_of_rows_with_an_id_column_and_a_silent_stderr() {
 /// the about page are machinery reached one-way from the root, not rows.
 #[test]
 fn id_column_is_filled_from_the_registry_when_the_document_carries_none() {
-    let dir = std::env::temp_dir().join(format!("prov-docs-cli-registry-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = prov_testkit::scratch("docs-cli", "registry");
     let (ok, out, err) = run(
         &dir,
         &[
@@ -161,9 +157,7 @@ fn a_root_alone_is_one_row() {
 /// `content` has nothing to read at all.
 #[test]
 fn body_column_is_prov_s_reading_of_the_prose_and_null_where_there_is_none() {
-    let dir = std::env::temp_dir().join(format!("prov-docs-cli-body-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = prov_testkit::scratch("docs-cli", "body");
     write(
         &dir,
         "index.md",

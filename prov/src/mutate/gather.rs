@@ -997,7 +997,7 @@ mod tests {
 
     /// An index holding a page and three photographs, each attached the
     /// ordinary way — a sidecar, a digest, a place in the list.
-    fn album_tree(tag: &str) -> PathBuf {
+    fn album_tree(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

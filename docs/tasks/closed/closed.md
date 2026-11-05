@@ -19,6 +19,7 @@ contents:
 - '[check skips orphaned sidecars](/docs/tasks/closed/check-skips-orphaned-sidecars.md)'
 - '[A nested workspace is walked as the outer one''s](/docs/tasks/closed/a-nested-workspace-is-walked-as-the-outer-ones.md)'
 - '[prov''s own docs fail prov check](/docs/tasks/closed/own-docs-fail-prov-check.md)'
+- '[Tests leave their fixtures in the temp directory](/docs/tasks/closed/tests-leave-their-fixtures-in-temp.md)'
 ---
 
 # Closed tasks

@@ -51,9 +51,7 @@ fn help_without_oneline_is_still_clap_help() {
 
 #[test]
 fn a_missing_parent_is_named() {
-    let dir = std::env::temp_dir().join(format!("prov-help-parent-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = prov_testkit::scratch("help", "parent");
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_prov"))
             .current_dir(&dir)
@@ -71,5 +69,4 @@ fn a_missing_parent_is_named() {
         "{err}"
     );
     assert!(!dir.join("notes.md").exists(), "nothing is written");
-    let _ = std::fs::remove_dir_all(&dir);
 }

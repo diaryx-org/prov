@@ -329,7 +329,7 @@ const DOS_EPOCH: (u16, u16) = (0, 0x0021);
 mod tests {
     use super::*;
 
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("backup", tag)
     }
 

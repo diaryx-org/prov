@@ -2417,7 +2417,7 @@ mod spanning_children_tests {
     use prov_graph::exec::block_on;
 
     use prov_testkit::write;
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("children", tag)
     }
 
@@ -2542,7 +2542,7 @@ mod reified_vocabulary_tests {
     use prov_store::index::FileIndex;
 
     use prov_testkit::write;
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("reified-vocab", tag)
     }
 
@@ -2562,7 +2562,7 @@ mod reified_vocabulary_tests {
     /// carrying the key, an explicit `term:` overriding a reader-facing title, a
     /// retirement, a gloss, a self-declared id, and a child that is no term at
     /// all.
-    fn a_vocabulary_of_audiences(tag: &str) -> PathBuf {
+    fn a_vocabulary_of_audiences(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,
@@ -2787,7 +2787,7 @@ mod journal_home_tests {
     use prov_testkit::{read, write};
 
     /// A workspace root with one parent document, and a separate journal home.
-    fn fixture(tag: &str) -> (PathBuf, PathBuf) {
+    fn fixture(tag: &str) -> (prov_testkit::Scratch, prov_testkit::Scratch) {
         let root = prov_testkit::scratch("journal-home", tag);
         write(&root, "index.md", "---\ntitle: Home\n---\n");
         let home = prov_testkit::scratch("journal-home", &format!("{tag}-home"));
@@ -3003,7 +3003,7 @@ mod journal_home_tests {
             .journal_home(&home)
             .build();
         let copy = ws.clone();
-        assert_eq!(copy.journal_home(), Some(home.as_path()));
+        assert_eq!(copy.journal_home(), Some(&*home));
         assert_eq!(
             copy.journal().unwrap().path_in(&root),
             home.join(JOURNAL_NAME)

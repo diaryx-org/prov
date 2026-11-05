@@ -35,11 +35,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (out, err)
 }
 
-fn sandbox(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-stamp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("stamp", tag)
 }
 
 /// A workspace whose documents are **separated** — each one a small metadata
@@ -47,7 +44,7 @@ fn sandbox(tag: &str) -> std::path::PathBuf {
 /// The only configuration in which `stamp` has both halves to write, because a
 /// checksum is recorded exactly where it covers a file of its own: `note.yaml`
 /// holds the hash, `note.md` holds the bytes it vouches for.
-fn workspace(tag: &str) -> std::path::PathBuf {
+fn workspace(tag: &str) -> prov_testkit::Scratch {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes", "--embed", "separate"]);
     ok(&dir, &["config", "fields.updated.stamp", "edit"]);
@@ -398,7 +395,7 @@ fn stamp_of_a_payload_restamps_its_sidecar() {
 /// A markdown workspace with an open `tags` vocabulary and one note whose tag
 /// is a near miss of a term — the warning `check` raises without anything
 /// being broken.
-fn workspace_with_a_near_miss(tag: &str) -> std::path::PathBuf {
+fn workspace_with_a_near_miss(tag: &str) -> prov_testkit::Scratch {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes"]);
     std::fs::write(

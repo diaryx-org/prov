@@ -1362,8 +1362,6 @@ mod tests {
         //
         // The sweep is bounded by a probe run rather than a literal, so it keeps
         // covering every write the day `rename` grows one.
-        let probe = tempdir("atomic-rename-probe");
-        let _ = std::fs::remove_dir_all(&probe);
         let dir = linked_tree("atomic-rename-probe");
         let mut w = Workspace::builder(FailAtWrite::never()).root(&dir).build();
         block_on(w.rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap();

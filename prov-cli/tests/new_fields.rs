@@ -34,11 +34,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (out, err)
 }
 
-fn sandbox(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-new-fields-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("new-fields", tag)
 }
 
 fn read(dir: &Path, rel: &str) -> String {
@@ -57,7 +54,7 @@ fn frontmatter(text: &str) -> Vec<&str> {
 
 /// A workspace stamping `created`, whose config declares a `status` that
 /// starts as `open` and a `priority` that starts as an integer.
-fn workspace(tag: &str) -> std::path::PathBuf {
+fn workspace(tag: &str) -> prov_testkit::Scratch {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes", "--created-field", "created"]);
     ok(&dir, &["config", "fields.status.default", "open"]);

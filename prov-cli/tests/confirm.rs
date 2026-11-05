@@ -29,10 +29,8 @@ fn run(dir: &Path, peers: &Path, args: &[&str], env: &[(&str, &str)]) -> (bool, 
     )
 }
 
-fn sandbox(tag: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("prov-confirm-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn sandbox(tag: &str) -> (prov_testkit::Scratch, PathBuf) {
+    let dir = prov_testkit::scratch("confirm", tag);
     let peers = dir.join("device").join("peers");
     std::fs::create_dir_all(peers.parent().unwrap()).unwrap();
     (dir, peers)
@@ -43,7 +41,7 @@ fn read(dir: &Path, rel: &str) -> String {
 }
 
 /// A workspace recording an `updated` field, with one document to confirm.
-fn workspace(tag: &str) -> (PathBuf, PathBuf) {
+fn workspace(tag: &str) -> (prov_testkit::Scratch, PathBuf) {
     let (dir, peers) = sandbox(tag);
     for args in [
         &["init", "--yes"][..],

@@ -8,7 +8,7 @@
 //! idempotent. The built-in preset is exercised through `init`, since that is
 //! where it is written.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 fn run(dir: &Path, args: &[&str]) -> (bool, String, String) {
@@ -35,11 +35,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (out, err)
 }
 
-fn sandbox(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-presets-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("presets", tag)
 }
 
 fn read(dir: &Path, rel: &str) -> String {

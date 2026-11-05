@@ -376,7 +376,7 @@ mod tests {
 
     /// The task's repro: a book `a/` — a folder note, a chapter, and a picture
     /// both pages embed — beside a second book `b/`.
-    fn book(tag: &str) -> PathBuf {
+    fn book(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,
@@ -459,7 +459,7 @@ mod tests {
     }
 
     /// A library holding a book of its own beside its own notes.
-    fn shelf(tag: &str) -> PathBuf {
+    fn shelf(tag: &str) -> prov_testkit::Scratch {
         let dir = book(tag);
         write(
             &dir,
