@@ -8,6 +8,7 @@ part_of: '[prov](/README.md)'
 contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[cel parses on a small stack](/docs/tasks/cel-parses-on-a-small-stack.md)'
+- '[Tests leave their fixtures in the temp directory](/docs/tasks/tests-leave-their-fixtures-in-temp.md)'
 ---
 
 # Tasks
