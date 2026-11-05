@@ -965,7 +965,7 @@ mod tests {
     use prov_graph::fs::StdFs;
 
     use prov_testkit::{read, write};
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("manifest", tag)
     }
 
@@ -974,7 +974,7 @@ mod tests {
     }
 
     /// A workspace with an index, a photo directory and nothing else.
-    fn photos(tag: &str) -> PathBuf {
+    fn photos(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
         write(&dir, "photos/a.jpg", [0xff, 0xd8, 0x01]);
@@ -1063,7 +1063,7 @@ mod tests {
     }
 
     /// A built web app: its `index.html` is part of the build, not a page.
-    fn app(tag: &str) -> PathBuf {
+    fn app(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(&dir, "index.md", b"---\ntitle: Home\n---\n");
         write(
@@ -1770,7 +1770,7 @@ mod tests {
     }
 
     /// `photos("…")` with what a Synology keeps beside the photographs.
-    fn nas_share(tag: &str) -> PathBuf {
+    fn nas_share(tag: &str) -> prov_testkit::Scratch {
         let dir = photos(tag);
         write(&dir, "photos/@eaDir/a.jpg/SYNOPHOTO_THUMB_XL.jpg", [1]);
         write(&dir, "photos/2019/@eaDir/b.jpg/SYNOPHOTO_THUMB_M.jpg", [2]);
@@ -1916,18 +1916,19 @@ mod tests {
 
         /// A workspace whose `photos` is a link to an archive kept outside it,
         /// as a NAS share is linked into a workspace kept on another.
-        fn linked_share(tag: &str) -> (PathBuf, PathBuf) {
+        fn linked_share(tag: &str) -> (prov_testkit::Scratch, PathBuf, PathBuf) {
             let dir = tempdir(tag);
             write(&dir, "ws/index.md", b"---\ntitle: Home\n---\n");
             write(&dir, "share/a.jpg", [0xff, 0xd8, 0x01]);
             write(&dir, "share/2019/b.jpg", [0xff, 0xd8, 0x02]);
             symlink(dir.join("share"), dir.join("ws/photos")).unwrap();
-            (dir.join("ws"), dir.join("share"))
+            let (ws, share) = (dir.join("ws"), dir.join("share"));
+            (dir, ws, share)
         }
 
         #[test]
         fn a_linked_root_is_covered_checked_and_ruled_out_as_claimed() {
-            let (ws_dir, _) = linked_share("linked-root");
+            let (_dir, ws_dir, _) = linked_share("linked-root");
             let mut w = ws(&ws_dir);
             let node =
                 block_on(w.attach_manifest(Path::new("photos"), Path::new("index.md"))).unwrap();
@@ -1948,7 +1949,7 @@ mod tests {
 
         #[test]
         fn a_link_inside_a_covered_directory_is_followed_and_a_dangling_one_skipped() {
-            let (ws_dir, share) = linked_share("linked-inside");
+            let (_dir, ws_dir, share) = linked_share("linked-inside");
             write(&share, "../elsewhere/c.jpg", [0xff, 0xd8, 0x03]);
             symlink("../../elsewhere", share.join("2019/more")).unwrap();
             symlink("../a.jpg", share.join("2019/same.jpg")).unwrap();
@@ -1973,7 +1974,7 @@ mod tests {
 
         #[test]
         fn a_link_that_leads_back_to_itself_is_refused() {
-            let (ws_dir, share) = linked_share("linked-loop");
+            let (_dir, ws_dir, share) = linked_share("linked-loop");
             symlink("..", share.join("2019/again")).unwrap();
             let refused =
                 block_on(ws(&ws_dir).attach_manifest(Path::new("photos"), Path::new("index.md")))

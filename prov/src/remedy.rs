@@ -1829,7 +1829,7 @@ mod tests {
     use prov_store::index::FileIndex;
 
     use prov_testkit::{read, write};
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("remedy", tag)
     }
 
@@ -2587,7 +2587,7 @@ mod tests {
             .build()
     }
 
-    fn declared_actors(name: &str, people: &[(&str, &str)]) -> PathBuf {
+    fn declared_actors(name: &str, people: &[(&str, &str)]) -> prov_testkit::Scratch {
         let dir = tempdir(name);
         let mut contents = String::from("- note.md\n");
         for (file, _) in people {

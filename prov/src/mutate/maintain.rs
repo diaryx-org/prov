@@ -848,7 +848,7 @@ mod tests {
     /// A workspace whose node names `README.md` as the root, and whose root says
     /// `part_of` an id in another workspace — a workspace inside a workspace,
     /// opened at the inner one.
-    fn sub_workspace(tag: &str) -> PathBuf {
+    fn sub_workspace(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

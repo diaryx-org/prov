@@ -473,7 +473,7 @@ mod tests {
 
     /// A docs workspace with a tasks corner and a proposals corner, and a
     /// `status` declared differently under each — plus an unscoped `audience`.
-    fn workspace(tag: &str) -> PathBuf {
+    fn workspace(tag: &str) -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("field-scopes", tag);
         write(
             &dir,

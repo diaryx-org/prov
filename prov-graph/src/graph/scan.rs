@@ -640,7 +640,7 @@ mod tests {
 
     /// A library holding a book somebody else wrote, as a workspace of its
     /// own: its node, root and chapter, each with an id and a title.
-    fn library() -> PathBuf {
+    fn library() -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("scan", "nested");
         write(&dir, "prov.yaml", "workspace_id: library\n");
         write(&dir, "config/notes.md", "---\nid: kept\ntitle: Kept\n---\n");

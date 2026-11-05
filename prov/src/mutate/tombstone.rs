@@ -548,7 +548,7 @@ mod tests {
     /// A root, a note under it, and the note's bytes — the starting point most
     /// of these need, and the bytes so a test can play the part of the
     /// version-control tool that hands them back.
-    fn a_note(tag: &str) -> (PathBuf, &'static str) {
+    fn a_note(tag: &str) -> (prov_testkit::Scratch, &'static str) {
         let dir = tempdir(tag);
         write(
             &dir,

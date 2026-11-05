@@ -867,11 +867,8 @@ mod tests {
     use prov_graph::fs::StdFs;
     use prov_testkit::write;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-crossing-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tmp(name: &str) -> prov_testkit::Scratch {
+        prov_testkit::scratch("crossing", name)
     }
 
     /// The outer root: a `contents` that is a manifest of foreign ids, which
@@ -913,7 +910,7 @@ mod tests {
 
     /// `org` beside `alpha` (which has a child) and `beta`. Siblings rather
     /// than nested, so no workspace scans another's ids into its own index.
-    fn federation(tag: &str) -> PathBuf {
+    fn federation(tag: &str) -> prov_testkit::Scratch {
         let dir = tmp(tag);
         org(&dir, &["id:alpha/alpha1", "id:beta/beta1"]);
         sub(

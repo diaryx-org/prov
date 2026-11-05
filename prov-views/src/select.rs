@@ -377,14 +377,14 @@ mod tests {
     use prov_graph::index::NoIndex;
 
     use prov_testkit::write;
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("select", tag)
     }
 
     /// A journal: a `Daily/` index with entries under it, plus a README beside
     /// them that carries a `created` stamp and is *not* a daily entry. The
     /// README is the reason a view needs scope at all.
-    fn journal(tag: &str) -> PathBuf {
+    fn journal(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

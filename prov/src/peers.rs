@@ -232,16 +232,14 @@ mod tests {
 
     #[test]
     fn a_recorded_path_that_is_not_a_workspace_is_unreadable_not_unknown() {
-        let dir = std::env::temp_dir().join(format!("prov-peers-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = prov_testkit::scratch("peers", "not-a-workspace");
         let file = PeerFile::parse(&format!("notes {}\n", dir.display()));
         match file.locate("notes") {
             PeerLookup::Unconfirmed { location, .. } => {
-                assert_eq!(location, PeerLocation::Path(dir.clone()));
+                assert_eq!(location, PeerLocation::Path(dir.to_path_buf()));
             }
             other => panic!("expected an unconfirmed lookup, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

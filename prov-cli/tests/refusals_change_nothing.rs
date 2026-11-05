@@ -31,10 +31,8 @@ fn ok(dir: &Path, args: &[&str]) {
 
 /// `index.md` → `a.md` (titled `A`) → `child.md` (titled `Child`), with
 /// every file the fixture's own commands bootstrap already on disk.
-fn workspace(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-refusals-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn workspace(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("refusals", tag);
     ok(&dir, &["init", "--yes"]);
     ok(&dir, &["new", "A", "--in", "index.md"]);
     ok(&dir, &["new", "Child", "--in", "a.md"]);

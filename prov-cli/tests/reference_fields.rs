@@ -37,11 +37,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (out, err)
 }
 
-fn sandbox(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-ref-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("ref", tag)
 }
 
 fn write(dir: &Path, rel: &str, text: &str) {
@@ -57,7 +54,7 @@ fn read(dir: &Path, rel: &str) -> String {
 /// The vault: a root declaring the field, a card citing two documents and a
 /// URL, and the two documents — one in the tree, one reached only by the
 /// citation.
-fn vault(tag: &str) -> std::path::PathBuf {
+fn vault(tag: &str) -> prov_testkit::Scratch {
     let dir = sandbox(tag);
     write(
         &dir,

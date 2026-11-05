@@ -1,12 +1,20 @@
 ---
 title: Tests leave their fixtures in the temp directory
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 created: 2026-11-05T16:46:21.220704Z
-status: open
+status: done
 description: "A green `cargo test --workspace` leaves 741 entries and 34 MB in the temp directory, and every run adds more, because `prov_testkit::scratch` removes only the path its own process id names"
+updated: 2026-11-05T19:56:20.778270Z
 ---
 
 # Tests leave their fixtures in the temp directory
+
+**Status.** Done. `prov_testkit::scratch` returns a `Scratch`, a guard that
+derefs to `Path` and removes the directory on drop, unless the thread is
+panicking. Every hand-written fixture moved onto it, and `smoke.rs` keeps its
+backups in a scratch directory of their own. Paths carry a per-process count
+as well as the pid, because a guard removes what it holds and two tests must
+not share one. `cargo test --workspace` with a fresh `TMPDIR` leaves nothing.
 
 **Done when** `cargo test --workspace` leaves nothing in `$TMPDIR` on a run
 that passes, and a test that fails still leaves its directory to be read.

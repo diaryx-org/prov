@@ -747,7 +747,7 @@ mod tests {
     use prov_graph::fs::StdFs;
     use prov_testkit::{read, write};
 
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("inline", tag)
     }
 
@@ -825,7 +825,7 @@ mod tests {
 
     /// A home, a trip in `days/` that owns `days/fjord.jpg` and shows it, and
     /// a second page elsewhere that links the picture too.
-    fn trip(tag: &str) -> PathBuf {
+    fn trip(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,
@@ -1075,7 +1075,7 @@ mod tests {
     }
     /// A home and a devlog whose two pictures are cards under it, shown in
     /// its body — the shape a devlog took before rows existed.
-    fn carded(tag: &str) -> PathBuf {
+    fn carded(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

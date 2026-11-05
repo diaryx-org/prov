@@ -37,7 +37,7 @@ fn run(dir: &Path, peers: &Path, args: &[&str]) -> (bool, String, String) {
 /// Siblings rather than nested, so no workspace scans another's documents into
 /// its own index — the boundary has to be the only way across.
 struct Federation {
-    root: PathBuf,
+    _guard: prov_testkit::Scratch,
     peers: PathBuf,
     org: PathBuf,
     alpha: PathBuf,
@@ -46,14 +46,12 @@ struct Federation {
 
 impl Federation {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("prov-follow-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let guard = prov_testkit::scratch("follow", tag);
         // Canonical, because the peer map records what it is given and the
         // output quotes it back — on macOS the temp dir is a symlink
         // (`/var` → `/private/var`), so an uncanonicalized expectation would
         // compare two spellings of one directory.
-        let root = root.canonicalize().unwrap();
+        let root = guard.canonicalize().unwrap();
         let peers = root.join("peers");
         std::fs::write(&peers, "# prov peer map\n").unwrap();
 
@@ -87,7 +85,7 @@ impl Federation {
         );
 
         let federation = Self {
-            root,
+            _guard: guard,
             peers,
             org,
             alpha,
@@ -123,12 +121,6 @@ impl Federation {
 
     fn run(&self, dir: &Path, args: &[&str]) -> (bool, String, String) {
         run(dir, &self.peers, args)
-    }
-}
-
-impl Drop for Federation {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -310,6 +302,7 @@ fn explore_takes_unverified() {
 /// An `org` workspace with a workspace of its own nested in its folder, linked
 /// from the root by foreign id — and an empty peer map.
 struct Nested {
+    _guard: prov_testkit::Scratch,
     root: PathBuf,
     peers: PathBuf,
     org: PathBuf,
@@ -318,10 +311,8 @@ struct Nested {
 
 impl Nested {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("prov-nested-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
+        let guard = prov_testkit::scratch("nested", tag);
+        let root = guard.canonicalize().unwrap();
         let peers = root.join("peers");
         std::fs::write(&peers, "# prov peer map\n").unwrap();
         let org = Federation::workspace(
@@ -342,6 +333,7 @@ impl Nested {
         )
         .unwrap();
         let scratch = Self {
+            _guard: guard,
             root,
             peers,
             org,
@@ -356,12 +348,6 @@ impl Nested {
 
     fn run(&self, dir: &Path, args: &[&str]) -> (bool, String, String) {
         run(dir, &self.peers, args)
-    }
-}
-
-impl Drop for Nested {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

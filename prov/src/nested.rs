@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use prov_testkit::write;
 
-    fn library(tag: &str) -> PathBuf {
+    fn library(tag: &str) -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("nested", tag);
         write(&dir, "prov.yaml", "workspace_id: library\n");
         write(&dir, "index.md", "---\ntitle: Home\n---\n");

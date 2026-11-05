@@ -202,11 +202,11 @@ mod tests {
     use prov_graph::fs::StdFs;
 
     use prov_testkit::write;
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("about", tag)
     }
 
-    fn fixture(tag: &str) -> (std::path::PathBuf, WorkspaceConfig, AboutContext) {
+    fn fixture(tag: &str) -> (prov_testkit::Scratch, WorkspaceConfig, AboutContext) {
         let dir = tempdir(tag);
         write(
             &dir,

@@ -320,7 +320,7 @@ mod tests {
     /// The shape fixity covers: a node whose `content` names the prose file
     /// beside it. `note.yaml` records the checksum, `note.md` is the bytes it
     /// covers — two files, so the record is one artifact vouching for another.
-    fn separated(tag: &str) -> std::path::PathBuf {
+    fn separated(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

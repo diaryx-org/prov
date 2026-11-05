@@ -12,9 +12,8 @@ fn prov() -> Command {
 
 /// An isolated `base/vault` where `vault` is an initialized workspace and `base`
 /// is a neutral outside directory to invoke from.
-fn isolated(tag: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("prov-root-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
+fn isolated(tag: &str) -> (prov_testkit::Scratch, PathBuf) {
+    let base = prov_testkit::scratch("root", tag);
     let vault = base.join("vault");
     std::fs::create_dir_all(&vault).unwrap();
     let ok = prov()

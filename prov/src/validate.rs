@@ -2783,7 +2783,7 @@ mod tests {
     use crate::remedy::{Fix, Warrant};
 
     pub(super) use prov_testkit::write;
-    pub(super) fn tempdir(tag: &str) -> PathBuf {
+    pub(super) fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("check", tag)
     }
 
@@ -3381,7 +3381,7 @@ mod tests {
     /// A workspace whose root still declares the pointer `deletions` replaced,
     /// with one document binned by it and its bytes parked under `items/` —
     /// exactly what an unmigrated workspace looks like on disk.
-    fn with_a_legacy_bin(tag: &str) -> PathBuf {
+    fn with_a_legacy_bin(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,
@@ -3772,7 +3772,11 @@ mod tests {
     /// node under the spine, its `contents` the term documents, each with a
     /// `part_of` back — content all the way down, which is what makes the
     /// whole-file store rule inapplicable.
-    fn a_workspace_with_reified_audiences(tag: &str, values: &str, note: &str) -> PathBuf {
+    fn a_workspace_with_reified_audiences(
+        tag: &str,
+        values: &str,
+        note: &str,
+    ) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

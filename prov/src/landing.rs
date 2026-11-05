@@ -98,7 +98,7 @@ mod tests {
         }
     }
 
-    fn tree(tag: &str) -> std::path::PathBuf {
+    fn tree(tag: &str) -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("landing", tag);
         write(
             &dir,

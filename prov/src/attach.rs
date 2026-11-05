@@ -467,7 +467,7 @@ mod tests {
     use prov_graph::title::TitleMatch;
 
     use prov_testkit::{read, write};
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("attach", tag)
     }
 

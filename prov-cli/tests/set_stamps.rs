@@ -36,11 +36,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (out, err)
 }
 
-fn sandbox(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-set-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("set", tag)
 }
 
 fn read(dir: &Path, rel: &str) -> String {
@@ -54,7 +51,7 @@ fn line_for<'a>(text: &'a str, field: &str) -> Option<&'a str> {
 }
 
 /// A workspace recording an `updated` field, with one document to edit.
-fn workspace(tag: &str) -> std::path::PathBuf {
+fn workspace(tag: &str) -> prov_testkit::Scratch {
     let dir = sandbox(tag);
     ok(&dir, &["init", "--yes"]);
     ok(&dir, &["config", "fields.updated.stamp", "edit"]);

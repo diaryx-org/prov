@@ -421,13 +421,13 @@ mod tests {
     use prov_graph::fs::StdFs;
     use prov_testkit::{read, write};
 
-    fn tempdir(tag: &str) -> PathBuf {
+    fn tempdir(tag: &str) -> prov_testkit::Scratch {
         prov_testkit::scratch("file", tag)
     }
 
     /// A workspace with a `Daily` index and a `daily` entry nesting under it
     /// at `nest` by `[date_of_document, created]`.
-    fn journal(tag: &str, nest: &str) -> (PathBuf, Workspace<StdFs>) {
+    fn journal(tag: &str, nest: &str) -> (prov_testkit::Scratch, Workspace<StdFs>) {
         let dir = tempdir(tag);
         write(
             &dir,
@@ -550,7 +550,7 @@ mod tests {
     /// no value files under the anchor; two values are refused.
     #[test]
     fn a_record_files_as_deep_as_its_value_says() {
-        let (_, ws) = journal("partial", "day");
+        let (_dir, ws) = journal("partial", "day");
         let spec = spec(&ws);
         let plan = |yaml: &str| block_on(ws.plan_file(Path::new("index.md"), &spec, &meta(yaml)));
         assert_eq!(

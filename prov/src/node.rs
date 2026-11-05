@@ -164,11 +164,8 @@ mod tests {
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-node-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tmp(name: &str) -> prov_testkit::Scratch {
+        prov_testkit::scratch("node", name)
     }
 
     fn found(dir: &Path) -> Located {

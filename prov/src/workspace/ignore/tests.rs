@@ -16,7 +16,7 @@ use super::{Ignore, IgnoreList, Reason};
 use crate::workspace::Workspace;
 
 use prov_testkit::write;
-fn tempdir(tag: &str) -> PathBuf {
+fn tempdir(tag: &str) -> prov_testkit::Scratch {
     prov_testkit::scratch("ignore", tag)
 }
 

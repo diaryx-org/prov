@@ -236,8 +236,6 @@ impl<FS: ReadStorage, Id, Ix: IdIndex> Workspace<FS, Id, Ix> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use prov_exports::Gate;
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
@@ -248,7 +246,7 @@ mod tests {
     /// A public tasks corner and a public proposals corner, each with its own
     /// `status` vocabulary, and one word — `draft` — in both: a proposal's
     /// draft holds, a task's does not.
-    fn workspace(tag: &str) -> PathBuf {
+    fn workspace(tag: &str) -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("term-holds", tag);
         write(
             &dir,
@@ -318,7 +316,7 @@ mod tests {
 
     /// Four nested circles and one outside them, as term nodes linking the
     /// circle each reads, and a page for each.
-    fn circles(tag: &str) -> PathBuf {
+    fn circles(tag: &str) -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("gate-reach", tag);
         write(
             &dir,
@@ -459,7 +457,7 @@ mod tests {
     /// A space that reads the family: a term node `reunion` reading
     /// `family.md`, and family pages keeping back from it by link, by name,
     /// or not at all.
-    fn space(tag: &str) -> PathBuf {
+    fn space(tag: &str) -> prov_testkit::Scratch {
         let dir = circles(tag);
         write(
             &dir,

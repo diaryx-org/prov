@@ -33,10 +33,8 @@ fn read(dir: &Path, rel: &str) -> String {
     std::fs::read_to_string(dir.join(rel)).unwrap()
 }
 
-fn workspace(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-regroup-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn workspace(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("regroup", tag);
     ok(&dir, &["init", "--yes"]);
     for (name, byte) in [("a.jpg", 1u8), ("b.jpg", 2)] {
         std::fs::write(dir.join(name), [0xff, 0xd8, byte]).unwrap();

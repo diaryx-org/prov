@@ -157,7 +157,7 @@ mod tests {
     use super::*;
 
     /// A shelf of three, each child claiming the shelf back.
-    fn shelf(tag: &str) -> PathBuf {
+    fn shelf(tag: &str) -> prov_testkit::Scratch {
         let dir = tempdir(tag);
         write(
             &dir,

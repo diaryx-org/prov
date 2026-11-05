@@ -5,7 +5,7 @@
 //! first, names the same item. Both must keep working, for every command
 //! that takes a path.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 fn run(dir: &Path, args: &[&str]) -> (bool, String) {
@@ -26,10 +26,8 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A loose file, no workspace: the path grammar is the same either way.
-fn fixture(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-field-paths-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn fixture(tag: &str) -> prov_testkit::Scratch {
+    let dir = prov_testkit::scratch("field-paths", tag);
     std::fs::write(
         dir.join("notes.md"),
         "---\ntitle: Notes\ncontents:\n  - a.md\n  - b.md\nsources:\n  - resource: x.md\n    title: X\n---\nbody\n",

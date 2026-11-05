@@ -490,11 +490,8 @@ mod tests {
     use prov_graph::exec::block_on;
     use prov_graph::fs::StdFs;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prov-discover-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tmp(name: &str) -> prov_testkit::Scratch {
+        prov_testkit::scratch("discover", name)
     }
 
     /// Discovery compiles every view's CEL, and the CEL parser recurses deeply
@@ -537,7 +534,7 @@ mod tests {
         let outcome = block_on(discover(&StdFs, &root.join("a/b"))).unwrap();
         match outcome {
             Discovery::Found(d) => {
-                assert_eq!(d.root_dir, root);
+                assert_eq!(d.root_dir, *root);
                 assert_eq!(d.root_doc, Path::new("index.md"));
             }
             other => panic!("expected Found, got {other:?}"),
@@ -577,7 +574,7 @@ mod tests {
         std::fs::write(root.join(".config/prov.yaml"), "title: prov config\n").unwrap();
         match block_on(discover(&StdFs, &root.join("docs/deeper"))).unwrap() {
             Discovery::Found(d) => {
-                assert_eq!(d.root_dir, root);
+                assert_eq!(d.root_dir, *root);
                 assert_eq!(d.root_doc, Path::new("README.md"));
                 assert_eq!(d.node.node, Some(PathBuf::from(".config/prov.yaml")));
             }
@@ -587,7 +584,7 @@ mod tests {
         // Asked *in* the tied directory the answer is the same: the tie is not
         // where the walk starts, it is what the walk passes through.
         match block_on(discover(&StdFs, &root.join("docs"))).unwrap() {
-            Discovery::Found(d) => assert_eq!(d.root_dir, root),
+            Discovery::Found(d) => assert_eq!(d.root_dir, *root),
             other => panic!("expected the node's workspace, got {other:?}"),
         }
     }
@@ -841,7 +838,7 @@ mod tests {
     /// own right: `sub/prov.yaml` names `sub/README.md` as the root, and that
     /// README says `part_of` an id in *another* workspace. Returns the outer
     /// root directory.
-    fn nested_workspaces(tag: &str, with_node: bool) -> PathBuf {
+    fn nested_workspaces(tag: &str, with_node: bool) -> prov_testkit::Scratch {
         let outer = tmp(tag);
         std::fs::write(outer.join("index.md"), "---\ntitle: Outer\n---\n").unwrap();
         std::fs::create_dir_all(outer.join("sub")).unwrap();
@@ -889,7 +886,7 @@ mod tests {
 
         match block_on(discover(&StdFs, &outer.join("sub"))).unwrap() {
             Discovery::Found(d) => {
-                assert_eq!(d.root_dir, outer);
+                assert_eq!(d.root_dir, *outer);
                 assert_eq!(d.root_doc, PathBuf::from("index.md"));
             }
             other => panic!("expected the outer root, got {other:?}"),
@@ -907,7 +904,8 @@ mod tests {
             Some(PathBuf::from("README.md"))
         );
         // And without the node there is nothing here to be the root.
-        let bare = nested_workspaces("nested-root-doc-bare", false).join("sub");
+        let bare = nested_workspaces("nested-root-doc-bare", false);
+        let bare = bare.join("sub");
         assert_eq!(block_on(probe(&bare).root_document()).unwrap(), None);
     }
 
@@ -959,7 +957,7 @@ mod tests {
         std::fs::rename(other.join("sub/README.md"), other.join("sub/home.md")).unwrap();
         std::fs::write(other.join("sub/prov.yaml"), "workspace_id: inner\n").unwrap();
         match block_on(discover(&StdFs, &other.join("sub"))).unwrap() {
-            Discovery::Found(d) => assert_eq!(d.root_dir, other),
+            Discovery::Found(d) => assert_eq!(d.root_dir, *other),
             other => panic!("expected the outer root, got {other:?}"),
         }
     }

@@ -17,7 +17,7 @@ use prov_store::fs::Storage;
 pub(super) use prov_store::index::FileIndex;
 
 pub(super) use prov_testkit::{read, write};
-pub(super) fn tempdir(tag: &str) -> PathBuf {
+pub(super) fn tempdir(tag: &str) -> prov_testkit::Scratch {
     prov_testkit::scratch("mutate", tag)
 }
 
@@ -115,7 +115,7 @@ pub(super) fn failing_ws(dir: &Path, fail_at: usize) -> Workspace<FailAtWrite> {
         .build()
 }
 
-pub(super) fn linked_tree(tag: &str) -> PathBuf {
+pub(super) fn linked_tree(tag: &str) -> prov_testkit::Scratch {
     let dir = tempdir(tag);
     write(
         &dir,

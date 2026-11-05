@@ -295,7 +295,7 @@ mod tests {
     use prov_graph::index::IdIndex;
     use prov_testkit::{read, write};
 
-    fn workspace(tag: &str) -> PathBuf {
+    fn workspace(tag: &str) -> prov_testkit::Scratch {
         let dir = prov_testkit::scratch("writable", tag);
         write(
             &dir,
@@ -451,6 +451,6 @@ mod tests {
             ..at
         };
         let ws = block_on(Workspace::open_for_writing(StdFs, at, 7)).unwrap();
-        assert_eq!(ws.journal_home(), Some(home.as_path()));
+        assert_eq!(ws.journal_home(), Some(&*home));
     }
 }

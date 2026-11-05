@@ -34,11 +34,8 @@ fn ok(dir: &Path, args: &[&str]) -> String {
     out
 }
 
-fn sandbox(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("prov-smoke-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn sandbox(tag: &str) -> prov_testkit::Scratch {
+    prov_testkit::scratch("smoke", tag)
 }
 
 #[test]
@@ -147,12 +144,11 @@ fn every_command_runs_end_to_end() {
     ok(&dir, &["config", "--setup"]);
 
     // ── backup: whole-tree copy, outside the graph entirely ──
-    let backup_dir = dir.parent().unwrap().join("smoke-all-backup");
-    let _ = std::fs::remove_dir_all(&backup_dir);
+    let outside = prov_testkit::scratch("smoke", "all-backup");
+    let backup_dir = outside.join("backup");
     ok(&dir, &["backup", "--to", backup_dir.to_str().unwrap()]);
     assert!(backup_dir.join("index.md").exists());
-    let backup_zip = dir.parent().unwrap().join("smoke-all-backup.zip");
-    let _ = std::fs::remove_file(&backup_zip);
+    let backup_zip = outside.join("backup.zip");
     ok(
         &dir,
         &["backup", "--to", backup_zip.to_str().unwrap(), "--zip"],
