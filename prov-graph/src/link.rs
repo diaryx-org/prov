@@ -274,7 +274,7 @@ fn split_markdown_link(raw: &str) -> Option<(String, String)> {
     if !raw.starts_with('[') {
         return None;
     }
-    let close_bracket = raw.find(']')?;
+    let close_bracket = find_closing_bracket(&raw[1..])? + 1;
     if !raw[close_bracket..].starts_with("](") {
         return None;
     }
@@ -294,6 +294,36 @@ fn split_markdown_link(raw: &str) -> Option<(String, String)> {
         after[..close_paren].to_string()
     };
     Some((label, target))
+}
+
+/// Find the byte offset of the `]` that balances the open bracket just before
+/// `s` — the end of a Markdown link's text. A label may hold brackets of its
+/// own as long as they balance, as CommonMark has it, and the commonest case is
+/// a linked picture, `[![alt](pic.jpg)](url)`: the first `]` there is the
+/// image's, and splitting at it read the label as `![alt` and the target as
+/// `pic.jpg`. A backslash-escaped bracket is text and counts for neither side.
+/// A label whose brackets never balance yields `None`.
+fn find_closing_bracket(s: &str) -> Option<usize> {
+    let mut depth = 0u32;
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '[' => depth += 1,
+            ']' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Find the byte offset of the `)` that balances the *implicit* open paren at
@@ -1168,6 +1198,115 @@ pub fn scan_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
     parse_body_links(path, body)
 }
 
+/// `body` with each link [`scan_body_links`] finds written as `retarget` says,
+/// or `None` when nothing changed — the one splice every body rewrite (move,
+/// rename, restyle) goes through.
+///
+/// `retarget` sees each link in source order and returns its new form, or
+/// `None` to leave it as written. A link may hold others in its text — a
+/// linked picture, `[![alt](pic.jpg)](url)`, is a link whose label is an
+/// image — so the spans nest, and splicing them one after another would
+/// either cut into a span already replaced or overwrite the inner rewrite with
+/// the outer link's label as first written. Here the links inside a label are
+/// rewritten first, and the outer link is passed to `retarget` carrying the
+/// rewritten label, so both changes land. A link `retarget` leaves alone and
+/// whose label did not change is copied byte for byte.
+pub fn rewrite_body_links(
+    path: &Path,
+    body: &str,
+    mut retarget: impl FnMut(&BodyLink) -> Option<Link>,
+) -> Option<String> {
+    let links = scan_body_links(path, body);
+    if links.is_empty() {
+        return None;
+    }
+    let mut next = 0;
+    let mut changed = false;
+    let out = rewrite_within(
+        body,
+        0..body.len(),
+        &links,
+        &mut next,
+        &mut retarget,
+        &mut changed,
+    );
+    changed.then_some(out)
+}
+
+/// [`rewrite_body_links`] over `range` of `body`: the links from `links[*next]`
+/// that start inside it, each with whatever it nests rewritten first.
+fn rewrite_within(
+    body: &str,
+    range: Range<usize>,
+    links: &[BodyLink],
+    next: &mut usize,
+    retarget: &mut impl FnMut(&BodyLink) -> Option<Link>,
+    changed: &mut bool,
+) -> String {
+    let mut out = String::with_capacity(range.len());
+    let mut cursor = range.start;
+    while let Some(found) = links.get(*next) {
+        if found.span.start >= range.end {
+            break;
+        }
+        *next += 1;
+        // A span that crosses one already written, or runs out of the label
+        // it starts in, is not nested in it; it is left as it was.
+        if found.span.start < cursor || found.span.end > range.end {
+            continue;
+        }
+        out.push_str(&body[cursor..found.span.start]);
+        let mut link = found.link.clone();
+        let mut relabeled = false;
+        match label_range(body, found) {
+            Some(label) => {
+                let inner = rewrite_within(body, label.clone(), links, next, retarget, changed);
+                if inner != body[label] {
+                    link.label = Some(inner);
+                    relabeled = true;
+                }
+            }
+            // Nothing in a wikilink is a link of its own.
+            None => {
+                while links
+                    .get(*next)
+                    .is_some_and(|l| l.span.start < found.span.end)
+                {
+                    *next += 1;
+                }
+            }
+        }
+        let seen = BodyLink {
+            link,
+            span: found.span.clone(),
+            image: found.image,
+        };
+        match retarget(&seen) {
+            Some(new) => {
+                out.push_str(&new.render());
+                *changed = true;
+            }
+            None if relabeled => out.push_str(&seen.link.render()),
+            None => out.push_str(&body[found.span.clone()]),
+        }
+        cursor = found.span.end;
+    }
+    out.push_str(&body[cursor..range.end]);
+    out
+}
+
+/// Where a markdown link's label sits in `body`: just after its `[`, as long
+/// as the text there is the label [`Link::parse`] read. `None` for a wikilink.
+fn label_range(body: &str, found: &BodyLink) -> Option<Range<usize>> {
+    if found.link.wikilink {
+        return None;
+    }
+    let label = found.link.label.as_deref()?;
+    let start = found.span.start + 1;
+    let range = start..start + label.len();
+    (body.get(range.clone()) == Some(label)).then_some(range)
+}
+
 /// [`scan_body_links`] without the lexical guard: every body parsed.
 fn parse_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
     // No grammar for this extension, or a parse that failed: the lexical scan
@@ -1188,6 +1327,7 @@ fn parse_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
             image: false,
         })
         .collect();
+    let wikilinks = out.len();
     // An image span is the whole `![alt](target)`; what is kept is the
     // `[alt](target)` after the `!`, which parses and renders as a link does
     // (see `BodyLink::image`). A reference-style image — `![alt][ref]` — has
@@ -1203,11 +1343,13 @@ fn parse_body_links(path: &Path, body: &str) -> Vec<BodyLink> {
         let link = Link::parse(&body[span.clone()]);
         // Keep only inline `[label](target)` links (a labeled markdown parse):
         // reference/autolink spans parse to a bare or external target and are
-        // skipped. Defensively drop a span overlapping a wikilink we already have.
+        // skipped. Defensively drop a span overlapping a wikilink we already
+        // have — a wikilink only: a markdown link may hold an image in its
+        // text (`[![alt](pic.jpg)](url)`), and both are links to account for.
         if link.label.is_none() || link.wikilink {
             continue;
         }
-        if out
+        if out[..wikilinks]
             .iter()
             .any(|b| b.span.start < span.end && span.start < b.span.end)
         {
@@ -1973,6 +2115,73 @@ mod tests {
                 assert_eq!(&body[image.span.start - 1..image.span.start], "!", "{ext}");
                 assert_eq!(image.link.render(), &body[image.span.clone()], "{ext}");
                 assert!(image.is_path_target(), "{ext}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_holding_brackets_runs_to_the_bracket_that_balances_its_first() {
+        // A linked picture — `[![alt](pic.jpg)](url)` — was split at its first
+        // `]`, inside the image: the label came back `![alt` and the target
+        // `pic.jpg`, so rendering it again lost the outer `](url)`.
+        let link = Link::parse("[![“His Hands”](p019-03.jpg)](https://youtu.be/RvZGS1QhOjA)");
+        assert_eq!(link.label.as_deref(), Some("![“His Hands”](p019-03.jpg)"));
+        assert_eq!(link.target, "https://youtu.be/RvZGS1QhOjA");
+        assert_eq!(
+            link.render(),
+            "[![“His Hands”](p019-03.jpg)](https://youtu.be/RvZGS1QhOjA)"
+        );
+        // Words around the picture, and a label with brackets of its own.
+        let link = Link::parse("[See ![a pic](p.jpg) here](b.md)");
+        assert_eq!(link.label.as_deref(), Some("See ![a pic](p.jpg) here"));
+        assert_eq!(link.target, "b.md");
+        let link = Link::parse("[a [b] c](d.md)");
+        assert_eq!(link.label.as_deref(), Some("a [b] c"));
+        assert_eq!(link.target, "d.md");
+        // An escaped bracket is text, not nesting.
+        let link = Link::parse(r"[a \] b](d.md)");
+        assert_eq!(link.label.as_deref(), Some(r"a \] b"));
+        assert_eq!(link.target, "d.md");
+        // Brackets that never balance are still no link.
+        assert_eq!(Link::parse("[a [b](c.md)").label, None);
+        assert_eq!(Link::parse("[a]b](c.md)").label, None);
+    }
+
+    #[test]
+    fn body_scan_reads_a_linked_image_as_a_link_holding_an_image() {
+        // The outer link and the image inside its text are two links: the
+        // outer one's label is the whole image, its target the outer target,
+        // whether that is a URL, another note, or the picture sits among words.
+        for ext in ["md", "dj"] {
+            let path = Path::new("page").with_extension(ext);
+            for (body, label, target) in [
+                (
+                    "[![“His Hands”](p019-03.jpg)](https://youtu.be/RvZGS1QhOjA)\n",
+                    "![“His Hands”](p019-03.jpg)",
+                    "https://youtu.be/RvZGS1QhOjA",
+                ),
+                ("[![A pic](p.jpg)](b.md)\n", "![A pic](p.jpg)", "b.md"),
+                (
+                    "[See ![a pic](p.jpg) here](b.md)\n",
+                    "See ![a pic](p.jpg) here",
+                    "b.md",
+                ),
+            ] {
+                let found = scan_body_links(&path, body);
+                assert_eq!(found.len(), 2, "{ext} {body:?}");
+                let (outer, inner) = (&found[0], &found[1]);
+                assert!(!outer.image, "{ext} {body:?}");
+                assert_eq!(outer.span, 0..body.trim_end().len(), "{ext} {body:?}");
+                assert_eq!(outer.link.label.as_deref(), Some(label), "{ext} {body:?}");
+                assert_eq!(outer.link.target, target, "{ext} {body:?}");
+                assert_eq!(outer.link.render(), &body[outer.span.clone()], "{ext}");
+                assert!(inner.image, "{ext} {body:?}");
+                assert!(inner.link.target.ends_with(".jpg"), "{ext} {body:?}");
+                assert!(
+                    outer.span.start < inner.span.start && inner.span.end <= outer.span.end,
+                    "{ext} {body:?}"
+                );
+                assert_eq!(inner.link.render(), &body[inner.span.clone()], "{ext}");
             }
         }
     }

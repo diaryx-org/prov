@@ -640,28 +640,17 @@ fn restyle_body_links(
     if body.is_empty() {
         return text.to_string();
     }
-    let mut new_body = String::with_capacity(body.len());
-    let mut cursor = 0;
-    let mut rewrote = false;
-    for bl in link::scan_body_links(file, body) {
+    let new_body = link::rewrite_body_links(file, body, |bl| {
         if !bl.is_path_target() || prov_graph::title::is_alias_shaped(&bl.link.target) {
-            continue;
+            return None;
         }
         let resolved = link::resolve(file, &bl.link.target);
-        let retargeted = bl
-            .link
-            .with_path(link::path_text(style, file, &resolved))
-            .render();
-        new_body.push_str(&body[cursor..bl.span.start]);
-        new_body.push_str(&retargeted);
-        cursor = bl.span.end;
-        rewrote = true;
+        Some(bl.link.with_path(link::path_text(style, file, &resolved)))
+    });
+    match new_body {
+        Some(new_body) => splice_body(text, body, &new_body),
+        None => text.to_string(),
     }
-    if !rewrote {
-        return text.to_string();
-    }
-    new_body.push_str(&body[cursor..]);
-    splice_body(text, body, &new_body)
 }
 
 #[cfg(test)]

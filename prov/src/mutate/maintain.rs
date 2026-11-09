@@ -800,8 +800,8 @@ pub(crate) fn splice_body(text: &str, old_body: &str, new_body: &str) -> String 
 /// Retarget the path-form body links in `source` that resolve to `from` so
 /// they reach `to` instead, splicing the result back into `text` — both
 /// `[[wikilinks]]` and markdown/djot `[t](a)` links. Id-form and external
-/// targets are left untouched. Rewrites right-to-left so each span stays valid
-/// as earlier ones are replaced. Returns `text` unchanged when no body link
+/// targets are left untouched, and a link nested in another's text (a linked
+/// picture) is rewritten inside it. Returns `text` unchanged when no body link
 /// pointed at `from`.
 fn rewrite_body_inbound(
     text: &str,
@@ -814,26 +814,14 @@ fn rewrite_body_inbound(
     if body.is_empty() {
         return text.to_string();
     }
-    let mut new_body = body.to_string();
-    let mut changed = false;
-    for bl in link::scan_body_links(source, body).into_iter().rev() {
-        if !bl.is_path_target() {
-            continue;
-        }
-        if link::resolve(source, &bl.link.target).as_path() != from {
-            continue;
-        }
-        let retargeted = bl
-            .link
-            .with_path(link::path_text(style, source, to))
-            .render();
-        new_body.replace_range(bl.span.clone(), &retargeted);
-        changed = true;
+    let new_body = link::rewrite_body_links(source, body, |bl| {
+        (bl.is_path_target() && link::resolve(source, &bl.link.target).as_path() == from)
+            .then(|| bl.link.with_path(link::path_text(style, source, to)))
+    });
+    match new_body {
+        Some(new_body) => splice_body(text, body, &new_body),
+        None => text.to_string(),
     }
-    if !changed {
-        return text.to_string();
-    }
-    splice_body(text, body, &new_body)
 }
 
 // The shared machinery has no fixtures of its own — each verb's tests exercise

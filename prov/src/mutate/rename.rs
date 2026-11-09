@@ -525,32 +525,22 @@ pub(super) fn rerelativize_body_links(
     if body.is_empty() {
         return text.to_string();
     }
-    let mut new_body = String::with_capacity(body.len());
-    let mut cursor = 0;
-    let mut rewrote = false;
-    for bl in link::scan_body_links(from, body) {
-        // ID-form (stable by construction) and external targets stay put; the
-        // text between `cursor` and this span — including any such skipped
-        // link — is copied verbatim by the next span's push (or the tail).
+    let new_body = link::rewrite_body_links(from, body, |bl| {
+        // ID-form (stable by construction) and external targets stay put, and
+        // are copied verbatim.
         if !bl.is_path_target() {
-            continue;
+            return None;
         }
         let resolved = moves.landed_or_same(&link::resolve(from, &bl.link.target));
         let new_target = link::path_text(style, to, &resolved);
-        let retargeted = bl.link.with_path(new_target).render();
-        if retargeted == body[bl.span.start..bl.span.end] {
-            continue; // already resolves under the workspace's path style
-        }
-        new_body.push_str(&body[cursor..bl.span.start]);
-        new_body.push_str(&retargeted);
-        cursor = bl.span.end;
-        rewrote = true;
+        let retargeted = bl.link.with_path(new_target);
+        // Already resolves under the workspace's path style, as written.
+        (retargeted.render() != body[bl.span.clone()]).then_some(retargeted)
+    });
+    match new_body {
+        Some(new_body) => splice_body(text, body, &new_body),
+        None => text.to_string(),
     }
-    if !rewrote {
-        return text.to_string();
-    }
-    new_body.push_str(&body[cursor..]);
-    splice_body(text, body, &new_body)
 }
 
 /// The directory `path` sits in, the root being the empty path.
@@ -1074,6 +1064,68 @@ mod tests {
         // The ordinary path link beside them still moved, so the pass ran at all
         // — without this the test would pass on a rename that did nothing.
         assert!(mid.contains("[the leaf](/leaf.md)"), "control: {mid}");
+    }
+
+    #[test]
+    fn rename_carries_a_linked_picture_and_its_link_together() {
+        // `[![alt](pic.jpg)](target)` is a link whose text is an image. Its
+        // first `]` is the image's, and reading the label as ending there
+        // rewrote the whole thing to `[![alt](pic.jpg)` — the outer link's
+        // target gone. Now both are carried: the picture inside, and the outer
+        // target when it is a path, while a URL is left as written.
+        let dir = tempdir("md-linked-picture");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\ncontents:\n- page.md\n- other.md\n---\n",
+        );
+        write(&dir, "other.md", "---\npart_of: index.md\n---\n");
+        write(
+            &dir,
+            "page.md",
+            "---\npart_of: index.md\n---\n\
+             [![“His Hands”](attachments/p.jpg)](https://youtu.be/RvZGS1QhOjA)\n\n\
+             [![A pic](attachments/p.jpg)](other.md)\n\n\
+             [See ![a pic](attachments/p.jpg) here](other.md)\n",
+        );
+        std::fs::create_dir_all(dir.join("attachments")).unwrap();
+        std::fs::write(dir.join("attachments/p.jpg"), b"jpeg").unwrap();
+
+        block_on(ws(&dir).rename(Path::new("page.md"), Path::new("page/index.md"))).unwrap();
+
+        let page = read(&dir, "page/index.md");
+        assert!(
+            page.contains("\n[![“His Hands”](/attachments/p.jpg)](https://youtu.be/RvZGS1QhOjA)\n"),
+            "{page}"
+        );
+        assert!(
+            page.contains("\n[![A pic](/attachments/p.jpg)](/other.md)\n"),
+            "{page}"
+        );
+        assert!(
+            page.contains("\n[See ![a pic](/attachments/p.jpg) here](/other.md)\n"),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn rename_retargets_an_inbound_link_around_a_picture() {
+        // The inbound direction: a page's linked picture points at the moved
+        // page, and only the outer target changes.
+        let dir = tempdir("md-linked-picture-inbound");
+        write(&dir, "index.md", "---\ncontents:\n- a.md\n- b.md\n---\n");
+        write(&dir, "a.md", "---\npart_of: index.md\n---\n");
+        write(
+            &dir,
+            "b.md",
+            "---\npart_of: index.md\n---\nSee [![it](p.jpg)](a.md) nearby.\n",
+        );
+        std::fs::write(dir.join("p.jpg"), b"jpeg").unwrap();
+
+        block_on(ws(&dir).rename(Path::new("a.md"), Path::new("sub/a.md"))).unwrap();
+
+        let b = read(&dir, "b.md");
+        assert!(b.contains("See [![it](p.jpg)](/sub/a.md) nearby."), "{b}");
     }
 
     #[test]
