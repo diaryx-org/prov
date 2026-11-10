@@ -36,6 +36,7 @@
 //! into the eventual public API.
 
 pub mod about;
+pub mod album;
 pub mod attach;
 pub use prov_config as config;
 /// Crossing a workspace boundary — opening a peer a [`PeerResolver`] located,

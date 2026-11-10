@@ -186,6 +186,12 @@ fn main() -> ExitCode {
             };
             check::cmd_manifest(&target, update, verify, &add, held)
         }
+        Command::Album {
+            album,
+            from,
+            pick,
+            drop,
+        } => check::cmd_album(&album, from.as_deref(), &pick, &drop),
         Command::Gather {
             cards,
             into,

@@ -51,6 +51,7 @@
 //! validation findings are all views over it, and any stored index heals
 //! *toward* it, never the reverse.
 
+pub mod album;
 pub mod bulk;
 pub mod content;
 pub mod document;
@@ -74,6 +75,7 @@ pub mod peer;
 pub mod relation;
 pub mod title;
 
+pub use album::{Album, Pick};
 pub use bulk::BulkReads;
 pub use content::{ContentFormat, code_spans, render_html};
 pub use document::{

@@ -17,7 +17,6 @@ use std::process::ExitCode;
 
 use prov::{FileIndex, Minter, NodeKind, StdFs, Workspace, block_on};
 
-use crate::CmdResult;
 use crate::about::about_context;
 use crate::cli::{CheckArgs, FixModeArg};
 use crate::json;
@@ -27,6 +26,7 @@ use crate::session::{
 };
 use crate::term::prompt;
 use crate::tree::{descent, workspace_label};
+use crate::{AnyError, CmdResult};
 
 /// `check` — walk the workspace and report what is wrong with it.
 ///
@@ -354,6 +354,107 @@ fn collect_refusals(node: &prov::crossing::Node, out: &mut Vec<String>) {
 /// Narration to stderr; stdout carries the machine value, which is the manifest
 /// document's path (bare/`--update`/`--add`) or one line per failing file
 /// (`--verify`).
+pub(crate) fn cmd_album(
+    album: &Path,
+    from: Option<&Path>,
+    pick: &[String],
+    drop: &[String],
+) -> CmdResult {
+    let mut session = Session::open()?;
+    let node = ws_rel(&session.ctx, album)?;
+    // A photograph named by a path to the file itself, where the archive is
+    // here, is taken as the workspace's path for it; anything else (a
+    // checksum, or a path within the manifest's root) is passed as written.
+    let named = |items: &[String]| -> Result<Vec<String>, AnyError> {
+        items
+            .iter()
+            .map(|item| {
+                if !prov::prov_graph::album::is_sha256(item) && Path::new(item).exists() {
+                    Ok(ws_rel(&session.ctx, Path::new(item))?
+                        .to_string_lossy()
+                        .into_owned())
+                } else {
+                    Ok(item.clone())
+                }
+            })
+            .collect()
+    };
+    let pick = named(pick)?;
+    let drop = named(drop)?;
+
+    let mut wrote = false;
+    if let Some(from) = from {
+        let source = ws_rel(&session.ctx, from)?;
+        block_on(session.ws.start_album(&node, &source))?;
+        eprintln!("{}: an album of {}", node.display(), source.display());
+        wrote = true;
+    }
+    if !pick.is_empty() {
+        let update = block_on(session.ws.pick(&node, &pick))?;
+        eprintln!(
+            "{}: {} picked, {} already, {} in all",
+            node.display(),
+            update.changed.len(),
+            update.unchanged.len(),
+            update.total
+        );
+        wrote |= !update.changed.is_empty();
+    }
+    if !drop.is_empty() {
+        let update = block_on(session.ws.unpick(&node, &drop))?;
+        eprintln!(
+            "{}: {} dropped, {} not picked, {} in all",
+            node.display(),
+            update.changed.len(),
+            update.unchanged.len(),
+            update.total
+        );
+        wrote |= !update.changed.is_empty();
+    }
+    if wrote {
+        session.commit()?;
+    }
+    if from.is_some() || !pick.is_empty() || !drop.is_empty() {
+        println!("{}", node.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let view = block_on(session.ws.album(&node))?.ok_or_else(|| {
+        format!(
+            "{} is not an album: give it a source with --from",
+            node.display()
+        )
+    })?;
+    for (pick, row) in &view.picked {
+        println!("{}\t{}", row.path.display(), pick.hash);
+    }
+    let held = view
+        .source
+        .manifest
+        .held
+        .as_ref()
+        .map(|held| format!(", held by {}", held.by))
+        .unwrap_or_default();
+    eprintln!(
+        "{}: {} picked from {}{held}",
+        node.display(),
+        view.picked.len(),
+        view.source.node.display()
+    );
+    if !view.missing.is_empty() {
+        for pick in &view.missing {
+            eprintln!("  not in {}: {}", view.source.node.display(), pick.hash);
+        }
+        eprintln!(
+            "{} no longer listed; `prov album {} --drop <checksum>` takes one out",
+            view.missing.len(),
+            node.display()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 pub(crate) fn cmd_manifest(
     target: &Path,
     update: bool,

@@ -660,6 +660,32 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with_all = ["update", "verify", "add"])]
         not_held: bool,
     },
+    /// Show or change an album: a document that picks photographs out of a
+    /// manifest by their checksum, claiming none of the files.
+    ///
+    /// Bare, it lists each pick as its path in the source and its checksum,
+    /// and names any pick the source no longer lists. `--from` makes the
+    /// document an album of a manifest node; `--pick` and `--drop` add and
+    /// take away photographs, each named by its checksum or by its path
+    /// (relative to the manifest's root, or a path to the file itself). An
+    /// album is read on a device without the files: a held archive's album
+    /// is picked from the rows.
+    Album {
+        /// The album: any document, which `--from` makes one.
+        #[arg(value_name = "ALBUM")]
+        album: PathBuf,
+        /// Make ALBUM an album of this manifest node, keeping any picks it has.
+        #[arg(long, value_name = "SOURCE")]
+        from: Option<PathBuf>,
+        /// Add these photographs, by checksum or path. Refuses one the source
+        /// does not list, and writes nothing.
+        #[arg(long, value_name = "PHOTO", num_args = 1..)]
+        pick: Vec<String>,
+        /// Take these photographs out, by checksum or path. A pick the source
+        /// no longer lists is dropped by its checksum.
+        #[arg(long, value_name = "PHOTO", num_args = 1..)]
+        drop: Vec<String>,
+    },
     /// Gather attachments into one manifest: their files move into a new
     /// directory, their sidecars go, and one node takes the first one's place
     /// in their index. For photographs added one at a time that turn out to be

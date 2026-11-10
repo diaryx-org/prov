@@ -743,6 +743,28 @@ pub enum Finding {
         recorded: String,
         actual: String,
     },
+    /// An album cannot be read as one: a pick is not a digest, or is picked
+    /// twice; `picks_from` is not a link, or links to something that is not a
+    /// manifest node with hashed rows; or the node also declares `manifest`.
+    /// `doc` is the album, `error` what reading it said.
+    ///
+    /// A `picks_from` that resolves to nothing is not this: it is a broken link,
+    /// reported where every broken link is.
+    AlbumMalformed { doc: PathBuf, error: String },
+    /// An album picks a digest its source manifest does not list: the
+    /// photograph was taken out of the archive, or replaced by other bytes and
+    /// the manifest refreshed. `album` is the album, `source` the manifest node
+    /// it picks from, `hash` the pick as written.
+    ///
+    /// Raised per pick, as [`ManifestMismatch`](Finding::ManifestMismatch) is
+    /// per file: each is one photograph someone chose and now has to find.
+    /// Diagnosis only. Whether to drop the pick or put the photograph back is
+    /// the author's call.
+    AlbumPickMissing {
+        album: PathBuf,
+        source: PathBuf,
+        hash: String,
+    },
 }
 
 impl Finding {
@@ -803,7 +825,10 @@ impl Finding {
             | Finding::TermNearMiss { doc, .. }
             | Finding::ReadsCycle { doc, .. }
             | Finding::ManifestConflict { doc }
-            | Finding::ManifestMalformed { doc, .. } => doc,
+            | Finding::ManifestMalformed { doc, .. }
+            | Finding::AlbumMalformed { doc, .. } => doc,
+            // The album is what a person edits to drop the pick.
+            Finding::AlbumPickMissing { album, .. } => album,
             // The child is what gains the back-link; `doc` is the parent that
             // reported it missing.
             Finding::MissingInverse { child, .. } => child,
@@ -900,7 +925,9 @@ impl Finding {
             | Finding::ManifestConflict { .. }
             | Finding::ManifestMalformed { .. }
             | Finding::ManifestDrift { .. }
-            | Finding::ManifestMismatch { .. } => Severity::Error,
+            | Finding::ManifestMismatch { .. }
+            | Finding::AlbumMalformed { .. }
+            | Finding::AlbumPickMissing { .. } => Severity::Error,
         }
     }
 
@@ -950,6 +977,8 @@ impl Finding {
             Finding::ViewScopeUnresolved { .. } => "view_scope_unresolved",
             Finding::ManifestConflict { .. } => "manifest_conflict",
             Finding::ManifestMalformed { .. } => "manifest_malformed",
+            Finding::AlbumMalformed { .. } => "album_malformed",
+            Finding::AlbumPickMissing { .. } => "album_pick_missing",
             Finding::ManifestDrift { .. } => "manifest_drift",
             Finding::ManifestMismatch { .. } => "manifest_mismatch",
         }
@@ -1477,6 +1506,19 @@ impl fmt::Display for Finding {
             Finding::ManifestMalformed { doc, error } => {
                 write!(f, "{}: not a readable manifest: {error}", doc.display())
             }
+            Finding::AlbumMalformed { doc, error } => {
+                write!(f, "{}: not a readable album: {error}", doc.display())
+            }
+            Finding::AlbumPickMissing {
+                album,
+                source,
+                hash,
+            } => write!(
+                f,
+                "{}: picks {hash}, which {} no longer lists",
+                album.display(),
+                source.display()
+            ),
             Finding::ManifestDrift {
                 manifest,
                 missing,
@@ -1658,6 +1700,7 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         findings.extend(self.fixity_findings(start, &documents).await?);
         findings.extend(self.payload_findings(&documents).await?);
         findings.extend(self.manifest_findings(&documents).await?);
+        findings.extend(self.album_findings(&documents).await?);
         findings.extend(self.config_findings(start).await?);
         findings.extend(self.store_findings(start).await?);
         findings.extend(self.deletions_findings(start).await?);
@@ -2559,6 +2602,61 @@ impl<FS: Storage, IdP, Ix: IndexStore> Workspace<FS, IdP, Ix> {
                     missing,
                     extra,
                 });
+            }
+        }
+        Ok(findings)
+    }
+
+    /// [`Finding::AlbumMalformed`] for an album that cannot be read as one, and
+    /// [`Finding::AlbumPickMissing`] for each pick its source no longer lists.
+    ///
+    /// Reads each album's source manifest once, and no photograph: whether a
+    /// pick is still in the archive is a question about the rows, which is
+    /// what makes it cheap enough for every `check`, held archive or not.
+    async fn album_findings(&self, documents: &BTreeSet<PathBuf>) -> Result<Vec<Finding>> {
+        use prov_graph::graph::album::SourceError;
+        let mut findings = Vec::new();
+        for path in documents {
+            let album = match self.graph().album_of(path).await {
+                Ok(Some(album)) => album,
+                Ok(None) => continue,
+                Err(error) => {
+                    // Unreadable as a document is another finding's business.
+                    if self.read(path).await.is_ok() {
+                        findings.push(Finding::AlbumMalformed {
+                            doc: path.clone(),
+                            error: error.to_string(),
+                        });
+                    }
+                    continue;
+                }
+            };
+            let source = match self.graph().album_source(path, &album).await {
+                Ok(source) => source,
+                // The census reports a link to nothing, once.
+                Err(SourceError::Unresolved) => continue,
+                Err(SourceError::Malformed(error)) => {
+                    findings.push(Finding::AlbumMalformed {
+                        doc: path.clone(),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let listed: std::collections::HashSet<&str> = source
+                .manifest
+                .files
+                .iter()
+                .filter_map(|row| row.hash.as_deref())
+                .collect();
+            for pick in &album.picks {
+                if !listed.contains(pick.hash.as_str()) {
+                    findings.push(Finding::AlbumPickMissing {
+                        album: path.clone(),
+                        source: source.node.clone(),
+                        hash: pick.hash.clone(),
+                    });
+                }
             }
         }
         Ok(findings)

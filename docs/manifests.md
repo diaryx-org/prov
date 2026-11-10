@@ -422,5 +422,73 @@ Each verb is one change set: moved, written and removed together.
 | `manifest TARGET --held-by NAME [--held-at ADDRESS]` | say who keeps the files, so a device without them reads them as held elsewhere (§3.5); `--not-held` clears it |
 | `gather ATTACHMENT... --into DIR [--title T] [--discard FIELD] [--dry-run]` | attachments of one index into one manifest over `DIR` (§7) |
 | `scatter TARGET [--into INDEX] [--discard FIELD] [--dry-run]` | a manifest back into one attachment per file (§7) |
+| `album ALBUM --from SOURCE` | make a document an album of a manifest node (§9) |
+| `album ALBUM --pick PHOTO...` / `--drop PHOTO...` | add or take away photographs, each by checksum or path (§9) |
+| `album ALBUM` | each pick's path and checksum, and any pick the source no longer lists |
 
 `TARGET` is the covered directory, the node, or the manifest document.
+
+## 9. Albums: a selection from a manifest
+
+A manifest claims its directory completely, and no two manifests claim one
+file (§3). That is what lets it answer *did anything vanish*, and it is also
+why a manifest cannot be a **selection**. Forty photographs out of an archive
+of eighty thousand, listed in a manifest of their own, would leave the rest as
+drift, and would claim forty files the archive's manifest already claims.
+
+An **album** is the selection. It claims no file. It names the manifest node
+it picks from, and picks that node's rows by their checksum:
+
+```yaml
+# reunion-2019.yaml
+title: Family reunion, 2019
+part_of: '[Photographs](/index.md)'
+picks_from: '[Harris family photographs](id:abc1234)'
+picks:
+  - sha256:bb2cb0280300ae0e9a87c49ea385083afd40c33c8aa1abdc88faa321f4a27e76
+  - hash: sha256:e6512e4c3757513df434c8d1e3565289c71dbe98a98fefae5c05795a0c5eda6b
+    caption: Grandpa at the lake
+```
+
+| Key | Meaning |
+|---|---|
+| `picks_from` | A link to the **manifest node** picked from. Required. |
+| `picks` | The picks, in the album's own order, which prov never sorts. Each is a checksum, `sha256:<64 lowercase hex>` as the source's rows write it, or a mapping with `hash` and fields of its own. |
+
+- **`picks_from` is a link wherever it is written**, without a `fields`
+  declaration: prov's own key, as `manifest` is. It is censused, reported
+  broken, rewritten when the source moves and relabelled when it is retitled,
+  as any path-valued field is (spec §3).
+- **A pick names bytes, not a place.** Reorganising the archive's folders
+  leaves every album as it was, and a device with the album and not the
+  archive (a held one, §3.5) asks the keeper for each photograph by the
+  address it already uses.
+- **A pick's fields are the album's**, a caption this album gives the
+  photograph. They are data, not links, as a row's are (§2.2).
+- **The source must carry checksums.** An inventory (§3) has nothing a pick
+  could name.
+- **An album is otherwise an ordinary document**: a YAML node, or a Markdown
+  page whose body says what the album is. It may not also declare `manifest`:
+  a node covers a directory or picks from one, never both.
+
+Who may read an album is a fact about the album, not its source. That is the
+point of one: the archive can stay its keeper's alone while an album of it is
+given to someone else.
+
+`check` reads each album's source manifest once and no photograph, so an
+album costs every `check` one parse:
+
+- **`AlbumPickMissing`**, per pick: a checksum the source no longer lists. The
+  photograph was taken out of the archive, or its bytes changed and the
+  manifest was refreshed. Dropping the pick (`album ALBUM --drop <checksum>`)
+  or putting the photograph back is the author's call.
+- **`AlbumMalformed`**: a pick that is not a checksum, or is picked twice; a
+  `picks_from` that links to something other than a manifest node with
+  checksums; or a node that also declares `manifest`. A `picks_from` that
+  links to nothing is a `BrokenLink`, reported once, where links are.
+
+`album ALBUM --pick` takes a photograph by checksum or by path: relative to
+the manifest's `root` (`2019/lake.jpg`), or to the workspace
+(`photo/2019/lake.jpg`), so it works on a device that has only the rows. A
+photograph the source does not list, or lists without a checksum, is refused,
+and nothing is written.

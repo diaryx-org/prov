@@ -595,9 +595,18 @@ pub fn finding(f: &Finding) -> J {
         Finding::ManifestConflict { doc } => {
             fields.push(("doc", p(doc)));
         }
-        Finding::ManifestMalformed { doc, error } => {
+        Finding::ManifestMalformed { doc, error } | Finding::AlbumMalformed { doc, error } => {
             fields.push(("doc", p(doc)));
             fields.push(("error", s(error)));
+        }
+        Finding::AlbumPickMissing {
+            album,
+            source,
+            hash,
+        } => {
+            fields.push(("album", p(album)));
+            fields.push(("source", p(source)));
+            fields.push(("hash", s(hash)));
         }
         Finding::ManifestDrift {
             node,

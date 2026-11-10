@@ -84,6 +84,7 @@
 //! returns [`Target::Foreign`], so a traversal that never follows one is
 //! unchanged by the port existing.
 
+pub mod album;
 pub mod census;
 pub mod load;
 pub mod manifest;
@@ -444,7 +445,13 @@ pub(crate) fn frontmatter_links_in(
             raw: edge.target,
         });
     }
-    for path in &settings.references {
+    // An album's `picks_from` is a link whether or not the workspace declares
+    // it, as a node's `manifest` pointer is a path whether or not anything
+    // says so: it is prov's own key, and an album whose source moved without
+    // it being rewritten would pick from nothing.
+    let picks_from = FieldPath::parse(crate::album::PICKS_FROM_KEY);
+    let builtin = (!settings.references.contains(&picks_from)).then_some(&picks_from);
+    for path in settings.references.iter().chain(builtin) {
         for (address, raw) in crate::field::strings_at(meta, path) {
             out.push(FrontmatterLink {
                 site: LinkSite::Field {
