@@ -1,0 +1,9 @@
+title: Audiences
+vocabulary:
+  field: audience
+  values: closed
+terms:
+  self:      { means: "Only me. Where every record starts." }
+  care-team: { means: "Clinicians I have chosen to share with; what a new doctor receives." }
+  emergency: { means: "The short list a stranger may need: allergies, current medications, active problems." }
+  family:    { means: "People who help with my care." }

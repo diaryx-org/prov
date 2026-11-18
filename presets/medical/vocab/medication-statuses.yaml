@@ -1,0 +1,8 @@
+title: Medication statuses
+vocabulary:
+  field: status
+  values: closed
+terms:
+  active:  { means: "Being taken.", fhir: active }
+  on-hold: { means: "Paused on purpose.", fhir: on-hold }
+  stopped: { means: "No longer taken.", fhir: stopped }

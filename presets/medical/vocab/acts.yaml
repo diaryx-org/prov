@@ -1,0 +1,10 @@
+title: Generating acts
+vocabulary:
+  field: generated.how
+  values: closed
+terms:
+  written:     { means: "A person wrote it." }
+  drafted:     { means: "Composed by a model (an AI scribe, say); needs a clinician's confirmation." }
+  transcribed: { means: "Carried across from a scan or recording; the words are the source's." }
+  imported:    { means: "Carried across from an EHR export, unchanged." }
+  converted:   { means: "The same record in another format (FHIR to Markdown, say)." }
