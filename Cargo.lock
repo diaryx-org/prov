@@ -881,6 +881,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prov-fhir"
+version = "0.18.0"
+dependencies = [
+ "clap",
+ "prov",
+ "prov-testkit",
+]
+
+[[package]]
 name = "prov-filing"
 version = "0.18.0"
 dependencies = [
