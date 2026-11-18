@@ -376,6 +376,26 @@ pub fn set_meta_in_text(
     set_in_text(text, carrier, dotted, fig::Value::from(value))
 }
 
+/// Upsert a full [`Value`](prov_graph::meta::Value) at a path given as literal
+/// mapping keys, one per step — the counterpart to [`set_meta_in_text`] for a
+/// key that is not itself a path. A config entry is named by a key that can
+/// contain the path grammar's own punctuation: `fields.generated.how` declares
+/// the field `generated.how`, one key under `fields`, and `fields.codes[].system`
+/// the field `codes[].system`. Parsing either as a dotted path would nest the
+/// first a level too deep and refuse the second, so the caller that knows where
+/// the key boundaries are says so.
+pub fn set_meta_at_keys(
+    text: &str,
+    carrier: Option<MetaCarrier>,
+    keys: &[&str],
+    value: &prov_graph::meta::Value,
+) -> Result<String> {
+    let mut editor = MetaEditor::open_or_init(text, carrier)?;
+    let path: Vec<Segment> = keys.iter().map(|k| Segment::Key(k)).collect();
+    editor.set_value(&path, fig::Value::from(value))?;
+    editor.render()
+}
+
 /// The value at a dotted path in `meta`, or `None`. Mapping keys only — a
 /// sequence index along the way reads as absent.
 #[cfg(test)]
