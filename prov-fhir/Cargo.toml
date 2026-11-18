@@ -1,0 +1,31 @@
+[package]
+name = "prov-fhir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Import a FHIR export (Bulk Data ndjson, or a Bundle) into a prov workspace kept with the medical preset."
+# A tool built on the library, not a library of its own: nothing depends on
+# it, so it is never packaged, and `cargo xtask package-isolation` (which
+# builds each *publishable* member alone) leaves it out the way it leaves out
+# `xtask` and `prov-testkit`.
+publish = false
+
+[[bin]]
+name = "prov-fhir"
+path = "src/main.rs"
+
+[dependencies]
+# The library, and only the library: every write goes through `Workspace`, so
+# an import is journaled, filed and linked exactly as `prov new` would do it.
+# FHIR's JSON is read with the same fig JSON parser prov reads `---json`
+# frontmatter with (`prov::meta::parse_value`), so the importer adds no JSON
+# crate of its own.
+prov.workspace = true
+# Argument parsing, the same version the `prov` CLI already compiles.
+clap = { version = "4.5", features = ["derive"] }
+
+[dev-dependencies]
+prov-testkit = { workspace = true }

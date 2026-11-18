@@ -4,7 +4,7 @@ resolver = "2"
 # package-isolation`; the jobs themselves are in .config/ship.figl). It is a
 # member so `cargo test --workspace` checks it, and `publish = false` keeps it
 # off crates.io.
-members = ["prov-graph", "prov-store", "prov-grain", "prov-views", "prov-filing", "prov-exports", "prov-config", "prov", "prov-cli", "prov-testkit", "xtask"]
+members = ["prov-graph", "prov-store", "prov-grain", "prov-views", "prov-filing", "prov-exports", "prov-config", "prov", "prov-cli", "prov-fhir", "prov-testkit", "xtask"]
 
 [workspace.package]
 version = "0.18.0"

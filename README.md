@@ -41,6 +41,7 @@ A *self-describing plaintext workspace*: a set of documents whose structure live
 
 - **`prov/`** — the library. Documents, relations, identity, and the workspace seam.
 - **`prov-cli/`** — a thin command-line companion (the installed binary is `prov`).
+- **`prov-fhir/`** — `prov-fhir`, an importer from a FHIR export (Bulk Data ndjson, or a Bundle) into a workspace kept with the [medical preset](presets/medical/prov.yaml): one patient's record per workspace, the export itself kept whole under Imports. Built on the library alone. Never published.
 - **`prov-testkit/`** — filesystem scratch helpers the tests share. Never published.
 - **`xtask/`** — the one CI job that is more than a command, `cargo xtask package-isolation`.
 
