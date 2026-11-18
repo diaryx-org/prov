@@ -1,0 +1,102 @@
+# The `medical` preset: a patient-held health record kept as plaintext.
+# Apply it with `prov presets ./presets/medical --write` (or `prov init --preset
+# ./presets/medical`), then make the indexes everything here names by title:
+#
+#   prov new Encounters  --in <root>     visit notes, one per date of service
+#   prov new Problems    --in <root>     conditions, each with a clinical status
+#   prov new Medications --in <root>     what is (or was) being taken
+#   prov new Labs        --in <root>     results; attach the PDF with `prov attach`
+#   prov new "Care team" --in <root>     one document per clinician or clinic
+#   prov new Imports     --in <root>     one manifest per EHR export (FHIR ndjson)
+#
+# The design in one paragraph. A record is an ordinary prov document; what kind
+# of clinical record it is lives in `kind`, closed against a short list. Codes
+# from the big terminologies (ICD-10, LOINC, RxNorm…) are carried, not
+# enumerated: `codes[].system` is closed, so a code is always said to be *from*
+# a known system, but the tens of thousands of codes themselves are never
+# copied into the workspace. Who wrote a note and who signed it off is prov's
+# own provenance (`generated`, `confirmed`); an AI scribe's draft is
+# `generated.how: drafted` until a clinician's `confirmed` entry lands. A draft
+# also carries `draft: true`, which every export holds on; signing off is
+# `prov unset <note> draft` and then `prov confirm <note> --by <clinician>`, in
+# that order, since a confirmation goes stale at the next edit (the `Awaiting
+# review` view lists what is left).
+# Corrections are new documents that `replaces` the old one, never edits to a
+# signed note. Nothing leaves without an `audience`, and `audience` starts as
+# `self`.
+fixity: on
+fields:
+  audience:
+    values: closed
+    vocabulary: '[Audiences](/vocab/audiences.yaml)'
+    default: self
+  kind:
+    values: closed
+    vocabulary: '[Record kinds](/vocab/record-kinds.yaml)'
+  date_of_service:
+    type: date
+  clinician:
+    type: ref
+  codes[].system:
+    values: closed
+    vocabulary: '[Code systems](/vocab/code-systems.yaml)'
+  generated.how:
+    values: closed
+    vocabulary: '[Generating acts](/vocab/acts.yaml)'
+  status:
+  - under: '[[Problems]]'
+    values: closed
+    vocabulary: '[Problem statuses](/vocab/problem-statuses.yaml)'
+    default: active
+  - under: '[[Medications]]'
+    values: closed
+    vocabulary: '[Medication statuses](/vocab/medication-statuses.yaml)'
+    default: active
+views:
+  timeline:
+    label: Timeline
+    where: present(date_of_service) && present(kind)
+    key: month(date_of_service)
+  active-problems:
+    label: Active problems
+    where: under('Problems') && status == 'active'
+    key: kind
+  current-medications:
+    label: Current medications
+    where: under('Medications') && status in ['active', 'on-hold']
+    key: status
+  by-clinician:
+    label: By clinician
+    where: present(clinician)
+    key: clinician
+  unreviewed:
+    # An AI scribe's (or importer's) draft no one has confirmed yet.
+    label: Awaiting review
+    where: >-
+      'drafted' in field('generated.how') && size(field('confirmed[].by')) == 0
+    key: kind
+filing:
+  encounters:
+    label: Encounters by year
+    under: '[[Encounters]]'
+    field: date_of_service
+    nest: year
+    kind: page
+  labs:
+    label: Labs by year
+    under: '[[Labs]]'
+    field: date_of_service
+    nest: year
+exports:
+  care-team:
+    label: For my care team
+    gate: { field: audience, value: care-team }
+    hold: draft
+  emergency:
+    label: Emergency summary
+    gate: { field: audience, value: emergency }
+    hold: draft
+  family:
+    label: For family
+    gate: { field: audience, value: family }
+    hold: draft

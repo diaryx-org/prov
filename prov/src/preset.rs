@@ -467,12 +467,19 @@ impl<FS: Storage, IdP: IdentityPolicy, Ix: IndexStore> Workspace<FS, IdP, Ix> {
         if !sets.is_empty() {
             let (mut text, doc) = self.load(&plan.surface).await?;
             for (key, value) in sets {
-                let dotted = if plan.in_root_block {
-                    format!("{ROOT_CONFIG_KEY}.{key}")
-                } else {
-                    key.clone()
-                };
-                text = prov_store::edit::set_meta_in_text(&text, doc.carrier, &dotted, value)?;
+                // A key is a top-level config key, or one and an entry name
+                // under it (`fields.generated.how`) — split as `lookup` splits
+                // it, never as a path: an entry's name may hold the path
+                // grammar's own `.` and `[]`.
+                let mut keys: Vec<&str> = Vec::with_capacity(3);
+                if plan.in_root_block {
+                    keys.push(ROOT_CONFIG_KEY);
+                }
+                match key.split_once('.') {
+                    Some((head, entry)) => keys.extend([head, entry]),
+                    None => keys.push(key),
+                }
+                text = prov_store::edit::set_meta_at_keys(&text, doc.carrier, &keys, value)?;
             }
             cs.write(&plan.surface, text);
         }
@@ -573,6 +580,44 @@ mod tests {
             config.fields["status"][0].default,
             Some(Value::String("open".into()))
         );
+    }
+
+    #[test]
+    fn a_field_named_by_a_path_is_written_as_one_key() {
+        // `generated.how` and `codes[].system` are field *names* — one key
+        // each under `fields` — not paths to walk into the config.
+        let dir = tempdir("preset-path-names");
+        write(
+            &dir,
+            "index.md",
+            "---\ntitle: Root\nconfig: prov.yaml\n---\n",
+        );
+        write(&dir, "prov.yaml", "title: prov config\n");
+        let mut declared = Mapping::new();
+        declared.insert("values".into(), Value::String("closed".into()));
+        declared.insert(
+            "vocabulary".into(),
+            Value::String("[Acts](/vocab/acts.yaml)".into()),
+        );
+        let mut fields = Mapping::new();
+        fields.insert("generated.how".into(), Value::Mapping(declared.clone()));
+        fields.insert("codes[].system".into(), Value::Mapping(declared));
+        let mut config = Mapping::new();
+        config.insert("fields".into(), Value::Mapping(fields));
+        let preset = Preset {
+            config,
+            files: vec![],
+        };
+        let mut w = ws(&dir);
+        block_on(w.apply_preset(Path::new("index.md"), &preset)).unwrap();
+
+        let node = read(&dir, "prov.yaml");
+        let config = block_on(w.effective_config(Path::new("index.md"))).unwrap();
+        assert!(config.fields.contains_key("generated.how"), "{node}");
+        assert!(config.fields.contains_key("codes[].system"), "{node}");
+        // And applying again recognizes both as already declared.
+        let again = block_on(w.plan_preset(Path::new("index.md"), &preset)).unwrap();
+        assert!(again.is_clean() && !again.writes_anything(), "{again:?}");
     }
 
     #[test]

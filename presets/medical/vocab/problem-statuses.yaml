@@ -1,0 +1,8 @@
+title: Problem statuses
+vocabulary:
+  field: status
+  values: closed
+terms:
+  active:   { means: "Current.", fhir: active }
+  resolved: { means: "Over.", fhir: resolved }
+  inactive: { means: "Not current, may return.", fhir: inactive }

@@ -1,0 +1,16 @@
+title: Record kinds
+vocabulary:
+  field: kind
+  values: closed
+terms:
+  encounter:    { means: "A visit, call, or televisit, and the note written about it.", fhir: Encounter }
+  problem:      { means: "A condition or diagnosis, tracked over time.", fhir: Condition }
+  medication:   { means: "A medicine taken, prescribed, or stopped.", fhir: MedicationStatement }
+  allergy:      { means: "An allergy or intolerance.", fhir: AllergyIntolerance }
+  immunization: { means: "A vaccine given.", fhir: Immunization }
+  lab:          { means: "A test result.", fhir: Observation }
+  imaging:      { means: "A scan and its report.", fhir: DiagnosticReport }
+  procedure:    { means: "Something done to or for the patient.", fhir: Procedure }
+  document:     { means: "A letter, fax, form, or other scanned paper.", fhir: DocumentReference }
+  import:       { means: "An export received from an EHR, kept whole as evidence." }
+  journal:      { means: "The patient's own note: symptoms, questions, how it went." }
